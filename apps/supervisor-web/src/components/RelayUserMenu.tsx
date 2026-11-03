@@ -1,3 +1,4 @@
+import { ClientVersion } from '../desktop/ClientVersion';
 import { devicesHref } from '../lib/devicesRoute';
 import { useAccountShareAttention } from './sharedAccess/useAccountShareAttention';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -245,6 +246,7 @@ export function RelayUserMenu({
               {user.username}
             </p>
             <p className="truncate text-xs text-[var(--theme-fg-muted)]">{user.email}</p>
+            <ClientVersion />
           </div>
           <Link
             className="flex h-11 items-center gap-2 rounded-md px-3 text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)] focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"

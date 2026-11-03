@@ -468,13 +468,14 @@ loopback Host. `/` redirects relatively to the requesting Agent's bound thread.
 Collections list only bound top-level threads and descendants; detached bindings
 remain visible. The workbench supports tabs, split views, favorites, thread
 settings, rename, delete and new conversations across that set. Files are
-read-only. Fork/import, sharing, terminal, device/global settings and harness
+read-only. Fork/import, sharing, terminal, device/global settings and device-level harness
 administration controls are hidden. Denied requests with
 `thread_scope_forbidden` have a clear fallback message.
 
-Settings stay available with three tabs. **Session** holds the current thread's
-own settings, the same ones its composer opens. **Preferences** keeps what is
-stored in this browser: language, theme and theme packs, color mode, text size,
+Settings stay available with two tabs. The composer’s model key selects model
+and effort. Its **Harness settings** menu entry opens workspace permissions and
+harness capabilities. The thread’s ⋯ menu opens **Session details** in a
+secondary window. **Preferences** keeps what is stored in this browser: language, theme and theme packs, color mode, text size,
 phone dock and hand, timeline folding and status summaries. It omits model
 pricing, the message-shortcut setting (saved to a relay account) and the tour.
 **Device** holds only hub maintenance: the running and latest version, **Check

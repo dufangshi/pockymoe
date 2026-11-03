@@ -79,7 +79,6 @@ import {
   type ThreadGraphWorkspaceFeatures,
 } from '@pockymoe/thread-ui';
 import {
-  formatLongTimestamp,
   threadStatusLabel,
 } from '@pockymoe/thread-ui';
 import { usePlugins } from '@pockymoe/thread-ui';
@@ -443,19 +442,6 @@ function relativeWorkspaceLinkPath(path: string, workspaceAbsPath: string) {
   return normalizedPath.slice(rootPrefix.length);
 }
 
-function CopyIcon() {
-  const { locale: i18nLocale } = useI18n();
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 16 16"
-      className="h-3.5 w-3.5 fill-current"
-    >
-      <path d="M5.75 1.75c-.97 0-1.75.78-1.75 1.75v.25H3.5c-.97 0-1.75.78-1.75 1.75v6c0 .97.78 1.75 1.75 1.75h4.75c.97 0 1.75-.78 1.75-1.75v-.25h.5c.97 0 1.75-.78 1.75-1.75v-6c0-.97-.78-1.75-1.75-1.75h-4.75Zm-.5 2V3.5c0-.28.22-.5.5-.5h4.75c.28 0 .5.22.5.5v6a.5.5 0 0 1-.5.5H10v-4.5c0-.97-.78-1.75-1.75-1.75h-3Zm-1.75 1.25h4.75c.28 0 .5.22.5.5v6a.5.5 0 0 1-.5.5H3.5a.5.5 0 0 1-.5-.5v-6c0-.28.22-.5.5-.5Z" />
-    </svg>
-  );
-}
-
 function threadConnectionSummary(isLoaded: boolean, connection: RealtimeConnectionSnapshot) {
   if (!isLoaded) {
     return translate("workbench.threadDisconnected");
@@ -706,8 +692,6 @@ export function ThreadDetailPage() {
   const [settingsBusy, setSettingsBusy] = useScopedState(routeKey, false);
   const [compactBusy, setCompactBusy] = useScopedState(routeKey, false);
   const [respondingRequestId, setRespondingRequestId] = useScopedState<string | null>(routeKey, null);
-  const [metaSessionCopyState, setMetaSessionCopyState] =
-    useState<'idle' | 'copied' | 'failed'>('idle');
   const [realtimeConnection, setRealtimeConnection] =
     useState<RealtimeConnectionSnapshot>({
       status: supervisorBrowserOnlineRef.current ? 'checking' : 'offline',
@@ -1810,7 +1794,6 @@ export function ThreadDetailPage() {
     setError(null);
     setLoading(!recent);
     setLoadingEarlier(false);
-    setMetaSessionCopyState('idle');
     setOptimisticTurn(null);
     setOptimisticSteers([]);
     setLiveItems(null);
@@ -1832,19 +1815,6 @@ export function ThreadDetailPage() {
     if (recent) applyDetailResponseRef.current(recent);
   }, [id, relayRouteDeviceId]);
 
-  useEffect(() => {
-    if (metaSessionCopyState === 'idle') {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      setMetaSessionCopyState('idle');
-    }, metaSessionCopyState === 'copied' ? 1200 : 1600);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [metaSessionCopyState]);
 
   useEffect(() => {
     if (typeof document === 'undefined') {
@@ -3100,20 +3070,6 @@ export function ThreadDetailPage() {
     }
   }
 
-  async function handleCopyMetaSessionId() {
-    const sessionId = detail?.thread.providerSessionId;
-    if (!sessionId) {
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(sessionId);
-      setMetaSessionCopyState('copied');
-    } catch {
-      setMetaSessionCopyState('failed');
-    }
-  }
-
   async function handleThreadConnectionToggle(options?: { attachShell?: boolean }) {
     if (!detail) {
       return;
@@ -3582,83 +3538,6 @@ export function ThreadDetailPage() {
     threadId: detail?.thread.id ?? id,
   });
 
-  const metaContent = detail ? (
-    <dl className="space-y-4 text-sm">
-      <div>
-        <dt className="text-[var(--theme-fg-muted)]">{translate("workbench.pockymoeSessionID")}</dt>
-        <dd className="mt-1 break-all text-[var(--theme-fg)]">{detail.thread.id}</dd>
-      </div>
-      <div className="relative pr-9">
-        <dt className="text-[var(--theme-fg-muted)]">{translate("workbench.harnessSessionID")}</dt>
-        <dd className="mt-1 break-all text-[var(--theme-fg)]">
-          {detail.thread.providerSessionId ?? translate("workbench.unavailable")}
-        </dd>
-        {(detail.thread.providerSessionId) && (
-          <button
-            type="button"
-            aria-label={translate("workbench.copyHarnessSessionID")}
-            title={
-              metaSessionCopyState === 'copied'
-                ? translate("workbench.copied")
-                : metaSessionCopyState === 'failed'
-                  ? translate("workbench.copyFailed")
-                  : translate("workbench.copyHarnessSessionID")
-            }
-            onClick={() => void handleCopyMetaSessionId()}
-            className={`thread-mobile-hit-target absolute bottom-0 right-0 inline-flex h-5 w-5 items-center justify-center rounded-full border shadow-sm backdrop-blur transition ${
-              metaSessionCopyState === 'copied'
-                ? 'ui-status-info'
-                : metaSessionCopyState === 'failed'
-                  ? 'ui-status-danger'
-                  : 'border-[var(--theme-border)] bg-[var(--theme-surface-strong)] text-[var(--theme-fg-soft)] hover:bg-[var(--theme-hover)] hover:text-[var(--theme-fg)]'
-            }`}
-          >
-            <span className="scale-[0.72]">
-              <CopyIcon />
-            </span>
-          </button>
-        )}
-      </div>
-      <div>
-        <dt className="text-[var(--theme-fg-muted)]">{translate("workbench.source")}</dt>
-        <dd className="mt-1 text-[var(--theme-fg)]">
-          {detail.thread.source === 'supervisor'
-            ? translate("workbench.supervisorThread", { value1: detail.thread.provider })
-            : translate("workbench.importedLocalSession", { value1: detail.thread.provider })}
-        </dd>
-      </div>
-      <div>
-        <dt className="text-[var(--theme-fg-muted)]">{translate("workbench.status")}</dt>
-        <dd className="mt-1 text-[var(--theme-fg)]">
-          {threadStatusLabel(detail.thread.status)}
-        </dd>
-      </div>
-      <div>
-        <dt className="text-[var(--theme-fg-muted)]">{translate("workbench.created")}</dt>
-        <dd className="mt-1 text-[var(--theme-fg)]">
-          {formatLongTimestamp(detail.thread.createdAt)}
-        </dd>
-      </div>
-      <div>
-        <dt className="text-[var(--theme-fg-muted)]">{translate("workbench.workspace")}</dt>
-        <dd className="mt-1 break-words text-[var(--theme-fg)]">
-          {detail.workspace.absPath}
-        </dd>
-      </div>
-      <div>
-        <dt className="text-[var(--theme-fg-muted)]">{translate("workbench.workspacePath")}</dt>
-        <dd className="mt-1 text-[var(--theme-fg)]">
-          {detail.workspacePathStatus === 'present' ? translate("workbench.present") : translate("workbench.missingOnThisMachine")}
-        </dd>
-      </div>
-      <div>
-        <dt className="text-[var(--theme-fg-muted)]">{translate("workbench.activeTurn")}</dt>
-        <dd className="mt-1 text-[var(--theme-fg)]">
-          {detail.thread.activeTurnId ?? translate("workbench.none")}
-        </dd>
-      </div>
-    </dl>
-  ) : null;
 
   const settingsContent = toolsDetail ? <div data-testid="workbench-session-settings" data-device={toolsDevice} data-thread={toolsDetail.thread.id}>
     <p className="mb-3 text-sm text-[var(--theme-fg-muted)]">{toolsDetail.workspace.label} · {toolsDetail.thread.title}</p>
@@ -4213,7 +4092,6 @@ export function ThreadDetailPage() {
       error={errorOnPrompt ? null : pageError}
       plugins={plugins}
       adapter={surfaceAdapter}
-      metaContent={metaContent}
       settingsContent={settingsContent}
       {...(relayModeActive() && !hostScope ? { renderRailSettings: (open: () => void) => <RelayUserMenu rail onSettings={open} /> } : {})}
       settingsSections={appSettingsSections({ scoped: Boolean(hostScope) })}

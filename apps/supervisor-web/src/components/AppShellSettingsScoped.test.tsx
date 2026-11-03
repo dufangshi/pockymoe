@@ -21,7 +21,7 @@ function open(scoped: boolean, initialId = 'preferences') {
 
 it('keeps every tab for a standalone Supervisor', () => {
   expect(appSettingsSections().map(section => section.id)).toEqual(
-    ['preferences', 'notifications', 'harnesses', 'upstreams', 'resources', 'device', 'workspace', 'plugins', 'advanced']);
+    ['preferences', 'notifications', 'harnesses', 'upstreams', 'resources', 'device', 'workspace', 'plugins']);
 });
 
 it('marks only fully account-scoped tabs', () => {
@@ -57,4 +57,20 @@ it('keeps only Check, Update and Restart on a Treer hub\'s Device tab', async ()
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+it.each(['session', 'advanced', 'unknown'])('falls back from an obsolete section %s', (section) => {
+  open(false, section);
+  expect(screen.getByRole('tab', { name: 'Preferences' })).toHaveAttribute('aria-selected', 'true');
+  expect(screen.getByText('Appearance')).toBeVisible();
+  expect(screen.queryByRole('tab', { name: 'Session' })).toBeNull();
+  expect(screen.queryByRole('tab', { name: 'Advanced' })).toBeNull();
+});
+
+it.each(['preferences', 'notifications', 'harnesses', 'upstreams', 'resources', 'device', 'workspace', 'plugins'])('renders a nonempty settings body for %s', id => {
+  open(false, id);
+  const panel = screen.getByRole('tabpanel');
+  const body = panel.querySelector(':scope > header + *');
+  expect(body).not.toBeNull();
+  expect(body?.textContent?.trim().length).toBeGreaterThan(0);
 });

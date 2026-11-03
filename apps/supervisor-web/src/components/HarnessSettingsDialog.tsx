@@ -61,7 +61,7 @@ export function HarnessSettingsDialog({
     [composerFocusOwner],
   );
   return (
-    <FormDialog title={translate('settings.harnessSettings')} onClose={onClose}>
+    <FormDialog secondary title={translate('settings.harnessSettings')} onClose={onClose}>
       <div
         ref={attachFocusOwner}
         data-composer-focus-owner={composerFocusOwner}

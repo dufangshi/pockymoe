@@ -249,14 +249,14 @@ export function AppShellSettingsDialog({
   const activeBackend =
     backends.find((backend) => backend.provider === selectedBackend) ??
     fallbackBackends.find((backend) => backend.provider === selectedBackend) ??
-    fallbackBackends[0]!;
+    { ...fallbackBackends.find((backend) => backend.provider === 'acp')!, displayName: selectedBackend };
   const activeManagementSchema =
     activeBackend.managementSchema ??
     fallbackManagementSchema(activeBackend.provider);
   const editableFiles = activeManagementSchema.hostConfigFiles;
 
   useEffect(() => {
-    if (!settingsVisible || section !== 'advanced') {
+    if (!settingsVisible || section !== 'harnesses') {
       return;
     }
 
@@ -354,7 +354,7 @@ export function AppShellSettingsDialog({
   useEffect(() => {
     if (
       !settingsVisible ||
-      section !== 'advanced' ||
+      section !== 'harnesses' ||
       !activeBackend.capabilities.management.hostConfigFiles
     ) {
       return;
@@ -449,7 +449,7 @@ export function AppShellSettingsDialog({
   ]);
 
   useEffect(() => {
-    if (!settingsVisible || section !== 'advanced') {
+    if (!settingsVisible || section !== 'harnesses' || !activeManagementSchema.configArchives) {
       return;
     }
 
@@ -1116,30 +1116,11 @@ export function AppShellSettingsDialog({
           {section === 'resources' && <HarnessResourceSettings />}
           {section === 'device' && !hostScope && <LocalPasscodeSettings />}
           {(section === 'device' || section === 'harnesses') && (
-            <RuntimeManagement view={section === 'device' && hostScope ? 'supervisor' : section} />
+            <RuntimeManagement view={section === 'device' && hostScope ? 'supervisor' : section} selectedHarness={selectedBackend} onHarnessChange={(id) => { setSelectedBackend(id as AgentBackendIdDto); setSelectedFileName(null); }} />
           )}
 
-          {section === 'advanced' && (
+          {section === 'harnesses' && (
             <>
-              <label className="block text-xs font-medium">
-                {translate("files.harnessConfiguration")}<Select
-                  className="host-input mt-2 w-full rounded-lg border p-3 text-sm"
-                  value={selectedBackend}
-                  onValueChange={(selectedValue) => {
-                    setSelectedBackend(selectedValue as AgentBackendIdDto);
-                    setSelectedFileName(null);
-                  }}
-                >
-                  {backends
-                    .filter((b) => b.capabilities.management.hostConfigFiles)
-                    .map((b) => (
-                      <option key={b.provider} value={b.provider}>
-                        {b.displayName}
-                      </option>
-                    ))}
-                </Select>
-              </label>
-
               <section className="py-5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -1150,6 +1131,7 @@ export function AppShellSettingsDialog({
                   </div>
                 </div>
                 <div className="mt-3 divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
+                  {editableFiles.length === 0 && <p className="py-4 text-xs text-[var(--theme-fg-muted)]">{translate("settings.noHostFiles")}</p>}
                   {editableFiles.map((file) => {
                     const state = files[file.name] ?? {
                       path: file.name,
@@ -1531,11 +1513,6 @@ export function appSettingsSections({ scoped = false }: { scoped?: boolean } = {
       id: 'plugins',
       label: translate("files.plugins"),
       description: translate("files.renderersAndExtensionsForYourWorkspace"),
-    },
-    {
-      id: 'advanced',
-      label: translate("files.advanced"),
-      description: translate("files.nativeConfigurationFilesAndRecoveryBackups"),
     },
   ];
   return sections.filter((section) => !scoped || section.id === 'preferences' || section.id === 'device').map((section) => ({

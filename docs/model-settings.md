@@ -1,8 +1,10 @@
 # Model and reasoning effort
 
-A thread's model and reasoning effort are chosen in the composer's model menu or
-in Settings → Session. Both show the same list from `GET /api/threads/{id}/models`
-and write through `PATCH /api/threads/{id}/settings`.
+A thread's model and reasoning effort are chosen in the composer's model menu.
+Model menu → Harness settings opens workspace permissions and the harness
+capability/plugin snapshot on desktop and phone, including Treer scoped surfaces.
+Both model selectors use `GET /api/threads/{id}/models` and write through
+`PATCH /api/threads/{id}/settings`.
 
 ## Effort levels per model
 
@@ -25,7 +27,7 @@ so learned levels show up there.
 
 ## Changing them during a turn
 
-The composer and Settings both accept a change while a turn runs, and it goes to
+The composer and Harness settings window both accept a change while a turn runs, and it goes to
 the live session at once. When it takes effect depends on the harness, reported as
 `controls.liveModelSwitch` in the thread's capabilities:
 
