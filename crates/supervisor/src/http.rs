@@ -3330,7 +3330,9 @@ async fn ws_upgrade(
 }
 
 async fn model_pricing(State(state): State<AppState>) -> Json<Value> {
-    Json(state.model_pricing())
+    let mut catalog = state.model_pricing();
+    catalog["localOverrides"] = state.local_model_price_overrides();
+    Json(catalog)
 }
 async fn patch_model_pricing(
     State(state): State<AppState>,

@@ -19,6 +19,7 @@ import type {
 } from '../../../../packages/shared/src/index';
 import {
   ApiError,
+  relayModeActive,
   fetchWorkspaceSettings,
   updateWorkspaceSettings,
 } from '../lib/api';
@@ -526,7 +527,7 @@ export function AppShellSettingsDialog({
               </label>
             </section>
           )}
-          {section === 'preferences' && !hostScope && (
+          {section === 'preferences' && !hostScope && !relayModeActive() && (
             <details className="settings-detail">
               <summary>{translate("files.modelPricing")}</summary>
               <div>

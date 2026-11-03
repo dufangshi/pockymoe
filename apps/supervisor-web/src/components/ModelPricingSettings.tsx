@@ -1,11 +1,14 @@
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { Plus, Pencil } from 'lucide-react';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { ConfirmDialog, ErrorMark } from '@pockymoe/thread-ui';
 import { FormDialog } from './FormDialog';
 import { useEffect, useState } from 'react';
+import { readSelectedRelayDeviceId } from '../lib/api';
 import {
   fetchModelPricing,
+  importModelPricing,
+  type PricingScope,
   updateModelPricing,
   type ModelPriceRates,
 } from '../lib/modelPricingApi';
@@ -20,10 +23,12 @@ const pricingFields = () => [
 const inputClass =
   'min-w-0 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-surface-strong)] px-2 py-1.5 text-sm text-[var(--theme-fg)]';
 
-export function ModelPricingSettings() {
+export function ModelPricingSettings({ scope = 'local' }: { scope?: PricingScope }) {
   useI18n();
   const [models, setModels] = useState<Record<string, ModelPriceRates>>({});
   const [query, setQuery] = useState('');
+  const [syncedAt, setSyncedAt] = useState<string>();
+  const [legacy, setLegacy] = useState<Record<string, ModelPriceRates>>({});
   const [draft, setDraft] = useState<{
     id: string;
     rates: ModelPriceRates;
@@ -31,23 +36,32 @@ export function ModelPricingSettings() {
     isNew: boolean;
   } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [draftDirty, setDraftDirty] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
+  const closeDraft = () => {setDraft(null); setDraftDirty(false); setError('');};
+  const requestClose = () => {if (busy) return; if (draftDirty) setDiscarding(true); else closeDraft();};
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let active = true;
     setError('');
-    fetchModelPricing()
+    fetchModelPricing(scope)
       .then((data) => {
-        if (active) setModels(data.models);
+        if (active) {setModels(data.models); setSyncedAt(data.syncedAt);}
       })
       .catch((e) => {
         if (active) setError(e.message);
       });
+    if (scope === 'account' && readSelectedRelayDeviceId()) {
+      void fetchModelPricing('local').then(data => {
+        if (active) setLegacy(data.localOverrides ?? {});
+      }).catch(() => undefined);
+    }
     return () => {
       active = false;
     };
-  }, [attempt]);
+  }, [attempt, scope]);
   async function save(reset = false) {
     if (!draft || busy) return;
     setBusy(true);
@@ -64,7 +78,7 @@ export function ModelPricingSettings() {
             .map((s) => s.trim())
             .filter(Boolean),
         },
-      });
+      }, scope);
       setModels(data.models);
       setDraft(null);
       window.dispatchEvent(new Event('model-pricing-updated'));
@@ -74,6 +88,16 @@ export function ModelPricingSettings() {
     } finally {
       setBusy(false);
     }
+  }
+  async function importLegacy() {
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const data = await importModelPricing(legacy);
+      setModels(data.models); setLegacy({});
+      window.dispatchEvent(new Event('model-pricing-updated'));
+      setMessage(translate('settings.modelPricesSaved'));
+    } catch (error) {setError(error instanceof Error ? error.message : translate('settings.unableToSavePrices'));}
+    finally {setBusy(false);}
   }
   return (
     <section className="py-5" aria-label={translate("settings.modelPricing")}>
@@ -86,18 +110,16 @@ export function ModelPricingSettings() {
           )}
         </div>
         <button
+          disabled={busy}
           aria-label={translate("settings.addModel")}
           title={translate("settings.addModel")}
           className="host-icon-button inline-flex h-9 w-9 items-center justify-center rounded-md"
           onClick={() => {
             setError('');
+            setDraftDirty(false);
             setDraft({
               id: '',
-              rates: {
-                inputUsdPerMillion: 0,
-                cachedInputUsdPerMillion: 0,
-                outputUsdPerMillion: 0,
-              },
+              rates: {},
               aliases: '',
               isNew: true,
             });
@@ -107,7 +129,10 @@ export function ModelPricingSettings() {
         </button>
       </div>
       <p className="mt-1 text-xs text-[var(--theme-fg-muted)]">
-        {translate("settings.uSDPer1MTokensInExcludesCache")}</p>
+        {translate(scope === 'account' ? 'settings.referencePricesAccount' : 'settings.referencePricesLocal')}</p>
+      <p className="mt-1 text-xs text-[var(--theme-fg-muted)]">{translate('settings.uSDPer1MTokensInExcludesCache')}</p>
+      {scope === 'account' && syncedAt && <p className="mt-1 text-xs text-[var(--theme-fg-muted)]">{translate('settings.pricesSyncedAt', { value1: new Date(syncedAt).toLocaleString(getLocale()) })}</p>}
+      {Object.keys(legacy).length > 0 && <button type="button" disabled={busy} onClick={() => void importLegacy()} className="host-secondary-button mt-2 min-h-10 rounded-md border px-3 text-xs">{translate('settings.importDevicePrices')}</button>}
       <input
         aria-label={translate("settings.searchModelPrices")}
         className={`${inputClass} mt-3`}
@@ -116,7 +141,7 @@ export function ModelPricingSettings() {
         onChange={(e) => setQuery(e.target.value)}
       />
       <div className="mt-2 max-h-72 overflow-auto rounded-md border border-[var(--theme-border)]">
-        <table className="w-full text-left text-xs">
+        <table className="min-w-[40rem] w-full text-left text-xs">
           <thead className="sticky top-0 bg-[var(--theme-surface-strong)]">
             <tr>
               <th className="p-2">{translate("settings.model")}</th>
@@ -137,10 +162,12 @@ export function ModelPricingSettings() {
                   s.toLowerCase().includes(query.toLowerCase()),
                 ),
               )
+              .sort(([a, ar], [b, br]) => Number(Boolean(br.unpriced)) - Number(Boolean(ar.unpriced)) || a.localeCompare(b))
               .map(([id, rates]) => (
                 <tr className="border-t border-[var(--theme-border)]" key={id}>
                   <td className="p-2">
                     <span>{id}</span>
+                    {rates.unpriced === true && <span className="ml-1 text-[var(--theme-fg-muted)]">{translate('settings.pricePending')}</span>}
                     {rates.custom && (
                       <span className="ml-1 text-[var(--theme-fg-muted)]">
                         {translate("settings.custom")}</span>
@@ -157,6 +184,7 @@ export function ModelPricingSettings() {
                       className="host-secondary-button rounded border px-2 py-1"
                       onClick={() => {
                         setError('');
+                        setDraftDirty(false);
                         setDraft({
                           id,
                           rates: { ...rates },
@@ -175,13 +203,15 @@ export function ModelPricingSettings() {
       </div>
       {draft && (
         <FormDialog
+          secondary
           title={draft.isNew ? translate("settings.addModel") : translate("settings.editModelPrices")}
           description={translate("settings.uSDPer1MTokens")}
           busy={busy}
-          onClose={() => { setDraft(null); setError(''); }}
+          onClose={requestClose}
         >
           <form
             className="space-y-3"
+            onChange={() => setDraftDirty(true)}
             onSubmit={(e) => {
               e.preventDefault();
               void save();
@@ -259,7 +289,7 @@ export function ModelPricingSettings() {
                 target="_blank"
                 rel="noreferrer"
               >
-                {translate("settings.officialPricingChecked")} {draft.rates.verifiedAt}
+                {translate('settings.pricingSource')} {draft.rates.verifiedAt}
               </a>
             )}
             <div className="mt-3 flex flex-wrap gap-2">
@@ -273,7 +303,7 @@ export function ModelPricingSettings() {
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => { setDraft(null); setError(''); }}
+                onClick={requestClose}
                 className="host-secondary-button min-h-10 rounded-md border px-3 text-xs"
               >
                 {translate("settings.cancel")}</button>
@@ -295,6 +325,13 @@ export function ModelPricingSettings() {
           </form>
         </FormDialog>
       )}
+      <ConfirmDialog open={discarding}
+        title={translate('devices.discardChangesTitle')}
+        description={translate('devices.discardChangesDescription')}
+        confirmLabel={translate('devices.discardChanges')}
+        onCancel={() => setDiscarding(false)}
+        onConfirm={() => {setDiscarding(false); closeDraft();}}
+      />
       {message && (
         <p role="status" className="mt-2 text-xs">
           {message}

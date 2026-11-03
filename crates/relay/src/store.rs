@@ -601,6 +601,7 @@ impl RelayStore {
         notification_scope::ensure_schema(&conn)?;
         workbench::ensure_schema(&conn)?;
         preferences::ensure_schema(&conn)?;
+        crate::model_pricing::ensure_schema(&conn)?;
         thread_groups::ensure_schema(&conn)?;
         upstream_catalog::ensure_schema(&conn)?;
         crate::metrics::ensure_schema(&conn)?;

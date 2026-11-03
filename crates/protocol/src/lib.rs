@@ -1,5 +1,6 @@
 pub mod access;
 mod notifications;
+pub mod pricing;
 pub use notifications::*;
 mod thread_summary;
 pub use thread_summary::*;

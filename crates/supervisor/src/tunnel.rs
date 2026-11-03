@@ -200,6 +200,16 @@ async fn run_connected_tunnel_with_deadline(
                         let Ok(message) = serde_json::from_str::<Value>(&text) else {
                             continue;
                         };
+                        if message["type"] == "pricing.changed" {
+                            if let Ok(frame)=state.model_pricing_sync(false,None) {let _=outgoing.send(frame);}
+                            continue;
+                        }
+                        if message["type"] == "pricing.snapshot" {
+                            if let Err(error)=state.accept_relay_model_pricing(&message["catalog"]) {
+                                tracing::warn!(%error,"could not cache reference prices");
+                            }
+                            continue;
+                        }
                         if message["type"] == "relay.notification.ack" {
                             if let Some(turn) = message["turnId"].as_str() { let _ = state.acknowledge_relay_notification(turn); }
                             continue;
@@ -216,6 +226,10 @@ async fn run_connected_tunnel_with_deadline(
                                 public_base_url: message["publicBaseUrl"].as_str().map(str::to_owned),
                             });
                             peer_connection.connected(identity);
+                            let sync_state=state.clone(); let sync_out=outgoing.clone();
+                            tokio::task::spawn_blocking(move || {
+                                if let Ok(frame)=sync_state.model_pricing_sync(true,None) { let _=sync_out.send(frame); }
+                            });
                         }
                         if matches!(message["type"].as_str(), Some("peer.response" | "peer.directory.result" | "upstream.directory.result")) {
                             peer_connection.receive(&message);
@@ -240,6 +254,7 @@ async fn run_connected_tunnel_with_deadline(
                 }
             }
             _ = heartbeat.tick() => {
+                if let Ok(frame)=state.model_pricing_sync(false,None) {let _=outgoing.send(frame);}
                 crate::ports::close_unauthorized(&state);
                 clients.retain(|id, client| {
                     if channel_authorized(&state, client.crypto.as_ref().map(|(_, s)| s.as_ref())) {
@@ -271,6 +286,12 @@ async fn run_connected_tunnel_with_deadline(
             event = activity.recv() => {
                 match event {
                     Ok(event) => {
+                        if matches!(event.event_type.as_str(), "thread.turn.completed" | "thread.turn.failed") {
+                            let sync_state=state.clone(); let sync_out=outgoing.clone(); let thread=event.thread_id.clone();
+                            tokio::task::spawn_blocking(move || {
+                                if let Ok(frame)=sync_state.model_pricing_sync(true,Some(&thread)) {let _=sync_out.send(frame);}
+                            });
+                        }
                         if event.payload["reason"] == "port_mappings_changed" {
                             let _ = outgoing.send(json!({"type":"relay.heartbeat","portMappings":crate::ports::snapshot(&state), "previewStreamLimit":crate::ports::PREVIEW_STREAMS_PER_MAPPING, "upstreamConnections":crate::connections::snapshot(&state)}));
                         }
@@ -1399,6 +1420,47 @@ pub(crate) mod tests {
                 expected
             );
         }
+    }
+
+    #[tokio::test]
+    async fn model_pricing_tunnel_syncs_on_connect_and_change_and_caches_snapshot() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (_dir, state) =
+            state_with_relay_url(&format!("ws://{}", listener.local_addr().unwrap()));
+        let tunnel = tokio::spawn(run_relay_tunnel(state.clone()));
+        let (tcp, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut relay = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        relay
+            .send(Message::Text(
+                json!({"type":"relay.connected","deviceId":"local-device","deviceName":"Local"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let request = relay_frame(&mut relay, "pricing.sync").await;
+        assert!(request["version"].is_null());
+        assert_eq!(request["models"], json!([]));
+        relay.send(Message::Text(json!({"type":"pricing.snapshot","catalog":{"version":"one","models":{"future-model":{"inputUsdPerMillion":2,"cachedInputUsdPerMillion":0.2,"outputUsdPerMillion":8}}}}).to_string().into())).await.unwrap();
+        relay
+            .send(Message::Text(
+                json!({"type":"pricing.changed"}).to_string().into(),
+            ))
+            .await
+            .unwrap();
+        let request = relay_frame(&mut relay, "pricing.sync").await;
+        assert_eq!(request["version"], "one");
+        assert_eq!(
+            state.model_pricing()["models"]["future-model"]["inputUsdPerMillion"],
+            2
+        );
+        tunnel.abort();
+        let _ = tunnel.await;
+        // Reading the price cache remains available after the connection ends.
+        assert_eq!(state.model_pricing()["version"], "one");
     }
 
     #[tokio::test]

@@ -10,6 +10,7 @@ mod host;
 mod live_activity;
 mod metrics;
 mod mobile_auth;
+mod model_pricing;
 mod notification_scope;
 mod notifications;
 mod oauth;
@@ -244,6 +245,7 @@ pub async fn serve() -> Result<()> {
     });
     notifications::start(&state)?;
     metrics::start(&state)?;
+    model_pricing::start(&state);
     let app = Router::new()
         .merge(mobile_auth::routes())
         .merge(auth_api::routes())
@@ -251,6 +253,7 @@ pub async fn serve() -> Result<()> {
         .merge(notification_scope::routes())
         .merge(workbench::routes())
         .merge(preferences::routes())
+        .merge(model_pricing::routes())
         .merge(preview::routes())
         .merge(admin::routes())
         .route("/healthz", get(healthz))
@@ -4404,6 +4407,9 @@ async fn handle_supervisor_with_timeout(
                                         )
                                         .await;
                                     }
+                                }
+                                Some("pricing.sync") => {
+                                    model_pricing::sync(&state,&device_id,connection_id,&msg).await;
                                 }
                                 Some("upstream.directory") => {
                                     upstream_catalog::directory(&state,&device_id,connection_id,msg).await;

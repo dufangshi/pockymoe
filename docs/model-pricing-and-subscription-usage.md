@@ -1,10 +1,39 @@
 # Model prices and subscription usage
 
-Settings → Global → Model pricing lists USD per million tokens for this device.
-Add a model or edit its rates and comma-separated display-name aliases. Matching
-ignores case, spaces and punctuation and also uses names advertised by the harness.
-Overrides persist in the supervisor database and apply to historical estimates on
-reload. Reset restores a bundled model or removes a custom model.
+In Relay mode, Account settings → Model pricing manages USD-per-million-token
+reference prices shared by all devices owned by the account. Relay imports
+first-party text-model prices from [LiteLLM's public cost map](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json).
+These are reference estimates, independent of the user's actual token supplier,
+discounts or subscription invoice. Account overrides take precedence over the
+synchronized defaults. Reset removes the override and follows defaults again.
+
+Relay checks the persisted feed age on startup and hourly, refreshing it when it
+is six hours old. Failed or invalid downloads preserve the last good catalog and
+retry on the next hourly check. The bundled catalog below remains the fallback
+for models absent from the feed and before the first successful refresh.
+`POCKYMOE_MODEL_PRICING_URL` optionally points a self-hosted Relay at a compatible
+LiteLLM JSON mirror; the default is the public GitHub raw file. LiteLLM's cost map
+is covered by its [MIT license](https://github.com/BerriAI/litellm/blob/main/LICENSE).
+
+Devices synchronize through their authenticated Relay tunnel on connection,
+price-change notifications and heartbeats. Snapshots persist locally and remain
+usable offline, scoped to the configured Relay and device credential. Shared
+viewers use the device owner's reference prices. Token usage and conversation
+content are never uploaded for this synchronization.
+
+A used model without prices is remembered in the owner's account and shown as
+awaiting a price, never as a free model. Matching ignores case, spaces and
+punctuation, handles provider prefixes and dated IDs, and uses model display-name
+aliases advertised by the harness. Each device reports its persisted model names
+at connection and the names from a thread after a turn ends. Later feed updates
+or account overrides automatically price historical usage when summaries reload;
+price changes refresh open thread views. Raw token records are not rewritten.
+Historical estimates always follow the current reference prices.
+
+Existing device overrides can be imported from the selected device in Account
+settings. Import keeps existing account overrides and retains the original local
+configuration. Standalone local mode continues to edit prices in
+Settings → Preferences → Model pricing in that Supervisor's database.
 
 The cost tooltip separates uncached input, cache reads, cache writes, output and
 reported reasoning tokens. Each row shows tokens and USD. Reasoning is part of
@@ -20,7 +49,7 @@ observation times. These request snapshots persist for historical repricing;
 child activity does not change the parent model or context-occupancy display.
 Older turns without these snapshots retain their previously recorded totals.
 
-## Bundled rates
+## Bundled fallback rates
 
 The catalog is `config/codex-model-pricing.json`, with source links and verification
 dates per added model. Sources checked on 2026-09-05:

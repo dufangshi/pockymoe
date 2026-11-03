@@ -346,7 +346,32 @@ pub(crate) fn estimate_price_with_catalog(
         return estimate_price_with_catalog(&normalized, model, tier, catalog, at);
     }
     let model = crate::pricing::match_model(catalog, model?)?;
-    let rates = &catalog["models"][&model];
+    let base_rates = &catalog["models"][&model];
+    let mut effective_rates = base_rates.clone();
+    let explicit_fast = tier == Some("fast") && base_rates["serviceTiers"]["fast"].is_object();
+    if explicit_fast {
+        for (key, value) in base_rates["serviceTiers"]["fast"].as_object()? {
+            effective_rates[key] = value.clone();
+        }
+    }
+    let last_input = usage
+        .pointer("/last/inputTokens")
+        .and_then(Value::as_u64)
+        .or_else(|| usage.pointer("/total/inputTokens").and_then(Value::as_u64))
+        .unwrap_or(0);
+    for context in base_rates["contextTiers"].as_array().into_iter().flatten() {
+        if context["aboveTokens"]
+            .as_u64()
+            .is_some_and(|threshold| last_input > threshold)
+        {
+            for (key, value) in context.as_object()? {
+                if key != "aboveTokens" {
+                    effective_rates[key] = value.clone();
+                }
+            }
+        }
+    }
+    let rates = &effective_rates;
     for field in [
         "inputUsdPerMillion",
         "cachedInputUsdPerMillion",
@@ -360,19 +385,17 @@ pub(crate) fn estimate_price_with_catalog(
     }
     let signature = signature_rates.to_string();
     if let Some(estimate) = usage.get("priceEstimate").filter(|v| v.is_object()) {
-        if estimate["ratesSignature"] == signature
-            || (estimate.get("ratesSignature").is_none() && rates["custom"] != true)
-        {
+        if estimate["ratesSignature"] == signature {
             return Some(estimate.clone());
         }
     }
     let tokens = Tokens::parse(usage.get("total")?)?;
-    let tier = if tier == Some("fast") && rates["supportsFastMode"] == true {
+    let tier = if tier == Some("fast") && (rates["supportsFastMode"] == true || explicit_fast) {
         "fast"
     } else {
         "standard"
     };
-    let multiplier = if tier == "fast" {
+    let multiplier = if tier == "fast" && !explicit_fast {
         rates
             .get("fastMultiplier")
             .and_then(Value::as_f64)
@@ -722,5 +745,31 @@ mod tests {
         let price = estimate_price(&usage, Some("openai/gpt-6-astra"), Some("fast")).unwrap();
         assert!((price["totalUsd"].as_f64().unwrap() - 10.2).abs() < 1e-10);
         assert!(estimate_price(&usage, Some("unknown-model"), None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod reference_pricing_tests {
+    use super::*;
+    #[test]
+    fn reference_pricing_applies_litellm_context_tiers_cache_durations_and_explicit_fast_rates() {
+        let catalog = json!({"models":{"future-model":{
+            "inputUsdPerMillion":2,"cachedInputUsdPerMillion":0.2,"outputUsdPerMillion":8,
+            "cacheWriteInputUsdPerMillion":2.5,"cacheWriteOneHourInputUsdPerMillion":4,
+            "contextTiers":[{"aboveTokens":200000,"inputUsdPerMillion":4,"cachedInputUsdPerMillion":0.4,
+                "cacheWriteInputUsdPerMillion":5,"cacheWriteOneHourInputUsdPerMillion":8,"outputUsdPerMillion":12}],
+            "serviceTiers":{"fast":{"inputUsdPerMillion":3,"cachedInputUsdPerMillion":0.3,"outputUsdPerMillion":10}}
+        }}});
+        let long = json!({"total":{"inputTokens":300000,"cachedInputTokens":100000,"cacheWriteInputTokens":100000,"cacheWriteOneHourInputTokens":40000,"outputTokens":20000}});
+        let price =
+            estimate_price_with_catalog(&long, Some("future-model"), None, &catalog, None).unwrap();
+        assert!((price["totalUsd"].as_f64().unwrap() - 1.3).abs() < 1e-10);
+        let short =
+            json!({"total":{"inputTokens":100000,"cachedInputTokens":20000,"outputTokens":10000}});
+        let price =
+            estimate_price_with_catalog(&short, Some("future-model"), Some("fast"), &catalog, None)
+                .unwrap();
+        assert!((price["totalUsd"].as_f64().unwrap() - 0.346).abs() < 1e-10);
+        assert_eq!(price["pricingTierKey"], "fast");
     }
 }

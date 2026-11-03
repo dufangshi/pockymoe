@@ -1,4 +1,5 @@
 import { devicesHref } from '../lib/devicesRoute';
+import { ModelPricingSettings } from '../components/ModelPricingSettings';
 import { AccountSecurityPanel } from '../components/AccountSecurityPanel';
 import { SharingSettingsPanel } from '../components/SharingSettingsPanel';
 import { useDesktopWorkspaceLayout, WorkspacesFrame } from '../desktop/WorkspacesFrame';
@@ -240,6 +241,10 @@ export function RelayAccountSettingsPanel({
         </div>
       </section>
 
+      <details className="settings-detail">
+        <summary>{translate('settings.modelPricing')}</summary>
+        <div><ModelPricingSettings scope="account" /></div>
+      </details>
       <SharingSettingsPanel />
       <AccountSecurityPanel />
 
