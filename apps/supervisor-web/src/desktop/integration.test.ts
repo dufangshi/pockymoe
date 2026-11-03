@@ -180,3 +180,10 @@ it('routes native update preparation and aborts through the page guard', async (
   expect(await handleHostCommand({ id: 'prepare', type: 'prepareUpdate' }, dependencies())).toEqual({ ok: true, data: { prepared: true } });
   expect(await handleHostCommand({ id: 'abort', type: 'prepareUpdate', cancel: true }, dependencies())).toEqual({ ok: true });
 });
+
+it('returns a failed host result if asynchronous update preparation fails', async () => {
+  const preparation = await import('./prepareUpdate');
+  const call = vi.spyOn(preparation, 'prepareClientUpdate').mockRejectedValueOnce(new Error('Update preparation failed'));
+  expect(await handleHostCommand({ id: 'prepare-failed', type: 'prepareUpdate' }, dependencies())).toEqual({ ok: false, error: 'Update preparation failed' });
+  call.mockRestore();
+});
