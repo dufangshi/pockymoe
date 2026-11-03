@@ -1,3 +1,4 @@
+import { useUsageColors } from './UsageColors';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
@@ -9,7 +10,7 @@ import { DeviceStateMark } from '../../pages/relayAdmin/ui';
 import type { DesktopDevice } from '../data/types';
 import { Info } from './UsagePanel';
 import { Sparkline } from './Charts';
-import { compact, deviceColor, newerVersion, type DeviceMetrics, type StatsSummary } from './model';
+import { compact, newerVersion, type DeviceMetrics, type StatsSummary } from './model';
 
 export interface DeviceCardProps {
   device: DesktopDevice;
@@ -26,6 +27,7 @@ export interface DeviceCardProps {
 }
 export function DeviceCard({ device, metric, today, history, counts, cacheLabel, partial, loading, skeleton, onUpdate, menuItems }: DeviceCardProps) {
   const { t } = useI18n();
+  const { deviceColor } = useUsageColors();
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const anchor = useRef({ x: 0, y: 0 });

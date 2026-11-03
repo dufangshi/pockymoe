@@ -18,8 +18,10 @@ for (const pack of ['classic']) for (const dark of [false]) for (const width of 
     await expect(tokens.locator('g[tabindex]')).toHaveCount(24);
     await expect(tokens.locator('[data-chart-bar]')).toHaveCount(24);
     await capture('today-tokens');
-    await turns.locator('g[tabindex]').nth(1).focus();
-    await expect(page.getByRole('tooltip')).toContainText('01:00–02:00');
+    const activeHour = await turns.locator('g[tabindex]').evaluateAll(groups => groups.findIndex(group => Number(group.querySelector('[data-chart-bar]')?.getAttribute('height')) > 0));
+    expect(activeHour).toBeGreaterThanOrEqual(0);
+    await turns.locator('g[tabindex]').nth(activeHour).focus();
+    await expect(page.getByRole('tooltip')).toContainText(`${String(activeHour).padStart(2, '0')}:00–${String(activeHour + 1).padStart(2, '0')}:00`);
     await expect(page.getByRole('tooltip')).toContainText('MacBook Pro');
     // The tip sits beside the hovered column on either side of the chart, never over it.
     for (const index of [1, 22]) {
@@ -56,7 +58,11 @@ for (const pack of ['classic']) for (const dark of [false]) for (const width of 
       delete value.hourly;
       return route.fulfill({ json: value });
     });
+    // The offline device retains valid hourly data. Scope this separate fallback
+    // scenario to a device whose refreshed response genuinely has no hourly data.
     await page.getByRole('button', { name: '今天', exact: true }).click();
+    await page.getByRole('combobox', { name: '统计设备', exact: true }).click();
+    await page.getByRole('option', { name: 'MacBook Pro', exact: true }).click();
     const runtime = page.getByRole('group', { name: '今日每小时运行时长，按设备堆叠', exact: true });
     await expect(runtime.locator('g[tabindex]')).toHaveCount(24);
     await expect(page.getByText('活动采样估算 · 并行线程时长相加 · 未覆盖时段留空', { exact: true })).toBeVisible();

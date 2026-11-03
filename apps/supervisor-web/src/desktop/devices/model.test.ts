@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { aggregate, age, calendarDays, compact, deviceColor, deviceCounts, duration, isUnsupported, lifetimeActivity, money, newerVersion, partialSummary, supportsStats, type StatsSummary } from './model';
+import { aggregate, age, calendarDays, compact, categoryColor, deviceCounts, duration, isUnsupported, lifetimeActivity, money, newerVersion, partialSummary, supportsStats, type StatsSummary } from './model';
 import { setLocale } from '@pockymoe/thread-ui/i18n';
 import type { DesktopIndex, DesktopThread } from '../data/types';
 
@@ -46,7 +46,7 @@ describe('desktop device statistics', () => {
     expect(money(null)).toBe('—'); expect(money(0)).toBe('$0.00'); expect(compact(1200000)).toBe('120万');
     expect(duration(72000)).toBe('1 分 12 秒'); expect(duration(null)).toBe('—');
     expect(age('2026-11-01T15:00:00Z', +now)).toBe('3 小时前'); expect(age('bad', +now)).toBe('时间未知');
-    expect(deviceColor('abc')).toBe(deviceColor('abc'));
+    expect(categoryColor('abc', ['abc'])).toBe(categoryColor('abc', ['abc']));
   });
   it('shows an update only for a newer stable semantic version', () => {
     expect(newerVersion('0.12.59', '0.12.60')).toBe(true);

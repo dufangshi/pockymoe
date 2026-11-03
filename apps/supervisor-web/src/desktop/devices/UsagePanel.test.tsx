@@ -55,3 +55,29 @@ it('explains devices without statistics instead of showing an empty table', () =
   fireEvent.click(screen.getByRole('button', { name: 'Show all time' }));
   expect(onShowAll).toHaveBeenCalled();
 });
+it('expands device models before workspaces and explains missing activity model history', () => {
+  const source = usageSource('a', 1000);
+  source.summary.byModel = [{ model: '["remote-codex","grok-4.7"]', turns: 2, tokens: 1000, costUsd: null }];
+  const view = render(panel([source]));
+  fireEvent.click(screen.getByRole('button', { name: 'Device a · 1,000 Tokens' }));
+  const details = document.querySelector('.pd-device-details')!;
+  expect(details.querySelectorAll('h4')).toHaveLength(1);
+  expect(details.querySelector('h4')).toHaveTextContent('Workspace');
+  expect(details.querySelector('.pd-device-models thead th')).toHaveTextContent('Model');
+  expect(details.querySelector('.pd-device-models')).toHaveTextContent('grok-4.7');
+  expect(details.querySelector('.pd-device-models')).toHaveTextContent('—');
+  view.unmount();
+  const activity = { since: '2026-11-01', hours: 24, threads: [{ threadId: 't', turns: 1, activeMs: 0, totalMs: 0, tokenUsage: { totalTokens: 1000, inputTokens: 1000, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0 } }] };
+  render(panel([{ deviceId: 'old', name: 'Old', activity }], { range: 'all' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Old · 1,000 Tokens' }));
+  expect(screen.getByText('This device has no model breakdown')).toBeVisible();
+  expect(document.querySelector('.pd-device-models')).toBeNull();
+});
+it('makes a full long model name readable from its Info mark', () => {
+  const source = usageSource('a', 1000);
+  const name = 'provider-a-very-long-model-name-with-specialized-reasoning-2026-11-02';
+  source.summary.byModel = [{ model: name, turns: 1, tokens: 1000, costUsd: 1 }];
+  render(panel([source]));
+  fireEvent.click(screen.getByRole('button', { name: 'Full model name' }));
+  expect(screen.getByRole('dialog', { name: 'Full model name' })).toHaveTextContent(name);
+});
