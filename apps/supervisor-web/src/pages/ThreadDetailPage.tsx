@@ -377,7 +377,7 @@ interface WorkspaceFocusPathRequest {
 type PendingThreadSettings = Partial<
   Pick<
     ThreadDto,
-    'model' | 'reasoningEffort' | 'fastMode' | 'collaborationMode' | 'sandboxMode'
+    'model' | 'reasoningEffort' | 'fastMode' | 'collaborationMode'
   >
 >;
 
@@ -3191,7 +3191,6 @@ export function ThreadDetailPage() {
     reasoningEffort?: ThreadDto['reasoningEffort'];
     fastMode?: boolean;
     collaborationMode?: ThreadDto['collaborationMode'];
-    sandboxMode?: ThreadDto['sandboxMode'];
   }) {
     if (!detail) {
       return;
@@ -3208,7 +3207,6 @@ export function ThreadDetailPage() {
       ...(input.collaborationMode !== undefined
         ? { collaborationMode: input.collaborationMode }
         : {}),
-      ...(input.sandboxMode !== undefined ? { sandboxMode: input.sandboxMode } : {}),
     };
     const optimisticThread = {
       ...detail.thread,
@@ -3245,7 +3243,6 @@ export function ThreadDetailPage() {
         ...(input.collaborationMode !== undefined
           ? { collaborationMode: input.collaborationMode }
           : {}),
-        ...(input.sandboxMode !== undefined ? { sandboxMode: input.sandboxMode } : {}),
       });
       pendingThreadSettingsRef.current = null;
       detailRef.current = previousDetail
@@ -3720,7 +3717,6 @@ export function ThreadDetailPage() {
         reasoningEffort: detail.thread.reasoningEffort,
         fastMode: detail.thread.fastMode ?? false,
         collaborationMode: detail.thread.collaborationMode,
-        sandboxMode: detail.thread.sandboxMode ?? null,
         modelOptions,
         contextUsage: resolveThreadContextUsage(detail),
         contextInspector,

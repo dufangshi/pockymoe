@@ -24,7 +24,6 @@ export interface HarnessSettingsFieldsProps {
   onChange: (input: {
     model?: string;
     reasoningEffort?: ThreadDto['reasoningEffort'];
-    sandboxMode?: Exclude<ThreadDto['sandboxMode'], undefined>;
   }) => Promise<void>;
   loadCapabilities?: () => Promise<AgentCapabilitySnapshotDto>;
   /** Device-scoped typed panel action; defaults to the local supervisor. */
@@ -94,7 +93,6 @@ export function HarnessSettingsFields({
   }, [thread.id]);
   const [info, setInfo] = useState<{
     profile?: string;
-    notice?: string;
     plugins?: { id: string; name: string; enabled: boolean }[];
   } | null>(null);
   const harnessAction = runHarnessAction
@@ -177,28 +175,6 @@ export function HarnessSettingsFields({
           </Select>
         </label>
       )}
-      <label className="block">
-        {translate('settings.workspacePermissions')}
-        <Select
-          className="host-input mt-1 w-full rounded-md border p-2"
-          aria-label={translate('settings.workspacePermissions')}
-          value={thread.sandboxMode ?? 'danger-full-access'}
-          disabled={disabled}
-          onValueChange={(selectedValue) =>
-            void onChange({
-              sandboxMode: selectedValue as Exclude<ThreadDto['sandboxMode'], undefined>,
-            })
-          }
-        >
-          <option value="danger-full-access">
-            {translate('settings.fullAccess')}
-          </option>
-          <option value="workspace-write">
-            {translate('chat.workspaceWrite')}
-          </option>
-          <option value="read-only">{translate('chat.readOnly')}</option>
-        </Select>
-      </label>
       {thread.activeTurnId && !readOnly && (
         <p className="settings-hint text-[var(--theme-fg-muted)]">
           {translate(liveModelSwitch ? 'settings.sessionSettingsApplyNextCall' : 'settings.sessionSettingsApplyNextTurn')}
@@ -213,11 +189,7 @@ export function HarnessSettingsFields({
           {translate('files.unavailable')}
           <ErrorMark message={error} onRetry={() => setAttempt((value) => value + 1)} />
         </p>
-      ) : (
-      <p className="text-[var(--theme-fg-muted)]">
-        {info?.notice ?? translate('settings.loadingHarnessCapabilities')}
-      </p>
-      )}
+      ) : null}
       {info && !isDshHarness(info) && (
         <section
           aria-label={translate('settings.harnessPlugins')}

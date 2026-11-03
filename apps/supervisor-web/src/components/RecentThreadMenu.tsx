@@ -1,11 +1,9 @@
-import { FormDialog } from './FormDialog';
-import { ThreadSessionDetails } from './ThreadSessionDetails';
 import { useHostScope } from '../lib/hostCapabilities';
 import { narrationQuery } from '../lib/transcriptPreferences';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Copy, Info, ExternalLink, MoreHorizontal, Pencil, Share2, Star, Trash2, TriangleAlert } from 'lucide-react';
+import { Check, Copy, ExternalLink, MoreHorizontal, Pencil, Share2, Star, Trash2, TriangleAlert } from 'lucide-react';
 import type { ThreadDetailDto } from '@pockymoe/shared';
 import { copyText, useMenuKeyboard, type ThreadMenuContext, type WorkbenchThread } from '@pockymoe/thread-ui';
 import { fetchRelayAccess, isInvisibleThreadError, relayModeActive, request } from '../lib/api';
@@ -34,7 +32,6 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
   const [notice, setNotice] = useState('');
   const [renaming, setRenaming] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [showDetails, setShowDetails] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [title, setTitle] = useState(thread.title);
   const [busy, setBusy] = useState(false);
@@ -95,8 +92,8 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
   const dismiss = useRef(context?.onClose);
   dismiss.current = context?.onClose;
   useEffect(() => {
-    if (context && !position && !renaming && !deleting && !sharing && !showDetails) dismiss.current?.();
-  }, [Boolean(context), position, renaming, deleting, sharing, showDetails]);
+    if (context && !position && !renaming && !deleting && !sharing) dismiss.current?.();
+  }, [Boolean(context), position, renaming, deleting, sharing]);
   // The thread page's rule: only the owner shares, and only a device opened
   // through the relay account (a direct Supervisor has no relay to share through).
   const canShare = owner && !hostScope && device !== 'local' && relayModeActive();
@@ -131,7 +128,6 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
       <p className="recent-thread-menu-title">{thread.title}</p>
       <button disabled={busy} onClick={async () => { setBusy(true); try { await onFavorite(thread.key); setPosition(null); } finally { setBusy(false); } }}><Star data-icon="shortcut" size={15} fill={thread.favorite ? 'currentColor' : 'none'} />{thread.favorite ? translate("workbench.unstarThread") : translate("workbench.starThread")}</button>
       <button onClick={() => { setPosition(null); onNavigate(thread.href); }}><ExternalLink data-icon="open" size={15} />{translate("workbench.openThread")}</button>
-      <button disabled={!detail} onClick={() => { setShowDetails(true); setPosition(null); }}><Info size={15} />{translate("files.sessionDetails")}</button>
       {/* Labelled, so an agent it is pasted to knows what it is (the Pockymoe
           skill says how to read that thread); another device's thread carries
           its device, as the CLI addresses it. */}
@@ -143,7 +139,6 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
       {owner && <button className="recent-thread-delete" onClick={() => { setNotice(''); setPosition(null); setDeleting(true); }}><Trash2 data-icon="delete" size={15} />{translate("workbench.deleteThread")}</button>}
       {notice && <p role="status">{notice}</p>}
     </div>, document.body)}
-    {showDetails && detail && <FormDialog secondary title={translate("files.sessionDetails")} onRestoreFocus={() => (trigger.current ?? context?.returnFocus)?.focus()} onClose={() => setShowDetails(false)}><ThreadSessionDetails detail={detail} /></FormDialog>}
     <RenameDialog open={renaming} title={translate("workbench.renameThread")} label={translate("workbench.threadTitle")} value={title} busy={busy} error={notice} onChange={setTitle} onCancel={() => setRenaming(false)} onSubmit={async () => {
       setBusy(true); setNotice('');
       try { await request(base, { method: 'PATCH', body: JSON.stringify({ title: title.trim() }) }); await onRenamed(thread.key, title.trim()); setRenaming(false); }

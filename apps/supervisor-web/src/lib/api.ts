@@ -13,7 +13,6 @@ import { confirmWorkspaceDocumentLeave, type WorkspaceDocumentSnapshot, type Wor
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { encryptedBrowserFetch, encryptedRelaySocket } from './relayTransport';
 import type {
-  ApplyProviderHostConfigArchiveResultDto,
   AgentBackendDto,
   AgentBackendIdDto,
   AgentCapabilitySnapshotDto,
@@ -43,9 +42,7 @@ import type {
   UpdateRelayAccessGrantInput,
   UpdateRelaySessionShareInput,
   RelayUserDto,
-  ProviderHostConfigArchiveDto,
   ProviderHostFileDto,
-  CreateProviderHostConfigArchiveInput,
   CreateRelaySessionShareInput,
   CreateThreadInput,
   CreateThreadHookInput,
@@ -90,7 +87,6 @@ import type {
   ThreadForkTurnOptionDto,
   WorkspaceFileDto,
   ThreadShellStateDto,
-  RenameProviderHostConfigArchiveInput,
   UpdateShellInput,
   UpdateThreadSettingsInput,
   UpdateThreadInput,
@@ -1210,54 +1206,6 @@ export function updateProviderHostFile(
     {
       method: 'PATCH',
       body: JSON.stringify(input),
-    },
-  );
-}
-
-export function fetchProviderHostConfigArchives(provider: AgentBackendIdDto) {
-  return request<ProviderHostConfigArchiveDto[]>(
-    `api/config/providers/${encodeURIComponent(provider)}/archives`,
-    {
-      cache: 'no-store',
-    },
-  );
-}
-
-export function createProviderHostConfigArchive(
-  provider: AgentBackendIdDto,
-  input: CreateProviderHostConfigArchiveInput = {},
-) {
-  return request<ProviderHostConfigArchiveDto>(
-    `api/config/providers/${encodeURIComponent(provider)}/archives`,
-    {
-      method: 'POST',
-      body: JSON.stringify(input),
-    },
-  );
-}
-
-export function renameProviderHostConfigArchive(
-  provider: AgentBackendIdDto,
-  id: string,
-  input: RenameProviderHostConfigArchiveInput,
-) {
-  return request<ProviderHostConfigArchiveDto>(
-    `api/config/providers/${encodeURIComponent(provider)}/archives/${encodeURIComponent(id)}`,
-    {
-      method: 'PATCH',
-      body: JSON.stringify(input),
-    },
-  );
-}
-
-export function applyProviderHostConfigArchive(
-  provider: AgentBackendIdDto,
-  id: string,
-) {
-  return request<ApplyProviderHostConfigArchiveResultDto>(
-    `api/config/providers/${encodeURIComponent(provider)}/archives/${encodeURIComponent(id)}/apply`,
-    {
-      method: 'POST',
     },
   );
 }
