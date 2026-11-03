@@ -99,3 +99,39 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
     await page.screenshot({ animations: 'disabled', path: join(evidence, `${tag}-thread-settings.png`) });
   });
 }
+
+for (const width of [390, 1440]) test(`secondary overlays are exclusive ${width}`, async ({ page }) => {
+  await setup(page, 'classic', false, width);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('desktopMock:update', { detail: { status: 'ready', version: '0.3.0' } })));
+  if (width < 640) {
+    await page.getByRole('button', { name: '更多操作', exact: true }).click();
+    await expect(page.locator('.matter-phone-sheet[data-open]')).toHaveCount(1);
+  }
+  await page.getByRole('button', { name: 'Alex 的 Relay 账号菜单', exact: true }).click();
+  await expect(page.getByRole('menu')).toBeVisible();
+  await expect(page.locator('.matter-phone-sheet[data-open]')).toHaveCount(0);
+  await page.screenshot({ animations: 'disabled', path: join(evidence, `exclusive-${width}-avatar.png`) });
+  await page.screenshot({ animations: 'disabled', path: join(evidence, `classic-light-${width}-avatar.png`) });
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu')).toHaveCount(0);
+  if (width < 640) {
+    await expect(page.getByRole('button', { name: '更多操作', exact: true })).toBeFocused();
+    await avatar(page, width);
+    await page.getByRole('button', { name: '更多操作', exact: true }).click();
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect(page.locator('.matter-phone-sheet[data-open]')).toHaveCount(1);
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.matter-phone-sheet[data-open]')).toHaveCount(0);
+  } else {
+    await avatar(page, width);
+    await page.getByRole('button', { name: '线程工具', exact: true }).click();
+    await expect(page.getByRole('menu')).not.toContainText('alex@example.test');
+    await expect(page.locator('[data-account-rail][aria-expanded="true"]')).toHaveCount(0);
+    await expect(page.getByRole('menu', { name: '线程工具', exact: true })).toBeVisible();
+    await avatar(page, width);
+    await expect(page.getByRole('menu', { name: '线程工具', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('menu')).toContainText('alex@example.test');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0);
+  }
+});
