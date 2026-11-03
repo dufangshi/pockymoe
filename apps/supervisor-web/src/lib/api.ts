@@ -11,7 +11,7 @@ import { accountRequest, currentBrowser, logoutAccount } from './accountVaultSta
 import { startAccountLogin, setAccountSession, cancelAccountLogin, rememberAccountLogin, type AccountSessionState } from './accountAuth';
 import { confirmWorkspaceDocumentLeave, type WorkspaceDocumentSnapshot, type WorkspaceDocumentSaveInput, type WorkspaceSaveReceipt } from "@pockymoe/thread-ui";
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { encryptedBrowserFetch, encryptedRelaySocket } from './relayTransport';
+import { encryptedBrowserFetch, encryptedRelaySocket, ensureRelayWorker } from './relayTransport';
 import type {
   AgentBackendDto,
   AgentBackendIdDto,
@@ -1301,6 +1301,21 @@ export function buildWorkspaceRawFileUrl(
   );
 }
 
+/** Re-resolve only our own media URLs; external images never receive credentials. */
+export async function refreshChatImageUrl(src: string): Promise<string> {
+  const url = new URL(src, window.location.href);
+  if (![window.location.origin, relayOrigin()].includes(url.origin)) return src;
+  const route = deviceRoute(url);
+  if (route) await ensureRelayWorker();
+  if (!/\/api\/(?:threads|workspaces)\//.test(url.pathname)) return src;
+  url.searchParams.delete('token');
+  url.searchParams.delete('relaySession');
+  // Relay sessions are HttpOnly cookies, not expiring tickets in image URLs.
+  const token = readStoredAuthToken();
+  if (!relayModeEnabled() && token) url.searchParams.set('token', token);
+  return url.href;
+}
+
 export function buildThreadImageAssetUrl(
   threadId: string,
   input: { path: string; variant?: 'thumbnail' | undefined },
@@ -2009,6 +2024,10 @@ export function connectSupervisorEvents(
 ) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = relayModeEnabled() ? encryptedRelaySocket(buildSocketUrl(protocol, target)) : new WebSocket(buildSocketUrl(protocol, target));
+
+  // All panes (including a reference device) recover on a fresh live connection.
+  // Emit only on socket open, never on successful image requests.
+  socket.addEventListener('open', () => window.dispatchEvent(new Event('pockymoe-images-reconnected')));
 
   socket.addEventListener('message', (message) => {
     try {
