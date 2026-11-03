@@ -30,3 +30,8 @@ export function playHaptic(kind: 'sent' | 'attention' | 'warning') {
     try { mobileHost()?.haptics?.play(kind); } catch { /* Optional system feedback cannot fail an action. */ }
   }
 }
+
+export function useHostCapabilities(): HostCapabilities | undefined {
+  useHostSurface();
+  return state()?.capabilities;
+}

@@ -16,6 +16,8 @@ export function FormDialog({
   meta,
   className,
   focusCancel = false,
+  onRestoreFocus,
+  secondary = false,
 }: {
   title: string;
   description?: string;
@@ -24,6 +26,9 @@ export function FormDialog({
   className?: string;
   /** Destructive confirmation forms start on their explicit Cancel control. */
   focusCancel?: boolean;
+  onRestoreFocus?: () => void;
+  /** A thread window: bottom sheet on phones, centered dialog on desktop. */
+  secondary?: boolean;
   children: ReactNode;
   onClose: () => void;
   busy?: boolean;
@@ -38,11 +43,12 @@ export function FormDialog({
     >
       <DialogContent
         ref={content}
+        onCloseAutoFocus={onRestoreFocus ? event => { event.preventDefault(); onRestoreFocus(); } : undefined}
         onOpenAutoFocus={event => {
           if (focusCancel) { event.preventDefault(); content.current?.querySelector<HTMLButtonElement>('[data-dialog-cancel]')?.focus(); }
         }}
-        className={`host-dialog ${className ?? ''} !z-[130] !max-h-[calc(100dvh-2rem)] !overflow-y-auto !overscroll-contain`}
-        overlayClassName="!z-[129]"
+        className={`host-dialog ${secondary ? 'host-secondary-window' : ''} ${className ?? ''} !z-[130] !max-h-[calc(100dvh-2rem)] !overflow-y-auto !overscroll-contain`}
+        overlayClassName={`!z-[129] ${secondary ? 'host-secondary-window-overlay' : ''}`}
         {...(!description ? { 'aria-describedby': undefined } : {})}
         onPointerDownOutside={(event) => {
           if (busy) event.preventDefault();
@@ -62,7 +68,7 @@ export function FormDialog({
           )}
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
-        {children}
+        {secondary ? <div className="host-secondary-window-body">{children}</div> : children}
       </DialogContent>
     </Dialog>
   );

@@ -222,3 +222,23 @@ The response is the updated `RelayDeviceDto` directly (no `device` wrapper), wit
 the same camelCase fields and presence/hosted metadata as an entry in
 `GET /relay/devices`. It does not return device credentials. This updates the
 relay display name only and does not restart or reconnect a device.
+
+## Settings navigation
+
+Settings contains Preferences, Notifications, Harness, Upstreams, Resources,
+Device, Workspace and Plugins. There are no Session or Advanced sections; stale
+section links fall back to the first section. The composer's model key selects
+model and effort; model menu → Harness settings opens workspace
+permissions and harness capabilities, including on Treer scoped surfaces. The
+thread's ⋯ menu opens Session details, including both session IDs, copy controls, source,
+status, creation time, workspace path and presence, and the active turn.
+
+Under Settings → Harness, select a harness to maintain it and edit its host
+files. Configuration backups there create, rename and restore that harness's
+host files. Harnesses without editable host files say so.
+
+Signed-in accounts use the same avatar menu in wide and phone navigation.
+In the desktop client's avatar menu, the name/email header also shows Pockymoe
+and the host's `shellVersion`. A ready client update adds an action to install
+the offered version through the same native update flow as the rail icon. Plain
+browsers and mobile hosts do not show a client version line.

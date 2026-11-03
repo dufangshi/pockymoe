@@ -68,3 +68,36 @@ it('confirms a copy on the item that copied, then closes', async () => {
   expect(screen.queryByRole('status')).toBeNull();
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), { timeout: 2000 });
 });
+
+it('opens every session detail in a modal and restores focus to its menu trigger', async () => {
+  vi.mocked(request).mockResolvedValue({ ...detail, workspace: { absPath: '/project' }, workspacePathStatus: 'present', thread: { ...detail.thread, provider: 'acp', providerSessionId: 'native-id', source: 'supervisor', status: 'idle', createdAt: '2026-11-01T12:00:00Z', activeTurnId: 'turn-1' } });
+  mount();
+  const trigger = await screen.findByRole('button', { name: 'Actions for reply 1' });
+  fireEvent.click(trigger);
+  const entry = await screen.findByRole('button', { name: 'Session details' });
+  await waitFor(() => expect(entry).toBeEnabled());
+  fireEvent.click(entry);
+  const dialog = screen.getByRole('dialog', { name: 'Session details' });
+  expect(dialog).toHaveTextContent('reply-1');
+  expect(dialog).toHaveTextContent('native-id');
+  expect(dialog).toHaveTextContent('turn-1');
+  expect(dialog).toHaveTextContent('/project');
+  expect(screen.getByRole('button', { name: 'Copy harness session ID' })).toBeVisible();
+  fireEvent.keyDown(dialog, { key: 'Escape' });
+  await waitFor(() => expect(trigger).toHaveFocus());
+});
+
+it('follows a visible trigger while scrolling without reloading its detail', async () => {
+  mount();
+  const trigger = await screen.findByRole('button', { name: 'Actions for reply 1' });
+  let top = 100;
+  vi.spyOn(trigger, 'getBoundingClientRect').mockImplementation(() => new DOMRect(40, top, 40, 40));
+  fireEvent.click(trigger);
+  const item = await screen.findByRole('button', { name: 'Session details' });
+  await waitFor(() => expect(item).toBeEnabled());
+  const before = vi.mocked(request).mock.calls.length;
+  top = 160;
+  fireEvent.scroll(window);
+  expect(item.closest('.recent-thread-menu')).toHaveStyle({ top: '206px' });
+  expect(request).toHaveBeenCalledTimes(before);
+});

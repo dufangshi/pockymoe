@@ -11,7 +11,7 @@ function releasePage(value: string | undefined): string | null {
 }
 
 /** The rail only receives a verified-ready state; downloading stays invisible. */
-export function ClientUpdateButton({ host, enabled }: { host: PockymoeHost | null; enabled: boolean }) {
+export function useClientUpdate(host: PockymoeHost | null, enabled: boolean) {
   useI18n();
   const [state, setState] = useState<UpdateState>(idle);
   const updates = enabled ? host?.updates : undefined;
@@ -24,16 +24,22 @@ export function ClientUpdateButton({ host, enabled }: { host: PockymoeHost | nul
     void updates.state().then(next => { if (active && !changed) setState(next); }, () => undefined);
     return () => { active = false; unsubscribe(); };
   }, [updates]);
-  if (!updates || !state.version || !['ready', 'installing', 'error'].includes(state.status)) return null;
   const busy = state.status === 'installing';
   const retryDisabled = state.retryAllowed === false;
   const label = translate('desktopShell.updateTo', { version: state.version });
   const install = () => {
     if (busy || retryDisabled) return;
     setState(current => { const next = { ...current, status: 'installing' as const }; delete next.error; return next; });
-    try { updates.install(); }
+    try { updates?.install(); }
     catch { setState(current => ({ ...current, status: 'error', error: translate('desktopShell.updateFailed') })); }
   };
+  return { state, busy, retryDisabled, label, install, updates };
+}
+
+export function ClientUpdateButton({ host, enabled }: { host: PockymoeHost | null; enabled: boolean }) {
+  useI18n();
+  const { state, busy, retryDisabled, label, install, updates } = useClientUpdate(host, enabled);
+  if (!updates || !state.version || !['ready', 'installing', 'error'].includes(state.status)) return null;
   const download = releasePage(state.releaseUrl);
   return <div className="desktop-client-update" data-update-status={state.status}>
     <button type="button" className="desktop-client-update-button" aria-label={label} title={label} aria-busy={busy} disabled={busy || retryDisabled} onClick={install}>

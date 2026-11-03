@@ -1,3 +1,4 @@
+import { ClientVersion } from '../desktop/ClientVersion';
 import { devicesHref } from '../lib/devicesRoute';
 import { useAccountShareAttention } from './sharedAccess/useAccountShareAttention';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -60,6 +61,7 @@ export function RelayUserMenu({
   const location = useLocation();
   const menuId = useId();
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const openingAnchor = useRef<DOMRect | undefined>(undefined);
   const menuRef = useRef<HTMLDivElement>(null);
   const initialFocusRef = useRef<'first' | 'last'>('first');
   const [session, setSession] = useState<RelaySessionDto | null>(null);
@@ -100,7 +102,9 @@ export function RelayUserMenu({
   useLayoutEffect(() => {
     if (!open) return;
     function placeMenu() {
-      const anchor = triggerRef.current?.getBoundingClientRect();
+      // A phone sheet closes when this portal menu opens; retain its last anchor.
+      const anchor = triggerRef.current?.closest('.matter-phone-sheet[aria-hidden="true"]')
+        ? openingAnchor.current : triggerRef.current?.getBoundingClientRect();
       const menu = menuRef.current;
       const viewport = window.visualViewport;
       const view = {
@@ -149,17 +153,27 @@ export function RelayUserMenu({
 
   function closeMenu(restoreFocus = true) {
     setOpen(false);
-    if (restoreFocus) triggerRef.current?.focus();
+    if (restoreFocus) {
+      const trigger = triggerRef.current;
+      const target = trigger?.closest('[inert]') ? trigger.closest('.matter-workbench')?.querySelector<HTMLElement>('.matter-phone-more') : trigger;
+      target?.focus({ preventScroll: true });
+    }
   }
 
-  useMenuKeyboard(menuRef, open, closeMenu);
+  useMenuKeyboard(menuRef, open, closeMenu, undefined, true);
 
   useEffect(() => {
     if (!open) {
       return;
     }
 
-    if (initialFocusRef.current === 'last') menuItems(menuRef.current).at(-1)?.focus();
+    const last = initialFocusRef.current === 'last';
+    if (last) menuItems(menuRef.current).at(-1)?.focus();
+    // Closing the replaced sheet restores its focus during effect cleanup.
+    const focusFrame = requestAnimationFrame(() => {
+      const items = menuItems(menuRef.current);
+      (last ? items.at(-1) : items[0])?.focus({ preventScroll: true });
+    });
     initialFocusRef.current = 'first';
 
     function handlePointerDown(event: PointerEvent) {
@@ -174,6 +188,7 @@ export function RelayUserMenu({
 
     document.addEventListener('pointerdown', handlePointerDown);
     return () => {
+      cancelAnimationFrame(focusFrame);
       document.removeEventListener('pointerdown', handlePointerDown);
     };
   }, [open]);
@@ -215,6 +230,7 @@ export function RelayUserMenu({
         onClick={() => {
           initialFocusRef.current = 'first';
           setLogoutError(null);
+          openingAnchor.current = triggerRef.current?.getBoundingClientRect();
           setOpen((current) => !current);
         }}
         onKeyDown={(event) => {
@@ -223,6 +239,7 @@ export function RelayUserMenu({
           }
           event.preventDefault();
           initialFocusRef.current = event.key === 'ArrowUp' ? 'last' : 'first';
+          openingAnchor.current = triggerRef.current?.getBoundingClientRect();
           setOpen(true);
         }}
         ref={triggerRef}
@@ -245,6 +262,7 @@ export function RelayUserMenu({
               {user.username}
             </p>
             <p className="truncate text-xs text-[var(--theme-fg-muted)]">{user.email}</p>
+            <ClientVersion />
           </div>
           <Link
             className="flex h-11 items-center gap-2 rounded-md px-3 text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)] focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
