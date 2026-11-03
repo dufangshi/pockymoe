@@ -1,4 +1,5 @@
 import { playHaptic } from './surface';
+import { prepareClientUpdate } from './prepareUpdate';
 import { translate } from '@pockymoe/thread-ui/i18n';
 import type { HostCommand, HostCommandResult, PockymoeHost } from './host';
 import { deviceRequest, respondToThreadRequest, sendThreadPrompt } from '../lib/api';
@@ -85,6 +86,7 @@ export function muteTargets(store: Pick<DesktopIndexStore, 'getSnapshot'>) {
 export async function handleHostCommand(command: HostCommand, deps: CommandDependencies): Promise<HostCommandResult> {
   try {
     switch (command.type) {
+      case 'prepareUpdate': return await prepareClientUpdate(command.cancel === true);
       case 'navigate':
         if (!command.path.startsWith('/') || command.path.startsWith('//') || command.path.includes('\\')) throw new Error(translate('desktopShell.invalidPath'));
         deps.navigate(command.path); break;

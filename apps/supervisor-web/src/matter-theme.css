@@ -68,6 +68,12 @@
   --theme-shadow: 0 14px 36px oklch(0.25 0.012 155 / 14%);
 }
 
+/* Classic's near-white primary labels need its existing stronger green for AA. */
+:root:root:root[data-theme-effective='light'][data-theme-preset='classic'] {
+  --action-primary-bg: var(--theme-accent-strong);
+  --action-primary-bg-hover: color-mix(in srgb, var(--theme-accent-strong) 90%, #000);
+}
+
 /* Outer routes share the workbench's compact, continuous chrome. */
 .product-page.product-page { max-width: 88rem; }
 .product-topbar.product-topbar.product-navigation {
