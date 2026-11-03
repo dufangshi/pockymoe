@@ -43,8 +43,7 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
     await expect(page.locator('.pd-page')).not.toContainText('≈ —');
     const old = page.locator('.pd-usage-device-row').filter({ hasText: 'wsl' });
     await expect(old).not.toContainText('—');
-    await page.locator('.pd-longest summary').click();
-    await expect(page.locator('.pd-longest a')).toHaveCount(5);
+    await expect(page.locator('.pd-longest')).toHaveCount(0);
     await page.locator('.pd-statistics').scrollIntoViewIfNeeded();
     await page.screenshot({ path: `${evidence}/${name}-statistics.png` });
     expect(await page.locator('.pd-page').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);

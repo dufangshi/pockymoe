@@ -1,8 +1,8 @@
 import { afterEach, expect, it } from 'vitest';
 import { setLocale } from '@pockymoe/thread-ui/i18n';
 import type { DesktopIndex } from '../data/types';
-import { accountUsage, costLabel, usageColor } from './usage';
-import { money, partialSummary, type StatsSummary } from './model';
+import { accountUsage, costLabel, normalizeModelName } from './usage';
+import { money, categoryColor, partialSummary, type StatsSummary } from './model';
 const index = { accountId: 'a', devices: [], workspaces: [], threads: [], activity: {}, extras: {}, pulseKeys: [], hydrated: true, refreshing: false, error: null } as DesktopIndex;
 const summary = (): StatsSummary => ({ ...partialSummary(index, 'a', 'today', 'UTC'), totals: { turns: 5, completed: 4, failed: 1, interrupted: 0, inputTokens: 8000, outputTokens: 2000, cachedTokens: 3000, avgDurationMs: 100, p50DurationMs: 100, costUsd: 6, unpricedTokens: 2000 }, byModel: [{ model: 'Fast', turns: 4, tokens: 8000, costUsd: 1 }, { model: 'Premium', turns: 1, tokens: 2000, costUsd: 5, unpricedTokens: 2000 }], byWorkspace: [{ workspaceId: 'same', label: 'Code', turns: 5, tokens: 10000, costUsd: 6, lastActivityAt: '2026-11-01' }] });
 afterEach(() => setLocale('en', false));
@@ -14,8 +14,8 @@ it('sorts models, devices and workspaces by the chosen metric while preserving m
   expect(tokens.total.tokens).toBe(30000);
   expect(tokens.devices.map(row => row.id)).toEqual(['b', 'a']); expect(cost.devices.map(row => row.id)).toEqual(['a', 'b']);
   expect(tokens.devices.flatMap(row => row.workspaces)).toHaveLength(2);
-  expect(usageColor(tokens.models[0]!.id)).toBe(usageColor(cost.models[1]!.id));
-  expect(usageColor('GPT-6.1')).not.toBe(usageColor('Claude Sonnet 4.6'));
+  expect(categoryColor(tokens.models[0]!.id, ["Fast", "Premium"])).toBe(categoryColor(cost.models[1]!.id, ["Fast", "Premium"]));
+  expect(categoryColor('GPT-6.1', ['GPT-6.1', 'Claude Sonnet 4.6'])).not.toBe(categoryColor('Claude Sonnet 4.6', ['GPT-6.1', 'Claude Sonnet 4.6']));
 });
 it('keeps known cost when some models are unpriced, distinguishing unknown from free usage', () => {
   const stats = summary(); stats.byModel.push({ model: 'Fast', turns: 1, tokens: 2000, costUsd: null });
@@ -74,4 +74,27 @@ it('marks partial native subagent evidence as a lower bound even when parent tok
   const data = accountUsage([{ deviceId: 'a', name: 'A', summary: stats }], index, 'today', 'cost');
   expect(data.total.tokenUnknown).toBe(true); expect(costLabel(data.total)).toBe('≥ $6.00');
   expect(data.models.find(row => row.id === 'Fast')!.partial).toBe(true);
+});
+
+it('normalizes array labels, merges both account and device models and retains synthetic counts', () => {
+  const stats = summary();
+  stats.byModel = [
+    { model: '["remote-codex","grok-4.7"]', turns: 1, tokens: 120, costUsd: 1 },
+    { model: 'grok-4.7', turns: 2, tokens: 80, costUsd: null },
+    { model: '<synthetic>', turns: 1, tokens: 10, costUsd: 0 },
+  ];
+  const data = accountUsage([{ deviceId: 'a', name: 'A', summary: stats }], index, 'today', 'tokens');
+  expect(data.devices[0]!.models).toEqual(data.models);
+  expect(data.models[0]).toMatchObject({ id: 'grok-4.7', turns: 3, tokens: 200, costUsd: 1, unpricedTokens: 80, partial: true });
+  expect(data.models[1]).toMatchObject({ id: '<synthetic>', label: 'System generated', turns: 1, tokens: 10 });
+  expect(normalizeModelName('[]')).toBe('[]'); expect(normalizeModelName('[1,2]')).toBe('[1,2]');
+  expect(normalizeModelName('[bad')).toBe('[bad'); expect(normalizeModelName('plain')).toBe('plain');
+  expect(accountUsage([{ deviceId: 'a', name: 'A', activity: { since: '', hours: 24, threads: [] } }], index, 'all', 'tokens').devices[0]).toMatchObject({ models: [], modelHistory: false });
+});
+it('assigns twelve distinct categories in stable ID order and varies reused hues beyond twelve', () => {
+  const ids = Array.from({ length: 30 }, (_, i) => `device-${String(i).padStart(2, '0')}`);
+  const colors = ids.map(id => categoryColor(id, ids));
+  expect(new Set(colors).size).toBe(30);
+  expect(new Set(colors.slice(0, 12)).size).toBe(12);
+  expect(categoryColor(ids[5]!, [...ids].reverse())).toBe(colors[5]);
 });

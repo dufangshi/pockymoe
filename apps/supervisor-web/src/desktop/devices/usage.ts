@@ -6,13 +6,19 @@ import { money, type StatsRange, type StatsSummary, type TurnOrigin, type UsageV
 type ActivityRow = ThreadActivityResponseDto['threads'][number] & { byOrigin?: Partial<Record<TurnOrigin, number>>; usageCoverage?: { missingUsageTurns?: number; partialUsageTurns?: number; unpricedTokens?: number } };
 export type UsageMetric = 'tokens' | 'cost';
 export interface UsageRow extends UsageValues { id: string; label: string; partial: boolean; unknown?: boolean; tokenUnknown?: boolean; hasPrice?: boolean }
-export interface DeviceUsage extends UsageRow { workspaces: UsageRow[] }
+export interface DeviceUsage extends UsageRow { workspaces: UsageRow[]; models: UsageRow[]; modelHistory: boolean }
 export interface UsageSource { deviceId: string; name: string; summary?: StatsSummary | undefined; activity?: ThreadActivityResponseDto | undefined }
 export const metricValue = (row: UsageValues, metric: UsageMetric) => metric === 'tokens' ? row.tokens : row.costUsd ?? 0;
-export function usageColor(model: string) {
-  const id = model.toLowerCase();
-  const hash = [...id].reduce((value, character) => Math.imul(value ^ character.charCodeAt(0), 16777619) >>> 0, 2166136261);
-  return ['var(--status-info-fg)', 'var(--status-warning-fg)', 'var(--status-danger-fg)', 'var(--status-success-fg)', 'var(--theme-accent-solid)', 'color-mix(in oklch, var(--status-info-fg) 60%, var(--status-danger-fg))', 'var(--theme-fg-muted)'][hash % 7]!;
+/** Historical adapters sometimes persisted a serialized provider/model tuple. */
+export function normalizeModelName(raw: string): string {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (Array.isArray(value) && value.length && typeof value.at(-1) === 'string') return value.at(-1) as string;
+  } catch { /* Ordinary model IDs are already display names. */ }
+  return raw;
+}
+export function modelLabel(id: string) {
+  return id === '<synthetic>' ? translate('desktopDevices.systemGenerated') : id === 'unknown' ? translate('desktopDevices.unknownModel') : id;
 }
 export const costLabel = (row: Pick<UsageValues, 'costUsd' | 'unpricedTokens'> & { partial?: boolean }) => row.costUsd == null ? '—' : `${row.unpricedTokens || row.partial ? '≥ ' : ''}${money(row.costUsd)}`;
 const empty = (id: string, label = id): UsageRow => ({ id, label, turns: 0, tokens: 0, costUsd: null, unpricedTokens: 0, partial: false });
@@ -36,7 +42,7 @@ export function accountUsage(sources: UsageSource[], index: DesktopIndex, range:
   let partial = false;
   const origins = { owner: 0, guest: 0, agent: 0, automation: 0, unknown: 0 };
   for (const source of sources) {
-    const device: DeviceUsage = { ...empty(source.deviceId, source.name), workspaces: [] };
+    const device: DeviceUsage = { ...empty(source.deviceId, source.name), workspaces: [], models: [], modelHistory: false };
     if (source.summary && (!origin || source.summary.origin === origin)) {
       const summary = source.summary;
       const totals = { ...summary.totals, tokens: summary.totals.tokens ?? summary.totals.inputTokens + summary.totals.outputTokens };
@@ -46,7 +52,16 @@ export function accountUsage(sources: UsageSource[], index: DesktopIndex, range:
       totals.unpricedTokens ??= summary.byModel.reduce((sum, row) => sum + (row.unpricedTokens ?? (row.costUsd == null ? row.tokens : 0)), 0);
       const incomplete = recoveredCost || Boolean(summary.coverage?.missingUsageTurns || summary.coverage?.partialUsageTurns || summary.totals.partialUsageTurns || summary.coverage?.excludedUndatedTurns);
       add(device, totals, incomplete, Boolean(summary.coverage?.missingUsageTurns || summary.coverage?.partialUsageTurns || summary.totals.partialUsageTurns)); partial ||= incomplete;
-      for (const row of summary.byModel) { const target = models.get(row.model) ?? empty(row.model, row.model === 'unknown' ? translate('desktopDevices.unknownModel') : row.model); add(target, row, incompleteUsage(row), incompleteUsage(row)); models.set(row.model, target); }
+      device.modelHistory = true;
+      const deviceModels = new Map<string, UsageRow>();
+      for (const row of summary.byModel) {
+        const id = normalizeModelName(row.model);
+        for (const group of [models, deviceModels]) {
+          const target = group.get(id) ?? empty(id, modelLabel(id));
+          add(target, row, incompleteUsage(row), incompleteUsage(row)); group.set(id, target);
+        }
+      }
+      device.models = [...deviceModels.values()].sort((a, b) => metricValue(b, metric) - metricValue(a, metric) || a.label.localeCompare(b.label));
       device.workspaces = summary.byWorkspace.map(row => { const target = empty(row.workspaceId, row.label); add(target, row, incompleteUsage(row), incompleteUsage(row)); return target; });
       for (const row of summary.byOrigin ?? []) if (row.origin in origins) origins[row.origin] += row.turns;
     } else if (!source.summary && source.activity && range === 'all' && !origin) {

@@ -1,10 +1,11 @@
-import { useState, type ReactNode } from 'react';
+import { useUsageColors } from './UsageColors';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { ErrorMark, MiddleName } from '@pockymoe/thread-ui';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
-import { compact, deviceColor, exact, type StatsRange, type TurnOrigin } from './model';
-import { accountUsage, costLabel, metricValue, usageColor, type UsageMetric, type UsageRow, type UsageSource } from './usage';
+import { compact, exact, type StatsRange, type TurnOrigin } from './model';
+import { accountUsage, costLabel, metricValue, type UsageMetric, type UsageRow, type UsageSource } from './usage';
 import type { DesktopIndex } from '../data/types';
 
 export function Info({ message, label }: { message: string; label?: string | undefined }) {
@@ -17,8 +18,21 @@ export function UsagePanel({ sources, index, range, metric, onMetric, origin, fi
 }) {
   const { t, formatNumber } = useI18n();
   const data = accountUsage(sources, index, range, metric, origin);
-  const [focused, setFocused] = useState<string | null>(null);
+  const { deviceColor, usageColor } = useUsageColors(index.devices.map(device => device.id).concat(sources.map(source => source.deviceId)), data.models.map(row => row.id));
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const anchor = useRef<{ element: HTMLElement; top: number } | null>(null);
+  useLayoutEffect(() => {
+    if (anchor.current) {
+      const { element, top } = anchor.current;
+      // Restore the clicked row after scroll anchoring/clamping, including collapse.
+      let parent = element.parentElement;
+      while (parent && parent.scrollHeight <= parent.clientHeight) parent = parent.parentElement;
+      const delta = element.getBoundingClientRect().top - top;
+      if (delta) { if (parent) parent.scrollTop += delta; else window.scrollBy(0, delta); }
+      anchor.current = null;
+    }
+  }, [expanded]);
+  const [focused, setFocused] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const modelTotal = data.models.reduce((sum, row) => sum + metricValue(row, metric), 0);
   const maximum = Math.max(1, ...data.devices.map(row => metricValue(row, metric)));
@@ -29,6 +43,9 @@ export function UsagePanel({ sources, index, range, metric, onMetric, origin, fi
   const focusedRow = data.models.find(row => row.id === focused);
   const exactCost = (row: UsageRow) => row.costUsd == null ? '—' : `${row.unpricedTokens || row.partial ? '≥ ' : ''}$${formatNumber(row.costUsd, { maximumSignificantDigits: 12 })}`;
   const fullValue = (row: UsageRow) => row.unknown || metric === 'tokens' && row.tokenUnknown && !row.tokens ? '—' : metric === 'tokens' ? `${exact(row.tokens)} ${t('desktopDevices.tokens')}` : exactCost(row);
+  const modelName = (row: UsageRow) => <span className="pd-model-name" data-muted={row.id === '<synthetic>' || undefined}><i style={{ background: usageColor(row.id) }} /><MiddleName name={row.label || t('desktopDevices.unknownModel')} /><Info label={t('desktopDevices.fullModelName')} message={row.label} /></span>;
+  const usageNumber = (content: ReactNode, info?: ReactNode) => <span className="pd-usage-number"><span>{content}</span><span>{info}</span></span>;
+  const modelNumbers = (row: UsageRow) => <><td data-label={t('desktopDevices.turnsColumn')} title={originHint}>{compact(row.turns)}</td><td data-label={t('desktopDevices.tokens')}>{usageNumber(<span title={exact(row.tokens)}>{row.tokenUnknown && !row.tokens ? '—' : compact(row.tokens)}</span>, <Info message={breakdown(row)} />)}</td><td data-label={t('desktopDevices.cost')} title={exactCost(row)}>{usageNumber(costLabel(row), row.costUsd == null || row.unpricedTokens || row.partial ? <Info message={priceInfo(row)} /> : null)}</td></>;
   const emptyNote = modelTotal ? null : metric === 'cost' && data.total.costUsd == null ? t('desktopDevices.priceUnknown') : data.total.tokenUnknown ? t('desktopDevices.unknownUsage') : !data.models.length ? t('desktopDevices.noModels') : null;
   // A device with no usage in this range is not news, and one with no statistics is only counted.
   const used = data.devices.filter(row => !row.unknown && metricValue(row, metric) > 0);
@@ -50,16 +67,21 @@ export function UsagePanel({ sources, index, range, metric, onMetric, origin, fi
       </svg>{focusedRow ? <div role="tooltip" className="pd-donut-tip">{focusedRow.label} · {metric === 'tokens' ? exact(focusedRow.tokens) : exactCost(focusedRow)}</div> : null}
       {emptyNote ? <span className="pd-donut-empty">{emptyNote}</span> : null}</div>
       <table className="pd-usage-table"><thead><tr><th scope="col">{t('desktopDevices.model')}</th><th scope="col">{t('desktopDevices.turnsColumn')}</th><th scope="col" aria-sort={metric === 'tokens' ? 'descending' : 'none'}>{t('desktopDevices.tokens')}</th><th scope="col" aria-sort={metric === 'cost' ? 'descending' : 'none'}>{t('desktopDevices.cost')}</th><th scope="col">{t('desktopDevices.share')}</th></tr></thead><tbody>
-        {data.models.map(row => <tr key={row.id} data-active={focused === row.id || undefined} onMouseEnter={() => setFocused(row.id)} onMouseLeave={() => setFocused(null)}><th scope="row"><span className="pd-model-name" title={row.label}><i style={{ background: usageColor(row.id) }} />{row.label || t('desktopDevices.unknownModel')}</span></th><td title={originHint}>{compact(row.turns)}</td><td><span title={exact(row.tokens)}>{row.tokenUnknown && !row.tokens ? '—' : compact(row.tokens)}</span><Info message={breakdown(row)} /></td><td title={exactCost(row)}>{costLabel(row)}{row.costUsd == null || row.unpricedTokens || row.partial ? <Info message={priceInfo(row)} /> : null}</td><td>{modelTotal && (metric !== 'cost' || row.costUsd != null) ? `${(metricValue(row, metric) / modelTotal * 100).toFixed(1)}%` : '—'}</td></tr>)}
+        {data.models.map(row => <tr key={row.id} data-active={focused === row.id || undefined} onMouseEnter={() => setFocused(row.id)} onMouseLeave={() => setFocused(null)}><th scope="row" aria-label={row.label}>{modelName(row)}</th>{modelNumbers(row)}<td data-label={t('desktopDevices.share')}>{modelTotal && (metric !== 'cost' || row.costUsd != null) ? `${(metricValue(row, metric) / modelTotal * 100).toFixed(1)}%` : '—'}</td></tr>)}
         {!data.models.length ? <tr><td colSpan={5} className="pd-table-empty">{t(data.total.unknown ? 'desktopDevices.usageNeedsUpdate' : data.total.turns ? 'desktopDevices.noModels' : 'desktopDevices.noUsage')}{data.partial && !data.total.unknown ? <Info message={t('desktopDevices.usagePartial')} /> : null}{data.total.unknown && range !== 'all' && onShowAll ? <button className="pd-link" onClick={onShowAll}>{t('desktopDevices.usageShowAll')}</button> : null}</td></tr> : null}
-      </tbody><tfoot><tr><th scope="row">{t('desktopDevices.total')}</th><td title={originHint}>{data.total.unknown ? '—' : compact(data.total.turns)}</td><td title={exact(data.total.tokens)}>{data.total.unknown || data.total.tokenUnknown && !data.total.tokens ? '—' : compact(data.total.tokens)}</td><td title={exactCost(data.total)}>{costLabel(data.total)}{data.total.unpricedTokens || data.total.partial || data.total.costUsd == null ? <Info message={priceInfo(data.total)} /> : null}</td><td /></tr></tfoot></table>
+      </tbody><tfoot><tr><th scope="row">{t('desktopDevices.total')}</th><td data-label={t('desktopDevices.turnsColumn')} title={originHint}>{data.total.unknown ? '—' : compact(data.total.turns)}</td><td data-label={t('desktopDevices.tokens')} title={exact(data.total.tokens)}>{usageNumber(data.total.unknown || data.total.tokenUnknown && !data.total.tokens ? '—' : compact(data.total.tokens))}</td><td data-label={t('desktopDevices.cost')} title={exactCost(data.total)}>{usageNumber(costLabel(data.total), data.total.unpricedTokens || data.total.partial || data.total.costUsd == null ? <Info message={priceInfo(data.total)} /> : null)}</td><td /></tr></tfoot></table>
     </div>
     <section className="pd-device-usage" aria-label={t('desktopDevices.usageByDevice')}><header><h3>{t('desktopDevices.usageByDevice')}</h3>{data.partial ? <Info message={t('desktopDevices.usagePartial')} /> : null}</header>
       {!used.length && !missing ? <p className="pd-row-empty">{t('desktopDevices.usageNoneInRange')}</p> : null}
       {visible.map(device => <div className="pd-usage-device" key={device.id}>
-        <button className="pd-usage-device-row" aria-expanded={expanded.has(device.id)} aria-label={`${device.label} · ${fullValue(device)}`} title={`${device.label} · ${fullValue(device)}`} onClick={() => setExpanded(previous => { const next = new Set(previous); if (next.has(device.id)) next.delete(device.id); else next.add(device.id); return next; })}>
+        <button className="pd-usage-device-row" aria-expanded={expanded.has(device.id)} aria-label={`${device.label} · ${fullValue(device)}`} title={`${device.label} · ${fullValue(device)}`} onClick={event => { anchor.current = { element: event.currentTarget, top: event.currentTarget.getBoundingClientRect().top }; setExpanded(previous => { const next = new Set(previous); if (next.has(device.id)) next.delete(device.id); else next.add(device.id); return next; }); }}>
           {expanded.has(device.id) ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />}<span className="pd-usage-label" title={device.label}>{device.label}</span><span className="pd-horizontal-track"><i style={{ width: `${metricValue(device, metric) / maximum * 100}%`, background: deviceColor(device.id) }} /></span><b>{value(device)}</b></button>
-        {expanded.has(device.id) ? <div className="pd-workspace-usage" aria-label={`${device.label} · ${t('desktopDevices.workspaceUsage')}`}>{device.workspaces.map(workspace => <Link key={workspace.id} to={`/devices/${encodeURIComponent(device.id)}/threads?workspaceId=${encodeURIComponent(workspace.id)}`}><span title={workspace.label}>{workspace.label}</span><span className="pd-horizontal-track"><i style={{ width: `${metricValue(workspace, metric) / maximum * 100}%`, background: deviceColor(device.id) }} /></span><b title={fullValue(workspace)}>{value(workspace)}</b></Link>)}{!device.workspaces.length ? <span className="pd-row-empty">{t('desktopDevices.noWorkspaces')}</span> : null}</div> : null}
+        {expanded.has(device.id) ? <div className="pd-device-details">
+          <section aria-label={`${device.label} · ${t('desktopDevices.model')}`}>{!device.modelHistory || !device.models.length ? <h4>{t('desktopDevices.model')}</h4> : null}
+            {device.modelHistory ? device.models.length ? <table className="pd-usage-table pd-device-models"><thead><tr><th scope="col">{t('desktopDevices.model')}</th><th scope="col">{t('desktopDevices.turnsColumn')}</th><th scope="col" aria-sort={metric === 'tokens' ? 'descending' : 'none'}>{t('desktopDevices.tokens')}</th><th scope="col" aria-sort={metric === 'cost' ? 'descending' : 'none'}>{t('desktopDevices.cost')}</th></tr></thead><tbody>{device.models.map(row => <tr key={row.id}><th scope="row" aria-label={row.label}>{modelName(row)}</th>{modelNumbers(row)}</tr>)}</tbody></table> : <p className="pd-row-empty">{t('desktopDevices.noModels')}</p> : <p className="pd-row-empty">{t('desktopDevices.noDeviceModels')}</p>}
+          </section>
+          <section className="pd-workspace-usage" aria-label={`${device.label} · ${t('desktopDevices.workspaceUsage')}`}><h4>{t('desktopDevices.workspace')}</h4>{device.workspaces.map(workspace => <Link key={workspace.id} to={`/devices/${encodeURIComponent(device.id)}/threads?workspaceId=${encodeURIComponent(workspace.id)}`}><span title={workspace.label}>{workspace.label}</span><span className="pd-horizontal-track"><i style={{ width: `${metricValue(workspace, metric) / maximum * 100}%`, background: deviceColor(device.id) }} /></span><b title={fullValue(workspace)}>{value(workspace)}</b></Link>)}{!device.workspaces.length ? <span className="pd-row-empty">{t('desktopDevices.noWorkspaces')}</span> : null}</section>
+        </div> : null}
       </div>)}
       {pages > 1 || missing ? <footer className="pd-usage-footer">
         {missing ? <span className="pd-usage-missing">{t('desktopDevices.usageMissingDevices', { count: missing })}<Info message={t('desktopDevices.usageMissingHint')} /></span> : <span />}

@@ -123,8 +123,7 @@ export function aggregate(sources: { deviceId: string; summary: StatsSummary }[]
   return { turns: sum('turns'), successRate: terminal ? sum('completed') / terminal : null, avgDurationMs: mean,
     tokens: sum('inputTokens') + sum('outputTokens'), cachedTokens: sum('cachedTokens'), costUsd: sumCost(summaries.map(s => s.totals.costUsd)), daily,
     models: [...models.values()].sort((a, b) => b.turns - a.turns),
-    workspaces: sources.flatMap(s => s.summary.byWorkspace.map(w => ({ ...w, deviceId: s.deviceId }))).sort((a, b) => b.turns - a.turns).slice(0, 5),
-    longest: sources.flatMap(s => s.summary.longestThreads.map(t => ({ ...t, deviceId: s.deviceId }))).sort((a, b) => b.durationMs - a.durationMs).slice(0, 5) };
+    workspaces: sources.flatMap(s => s.summary.byWorkspace.map(w => ({ ...w, deviceId: s.deviceId }))).sort((a, b) => b.turns - a.turns).slice(0, 5) };
 }
 export function supportsStats(health: { capabilities?: { statsSummary?: boolean } }) { return health.capabilities?.statsSummary === true; }
 export function supportsHourly(summary: StatsSummary | undefined): summary is StatsSummary & { hourly: HourBucket[] } {
@@ -133,10 +132,10 @@ export function supportsHourly(summary: StatsSummary | undefined): summary is St
 }
 export function aggregateHourly(sources: { summary: StatsSummary }[]) {
   return Array.from({ length: 24 }, (_, hour) => {
-    const rows = sources.map(source => supportsHourly(source.summary) ? source.summary.hourly.find(row => row.hour === hour)! : null);
-    const complete = rows.length > 0 && rows.every(row => row !== null);
-    return { hour, tokens: complete ? rows.reduce((sum, row) => sum + row!.tokens, 0) : null,
-      costUsd: complete ? bucketCost(rows as HourBucket[]) : null, pricePartial: complete && pricePartial(rows as HourBucket[]) };
+    const rows = sources.flatMap(source => supportsHourly(source.summary) ? [source.summary.hourly.find(row => row.hour === hour)!] : []);
+    const known = rows.length > 0;
+    return { hour, tokens: known ? rows.reduce((sum, row) => sum + row.tokens, 0) : null,
+      costUsd: known ? bucketCost(rows) : null, pricePartial: known && pricePartial(rows) };
   });
 }
 
@@ -190,8 +189,10 @@ export function lifetimeActivity(index: DesktopIndex, deviceId: string, activity
     costUsd: rows.some(row => row.pricePartial || !row.priceEstimate) ? null : rows.reduce((n, row) => n + row.priceEstimate!.totalUsd, 0),
     workspaces: [...workspaces.values()].sort((a, b) => b.turns - a.turns).slice(0, 5) };
 }
-/** Stable across sorting, range changes and disconnects; colors are shared by all charts. */
-export function deviceColor(id: string) {
-  const hash = [...id].reduce((n, c) => ((n * 31 + c.charCodeAt(0)) >>> 0), 0);
-  return ['var(--theme-accent-solid)', 'var(--status-info-fg)', 'var(--status-warning-fg)', 'var(--status-danger-fg)', 'var(--status-success-fg)', 'color-mix(in oklch, var(--theme-accent-solid), var(--status-danger-fg))'][hash % 6]!;
+/** Index the full account inventory, never a metric-sorted or filtered subset. */
+export function categoryColor(id: string, ids: readonly string[]) {
+  const position = Math.max(0, [...new Set(ids)].sort().indexOf(id));
+  const base = `var(--usage-category-${position % 12 + 1})`;
+  const cycle = Math.floor(position / 12);
+  return cycle ? `color-mix(in oklch, ${base} ${100 / (cycle + 1)}%, var(--theme-fg))` : base;
 }

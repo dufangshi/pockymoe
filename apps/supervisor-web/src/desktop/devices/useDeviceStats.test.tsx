@@ -59,16 +59,16 @@ it('pauses hidden probes, uses 60s stats and 30s latency, and debounces completi
   const healthReads = () => vi.mocked(request).mock.calls.filter(([path]: Parameters<typeof request>) => String(path).endsWith('/healthz')).length;
   try {
     await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-    expect(statReads()).toBe(2); expect(healthReads()).toBe(1);
+    expect(statReads()).toBe(3); expect(healthReads()).toBe(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
-    expect(statReads()).toBe(2); expect(healthReads()).toBe(2);
+    expect(statReads()).toBe(3); expect(healthReads()).toBe(2);
     hidden.mockReturnValue(true);
     await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-    expect(statReads()).toBe(2); expect(healthReads()).toBe(2);
+    expect(statReads()).toBe(3); expect(healthReads()).toBe(2);
     hidden.mockReturnValue(false);
     hook.rerender({ completed: '2026-11-01T00:00:00Z' });
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    expect(statReads()).toBe(4);
+    expect(statReads()).toBe(6);
   } finally { hook.unmount(); hidden.mockRestore(); vi.useRealTimers(); }
 });
 it('keeps All time unsupported separate from finite summaries and requests the lifetime fallback', async () => {

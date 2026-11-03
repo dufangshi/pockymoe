@@ -25,9 +25,10 @@ describe('hourly device charts', () => {
     expect(result[6]).toEqual({ hour: 6, tokens: 1200, costUsd: .06, pricePartial: true });
     expect(result[7]?.tokens).toBe(1400); // Not a cumulative sum.
   });
-  it('does not treat a device missing hourly data as zero usage', () => {
+  it('retains hourly tokens and cost from capable devices when a legacy device is present', () => {
     const legacy = summary(); delete legacy.hourly;
-    expect(aggregateHourly([{ summary: summary() }, { summary: legacy }]).every(row => row.tokens === null && row.costUsd === null)).toBe(true);
+    expect(aggregateHourly([{ summary: summary() }, { summary: legacy }])[5]).toEqual({ hour: 5, tokens: 500, costUsd: .05, pricePartial: false });
+    expect(aggregateHourly([{ summary: legacy }]).every(row => row.tokens === null)).toBe(true);
     expect(aggregateHourly([]).every(row => row.tokens === null)).toBe(true);
   });
   it('folds repeated local DST hours and conserves sampled runtime without inventing turns', () => {
