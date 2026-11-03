@@ -138,12 +138,9 @@ const failedPhases = ['failed', 'rolled-back', 'rollback-failed'];
 export function RuntimeManagement({
   view = 'all',
   deviceId: explicitDeviceId,
-  selectedHarness, onHarnessChange,
 }: {
   view?: 'all' | 'device' | 'harnesses' | 'supervisor';
   deviceId?: string;
-  selectedHarness?: string;
-  onHarnessChange?: (id: string) => void;
 }) {
   const { locale: i18nLocale } = useI18n();
   const { pathname } = useLocation();
@@ -162,7 +159,6 @@ export function RuntimeManagement({
   return (
     <DeviceRuntimeManagement
       view={view}
-      selectedHarness={selectedHarness} onHarnessChange={onHarnessChange}
       key={deviceId ?? 'local'}
       apiRoot={
         deviceId ? `relay/devices/${encodeURIComponent(deviceId)}/api` : 'api'
@@ -173,17 +169,13 @@ export function RuntimeManagement({
 
 function DeviceRuntimeManagement({
   apiRoot,
-  view, selectedHarness: controlledHarness, onHarnessChange,
+  view,
 }: {
   apiRoot: string;
-  selectedHarness?: string | undefined;
-  onHarnessChange?: ((id: string) => void) | undefined;
   view: 'all' | 'device' | 'harnesses' | 'supervisor';
 }) {
   const { locale: i18nLocale } = useI18n();
-  const [ownHarness, setOwnHarness] = useState('codex');
-  const selectedHarness = controlledHarness ?? ownHarness;
-  const setSelectedHarness = (id: string) => { setOwnHarness(id); onHarnessChange?.(id); };
+  const [selectedHarness, setSelectedHarness] = useState('codex');
   const api = <T,>(path: string, action?: unknown) =>
     request<T>(
       `${apiRoot}/management/${path}`,

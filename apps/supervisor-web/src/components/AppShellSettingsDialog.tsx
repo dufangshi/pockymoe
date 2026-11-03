@@ -1,7 +1,6 @@
 import { NotificationSettings } from './NotificationSettings';
 import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
-import { FormDialog } from './FormDialog';
 import { useFontSize } from '../lib/fontSize';
 import { RuntimeManagement } from './RuntimeManagement';
 import { LocalPasscodeSettings } from './LocalPasscodeSettings';
@@ -16,24 +15,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useHostScope } from '../lib/hostCapabilities';
 
 import type {
-  AgentBackendDto,
-  AgentBackendIdDto,
-  ProviderHostConfigArchiveDto,
   WorkspaceSettingsDto,
 } from '../../../../packages/shared/src/index';
 import {
   ApiError,
-  applyProviderHostConfigArchive,
-  createProviderHostConfigArchive,
-  fetchAgentBackends,
-  fetchProviderHostFile,
-  fetchProviderHostConfigArchives,
   fetchWorkspaceSettings,
-  renameProviderHostConfigArchive,
-  updateProviderHostFile,
   updateWorkspaceSettings,
 } from '../lib/api';
-import { Select,
+import {
   ErrorMark,
   PathChip,
   PhoneHandChoice,
@@ -44,15 +33,7 @@ import { Select,
   type SettingsSection,
 } from '@pockymoe/thread-ui';
 import { useAppShellNav } from './AppShellNavContext';
-import {
-  apiErrorMessage,
-  defaultProviderHostFileState,
-  fallbackBackends,
-  fallbackManagementSchema,
-  formatArchiveDate,
-  normalizeBackendDescriptor,
-  themeOptions,
-} from './appShellNavigationModel';
+import { themeOptions } from './appShellNavigationModel';
 
 // The Rust Supervisor answers every plugin import with 501 (`import_plugin_unsupported`
 // in crates/supervisor/src/http.rs), so the form stays hidden until it can import.
@@ -106,40 +87,6 @@ export function AppShellSettingsDialog({
     message: null,
     error: null,
   });
-  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
-  const [files, setFiles] = useState<
-    Record<
-      string,
-      {
-        path: string;
-        exists: boolean;
-        originalContent: string;
-        draftContent: string;
-        loading: boolean;
-        saving: boolean;
-        error: string | null;
-        saveMessage: string | null;
-      }
-    >
-  >({});
-  const selectedFile = selectedFileName ? files[selectedFileName] : null;
-  const [archives, setArchives] = useState<ProviderHostConfigArchiveDto[]>([]);
-  const [backends, setBackends] = useState<AgentBackendDto[]>(fallbackBackends);
-  const [, setBackendState] = useState<{
-    loading: boolean;
-    saving: boolean;
-    error: string | null;
-    operatingProvider: AgentBackendIdDto | null;
-    operatingAction: 'install' | 'update' | null;
-    message: string | null;
-  }>({
-    loading: false,
-    saving: false,
-    error: null,
-    operatingProvider: null,
-    operatingAction: null,
-    message: null,
-  });
   const [workspaceSettings, setWorkspaceSettings] =
     useState<WorkspaceSettingsDto | null>(null);
   const [workspaceSettingsState, setWorkspaceSettingsState] = useState<{
@@ -155,31 +102,8 @@ export function AppShellSettingsDialog({
     message: null,
     error: null,
   });
-  const [archivesState, setArchivesState] = useState<{
-    loading: boolean;
-    creating: boolean;
-    applyingId: string | null;
-    renamingId: string | null;
-    renamingBusyId: string | null;
-    renameDraft: string;
-    message: string | null;
-    error: string | null;
-    /** Where the error belongs: the list, Create backup, or one archive's Apply or rename. */
-    failedAt: 'load' | 'create' | `apply:${string}` | `rename:${string}` | null;
-  }>({
-    loading: false,
-    creating: false,
-    applyingId: null,
-    renamingId: null,
-    renamingBusyId: null,
-    renameDraft: '',
-    message: null,
-    error: null,
-    failedAt: null,
-  });
   // Bumped by a Retry after a read that never arrived.
   const [workspaceRevision, setWorkspaceRevision] = useState(0);
-  const [archivesRevision, setArchivesRevision] = useState(0);
   const selectedThemeMode = shellNav?.themeMode ?? 'system';
   // The applied pack may support one color mode only; the stored choice stays.
   const fixedThemeMode = useThemeRegistry().fixedMode;
@@ -197,10 +121,6 @@ export function AppShellSettingsDialog({
         ?.focus();
     });
   }, []);
-  const closeFileEditor = useCallback(() => {
-    setSelectedFileName(null);
-  }, []);
-
   async function handleImportPlugin() {
     const manifestJson = pluginImportDraft.trim();
     if (!manifestJson || pluginImportState.busy) {
@@ -238,73 +158,12 @@ export function AppShellSettingsDialog({
   const [fontSize, setFontSize] = useFontSize();
   const autoCollapseCompletedTurns =
     shellNav?.autoCollapseCompletedTurns ?? true;
-  const [selectedBackend, setSelectedBackend] =
-    useState<AgentBackendIdDto>('codex');
   const enabledPluginCount = plugins.plugins.filter(
     (plugin) => plugin.enabled,
   ).length;
   const pluginCountLabel = plugins.loading
     ? translate("files.loading")
     : translate('files.pluginsEnabledCount', { value1: enabledPluginCount, value2: plugins.plugins.length });
-  const activeBackend =
-    backends.find((backend) => backend.provider === selectedBackend) ??
-    fallbackBackends.find((backend) => backend.provider === selectedBackend) ??
-    { ...fallbackBackends.find((backend) => backend.provider === 'acp')!, displayName: selectedBackend };
-  const activeManagementSchema =
-    activeBackend.managementSchema ??
-    fallbackManagementSchema(activeBackend.provider);
-  const editableFiles = activeManagementSchema.hostConfigFiles;
-
-  useEffect(() => {
-    if (!settingsVisible || section !== 'harnesses') {
-      return;
-    }
-
-    let cancelled = false;
-    setBackendState((current) => ({
-      ...current,
-      loading: true,
-      error: null,
-    }));
-
-    fetchAgentBackends()
-      .then((records) => {
-        if (cancelled) {
-          return;
-        }
-        const merged = [
-          ...records.map(normalizeBackendDescriptor),
-          ...fallbackBackends.filter(
-            (fallback) =>
-              !records.some((record) => record.provider === fallback.provider),
-          ),
-        ];
-        setBackends(merged);
-        setBackendState((current) => ({
-          ...current,
-          loading: false,
-        }));
-      })
-      .catch((error) => {
-        if (cancelled) {
-          return;
-        }
-        setBackends(fallbackBackends);
-        setBackendState((current) => ({
-          ...current,
-          loading: false,
-          error:
-            error instanceof ApiError
-              ? error.message
-              : translate("files.unableToLoadBackendSettings"),
-        }));
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [settingsVisible, section]);
-
   useEffect(() => {
     if (!settingsVisible || section !== 'workspace') {
       return;
@@ -351,162 +210,6 @@ export function AppShellSettingsDialog({
     };
   }, [settingsVisible, section, workspaceRevision]);
 
-  useEffect(() => {
-    if (
-      !settingsVisible ||
-      section !== 'harnesses' ||
-      !activeBackend.capabilities.management.hostConfigFiles
-    ) {
-      return;
-    }
-
-    let cancelled = false;
-
-    async function loadFiles() {
-      setFiles((current) => {
-        const next = { ...current };
-        for (const file of editableFiles) {
-          next[file.name] = {
-            ...defaultProviderHostFileState(file.name),
-            ...current[file.name],
-            loading: true,
-            saving: false,
-            error: null,
-            saveMessage: null,
-          };
-        }
-        return next;
-      });
-
-      const results = await Promise.allSettled(
-        editableFiles.map(async (file) => ({
-          name: file.name,
-          result: await fetchProviderHostFile(
-            activeBackend.provider,
-            file.name,
-          ),
-        })),
-      );
-
-      if (cancelled) {
-        return;
-      }
-
-      setFiles((current) => {
-        const next = { ...current };
-
-        for (const result of results) {
-          if (result.status === 'fulfilled') {
-            const { name, result: fileResult } = result.value;
-            next[name] = {
-              path: fileResult.path,
-              exists: fileResult.exists,
-              originalContent: fileResult.content,
-              draftContent: fileResult.content,
-              loading: false,
-              saving: false,
-              error: null,
-              saveMessage: null,
-            };
-            continue;
-          }
-
-          const message =
-            result.reason instanceof ApiError
-              ? result.reason.message
-              : translate("files.unableToLoadTheFile");
-          const failedName =
-            editableFiles[results.indexOf(result)]?.name ??
-            editableFiles[0]?.name;
-          if (!failedName) {
-            continue;
-          }
-          next[failedName] = {
-            ...defaultProviderHostFileState(failedName),
-            ...next[failedName],
-            loading: false,
-            saving: false,
-            error: message,
-            saveMessage: null,
-          };
-        }
-
-        return next;
-      });
-    }
-
-    void loadFiles();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    activeBackend.capabilities.management.hostConfigFiles,
-    activeBackend.provider,
-    editableFiles,
-    settingsVisible,
-    section,
-  ]);
-
-  useEffect(() => {
-    if (!settingsVisible || section !== 'harnesses' || !activeManagementSchema.configArchives) {
-      return;
-    }
-
-    let cancelled = false;
-
-    async function loadArchives() {
-      setArchivesState((current) => ({
-        ...current,
-        loading: true,
-        error: null,
-        failedAt: null,
-        message: null,
-      }));
-
-      try {
-        const results = await fetchProviderHostConfigArchives(
-          activeBackend.provider,
-        );
-        if (cancelled) {
-          return;
-        }
-
-        setArchives(results);
-        setArchivesState((current) => ({
-          ...current,
-          loading: false,
-        }));
-      } catch (error) {
-        if (cancelled) {
-          return;
-        }
-
-        setArchivesState((current) => ({
-          ...current,
-          loading: false,
-          error:
-            error instanceof ApiError
-              ? error.message
-              : translate("files.unableToLoadConfigArchives"),
-          failedAt: 'load',
-        }));
-      }
-    }
-
-    void loadArchives();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    activeBackend.provider,
-    activeManagementSchema.configArchives,
-    settingsVisible,
-    section,
-    archivesRevision,
-  ]);
-
   async function handleSaveWorkspaceSettings() {
     const devHome = workspaceSettingsState.devHomeDraft.trim();
     if (!devHome || workspaceSettingsState.saving) {
@@ -539,194 +242,6 @@ export function AppShellSettingsDialog({
           error instanceof ApiError
             ? error.message
             : translate("files.unableToSaveWorkspaceSettings"),
-      }));
-    }
-  }
-
-  async function handleSave(name: string) {
-    const fileState = files[name];
-    if (!fileState || fileState.saving) {
-      return;
-    }
-
-    setFiles((current) => ({
-      ...current,
-      [name]: {
-        ...defaultProviderHostFileState(name),
-        ...current[name],
-        saving: true,
-        error: null,
-        saveMessage: null,
-      },
-    }));
-
-    try {
-      const updated = await updateProviderHostFile(
-        activeBackend.provider,
-        name,
-        {
-          content: fileState.draftContent,
-        },
-      );
-
-      setFiles((current) => ({
-        ...current,
-        [name]: {
-          path: updated.path,
-          exists: updated.exists,
-          originalContent: updated.content,
-          draftContent: updated.content,
-          loading: false,
-          saving: false,
-          error: null,
-          saveMessage: translate("files.saved_c0ae8f"),
-        },
-      }));
-    } catch (error) {
-      setFiles((current) => ({
-        ...current,
-        [name]: {
-          ...defaultProviderHostFileState(name),
-          ...current[name],
-          saving: false,
-          error:
-            error instanceof ApiError
-              ? error.message
-              : translate("files.unableToSaveTheFile"),
-          saveMessage: null,
-        },
-      }));
-    }
-  }
-
-  async function handleCreateArchive() {
-    if (
-      archivesState.creating ||
-      archivesState.applyingId !== null ||
-      archivesState.renamingBusyId !== null
-    ) {
-      return;
-    }
-
-    setArchivesState((current) => ({
-      ...current,
-      creating: true,
-      message: null,
-      error: null,
-      failedAt: null,
-    }));
-
-    try {
-      const archive = await createProviderHostConfigArchive(
-        activeBackend.provider,
-      );
-      setArchives((current) => [archive, ...current]);
-      setArchivesState((current) => ({
-        ...current,
-        creating: false,
-        message: translate("files.backupCreated"),
-      }));
-    } catch (error) {
-      setArchivesState((current) => ({
-        ...current,
-        creating: false,
-        error:
-          error instanceof ApiError
-            ? error.message
-            : translate("files.unableToCreateAConfigBackup"),
-        failedAt: 'create',
-      }));
-    }
-  }
-
-  async function handleApplyArchive(archive: ProviderHostConfigArchiveDto) {
-    if (
-      archivesState.applyingId ||
-      archivesState.creating ||
-      archivesState.renamingBusyId !== null
-    ) {
-      return;
-    }
-
-    setArchivesState((current) => ({
-      ...current,
-      applyingId: archive.id,
-      message: null,
-      error: null,
-      failedAt: null,
-    }));
-
-    try {
-      const result = await applyProviderHostConfigArchive(
-        activeBackend.provider,
-        archive.id,
-      );
-      setArchivesState((current) => ({
-        ...current,
-        applyingId: null,
-        message:
-          result.status.state === 'ready'
-            ? translate("files.appliedAndRestarted", { value1: result.archive.label, value2: activeBackend.displayName })
-            : translate("files.appliedState", { value1: result.archive.label, value2: activeBackend.displayName, value3: result.status.state }),
-      }));
-    } catch (error) {
-      setArchivesState((current) => ({
-        ...current,
-        applyingId: null,
-        error:
-          error instanceof ApiError
-            ? error.message
-            : translate("files.unableToApplyTheConfigArchive"),
-        failedAt: `apply:${archive.id}`,
-      }));
-    }
-  }
-
-  async function handleRenameArchive(archive: ProviderHostConfigArchiveDto) {
-    const label = archivesState.renameDraft.trim();
-    if (
-      !label ||
-      archivesState.renamingId !== archive.id ||
-      archivesState.renamingBusyId !== null ||
-      archivesState.creating ||
-      archivesState.applyingId !== null
-    ) {
-      return;
-    }
-
-    setArchivesState((current) => ({
-      ...current,
-      renamingBusyId: archive.id,
-      message: null,
-      error: null,
-      failedAt: null,
-    }));
-
-    try {
-      const updated = await renameProviderHostConfigArchive(
-        activeBackend.provider,
-        archive.id,
-        { label },
-      );
-      setArchives((current) =>
-        current.map((entry) => (entry.id === archive.id ? updated : entry)),
-      );
-      setArchivesState((current) => ({
-        ...current,
-        renamingId: null,
-        renamingBusyId: null,
-        renameDraft: '',
-        message: translate("files.backupRenamed"),
-      }));
-    } catch (error) {
-      setArchivesState((current) => ({
-        ...current,
-        renamingBusyId: null,
-        error:
-          error instanceof ApiError
-            ? error.message
-            : translate("files.unableToRenameTheConfigBackup"),
-        failedAt: `rename:${archive.id}`,
       }));
     }
   }
@@ -1116,285 +631,7 @@ export function AppShellSettingsDialog({
           {section === 'resources' && <HarnessResourceSettings />}
           {section === 'device' && !hostScope && <LocalPasscodeSettings />}
           {(section === 'device' || section === 'harnesses') && (
-            <RuntimeManagement view={section === 'device' && hostScope ? 'supervisor' : section} selectedHarness={selectedBackend} onHarnessChange={(id) => { setSelectedBackend(id as AgentBackendIdDto); setSelectedFileName(null); }} />
-          )}
-
-          {section === 'harnesses' && (
-            <>
-              <section className="py-5">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h3 className="text-sm font-semibold text-[var(--theme-fg)]">
-                      {translate("files.providerHostFiles")}</h3>
-                    <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
-                      {activeBackend.displayName} {translate("files.exposesTheseEditableFilesThroughItsBackend")}</p>
-                  </div>
-                </div>
-                <div className="mt-3 divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
-                  {editableFiles.length === 0 && <p className="py-4 text-xs text-[var(--theme-fg-muted)]">{translate("settings.noHostFiles")}</p>}
-                  {editableFiles.map((file) => {
-                    const state = files[file.name] ?? {
-                      path: file.name,
-                      exists: false,
-                      originalContent: '',
-                      draftContent: '',
-                      loading: false,
-                      saving: false,
-                      error: null,
-                      saveMessage: null,
-                    };
-                    const dirty = state.draftContent !== state.originalContent;
-
-                    return (
-                      // The row is a button, so a failure's mark sits beside it, not in it.
-                      <div key={file.name} className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => setSelectedFileName(file.name)}
-                          className="block min-h-11 min-w-0 flex-1 px-2 py-3 text-left transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)]"
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium text-[var(--theme-fg)]">
-                                {file.label}
-                              </p>
-                              <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
-                                {file.description}
-                              </p>
-                            </div>
-                            <div className="shrink-0">
-                              {state.loading ? (
-                                <span className="text-[11px] font-medium text-[var(--theme-fg-muted)]">
-                                  {translate("files.loading_8f26c6")}</span>
-                              ) : dirty ? (
-                                <span className="text-[11px] font-medium text-[var(--theme-accent-strong)]">
-                                  {translate("files.unsaved")}</span>
-                              ) : state.exists ? (
-                                <span className="text-[11px] font-medium text-[var(--status-success-fg)]">
-                                  {translate("files.ready")}</span>
-                              ) : (
-                                <span className="text-[11px] font-medium text-[var(--status-info-fg)]">
-                                  {translate("files.new")}</span>
-                              )}
-                            </div>
-                          </div>
-                        </button>
-                        {/* The open editor shows its own. */}
-                        {state.error && selectedFileName !== file.name ? (
-                          <ErrorMark message={state.error} className="mr-2" />
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                  {editableFiles.length === 0 ? (
-                    <p className="py-4 text-xs text-[var(--theme-fg-muted)]">
-                      {translate("files.thisBackendDoesNotExposeEditableHost")}</p>
-                  ) : null}
-                </div>
-              </section>
-
-              {activeManagementSchema.configArchives ? (
-                <details className="settings-detail">
-                  <summary>{translate("files.configurationBackups")}</summary>
-                  <div>
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="min-w-0">
-                        <h3 className="text-sm font-semibold text-[var(--theme-fg)]">
-                          {translate("files.configArchives")}</h3>
-                        <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
-                          {translate("files.backupTheSelectedBackendHostFilesThen")}</p>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => void handleCreateArchive()}
-                          disabled={
-                            archivesState.creating ||
-                            archivesState.applyingId !== null ||
-                            archivesState.renamingBusyId !== null
-                          }
-                          className="host-secondary-button min-h-11 shrink-0 rounded-md border px-3 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {archivesState.creating
-                            ? translate("files.creating")
-                            : translate("files.createBackup")}
-                        </button>
-                        {archivesState.error && archivesState.failedAt === 'create' ? (
-                          <ErrorMark message={archivesState.error} onRetry={() => void handleCreateArchive()} />
-                        ) : null}
-                      </div>
-                    </div>
-                    {archivesState.message ? (
-                      <p
-                        className="mt-3 rounded-md bg-[var(--status-success-bg)] px-3 py-2 text-xs text-[var(--status-success-fg)]"
-                        role="status"
-                      >
-                        {archivesState.message}
-                      </p>
-                    ) : null}
-                    <div className="mt-3 divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
-                      {archivesState.loading ? (
-                        <p
-                          className="py-4 text-xs text-[var(--theme-fg-muted)]"
-                          role="status"
-                        >
-                          {translate("files.loadingBackups")}</p>
-                      ) : archivesState.error && archivesState.failedAt === 'load' && archives.length === 0 ? (
-                        // The list never arrived: not "no backups yet", but a mark with Retry.
-                        <p className="flex items-center gap-1 py-4 text-xs text-[var(--theme-fg-muted)]">
-                          {translate("files.unavailable")}
-                          <ErrorMark message={archivesState.error} onRetry={() => setArchivesRevision((value) => value + 1)} />
-                        </p>
-                      ) : archives.length === 0 ? (
-                        <p className="py-4 text-xs text-[var(--theme-fg-muted)]">
-                          {translate("files.noConfigBackupsYet")}</p>
-                      ) : (
-                        archives.map((archive) => {
-                          const renaming =
-                            archivesState.renamingId === archive.id;
-                          return (
-                            <div key={archive.id} className="py-3">
-                              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                                <div className="min-w-0">
-                                  {renaming ? (
-                                    <div className="flex max-w-xl flex-col gap-2 sm:flex-row">
-                                      <input
-                                        aria-label={translate("files.rename", { value1: archive.label })}
-                                        disabled={
-                                          archivesState.renamingBusyId ===
-                                          archive.id
-                                        }
-                                        value={archivesState.renameDraft}
-                                        onChange={(event) =>
-                                          setArchivesState((current) => ({
-                                            ...current,
-                                            renameDraft: event.target.value,
-                                            error: null,
-                                            failedAt: null,
-                                            message: null,
-                                          }))
-                                        }
-                                        className="relay-input min-h-11 min-w-0 flex-1 rounded-md disabled:cursor-wait disabled:opacity-60"
-                                      />
-                                      <button
-                                        type="button"
-                                        aria-label={translate("files.saveArchiveName", { value1: archive.label })}
-                                        onClick={() =>
-                                          void handleRenameArchive(archive)
-                                        }
-                                        disabled={
-                                          archivesState.renamingBusyId ===
-                                            archive.id ||
-                                          !archivesState.renameDraft.trim()
-                                        }
-                                        className="relay-button-primary min-h-11 rounded-md px-3"
-                                      >
-                                        {archivesState.renamingBusyId ===
-                                        archive.id
-                                          ? translate("files.saving")
-                                          : translate("files.save")}
-                                      </button>
-                                      {archivesState.error && archivesState.failedAt === `rename:${archive.id}` ? (
-                                        <span className="flex shrink-0 items-center">
-                                          <ErrorMark message={archivesState.error} onRetry={() => void handleRenameArchive(archive)} />
-                                        </span>
-                                      ) : null}
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          setArchivesState((current) => ({
-                                            ...current,
-                                            renamingId: null,
-                                            renameDraft: '',
-                                          }))
-                                        }
-                                        disabled={
-                                          archivesState.renamingBusyId ===
-                                          archive.id
-                                        }
-                                        className="host-secondary-button min-h-11 rounded-md border px-3 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50"
-                                      >
-                                        {translate("files.cancel")}</button>
-                                    </div>
-                                  ) : (
-                                    <p className="truncate text-sm font-medium text-[var(--theme-fg)]">
-                                      {archive.label}
-                                    </p>
-                                  )}
-                                  <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[var(--theme-fg-muted)]">
-                                    <span>
-                                      {translate("files.created")}{' '}
-                                      {formatArchiveDate(archive.createdAt)}
-                                    </span>
-                                    {editableFiles.map((file) => (
-                                      <span
-                                        key={file.name}
-                                        className="font-mono"
-                                      >
-                                        {file.name}:{' '}
-                                        {archive.files[
-                                          file.name as keyof typeof archive.files
-                                        ]?.exists
-                                          ? translate("files.saved")
-                                          : translate("files.missing")}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                                <div className="flex shrink-0 flex-wrap gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setArchivesState((current) => ({
-                                        ...current,
-                                        renamingId: archive.id,
-                                        renameDraft: archive.label,
-                                        message: null,
-                                        error: null,
-                                        failedAt: null,
-                                      }))
-                                    }
-                                    disabled={
-                                      renaming ||
-                                      archivesState.creating ||
-                                      archivesState.renamingBusyId !== null ||
-                                      archivesState.applyingId !== null
-                                    }
-                                    className="host-secondary-button min-h-11 rounded-md border px-3 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    {translate("files.rename_d3f4cb")}</button>
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      void handleApplyArchive(archive)
-                                    }
-                                    disabled={
-                                      archivesState.applyingId !== null ||
-                                      archivesState.creating ||
-                                      archivesState.renamingBusyId !== null
-                                    }
-                                    className="host-secondary-button min-h-11 rounded-md border px-3 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    {archivesState.applyingId === archive.id
-                                      ? translate("files.applying")
-                                      : translate("files.apply")}
-                                  </button>
-                                  {archivesState.error && archivesState.failedAt === `apply:${archive.id}` ? (
-                                    <span className="flex min-h-11 items-center">
-                                      <ErrorMark message={archivesState.error} onRetry={() => void handleApplyArchive(archive)} />
-                                    </span>
-                                  ) : null}
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-                    </div>
-                  </div>
-                </details>
-              ) : null}
-            </>
+            <RuntimeManagement view={section === 'device' && hostScope ? 'supervisor' : section} />
           )}
         </div>
       </div>
@@ -1408,50 +645,6 @@ export function AppShellSettingsDialog({
           settingsContentNode
         ) : (
           <SettingsPanels sections={appSettingsSections()} />
-        )}
-        {selectedFileName && selectedFile && (
-          <FormDialog
-            title={selectedFileName}
-            onClose={closeFileEditor}
-            busy={selectedFile.saving}
-          >
-            <p className="break-all font-mono text-xs text-[var(--theme-fg-muted)]">
-              {selectedFile.path}
-            </p>
-            <textarea
-              aria-label={translate("files.edit", { value1: selectedFileName })}
-              disabled={selectedFile.loading || selectedFile.saving}
-              spellCheck={false}
-              className="host-input my-3 min-h-64 w-full rounded-lg border p-3 font-mono text-xs"
-              value={selectedFile.draftContent}
-              onChange={(e) =>
-                setFiles((current) => ({
-                  ...current,
-                  [selectedFileName]: {
-                    ...current[selectedFileName]!,
-                    draftContent: e.target.value,
-                  },
-                }))
-              }
-            />
-            {selectedFile.saveMessage && (
-              <p role="status">{selectedFile.saveMessage}</p>
-            )}
-            <div className="flex items-center gap-2">
-              <button
-                className="relay-button-primary min-h-10 flex-1"
-                disabled={
-                  selectedFile.loading ||
-                  selectedFile.saving ||
-                  selectedFile.draftContent === selectedFile.originalContent
-                }
-                onClick={() => void handleSave(selectedFileName)}
-              >
-                {translate("files.saveFile")}</button>
-              {/* No Retry here: after a failed read it would write an empty file. */}
-              {selectedFile.error && <ErrorMark message={selectedFile.error} />}
-            </div>
-          </FormDialog>
         )}
       </div>
     );

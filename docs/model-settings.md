@@ -1,8 +1,9 @@
 # Model and reasoning effort
 
 A thread's model and reasoning effort are chosen in the composer's model menu.
-Model menu → Harness settings opens workspace permissions and the harness
-capability/plugin snapshot on desktop and phone, including Treer scoped surfaces.
+Model menu → Harness settings opens the harness plugin snapshot and DSH panel
+on desktop and phone, including Treer scoped surfaces. It has no access-level
+control or capability notice.
 Both model selectors use `GET /api/threads/{id}/models` and write through
 `PATCH /api/threads/{id}/settings`.
 
@@ -22,7 +23,7 @@ Haiku has none). The runtime therefore learns each model's levels:
   from a probe anyway.
 
 A model not learned yet keeps the current model's levels. The Web fetches the
-list again when the model menu or the session settings open and after a switch,
+list again when the model menu or Harness settings opens and after a switch,
 so learned levels show up there.
 
 ## Changing them during a turn

@@ -1,4 +1,3 @@
-import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import type {
   AgentBackendDto,
@@ -10,7 +9,6 @@ import {
   agentBackendMetadata,
   defaultAgentBackendId,
 } from '../../../../packages/shared/src/index';
-import { ApiError } from '../lib/api';
 import type { AgentBackendId, ThemeMode } from './AppShellNavContext';
 
 function menuItemClassName(active = false) {
@@ -192,51 +190,10 @@ function fallbackManagementSchema(provider: AgentBackendId) {
   );
 }
 
-function formatArchiveDate(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleString(getLocale(), {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function apiErrorMessage(error: ApiError) {
-  const details = error.payload.details;
-  const detailText =
-    typeof details?.stderr === 'string' && details.stderr.trim()
-      ? details.stderr.trim()
-      : typeof details?.stdout === 'string' && details.stdout.trim()
-        ? details.stdout.trim()
-        : null;
-  return detailText ? `${error.message}\n${detailText}` : error.message;
-}
-
-function defaultProviderHostFileState(name: string) {
-  return {
-    path: name,
-    exists: false,
-    originalContent: '',
-    draftContent: '',
-    loading: false,
-    saving: false,
-    error: null as string | null,
-    saveMessage: null as string | null,
-  };
-}
-
 export {
-  apiErrorMessage,
-  defaultProviderHostFileState,
   emptyManagementSchema,
   fallbackBackends,
   fallbackManagementSchema,
-  formatArchiveDate,
   menuItemClassName,
   normalizeBackendDescriptor,
   themeOptions,

@@ -473,9 +473,9 @@ administration controls are hidden. Denied requests with
 `thread_scope_forbidden` have a clear fallback message.
 
 Settings stay available with two tabs. The composer’s model key selects model
-and effort. Its **Harness settings** menu entry opens workspace permissions and
-harness capabilities. The thread’s ⋯ menu opens **Session details** in a
-secondary window. **Preferences** keeps what is stored in this browser: language, theme and theme packs, color mode, text size,
+and effort. Its **Harness settings** menu entry retains the harness plugin
+snapshot and DSH panel. Access levels and the Session details window are not
+exposed in the UI. **Preferences** keeps what is stored in this browser: language, theme and theme packs, color mode, text size,
 phone dock and hand, timeline folding and status summaries. It omits model
 pricing, the message-shortcut setting (saved to a relay account) and the tour.
 **Device** holds only hub maintenance: the running and latest version, **Check

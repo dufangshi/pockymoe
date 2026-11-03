@@ -42,7 +42,6 @@ export interface DshHarnessInfo {
   compositionError?: string | null;
   runModes?: DshRunMode[];
   features?: Partial<Record<'runModes' | 'console' | 'commands', boolean>>;
-  permissionPresets: string[];
   plugins: DshPlugin[];
   bundles: DshBundle[];
   providers: { id: string; name: string; declared: boolean }[];
@@ -54,7 +53,6 @@ export interface DshHarnessInfo {
     projections: {
       agentPreset?: string | null;
       plan?: { active: boolean; pending: boolean } | null;
-      permissions?: { currentValue: string } | null;
       goal?: {
         goal: { objective: string; phase: string };
         roundsStarted: number;
@@ -142,8 +140,8 @@ export function dshRunModeHint(mode: DshRunMode | undefined) {
   return known ? translate(known[1]) : mode.description ?? '';
 }
 
-// Mirrors the runtime: thread controls own plan mode, sandbox, goals and compaction.
-const THREAD_COMMANDS = new Set(['plan', 'permission', 'goal', 'compact']);
+// Mirrors the runtime: thread controls own plan mode, goals and compaction.
+const THREAD_COMMANDS = new Set(['plan', 'goal', 'compact']);
 // Web-only commands whose result is a browser action (the log download).
 const CONSOLE_COMMANDS = new Set(['export']);
 // With DSH's default telemetry mode, feedback uploads the session history.
@@ -228,7 +226,6 @@ function failureTarget(action: DshPanelAction) {
 }
 
 const SELECTS: Record<string, (info: DshHarnessInfo) => string[]> = {
-  'permission.defaultPreset': (info) => info.permissionPresets,
   'llm-deepseek.reasoningEffort': () => ['off', 'low', 'high', 'max'],
 };
 
@@ -374,7 +371,7 @@ export function DshHarnessPanel({
   const runMode = projections.agentPreset
     ?? runModes.find((mode) => mode.isDefault)?.id ?? '';
   const runModeLocked = info.session?.presetLocked !== false;
-  const commands = info.session?.commands ?? [];
+  const commands = (info.session?.commands ?? []).filter((command) => command.name !== 'permission');
   const markFor = (at: Failure['at'][], target?: string) =>
     failure && at.includes(failure.at) && (target === undefined || failure.target === target)
       ? <ErrorMark message={failure.message} />
@@ -425,8 +422,6 @@ export function DshHarnessPanel({
       <section aria-label={translate('settings.dshSession')} className="space-y-1">
         <h4 className="font-semibold">{translate('settings.dshSession')}</h4>
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-          <dt>{translate('settings.dshPermissionPreset')}</dt>
-          <dd>{projections.permissions?.currentValue ?? translate('settings.dshNone')}</dd>
           <dt>{translate('settings.dshPlanMode')}</dt>
           <dd>
             {translate(plan?.active ? 'settings.dshOn' : 'settings.dshOff')}
@@ -536,7 +531,7 @@ export function DshHarnessPanel({
         </p>
         {settings ? (
           <div className="space-y-2" key={formKey}>
-            {settings.flatMap((view) =>
+            {settings.filter((view) => view.ns !== 'permission').flatMap((view) =>
               view.fields.map((field) => {
                 const id = `${view.ns}.${field.key}`;
                 const choices = SELECTS[id]?.(info);
