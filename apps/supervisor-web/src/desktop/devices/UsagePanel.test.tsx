@@ -61,7 +61,9 @@ it('expands device models before workspaces and explains missing activity model 
   const view = render(panel([source]));
   fireEvent.click(screen.getByRole('button', { name: 'Device a · 1,000 Tokens' }));
   const details = document.querySelector('.pd-device-details')!;
-  expect(details.querySelector('h4')).toHaveTextContent('Model');
+  expect(details.querySelectorAll('h4')).toHaveLength(1);
+  expect(details.querySelector('h4')).toHaveTextContent('Workspace');
+  expect(details.querySelector('.pd-device-models thead th')).toHaveTextContent('Model');
   expect(details.querySelector('.pd-device-models')).toHaveTextContent('grok-4.7');
   expect(details.querySelector('.pd-device-models')).toHaveTextContent('—');
   view.unmount();

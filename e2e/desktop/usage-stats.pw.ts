@@ -26,7 +26,8 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
     await expect(row).toHaveAttribute('aria-expanded', 'true');
     expect(Math.abs((await row.boundingBox())!.y - before)).toBeLessThanOrEqual(1);
     const details = row.locator('..').locator('.pd-device-details');
-    await expect(details.getByRole('heading', { name: '模型', exact: true })).toBeVisible();
+    await expect(details.getByRole('heading', { name: '模型', exact: true })).toHaveCount(0);
+    await expect(details.getByRole('columnheader', { name: '模型', exact: true })).toHaveCount(1);
     await expect(details.getByRole('heading', { name: '工作区', exact: true })).toBeVisible();
     await expect(details.getByRole('rowheader', { name: 'grok-4.7', exact: true })).toHaveCount(1);
     expect(await details.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
