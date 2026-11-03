@@ -27,7 +27,7 @@ prepare through the `prepareUpdate` host command. Approval returns
 `{ ok: true, data: { prepared: true } }`; native requires that marker so older
 pages that acknowledge unknown commands cannot bypass the guard. A window with unsent composer
 drafts or unsaved workspace documents uses the existing confirmation dialog to
-show both counts, including attachment-only drafts. Cancellation aborts the
+name every affected conversation and show both counts, including attachment-only drafts. The primary confirmation is “Update and restart?” with Update / Cancel; its lead message names the unsent content that will be lost. Long title lists scroll inside the existing dialog. Cancellation aborts the
 update. An empty window needs no confirmation. The native client owns installation
 and relaunch, and rejects requests without an already-verified update.
 

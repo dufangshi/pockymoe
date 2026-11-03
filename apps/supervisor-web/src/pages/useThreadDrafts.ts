@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 import type { PromptAttachmentUpload } from '../lib/api';
 interface Draft {
   prompt: string;
@@ -9,6 +9,17 @@ const empty: Draft = { prompt: '', attachments: [] };
     device remounts the workbench, and a half-written prompt must not vanish.
     Memory only (this tab), never storage. */
 const kept = new Map<string, Draft>();
+const titles = new Map<string, string>();
+export function registerThreadDraftTitle(key: string, title: string | undefined): void {
+  if (key && title?.trim()) titles.set(key, title.trim());
+}
+/** Keep names with retained drafts, without persisting either names or content. */
+export function useThreadDraftTitle(key: string, title: string | undefined): void {
+  useEffect(() => { registerThreadDraftTitle(key, title); return () => { if (!kept.has(key)) titles.delete(key); }; }, [key, title]);
+}
+export function getUnsentThreadDraftTitles(): (string | undefined)[] {
+  return [...kept.keys()].map(key => titles.get(key));
+}
 let keptRevision = 0;
 export function getThreadDraftRevision(): number { return keptRevision; }
 export function getUnsentThreadDraftCounts(): { drafts: number; attachments: number } {
@@ -20,7 +31,7 @@ function keep(key: string, draft: Draft | undefined) {
   else if (kept.get(key) !== draft) { kept.set(key, draft); keptRevision++; }
 }
 /** For tests: forget every kept draft. */
-export function resetKeptDrafts() { kept.clear(); keptRevision++; }
+export function resetKeptDrafts() { kept.clear(); titles.clear(); keptRevision++; }
 function useDraftBinding(
   key: string,
   drafts: Record<string, Draft>,

@@ -84,17 +84,20 @@ test('native preflight counts drafts and dirty documents, and cancellation or co
   await page.evaluate(async () => {
     const path = '/src/desktop/prepareUpdate.ts';
     const { prepareClientUpdate } = await import(/* @vite-ignore */ path);
-    const dependencies = { draftRevision: () => 1, draftCounts: () => ({ drafts: 2, attachments: 3 }), documentCount: () => 1, prepareDocuments: () => () => true };
+    const dependencies = { draftRevision: () => 1, draftCounts: () => ({ drafts: 2, attachments: 3 }), draftTitles: () => ['修复登录', '检查附件'], documentCount: () => 1, prepareDocuments: () => () => true };
     const state = window as unknown as { beginUpdateConfirmation(): void; updatePreparation?: { ok: boolean } };
     state.beginUpdateConfirmation = () => { delete state.updatePreparation; void prepareClientUpdate(false, dependencies).then((result: { ok: boolean }) => { state.updatePreparation = result; }); };
     state.beginUpdateConfirmation();
   });
-  const dialog = page.getByRole('dialog', { name: '重启以更新 Pockymoe？', exact: true });
-  await expect(dialog).toContainText('2 个未发送的对话草稿（3 个附件）和 1 个未保存的工作区文档');
-  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '更新并重启？', exact: true });
+  await expect(dialog).toContainText('未发送的内容会丢失：修复登录和检查附件');
+  await expect(dialog).toContainText('草稿 2 个，附件 3 个；未保存的工作区文档 1 个。');
+  await expect(dialog.getByRole('button', { name: '更新', exact: true })).toHaveClass(/ui-action-primary/);
+  await expect(dialog.getByRole('button', { name: '取消', exact: true })).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect.poll(() => page.evaluate(() => (window as unknown as { updatePreparation?: { ok: boolean } }).updatePreparation?.ok)).toBe(false);
   await page.evaluate(() => (window as unknown as { beginUpdateConfirmation(): void }).beginUpdateConfirmation());
   await expect(dialog).toBeVisible();
-  await dialog.getByRole('button', { name: '丢弃并更新', exact: true }).click();
+  await dialog.getByRole('button', { name: '更新', exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { updatePreparation?: { ok: boolean; data?: { prepared?: boolean } } }).updatePreparation?.data?.prepared)).toBe(true);
 });

@@ -9,7 +9,7 @@ import { SupervisorHeartbeat, SUPERVISOR_HEARTBEAT_TIMEOUT_MS } from '../lib/sup
 import { appUrl } from '../lib/webBase';
 import { workbenchUrls } from '../lib/workbenchUrls';
 import { HostFeatureGate, useHostScope, UnscopedOnly } from '../lib/hostCapabilities';
-import { useThreadDrafts } from './useThreadDrafts';
+import { useThreadDrafts, useThreadDraftTitle } from './useThreadDrafts';
 import { useWorkbenchReference } from './useWorkbenchReference';
 import { WorkbenchThreadPicker } from '../components/WorkbenchThreadPicker';
 import { WorkbenchTerminal, terminalTargetKey, type TerminalOpenRequest } from '../components/WorkbenchTerminal';
@@ -893,6 +893,8 @@ export function ThreadDetailPage() {
   const referenceShown = Boolean(referenceId) && splitShown(workbenchPresentation.value);
   // A closed split keeps its reference for reopening but must not keep polling it.
   const referenceController = useWorkbenchReference(referenceDevice, referenceShown ? referenceId : null, relayRouteDeviceId ?? 'local', referenceShown);
+  useThreadDraftTitle(routeKey, detail && detail.thread.id === id ? detail.thread.title : threads.find(thread => thread.id === id)?.title);
+  useThreadDraftTitle(referenceId ? `${referenceDevice}:${referenceId}` : '', referenceController.detail && referenceController.detail.thread.id === referenceId ? referenceController.detail.thread.title : threads.find(thread => thread.id === referenceId)?.title);
   useEffect(() => {
     if (!hostScope || !referenceId || !referenceController.unavailable) return;
     void workbenchNavigation.onThreadRemoved(`local:${referenceId}`);

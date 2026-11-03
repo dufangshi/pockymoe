@@ -64,3 +64,13 @@ it('counts unsent conversations and attachments, including retained and attachme
   expect(getUnsentThreadDraftCounts()).toEqual({ drafts: 2, attachments: 1 }); expect(getThreadDraftRevision()).toBeGreaterThan(before);
   hook.unmount(); expect(getUnsentThreadDraftCounts()).toEqual({ drafts: 2, attachments: 1 });
 });
+
+it('retains actual titles with pending primary/reference drafts without persisting content', async () => {
+  const { useThreadDraftTitle, getUnsentThreadDraftTitles, getUnsentThreadDraftCounts, registerThreadDraftTitle } = await import('./useThreadDrafts');
+  const hook = renderHook(() => { useThreadDraftTitle('device:a', 'Fix login'); useThreadDraftTitle('other:b', 'Review attachment'); return useThreadDrafts('device:a', 'other:b'); });
+  const attachment = { file: new File(['draft'], 'draft.txt'), kind: 'file' as const, clientId: 'file', originalName: 'draft.txt', placeholder: '[FILE draft.txt]' };
+  act(() => { hook.result.current[1]({ prompt: 'Unsent', attachments: [] }); hook.result.current[3]({ prompt: '', attachments: [attachment] }); });
+  expect(getUnsentThreadDraftTitles()).toEqual(['Fix login', 'Review attachment']);
+  hook.unmount(); registerThreadDraftTitle('device:a', 'Renamed login task');
+  expect(getUnsentThreadDraftTitles()).toEqual(['Renamed login task', 'Review attachment']); expect(getUnsentThreadDraftCounts()).toEqual({ drafts: 2, attachments: 1 });
+});

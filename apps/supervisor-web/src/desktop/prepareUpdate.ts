@@ -1,15 +1,16 @@
 import { confirmAsync, getDirtyWorkspaceDocumentCount, prepareWorkspaceDocumentUnloadApproval, revokeWorkspaceDocumentUnloadApproval } from '@pockymoe/thread-ui';
-import { translate } from '@pockymoe/thread-ui/i18n';
-import { getThreadDraftRevision, getUnsentThreadDraftCounts } from '../pages/useThreadDrafts';
+import { getLocale, translate } from '@pockymoe/thread-ui/i18n';
+import { getThreadDraftRevision, getUnsentThreadDraftCounts, getUnsentThreadDraftTitles } from '../pages/useThreadDrafts';
 import type { HostCommandResult } from './host';
 
 export interface UpdatePreparationDependencies {
   draftRevision(): number;
   draftCounts(): { drafts: number; attachments: number };
+  draftTitles?(): (string | undefined)[];
   documentCount(): number;
   prepareDocuments(): () => boolean;
 }
-const defaults: UpdatePreparationDependencies = { draftRevision: getThreadDraftRevision, draftCounts: getUnsentThreadDraftCounts, documentCount: getDirtyWorkspaceDocumentCount, prepareDocuments: prepareWorkspaceDocumentUnloadApproval };
+const defaults: UpdatePreparationDependencies = { draftRevision: getThreadDraftRevision, draftCounts: getUnsentThreadDraftCounts, draftTitles: getUnsentThreadDraftTitles, documentCount: getDirtyWorkspaceDocumentCount, prepareDocuments: prepareWorkspaceDocumentUnloadApproval };
 let approvedDraftRevision: { revision: number; read(): number } | null = null;
 let generation = 0;
 let activeConfirmation: AbortController | null = null;
@@ -44,7 +45,14 @@ export function prepareClientUpdate(cancel = false, dependencies: UpdatePreparat
   const controller = new AbortController(); activeConfirmation = controller;
   const work = async (): Promise<HostCommandResult> => {
     if (counts.drafts || documents) {
-      const accepted = await confirmAsync({ title: translate('desktopShell.updatePendingTitle'), description: translate('desktopShell.updatePendingDescription', { ...counts, documents }), confirmLabel: translate('desktopShell.updateDiscardConfirm'), signal: controller.signal });
+      const titles = (dependencies.draftTitles?.() ?? []).map(title => title || translate('workbench.splitUntitled'));
+      const description = counts.drafts
+        ? `${translate('desktopShell.updatePendingDescription', { titles: new Intl.ListFormat(getLocale(), { style: 'long', type: 'conjunction' }).format(titles.length ? titles : [translate('workbench.splitUntitled')]) })}
+${translate('desktopShell.updatePendingCounts', { ...counts, documents })}`
+        : translate('desktopShell.updatePendingDocuments', { documents });
+      // The update action uses primary tone; the text explicitly names the work
+      // that will be lost, while Cancel remains the initial focused control.
+      const accepted = await confirmAsync({ title: translate('desktopShell.updatePendingTitle'), description, confirmLabel: translate('desktopShell.updateDiscardConfirm'), tone: 'primary', signal: controller.signal });
       if (!accepted) return cancelled();
     }
     if (current !== generation || draftRevision !== dependencies.draftRevision() || !approveDocuments()) return cancelled();
