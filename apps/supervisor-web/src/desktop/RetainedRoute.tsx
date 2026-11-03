@@ -1,10 +1,8 @@
 import { startTransition, useContext, useLayoutEffect, useRef, useState } from 'react';
 import { UNSAFE_LocationContext, useLocation, useOutlet } from 'react-router-dom';
-import { HostCapabilitiesProvider, useHostScope } from '../lib/hostCapabilities';
-import { TourProvider } from '../components/onboarding/TourProvider';
+import { HostCapabilitiesProvider } from '../lib/hostCapabilities';
 import { HostScopeRouteGate } from '../components/HostScopeRouteGate';
 import type { ReactNode } from 'react';
-function ScopedTourProvider({ children }: { children: ReactNode }) { return useHostScope() ? children : <TourProvider>{children}</TourProvider>; }
 import { AppShellSettingsDialog } from '../components/AppShellSettingsDialog';
 import { prepareDesktopThread } from '../pages/ThreadDetailPage';
 import { relayDeviceIdFromPath, threadIdFromPath } from '../lib/relayRoutes';
@@ -35,9 +33,9 @@ export function RetainedDesktopRoute() {
     return () => { active = false; };
   }, [location.key, location.pathname, overlay]);
   return <>{shown ? <RetainedRouteActiveContext.Provider value={!overlay && location.pathname === shown.path}><UNSAFE_LocationContext.Provider value={shown.locationContext}>
-    <HostCapabilitiesProvider scope={shown.scope}><ScopedTourProvider>
+    <HostCapabilitiesProvider scope={shown.scope}>
       <RoutePaintReady path={shown.path} visit={shown}><HostScopeRouteGate>{shown.outlet}</HostScopeRouteGate></RoutePaintReady>
-    </ScopedTourProvider></HostCapabilitiesProvider>
+    </HostCapabilitiesProvider>
   </UNSAFE_LocationContext.Provider></RetainedRouteActiveContext.Provider> : null}<AppShellSettingsDialog /></>;
 }
 

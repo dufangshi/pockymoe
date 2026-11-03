@@ -24,10 +24,10 @@
 .desktop-activity-row .matter-thread-copy { flex: 1; }
 .desktop-activity-time { font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 10px; color: var(--theme-fg-muted); }
 .desktop-activity-request { font-size: 10px; white-space: nowrap; color: var(--status-warning-fg); }
-.desktop-activity-family > summary { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 8px; font-size: 12px; cursor: pointer; list-style: none; }
-.desktop-activity-family > summary > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.desktop-activity-family[open] > summary > svg { transform: rotate(90deg); }
-.desktop-activity-family .desktop-activity-row { margin-left: 12px; }
+.desktop-activity-family-row > a { padding-left: 2px; }
+.desktop-activity-family-toggle { position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 20px; margin-left: 4px; align-self: stretch; color: var(--theme-fg-muted); background: none; border: 0; cursor: pointer; }
+@media (hover: hover) { .desktop-activity-family-toggle:hover { color: var(--theme-fg); } }
+.desktop-activity-family > .desktop-activity-row:not(.desktop-activity-family-row) { margin-left: 12px; }
 .desktop-quicklook-layer { position: fixed; inset: 0; z-index: 90; }
 .desktop-quicklook.thread-ui-shell { position: fixed; width: 420px; max-width: calc(100vw - 24px); max-height: calc(100svh - 24px); height: auto; min-height: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--theme-border-strong); border-radius: 12px; background: var(--theme-panel); color: var(--theme-fg); box-shadow: var(--theme-shadow); overflow: hidden; font-size: 13px; }
 .desktop-quicklook header { display: flex; align-items: center; gap: 10px; padding: 12px 12px 8px 16px; }
@@ -91,3 +91,18 @@
 :root:root [data-desktop-surface] .desktop-client-update-button:disabled { opacity: 1; cursor: progress; }
 :root:root [data-desktop-surface] .desktop-client-update-button:focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 1px; }
 :root:root [data-desktop-surface] .desktop-client-update-failure { width: 40px; height: 40px; display: grid; place-items: center; }
+[data-desktop-surface] .desktop-route > [data-page="account"] { height: 100%; overflow-y: auto; }
+
+/* Global navigation keeps its positions across host pages. Contextual tools
+   follow Explorer; they never push shared navigation or the footer around. */
+[data-desktop-surface] .matter-rail > :is(button, a) { flex-shrink: 0; order: 6; }
+[data-desktop-surface] .matter-rail > .matter-brand { order: 0; }
+[data-desktop-surface] .matter-rail > [data-desktop-map-link] { order: 1; }
+[data-desktop-surface] .matter-rail > button:has([data-icon=devices]) { order: 2; }
+[data-desktop-surface] .matter-rail > button:has([data-icon=chat]) { order: 3; }
+[data-desktop-surface] .matter-rail > button:has([data-icon=explorer]) { order: 4; }
+[data-desktop-surface] .matter-rail > button:has([data-icon=terminal]) { order: 5; }
+[data-desktop-surface] .matter-rail > .matter-rail-bottom { order: 100; }
+/* The global footer has one account entry on every page. Device monitoring is
+   available on Devices cards; the tutorial is in the account menu. */
+[data-desktop-surface] .matter-rail-bottom :is(.device-monitor-button, .pm-tour-launcher) { display: none; }

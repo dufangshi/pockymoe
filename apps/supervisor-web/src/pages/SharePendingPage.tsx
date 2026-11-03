@@ -1,3 +1,4 @@
+import { devicesHref } from '../lib/devicesRoute';
 import { CopyButton, ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import type { RelayAccessGrantDto, RelayPortalSummaryDto, RelaySessionShareDto } from '@pockymoe/shared';
@@ -11,7 +12,7 @@ import { threadHref, threadsHref, workspacesHref } from '../lib/relayRoutes';
 import './share-pending.css';
 
 const POLL_MS = 4000;
-const SHARING_HREF = '/relay-devices?tab=shared';
+const sharingHref = () => devicesHref('?tab=shared');
 
 type Received = { kind: 'share'; row: RelaySessionShareDto } | { kind: 'grant'; row: RelayAccessGrantDto };
 
@@ -113,7 +114,7 @@ export function SharePendingPage() {
 
   return (
     <div className="product-page !max-w-2xl" data-page="share-pending">
-      <ProductHeader title={translate('sharing.tabSharing')} backHref={SHARING_HREF} backLabel={translate('sharing.pendingBack')} />
+      <ProductHeader title={translate('sharing.tabSharing')} backHref={sharingHref()} backLabel={translate('sharing.pendingBack')} />
       <main className="share-pending">
         {received === undefined && !loadError ? (
           <p className="share-pending-status" role="status">{translate('sharing.loadingShares')}</p>
@@ -125,7 +126,7 @@ export function SharePendingPage() {
         ) : gone || !row ? (
           <section className="share-pending-card">
             <p>{translate('sharing.pendingGone', { owner: translate('sharing.pendingSomeone') })}</p>
-            <Link className="share-pending-link" to={SHARING_HREF}>{translate('sharing.pendingBack')}</Link>
+            <Link className="share-pending-link" to={sharingHref()}>{translate('sharing.pendingBack')}</Link>
           </section>
         ) : (
           <section className="share-pending-card" aria-labelledby="share-pending-title">

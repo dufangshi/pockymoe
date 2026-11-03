@@ -1,3 +1,5 @@
+import { RelayUserMenu } from '../components/RelayUserMenu';
+import { relayModeActive } from '../lib/api';
 import { useSyncExternalStore, useMemo, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { FileInput, LayoutDashboard, Plus, Settings } from 'lucide-react';
@@ -6,6 +8,7 @@ import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useDesktopSurface, useDesktopWorkbench } from './context';
 import { useDesktopSelector } from './data';
 import { useWorkbenchNavigation } from '../pages/useWorkbenchNavigation';
+import { appUrl } from '../lib/webBase';
 import { workbenchUrls } from '../lib/workbenchUrls';
 import { currentRelayScopedPath, workspacesHref } from '../lib/relayRoutes';
 import { useAppShellNav } from '../components/AppShellNavContext';
@@ -37,11 +40,11 @@ export function WorkspacesFrame({ deviceId, children, sharedOnly }: { deviceId: 
     <button onClick={surface?.openMap}><LayoutDashboard size={16} aria-hidden />{translate('workbench.threadMap')}</button>
   </div>;
   return <div className="thread-ui-shell thread-ui-viewport-constrained desktop-workspaces-shell" data-theme-effective={shell?.effectiveTheme} data-theme-mode={shell?.themeMode}>
-    <MatterWorkbench title={translate('files.workspaces')} options={workbenchUrls({ ...navigation, ...desktop, workspaceControlsEnabled: false, emptyWorkspace: true, activeView: 'chat', terminalEnabled: false, onViewChange: () => {}, onSearch: () => {}, onNavigate: navigate,
+    <MatterWorkbench homeHref={appUrl('/')} title={translate('files.workspaces')} options={workbenchUrls({ ...navigation, ...desktop, workspaceControlsEnabled: false, emptyWorkspace: true, activeView: 'chat', terminalEnabled: false, onViewChange: () => {}, onSearch: () => {}, onNavigate: navigate,
       sidebarHeader: <div className="desktop-workspace-device"><DeviceStateMark state={device?.connected ? 'online' : 'offline'} showLabel={false} label={translate(device?.connected ? 'desktopDevices.online' : 'desktopDevices.offline')} /><Select aria-label={translate('desktopDevices.device')} value={deviceId ?? ''} options={index.devices.map(device => ({ value: device.id, label: device.name }))} onValueChange={id => navigate(workspacesHref(id))} /></div>,
       sidebarLeading: <>{actions}{desktop.sidebarLeading}</>,
       renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={navigation.currentKey} onFavorite={navigation.onToggleThreadFavorite} onRenamed={navigation.onThreadRenamed} onRemoved={navigation.onThreadRemoved} onNavigate={navigate} />,
-    })} settings={<button aria-label={translate('desktopShell.settings')} onClick={shell?.openSettings}><Settings data-icon="settings" /></button>} newThread={null} actions={null} threadMenu={null} connection={null} explorer={null} revealExplorer={0}>
+    })} settings={relayModeActive() ? <RelayUserMenu rail /> : <button aria-label={translate('desktopShell.settings')} onClick={shell?.openSettings}><Settings data-icon="settings" /></button>} newThread={null} actions={null} threadMenu={null} connection={null} explorer={null} revealExplorer={0}>
       <div className="desktop-workspaces-scroll">{children}</div>
     </MatterWorkbench>
   </div>;

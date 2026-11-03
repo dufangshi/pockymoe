@@ -4,6 +4,7 @@ import { ErrorMark } from '@pockymoe/thread-ui';
 import { fetchRelaySession } from '../lib/api';
 import { DesktopIndexStore, DesktopStoreContext } from './data';
 import { desktopHost, type DesktopCapabilities } from './host';
+import { TourProvider } from '../components/onboarding/TourProvider';
 import { DesktopShell } from './DesktopShell';
 
 export default function DesktopEntry({ children }: { children: ReactNode }) {
@@ -24,5 +25,5 @@ export default function DesktopEntry({ children }: { children: ReactNode }) {
     return () => { cancelled = true; store?.stop(); };
   }, []);
   if (!ready) return error ? <div className="p-6"><ErrorMark message={error} /></div> : null;
-  return <DesktopStoreContext.Provider value={ready.store}><DesktopShell capabilities={ready.capabilities}>{children}</DesktopShell></DesktopStoreContext.Provider>;
+  return <DesktopStoreContext.Provider value={ready.store}><TourProvider><DesktopShell capabilities={ready.capabilities}>{children}</DesktopShell></TourProvider></DesktopStoreContext.Provider>;
 }

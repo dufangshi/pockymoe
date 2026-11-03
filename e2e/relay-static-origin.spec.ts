@@ -147,7 +147,7 @@ test('separate static origin registers with a relay cookie and loads devices', a
   const recovery = await group.evaluate((element) => [...element.querySelectorAll('span')].map((span) => span.textContent?.trim()).join('-'));
   await page.getByLabel('Type the last 4 characters to confirm', { exact: true }).fill(recovery.slice(-4));
   await page.getByRole('button', { name: /^I.ve saved it$/ }).click();
-  await expect(page.getByRole('heading', { name: 'Security', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Sign-in and security', exact: true })).toBeVisible();
   const userId = (await relayApi('/relay/auth/session')).data.user.id;
   await context.addInitScript((id) => localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, `relay:${id}`])}`,
     JSON.stringify({ welcomeDismissed: true, completed: [], resume: {} })), userId);

@@ -54,3 +54,13 @@ it('keeps a draft when the page that edits it remounts (another device, another 
   second.unmount();
   expect(renderHook(() => useThreadDrafts('dev:a')).result.current[0].prompt).toBe('');
 });
+
+it('counts unsent conversations and attachments, including retained and attachment-only drafts', async () => {
+  const { getUnsentThreadDraftCounts, getThreadDraftRevision } = await import('./useThreadDrafts');
+  const before = getThreadDraftRevision();
+  const hook = renderHook(() => useThreadDrafts('text', 'file'));
+  const attachment = { file: new File(['draft'], 'draft.txt'), kind: 'file' as const, clientId: 'draft', originalName: 'draft.txt', placeholder: '[FILE draft.txt]' };
+  act(() => { hook.result.current[1]({ prompt: 'Unsent', attachments: [] }); hook.result.current[3]({ prompt: '', attachments: [attachment] }); });
+  expect(getUnsentThreadDraftCounts()).toEqual({ drafts: 2, attachments: 1 }); expect(getThreadDraftRevision()).toBeGreaterThan(before);
+  hook.unmount(); expect(getUnsentThreadDraftCounts()).toEqual({ drafts: 2, attachments: 1 });
+});

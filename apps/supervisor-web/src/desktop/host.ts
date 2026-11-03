@@ -101,6 +101,7 @@ export interface ActivityRecent {
 }
 
 export type HostCommand =
+  | { id: string; type: 'prepareUpdate'; cancel?: boolean }
   | { id: string; type: 'back' }
   | { id: string; type: 'liveActivityToken'; token: string }
   | { id: string; type: 'navigate'; path: string }
@@ -176,6 +177,7 @@ export interface UpdateState {
   version?: string;
   error?: string;
   releaseUrl?: string;
+  retryAllowed?: boolean;
 }
 
 /** Exposed as window.pockymoeHost to the configured webOrigin's top frame only. */

@@ -1,3 +1,4 @@
+import { devicesHref } from './lib/devicesRoute';
 import { useHostSurface } from './desktop/surface';
 import { MobileHostBoundary, MobileActivity } from './mobile/MobileHost';
 import { useSessionRevision } from './lib/useSessionRevision';
@@ -58,7 +59,7 @@ import { RelayAccountPage } from './pages/RelayAccountPage';
 import { SharePendingPage } from './pages/SharePendingPage';
 import { onSharePending, SHARE_PENDING_PATH, sharePendingHref } from './lib/sharePending';
 import { RelayAdminPage } from './pages/RelayAdminPage';
-import { RelayDevicesPage } from './pages/RelayDevicesPage';
+import { DevicesEntryRoute } from './pages/DevicesEntryRoute';
 import { RelayGuidePage } from './pages/RelayGuidePage';
 import { HelpPage } from './pages/HelpPage';
 import { RelayHomePage } from './pages/RelayHomePage';
@@ -206,7 +207,7 @@ function routeDocumentTitle(pathname: string) {
   if (pathname === '/relay-account') {
     return translate("workbench.account");
   }
-  if (pathname === '/relay-devices') {
+  if (pathname === '/relay-devices' || pathname.startsWith('/desktop/devices')) {
     return translate("workbench.devicesAndSharedSessions");
   }
   if (pathname === SHARE_PENDING_PATH) {
@@ -690,7 +691,7 @@ function SupervisorRoutes({
         <Route path="/workspaces" element={<WorkspacesPage />} />
         <Route path="/workspaces/new" element={<WorkspaceNewPage />} />
         <Route path="/relay-account" element={<RelayAccountPage />} />
-        <Route path="/relay-devices" element={<RelayDevicesPage />} />
+        <Route path="/relay-devices" element={<DevicesEntryRoute />} />
         <Route path={SHARE_PENDING_PATH} element={<SharePendingPage />} />
         <Route path="/relay-settings" element={<RelaySettingsPage />} />
         <Route path="/threads" element={<ThreadsPage />} />
@@ -707,7 +708,7 @@ function SupervisorRoutes({
           path="*"
           element={
             <Navigate
-              to={relayModeActive() ? '/relay-devices' : '/workspaces'}
+              to={relayModeActive() ? devicesHref() : '/workspaces'}
               replace
             />
           }

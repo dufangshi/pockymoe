@@ -1,3 +1,6 @@
+import { useDesktopSurface } from '../desktop/context';
+import { RelayUserMenu } from './RelayUserMenu';
+import { relayModeActive } from '../lib/api';
 import { useHostScope } from '../lib/hostCapabilities';
 import {
   ThreadCards,
@@ -39,6 +42,7 @@ export function ThreadWorkspaceLayout({
   ...props
 }: ThreadWorkspaceLayoutProps) {
   const navigate = useNavigate();
+  const desktopSurface = useDesktopSurface();
   const hostScope = useHostScope();
   const location = useLocation();
   const deviceId = relayDeviceIdFromPath(location.pathname) ?? 'local';
@@ -52,9 +56,10 @@ export function ThreadWorkspaceLayout({
     <SharedThreadWorkspaceLayout
       {...props}
       {...(props.workbench ? { workbench: workbenchUrls(props.workbench) } : {})}
+      {...(relayModeActive() && !hostScope ? { renderRailSettings: (open: () => void) => <RelayUserMenu rail onSettings={open} /> } : {})}
       restrictedNavigation={Boolean(hostScope)}
       deviceMonitor={hostScope ? null : <><DeviceMonitor key={deviceId} /><TourLauncherButton /></>}
-      workspaceReturnHref={appUrl(props.workspaceReturnHref ?? currentWorkspacesHref())}
+      workspaceReturnHref={appUrl(desktopSurface ? '/' : props.workspaceReturnHref ?? currentWorkspacesHref())}
       settingsSections={props.settingsSections ?? appSettingsSections()}
       {...(effectiveTheme ? { effectiveTheme } : {})}
       {...(themeMode ? { themeMode } : {})}

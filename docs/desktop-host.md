@@ -22,12 +22,17 @@ Only `ready`, `installing` and install-error states with a version show a rail
 button. The native client downloads and verifies files before exposing `ready`;
 the Web never handles downloaded files, signatures or file paths. Clicking
 “Update to {version}” calls `updates.install()` without arguments and immediately
-shows the existing busy spinner. There is no confirmation dialog. The native
-client owns installation and relaunch, and rejects requests without an
-already-verified update.
+shows the existing busy spinner. The native client asks every trusted window to
+prepare through the `prepareUpdate` host command. Approval returns
+`{ ok: true, data: { prepared: true } }`; native requires that marker so older
+pages that acknowledge unknown commands cannot bypass the guard. A window with unsent composer
+drafts or unsaved workspace documents uses the existing confirmation dialog to
+show both counts, including attachment-only drafts. Cancellation aborts the
+update. An empty window needs no confirmation. The native client owns installation
+and relaunch, and rejects requests without an already-verified update.
 
-The control sits in the rail's bottom host-action slot above the existing bottom
-controls. Narrow desktop windows expose the same host action in the navigation
+The control sits in the rail's bottom host-action slot immediately above the
+account avatar. Narrow desktop windows expose the same host action in the navigation
 drawer. Its 40px target contains a static 32px accent circle and a 16px ArrowUp;
 all colours come from the current theme. A failed installation retains the
 button and uses `ErrorMark` for the reason, Retry and Go to download. Download
@@ -36,7 +41,15 @@ recovery accepts only the client's canonical GitHub release-tag page.
 A missing service, an unadvertised feature, an idle check or an ongoing background
 download never adds an icon. Clients without a valid signed release can offer
 manual downloads through their own Preferences; the page does not invent a
-ready state.
+ready state. Unsigned or invalidly signed offers do not create a link or an icon.
+`retryAllowed: false` keeps the icon and Retry disabled after the native attempt
+limit; the verified release page remains available for manual recovery.
+
+`prepareUpdate { cancel: true }` revokes earlier consent, including dismissing an
+open confirmation if another window refused. Consent covers only the draft and
+document revisions shown in that window. Synthetic native unload preflight does
+not consume it; a real browser unload does. New edits veto closing again. Native
+installation starts only after all windows have actually closed.
 
 ## Composer drafts
 

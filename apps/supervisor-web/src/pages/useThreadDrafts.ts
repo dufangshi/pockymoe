@@ -9,13 +9,18 @@ const empty: Draft = { prompt: '', attachments: [] };
     device remounts the workbench, and a half-written prompt must not vanish.
     Memory only (this tab), never storage. */
 const kept = new Map<string, Draft>();
+let keptRevision = 0;
+export function getThreadDraftRevision(): number { return keptRevision; }
+export function getUnsentThreadDraftCounts(): { drafts: number; attachments: number } {
+  return { drafts: kept.size, attachments: [...kept.values()].reduce((count, draft) => count + draft.attachments.length, 0) };
+}
 function keep(key: string, draft: Draft | undefined) {
   if (!key) return;
-  if (!draft || (!draft.prompt && !draft.attachments.length)) kept.delete(key);
-  else kept.set(key, draft);
+  if (!draft || (!draft.prompt && !draft.attachments.length)) { if (kept.delete(key)) keptRevision++; }
+  else if (kept.get(key) !== draft) { kept.set(key, draft); keptRevision++; }
 }
 /** For tests: forget every kept draft. */
-export function resetKeptDrafts() { kept.clear(); }
+export function resetKeptDrafts() { kept.clear(); keptRevision++; }
 function useDraftBinding(
   key: string,
   drafts: Record<string, Draft>,

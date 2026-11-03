@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { seed } from './fixtures';
 const evidence = process.env.DESKTOP_EVIDENCE_DIR ?? join(tmpdir(), 'pockymoe-client-updates');
-const release = { version: '0.2.1', releaseUrl: 'https://github.com/dufangshi/pockymoe-app/releases/tag/v0.2.1' };
+const release = { version: '0.3.0', releaseUrl: 'https://github.com/dufangshi/pockymoe-app/releases/tag/v0.3.0' };
 async function update(page: Page, status: string, error?: string) {
   await page.evaluate(state => window.dispatchEvent(new CustomEvent('desktopMock:update', { detail: state })), { ...release, status, ...(error ? { error } : {}) });
 }
@@ -23,7 +23,7 @@ async function setup(page: Page, pack = 'classic', dark = false, width = 1440, e
     await expect(page.getByRole('dialog', { name: '更多操作', exact: true })).toBeHidden();
   }
 }
-const icon = (page: Page) => page.getByRole('button', { name: '更新到 0.2.1', exact: true });
+const icon = (page: Page) => page.getByRole('button', { name: '更新到 0.3.0', exact: true });
 
 test('older hosts keep the client update control hidden', async ({ page }) => {
   await setup(page, 'classic', false, 1440, false); await update(page, 'ready'); await expect(icon(page)).toHaveCount(0);
@@ -48,7 +48,7 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
     const bounds = await icon(page).boundingBox(); expect(bounds!.width).toBeCloseTo(40, 1); expect(bounds!.height).toBeCloseTo(40, 1);
     const circle = icon(page).locator('.desktop-client-update-circle'); const dot = await circle.boundingBox(); expect(dot!.width).toBeCloseTo(32, 1); expect(dot!.height).toBeCloseTo(32, 1);
     const glyph = await icon(page).locator('svg').boundingBox(); expect(glyph!.width).toBeCloseTo(16, 1); expect(glyph!.height).toBeCloseTo(16, 1);
-    await expect(icon(page)).toHaveAttribute('title', '更新到 0.2.1');
+    await expect(icon(page)).toHaveAttribute('title', '更新到 0.3.0');
     const contrast = await circle.evaluate(element => {
       const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
       const context = canvas.getContext('2d')!;
@@ -78,3 +78,23 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
     await page.getByRole('dialog').screenshot({ path: join(evidence, `${pack}-${dark ? 'dark' : 'light'}-${width}-error-bubble.png`) });
   });
 }
+
+test('native preflight counts drafts and dirty documents, and cancellation or consent uses the existing confirmation', async ({ page }) => {
+  await setup(page);
+  await page.evaluate(async () => {
+    const path = '/src/desktop/prepareUpdate.ts';
+    const { prepareClientUpdate } = await import(/* @vite-ignore */ path);
+    const dependencies = { draftRevision: () => 1, draftCounts: () => ({ drafts: 2, attachments: 3 }), documentCount: () => 1, prepareDocuments: () => () => true };
+    const state = window as unknown as { beginUpdateConfirmation(): void; updatePreparation?: { ok: boolean } };
+    state.beginUpdateConfirmation = () => { delete state.updatePreparation; void prepareClientUpdate(false, dependencies).then((result: { ok: boolean }) => { state.updatePreparation = result; }); };
+    state.beginUpdateConfirmation();
+  });
+  const dialog = page.getByRole('dialog', { name: '重启以更新 Pockymoe？', exact: true });
+  await expect(dialog).toContainText('2 个未发送的对话草稿（3 个附件）和 1 个未保存的工作区文档');
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { updatePreparation?: { ok: boolean } }).updatePreparation?.ok)).toBe(false);
+  await page.evaluate(() => (window as unknown as { beginUpdateConfirmation(): void }).beginUpdateConfirmation());
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: '丢弃并更新', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { updatePreparation?: { ok: boolean; data?: { prepared?: boolean } } }).updatePreparation?.data?.prepared)).toBe(true);
+});

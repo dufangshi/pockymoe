@@ -1,3 +1,4 @@
+import { devicesHref } from '../lib/devicesRoute';
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
@@ -63,7 +64,7 @@ export function MobileActivity({ children }: { children: ReactNode }) {
       const index = store;
       commands = host.onCommand(command => {
         if (command.type === 'back' || command.type === 'liveActivityToken') return;
-        void handleHostCommand(command, { store: index, navigate, openMap: () => navigate('/'), revealInMap: () => navigate('/'), newThread: () => navigate('/relay-devices'), openUpstreams: () => navigate('/relay-settings?tab=connections') }).then(result => host.commandResult(command.id, result));
+        void handleHostCommand(command, { store: index, navigate, openMap: () => navigate('/'), revealInMap: () => navigate('/'), newThread: () => navigate(devicesHref()), openUpstreams: () => navigate('/relay-settings?tab=connections') }).then(result => host.commandResult(command.id, result));
       });
     })().catch(() => { /* Device/index retries are owned by the shared store. */ });
     return () => { cancelled = true; stop(); commands(); store?.stop(); };

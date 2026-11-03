@@ -175,3 +175,8 @@ it('signals only newly arriving foreground requests, once per request', async ()
   notify(); await vi.advanceTimersByTimeAsync(250); expect(playHaptic).toHaveBeenCalledTimes(1);
   stop(); visibility.mockRestore(); vi.useRealTimers();
 });
+
+it('routes native update preparation and aborts through the page guard', async () => {
+  expect(await handleHostCommand({ id: 'prepare', type: 'prepareUpdate' }, dependencies())).toEqual({ ok: true, data: { prepared: true } });
+  expect(await handleHostCommand({ id: 'abort', type: 'prepareUpdate', cancel: true }, dependencies())).toEqual({ ok: true });
+});

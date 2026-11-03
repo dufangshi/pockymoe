@@ -1,3 +1,4 @@
+import { devicesHref } from '../lib/devicesRoute';
 import { openOAuth } from '../mobile/auth';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
@@ -21,7 +22,7 @@ import { AccountTrustError, changeAccountPassword, createVault, openVault, regis
 import { ApiError, enableRelayMode, fetchRelaySession, relayLogin, relayLogout } from '../lib/api';
 import { accountRefusal, providerLabel, readOAuthReturn, withoutOAuthReturn, type OAuthReturn, type SignInNotice } from '../lib/signInOutcome';
 
-const DEFAULT_RETURN_TO = '/relay-devices';
+
 const RETURN_TO_STORAGE_KEY = 'remote-codex-relay-return-to';
 
 function errorMessage(caught: unknown, fallback = translate('auth.unableToAuthenticateWithTheRelay')) {
@@ -54,7 +55,7 @@ function resolveReturnTo(search: string, state: unknown) {
   const queryValue = safeReturnTo(new URLSearchParams(search).get('returnTo'));
   const stateValue = state && typeof state === 'object' && 'returnTo' in state
     ? safeReturnTo((state as { returnTo?: unknown }).returnTo) : null;
-  return queryValue ?? stateValue ?? storedReturnTo() ?? DEFAULT_RETURN_TO;
+  return queryValue ?? stateValue ?? storedReturnTo() ?? devicesHref();
 }
 
 function rememberReturnTo(returnTo: string) {
