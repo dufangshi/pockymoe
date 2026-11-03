@@ -3,7 +3,7 @@ import type { RelayPortalSummaryDto, ThreadDetailDto, ThreadDto, ThreadEventEnve
 import { mergeRows } from './merge';
 import { DesktopIndexStore, type DesktopDataAdapter } from './store';
 import { plainSummary, summarizeThread, unread } from './types';
-import { attentionFromActivity, buildActivityItems, buildActivitySnapshot } from './activity';
+import { buildActivityItems, buildActivitySnapshot } from './activity';
 vi.mock('../../lib/api', () => ({ connectSupervisorEvents: vi.fn(), deviceRequest: vi.fn(), fetchRelayPortal: vi.fn(), request: vi.fn() }));
 const thread = (id: string, patch: Partial<ThreadDto> = {}): ThreadDto => ({ id, workspaceId: 'w', title: id, provider: 'codex', model: 'gpt', status: 'idle', isPinned: false, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-30T00:00:00Z', lastTurnStartedAt: null, lastTurnCompletedAt: null, activeTurnId: null, summaryText: null, lastError: null, ...patch } as ThreadDto);
 function setup() {
@@ -81,7 +81,6 @@ describe('desktop cached index', () => {
     store.applyEvent('a', { type: 'thread.turn.failed', threadId: 'same', timestamp: '2026-11-01T01:01:00Z', payload: { turnId: 'failed', error: '<b>Failure</b>\nsecret second line' } });
     const items = buildActivityItems(store.getSnapshot(), Date.parse('2026-11-01T02:00:00Z'));
     expect(items.map(item => item.state)).toEqual(['needsInput', 'failed']);
-    expect(attentionFromActivity(items).map(item => item.key)).toEqual(items.map(item => item.key));
     expect(items[1]?.resultSummary).toBe('Failure');
     expect(buildActivitySnapshot(store.getSnapshot(), 'a:same', false).focusedThreadKey).toBeNull(); store.stop();
   });

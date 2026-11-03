@@ -15,9 +15,7 @@ import { appPathname, appUrl } from '../lib/webBase';
 import { relayFetchInit, relayUrl } from '../lib/relayOrigin';
 import { threadHref } from '../lib/relayRoutes';
 import { useDesktopSelector, useDesktopStore, failed, unread } from './data';
-import { attentionFromActivity, buildActivityItems } from './data/activity';
 import { useDesktopSurface, useDesktopWorkbench } from './context';
-import { resolveRequest } from './integration';
 import { QuickLook } from './QuickLook';
 import { deviceActions } from './devices/deviceActions';
 import DevicesPage from './devices';
@@ -28,7 +26,7 @@ export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen }: { vis
   const index = useDesktopSelector(index => index); const store = useDesktopStore();
   const shell = useAppShellNav(); const navigate = useNavigate();
   const [scope, setScope] = useState<MapScope>('all'); const [filter, setFilter] = useState('');
-  const [quickLook, setQuickLook] = useState<string | null>(null); const [error, setError] = useState('');
+  const [quickLook, setQuickLook] = useState<string | null>(null);
   const [renameSupported, setRenameSupported] = useState<ReadonlySet<string>>(new Set());
   const [searchOpen, setSearchOpen] = useState(false);
   const first = index.devices.find(device => device.connected) ?? index.devices[0];
@@ -60,7 +58,6 @@ export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen }: { vis
   // translate in mapDevice reads the shared locale store.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [index.activity, index.devices, index.threads, index.workspaces, locale]);
-  const attention = useMemo(() => attentionFromActivity(buildActivityItems(index)), [index]);
   const deviceIds = index.devices.map(device => device.id).sort().join(',');
   useEffect(() => {
     if (!visible) { setSearchOpen(false); setQuickLook(null); return; }
@@ -83,16 +80,12 @@ export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen }: { vis
   // translate reads the shared locale store; menu labels must refresh with it.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   })), [index, navigate, renameSupported, revealDevice, locale]);
-  const decide = useCallback((key: string, requestId: string, decision: 'approve' | 'deny') => {
-    const thread = store.getSnapshot().threads.find(thread => thread.key === key); if (!thread) return;
-    void resolveRequest(thread.deviceId, thread.id, requestId, decision, { store }).catch(error => setError(error instanceof Error ? error.message : String(error)));
-  }, [store]);
   return <div className="desktop-map-scene thread-ui-shell thread-ui-viewport-constrained" hidden={!visible} inert={!visible} data-theme-effective={shell?.effectiveTheme} data-theme-mode={shell?.themeMode}>
     <MatterWorkbench title={translate('desktopShell.map')} homeHref={appUrl('/')} options={workbenchUrls({ ...navigation, ...desktopWorkbench, workspaceControlsEnabled: false, emptyWorkspace: !visible, activeView: 'chat', terminalEnabled: false, onViewChange: () => {}, onNavigate: navigate, onSearch: () => setSearchOpen(true), searchOpen,
       search: <ConversationSearch threadId={firstThreads[0]?.id ?? ''} workspaceId={firstThreads[0]?.workspaceId ?? ''} deviceLabel={first?.name ?? translate('desktopShell.devices')} deviceId={first?.id} initialScope="device" allowGlobal turns={[]} open={searchOpen} onOpen={() => setSearchOpen(true)} onClose={() => setSearchOpen(false)} onSelect={(_turns, turnId, itemId, query) => { if (firstThreads[0]) { setSearchOpen(false); navigate(`${threadHref(firstThreads[0].id, first?.id)}?${new URLSearchParams({ turnId, itemId, query })}`); } }} onNavigate={(match, query) => { setSearchOpen(false); navigate(`${threadHref(match.threadId, first?.id)}?${new URLSearchParams({ query, ...(match.turnId ? { turnId: match.turnId } : {}), ...(match.itemId ? { itemId: match.itemId } : {}) })}`); }} />,
       renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={navigation.currentKey} onFavorite={navigation.onToggleThreadFavorite} onRenamed={navigation.onThreadRenamed} onRemoved={navigation.onThreadRemoved} onNavigate={navigate} />,
     })} settings={relayModeActive() ? <RelayUserMenu rail /> : <button aria-label={translate('desktopShell.settings')} onClick={shell?.openSettings}><Settings data-icon="settings" /></button>} newThread={<button aria-label={translate('desktopShell.newThread')} onClick={() => first && navigate(`/devices/${encodeURIComponent(first.id)}/threads/new`)}><Plus data-icon="new-thread" /></button>} actions={null} threadMenu={null} connection={<span className="desktop-online-count">{translate('desktopShell.onlineCount', { count: formatNumber(index.devices.filter(device => device.connected).length) })}</span>} explorer={null} revealExplorer={0}>
-      <div className="desktop-map-persistent" hidden={!mapVisible} inert={!mapVisible}><ThreadMap devices={devices} presentation="page" stableLayout scope={scope} onScopeChange={setScope} filterText={filter} onFilterChange={setFilter} attention={attention} deviceExtras={extras} revealKey={revealKey} pulseKeys={index.pulseKeys} onQuickLook={setQuickLook} onRequestDecision={decide} onOpen={thread => onOpen(thread.key)} onNavigate={href => navigate(appPathname(href))} onRetry={id => { void store.refreshDevice(id); }} actions={error ? <ErrorMark message={error} retryLabel={translate('desktopShell.dismissNotice')} onRetry={() => setError('')} /> : index.error ? <ErrorMark message={index.error} onRetry={() => { void store.refresh(); }} /> : undefined} /></div>
+      <div className="desktop-map-persistent" hidden={!mapVisible} inert={!mapVisible}><ThreadMap devices={devices} presentation="page" stableLayout scope={scope} onScopeChange={setScope} filterText={filter} onFilterChange={setFilter} deviceExtras={extras} revealKey={revealKey} pulseKeys={index.pulseKeys} onQuickLook={setQuickLook} onOpen={thread => onOpen(thread.key)} onNavigate={href => navigate(appPathname(href))} onRetry={id => { void store.refreshDevice(id); }} actions={index.error ? <ErrorMark message={index.error} onRetry={() => { void store.refresh(); }} /> : undefined} /></div>
       {visible && !mapVisible ? <div className="desktop-map-route"><DevicesPage onRevealDevice={revealDevice} /></div> : null}
       {quickLook && mapVisible ? <QuickLook threadKey={quickLook} onClose={() => setQuickLook(null)} onOpen={(key, newWindow) => { setQuickLook(null); onOpen(key, newWindow); }} /> : null}
     </MatterWorkbench>
