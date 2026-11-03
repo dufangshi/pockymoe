@@ -24,10 +24,10 @@
 .desktop-activity-row .matter-thread-copy { flex: 1; }
 .desktop-activity-time { font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 10px; color: var(--theme-fg-muted); }
 .desktop-activity-request { font-size: 10px; white-space: nowrap; color: var(--status-warning-fg); }
-.desktop-activity-family > summary { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 5px 8px; font-size: 12px; cursor: pointer; list-style: none; }
-.desktop-activity-family > summary > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.desktop-activity-family[open] > summary > svg { transform: rotate(90deg); }
-.desktop-activity-family .desktop-activity-row { margin-left: 12px; }
+.desktop-activity-family-row > a { padding-left: 2px; }
+.desktop-activity-family-toggle { position: relative; flex: none; display: inline-flex; align-items: center; justify-content: center; width: 20px; margin-left: 4px; align-self: stretch; color: var(--theme-fg-muted); background: none; border: 0; cursor: pointer; }
+@media (hover: hover) { .desktop-activity-family-toggle:hover { color: var(--theme-fg); } }
+.desktop-activity-family > .desktop-activity-row:not(.desktop-activity-family-row) { margin-left: 12px; }
 .desktop-quicklook-layer { position: fixed; inset: 0; z-index: 90; }
 .desktop-quicklook.thread-ui-shell { position: fixed; width: 420px; max-width: calc(100vw - 24px); max-height: calc(100svh - 24px); height: auto; min-height: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--theme-border-strong); border-radius: 12px; background: var(--theme-panel); color: var(--theme-fg); box-shadow: var(--theme-shadow); overflow: hidden; font-size: 13px; }
 .desktop-quicklook header { display: flex; align-items: center; gap: 10px; padding: 12px 12px 8px 16px; }
