@@ -1,3 +1,5 @@
+import { devicesHref } from '../lib/devicesRoute';
+import { useAccountShareAttention } from './sharedAccess/useAccountShareAttention';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ErrorMark, useMenuKeyboard } from '@pockymoe/thread-ui';
 import { CircleHelp, LogOut, Settings, UserRound, MonitorSmartphone } from 'lucide-react';
@@ -42,12 +44,17 @@ function menuErrorMessage(caught: unknown) {
 export function RelayUserMenu({
   className = '',
   menuAlign = 'left',
+  rail = false,
+  onSettings,
 }: {
   className?: string;
+  rail?: boolean;
+  onSettings?: (() => void) | undefined;
   menuAlign?: 'left' | 'right';
 }) {
   useI18n();
   const shellNav = useAppShellNav();
+  const { attention } = useAccountShareAttention();
   const tour = useTour();
   const navigate = useNavigate();
   const location = useLocation();
@@ -110,10 +117,16 @@ export function RelayUserMenu({
       }
       // Browser chrome can resize/offset the visual viewport without moving the
       // document. Share the same viewport coordinates as other anchored panels.
-      setPosition(popoverPosition(anchor, {
+      const nextPosition = popoverPosition(anchor, {
         width: 256,
         height: menu.scrollHeight + menu.offsetHeight - menu.clientHeight,
-      }, view, 8, 8, menuAlign === 'left' ? 'start' : 'end'));
+      }, view, 8, 8, menuAlign === 'left' ? 'start' : 'end');
+      if (rail) {
+        const available = Math.max(0, anchor.top - view.top - 16);
+        nextPosition.maxHeight = available;
+        nextPosition.top = Math.max(view.top + 8, anchor.top - 8 - Math.min(menu.scrollHeight + menu.offsetHeight - menu.clientHeight, available));
+      }
+      setPosition(nextPosition);
     }
     const scroll = (event: Event) => {
       if (!menuRef.current?.contains(event.target as Node)) placeMenu();
@@ -132,7 +145,7 @@ export function RelayUserMenu({
       window.visualViewport?.removeEventListener('scroll', placeMenu);
       observer?.disconnect();
     };
-  }, [open, menuAlign]);
+  }, [open, menuAlign, rail]);
 
   function closeMenu(restoreFocus = true) {
     setOpen(false);
@@ -196,8 +209,9 @@ export function RelayUserMenu({
         aria-controls={open ? menuId : undefined}
         aria-expanded={open}
         aria-haspopup="menu"
-        aria-label={translate("auth.relayAccountMenuFor", { value1: user.username })}
-        className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-surface-strong)] text-sm font-semibold text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]"
+        aria-label={[translate("auth.relayAccountMenuFor", { value1: user.username }), attention.size ? `${translate("sharing.tabSharing")}: ${translate("sharing.toReview", { count: attention.size })}` : null].filter(Boolean).join(" · ")}
+        data-account-rail={rail || undefined}
+        className={`${rail ? "relay-rail-avatar" : ""} relative inline-flex h-11 w-11 items-center justify-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-surface-strong)] text-sm font-semibold text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-ring)]`}
         onClick={() => {
           initialFocusRef.current = 'first';
           setLogoutError(null);
@@ -214,7 +228,8 @@ export function RelayUserMenu({
         ref={triggerRef}
         type="button"
       >
-        {user.avatarUrl ? <img src={user.avatarUrl} alt="" className="h-full w-full rounded-full object-cover" /> : label}
+        <span className={rail ? "relay-rail-avatar-image" : "contents"}>{user.avatarUrl ? <img src={user.avatarUrl} alt="" className="h-full w-full rounded-full object-cover" /> : label}</span>
+        {attention.size ? <span className="relay-account-attention" aria-hidden="true" /> : null}
       </button>
       {/* Keep the whole menu's hit area outside the fixed, backdrop-filtered topbar. */}
       {open ? createPortal(
@@ -240,14 +255,14 @@ export function RelayUserMenu({
             <UserRound aria-hidden="true" className="h-4 w-4" />
             {translate("auth.accountSettings")}</Link>
 
-          {shellNav && <button type="button" role="menuitem"
+          {(onSettings || shellNav) && <button type="button" role="menuitem"
             className="flex h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] hover:bg-[var(--theme-hover)] focus-visible:bg-[var(--theme-hover)]"
-            onClick={() => { closeMenu(); shellNav.openSettings(); }}>
+            onClick={() => { closeMenu(); (onSettings ?? shellNav?.openSettings)?.(); }}>
             <Settings aria-hidden="true" className="h-4 w-4" />{translate('files.settings')}
           </button>}
-          <Link to="/relay-devices" role="menuitem" onClick={() => closeMenu()}
+          <Link to={devicesHref()} role="menuitem" onClick={() => closeMenu()}
             className="flex h-11 items-center gap-2 rounded-md px-3 text-sm text-[var(--theme-fg)] hover:bg-[var(--theme-hover)] focus-visible:bg-[var(--theme-hover)]">
-            <MonitorSmartphone aria-hidden="true" className="h-4 w-4" />{translate('files.deviceManagement')}
+            <MonitorSmartphone aria-hidden="true" className="h-4 w-4" />{translate('files.deviceManagement')}{attention.size ? <span className="ml-auto devices-page-tab-review">{attention.size}</span> : null}
           </Link>
           {tour && <button type="button" role="menuitem"
             className="flex h-11 w-full items-center gap-2 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] hover:bg-[var(--theme-hover)] focus-visible:bg-[var(--theme-hover)]"
@@ -255,7 +270,7 @@ export function RelayUserMenu({
             <CircleHelp aria-hidden="true" className="h-4 w-4" />{translate('tour.entry')}
           </button>}
 
-          <div className="mt-2 flex items-center gap-1" role="none">
+          <div className="mt-1 flex items-center gap-1 border-t border-[var(--theme-border)] pt-1" role="none">
             <button
               aria-busy={loggingOut}
               aria-disabled={loggingOut}

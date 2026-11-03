@@ -344,7 +344,7 @@ test('account key registration, enrollment, browser trust and recovery', async (
     await recovery.page.getByLabel('New password', { exact: true }).fill(recoveredPassword);
     await recovery.page.getByLabel('Confirm password', { exact: true }).fill(recoveredPassword);
     await recovery.page.getByRole('button', { name: 'Reset password', exact: true }).click();
-    await expect(recovery.page.getByRole('heading', { name: 'Security', exact: true })).toBeVisible();
+    await expect(recovery.page.getByRole('heading', { name: 'Sign-in and security', exact: true })).toBeVisible();
     await recovery.page.goto(d1.url);
     await sendPrompt(recovery.page, 'RECOVERY_REWRAPPED_REPLY');
     owner.password = recoveredPassword;
@@ -378,7 +378,7 @@ test('account key registration, enrollment, browser trust and recovery', async (
     await legacy.page.getByRole('button', { name: 'Continue', exact: true }).click();
     const code = await readRecoveryCode(legacy.page); f.secrets.push(code);
     await confirmRecoveryCode(legacy.page, code);
-    await expect(legacy.page.getByRole('heading', { name: 'Security', exact: true })).toBeVisible();
+    await expect(legacy.page.getByRole('heading', { name: 'Sign-in and security', exact: true })).toBeVisible();
     f.events.push('Legacy account upgraded with forced long password and confirmed recovery');
 
     // Admin reset changes the relay credential but cannot decrypt the vault.
@@ -403,7 +403,7 @@ test('account key registration, enrollment, browser trust and recovery', async (
     await reset.page.getByLabel('New password', { exact: true }).fill(resetPassword);
     await reset.page.getByLabel('Confirm password', { exact: true }).fill(resetPassword);
     await reset.page.getByRole('button', { name: 'Reset password', exact: true }).click();
-    await expect(reset.page.getByRole('heading', { name: 'Security', exact: true })).toBeVisible();
+    await expect(reset.page.getByRole('heading', { name: 'Sign-in and security', exact: true })).toBeVisible();
     await reset.page.goto(d1.url);
     await sendPrompt(reset.page, 'ADMIN_RESET_RECOVERY_REPLY');
     f.events.push('Admin temporary reset recovered the same vault with recovery code; bound device still works');

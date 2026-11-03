@@ -28,6 +28,21 @@ const ActivityRow = memo(function ActivityRow({ item, favorite, onOpen, menu }: 
     </a>{menu(item.key, favorite)}
   </div>;
 });
+/** The chevron folds the agent threads, and the rest of the row opens the conversation, like any other row. */
+export function ActivityFamily({ root, item, members, favorites, onOpen, menu }: { root: { key: string; id: string; deviceId: string; title: string }; item: ActivityItem; members: readonly ActivityItem[]; favorites: ReadonlySet<string>; onOpen(key: string): void; menu(key: string, favorite: boolean): React.ReactNode }) {
+  useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const status = item.state === 'needsInput' ? 'waiting' : item.state === 'running' ? 'agents-running' : item.state === 'completed' ? 'unread' : item.state;
+  return <div className="desktop-activity-family">
+    <div className="matter-thread-row desktop-activity-row desktop-activity-family-row" data-activity-key={root.key}>
+      <button type="button" className="desktop-activity-family-toggle" aria-expanded={expanded} aria-label={translate('workbench.agentThreads', { value1: root.title, value2: members.length })} onClick={() => setExpanded(current => !current)}>{expanded ? <ChevronDown size={11} aria-hidden /> : <ChevronRight size={11} aria-hidden />}</button>
+      <a href={appUrl(threadHref(root.id, root.deviceId))} onClick={event => { if (!event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && event.button === 0) { event.preventDefault(); onOpen(root.key); } }} title={root.title}>
+        <StatusMark status={status} /><span className="matter-thread-copy"><span>{root.title}</span></span><span className="desktop-activity-time">{members.length}</span>
+      </a>{menu(root.key, favorites.has(root.key))}
+    </div>
+    {expanded ? members.map(member => <ActivityRow key={member.key} item={member} favorite={favorites.has(member.key)} onOpen={onOpen} menu={menu} />) : null}
+  </div>;
+}
 /** Desktop-only: the persistent account index also drives native alerts. Ordinary
  * browsers keep their existing sidebar (docs/ui-principles.md, desktop exception). */
 export function ActivitySection({ navigation, onOpen }: { navigation: NavigationActions; onOpen(key: string): void }) {
@@ -71,7 +86,7 @@ export function ActivitySection({ navigation, onOpen }: { navigation: Navigation
         if (!root || (members.length === 1 && key === item.key)) return <ActivityRow key={item.key} item={item} favorite={favorites.has(item.key)} onOpen={onOpen} menu={renderMenu} />;
         // Agent activity always retains its conversation; a family appears once
         // in a group, with its individual requests folded underneath.
-        return <details key={key} className="matter-agent-threads desktop-activity-family"><summary><ChevronRight size={11} /><StatusMark status={item.state === 'needsInput' ? 'waiting' : item.state === 'running' ? 'agents-running' : item.state === 'completed' ? 'unread' : item.state} /><span>{root.title}</span><span>{members.length}</span></summary>{members.map(member => <ActivityRow key={member.key} item={member} favorite={favorites.has(member.key)} onOpen={onOpen} menu={renderMenu} />)}</details>;
+        return <ActivityFamily key={key} root={root} item={item} members={members} favorites={favorites} onOpen={onOpen} menu={renderMenu} />;
       })}</div>;
     })}
   </section>;

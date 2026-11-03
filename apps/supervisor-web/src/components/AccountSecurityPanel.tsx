@@ -1,6 +1,7 @@
 import { appUrl } from '../lib/webBase';
 import { confirmAsync, CopyButton, ErrorMark } from '@pockymoe/thread-ui';
-import { SecurityVerification } from './RelaySecurity';
+import type { ReactNode } from 'react';
+import { RelaySecurityPanel, SecurityVerification } from './RelaySecurity';
 import { securityRequest, type SecurityStatus } from '../lib/relaySecurity';
 import { getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useRef, useState } from 'react';
@@ -12,17 +13,22 @@ import { verifyBrowserCertificate } from '../lib/accountCrypto';
 import { FormDialog } from './FormDialog';
 import { RecoveryConfirmation } from './AccountUnlockPrompt';
 interface BrowserRow { certificate: BrowserCertificate; label: string; createdAt: number; lastSeenAt: number }
+function AccountRow({ title, description, children }: { title: string; description: string; children: ReactNode }) {
+  return <section className="grid gap-5 py-6 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-8"><header><h2 className="text-base font-semibold">{title}</h2><p className="mt-1 text-sm leading-5 text-[var(--theme-fg-muted)]">{description}</p></header><div className="min-w-0 space-y-5">{children}</div></section>;
+}
 export function AccountSecurityPanel() {
   useI18n(); const [browsers, setBrowsers] = useState<BrowserRow[]>([]), [thisId, setThisId] = useState<string>();
   const [code, setCode] = useState(''), [accountId, setAccountId] = useState(''), [error, setError] = useState<string>(), [busy, setBusy] = useState(false);
   const [action, setAction] = useState<'password' | 'reset' | 'recovery'>(), [password, setPassword] = useState('');
   const [recovery, setRecovery] = useState<string>(), [message, setMessage] = useState<string>();
   const [recoverySession, setRecoverySession] = useState(false);
+  const [oauth, setOauth] = useState(false);
   // Only a failed first read has nothing to show; its Retry reads again.
   const [loadFailed, setLoadFailed] = useState(false);
   async function load() {
-    setRecoverySession(!!(await accountSessionState())?.recovery);
-    const account = await currentAccount(); if (!account) return;
+    const [session, oauthOnly] = await Promise.all([accountSessionState(), isOAuthAccount()]);
+    setRecoverySession(!!session?.recovery); setOauth(oauthOnly);
+    const account = await currentAccount(); if (!account) throw new Error(translate('auth.accountUnlockRequired'));
     const data = await accountRequest<{ browsers: BrowserRow[] }>('relay/account/browsers');
     if (!Array.isArray(data.browsers)) throw new Error(translate('auth.accountCertificateInvalid'));
     for (const row of data.browsers) if (!await verifyBrowserCertificate(row.certificate, account)) throw new Error(translate('auth.accountCertificateInvalid'));
@@ -50,19 +56,20 @@ export function AccountSecurityPanel() {
     finally { setBusy(false); setPassword(''); }
   }
   const date = (n: number) => new Date(n).toLocaleString(getLocale());
-  return <section className="space-y-4 border-t border-[var(--theme-border)] py-6">
-    <div className="flex items-center gap-1">
-      <h2 className="font-semibold">{translate('auth.accountDeviceSecurity')}</h2>
-      {/* While a dialog is open, its own mark sits by its Continue button. */}
+  return <>
+    <AccountRow title={translate('auth.loginSecurity')} description={translate('auth.accountPasswordHelp')}>
       {error && (!action || verification) && <ErrorMark message={error} onRetry={loadFailed ? reload : undefined} />}
-    </div>
-    <p className="text-sm text-[var(--theme-fg-muted)]">{translate('auth.accountPasswordHelp')}</p>
-    {/* People who share with this account ask for this code. */}
-    <p className="flex flex-wrap items-center gap-2">{translate('auth.accountSafetyCode')} <code className="font-mono">{code}</code>{code ? <CopyButton value={code} label={translate('sharing.copyCode')} /> : null}</p>
-    {/* `pockymoe bind --status` prints the same 12 characters on a bound device. */}
-    <p>{translate('auth.accountKeyIdLabel')} <code className="font-mono">{accountId}</code></p>
-    {message && <p role="status">{message}</p>}
-    <h3>{translate('auth.accountBrowsers')}</h3>
+      {message && <p role="status">{message}</p>}
+      <div className="flex flex-wrap items-center justify-between gap-3"><h3>{translate('auth.password')}</h3><span className="flex items-center gap-2"><button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('password')}>{translate('auth.changePassword')}</button>{oauth && <ErrorMark kind="unavailable" message={translate('auth.oauthUnlockPasswordHelp')} />}</span></div>
+      <div className="flex flex-wrap items-center justify-between gap-3"><h3>{translate('auth.accountRecoveryCode')}</h3><button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('recovery')}>{translate('auth.accountRegenerateRecovery')}</button></div>
+      <RelaySecurityPanel embedded />
+    </AccountRow>
+    <AccountRow title={translate('auth.accountKeys')} description={translate('auth.accountKeysHelp')}>
+      <p className="flex flex-wrap items-center gap-2">{translate('auth.accountSafetyCode')} <code className="font-mono">{code}</code>{code ? <CopyButton value={code} label={translate('sharing.copyCode')} /> : null}</p>
+      {/* Same short account ID as pockymoe bind --status. */}
+      <p>{translate('auth.accountKeyIdLabel')} <code className="font-mono">{accountId}</code></p>
+    </AccountRow>
+    <AccountRow title={translate('auth.accountBrowsers')} description={translate('auth.accountBrowsersHelp')}>
     <ul className="space-y-3">{browsers.map(b => <li className="owner-trust-row" key={b.certificate.browserId}>
       <span className="min-w-0 break-words" title={b.certificate.browserId}>{b.label || `${b.certificate.browserId.slice(0, 8)}…`}
         {b.certificate.browserId === thisId && <span className="owner-trust-browser-badge ml-2">{translate('auth.ownerCurrent')}</span>}
@@ -74,13 +81,12 @@ export function AccountSecurityPanel() {
           void run(async () => { await revokeAccountSubject('browser', b.certificate.browserId); });
       }}>{translate('auth.accountRemoveBrowser')}</button>
     </li>)}</ul>
-    <div className="flex flex-wrap gap-2">
-      <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('password')}>{translate('auth.changePassword')}</button>
-      <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('recovery')}>{translate('auth.accountRegenerateRecovery')}</button>
-      <button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('reset')}>{translate('auth.accountStartOver')}</button>
-    </div>
+    </AccountRow>
+    <AccountRow title={translate('auth.dangerZone')} description={translate('auth.dangerZoneHelp')}>
+      <button className="ui-action-danger min-h-11 rounded-md px-3" disabled={busy} onClick={() => setAction('reset')}>{translate('auth.accountStartOver')}</button>
+    </AccountRow>
     {verification && <SecurityVerification status={verification} onCancel={() => { retry.current = null; setVerification(undefined); }} onVerified={async () => { const work = retry.current; retry.current = null; setVerification(undefined); if (work) await run(work, true); }} />}
-    {action && !verification && <FormDialog title={translate(action === 'password' ? 'auth.changePassword' : action === 'reset' ? 'auth.accountStartOver' : 'auth.accountRegenerateRecovery')} busy={busy} onClose={() => { setAction(undefined); setPassword(''); }}>
+    {action && !verification && <FormDialog focusCancel={action === 'reset'} title={translate(action === 'password' ? 'auth.changePassword' : action === 'reset' ? 'auth.accountStartOver' : 'auth.accountRegenerateRecovery')} busy={busy} onClose={() => { setAction(undefined); setPassword(''); }}>
       <p>{translate(action === 'reset' ? 'auth.accountResetWarning' : 'auth.accountPasswordHelp')}</p>
       {action !== 'reset' && <p className="text-sm text-[var(--theme-fg-muted)]">{translate('auth.accountSecretRotationWarning')}</p>}
       <form className="space-y-4" onSubmit={e => { e.preventDefault(); void run(async () => {
@@ -92,7 +98,8 @@ export function AccountSecurityPanel() {
         {action === 'password' && <label className="block">{translate('auth.newPassword')}<input type="password" autoComplete="new-password" minLength={12} className="relay-input mt-2 w-full" value={password} required onChange={e => setPassword(e.target.value)} disabled={busy} /></label>}
         {action === 'reset' && !recoverySession && <label className="block">{translate('auth.currentPassword')}<input type="password" autoComplete="current-password" className="relay-input mt-2 w-full" value={password} required onChange={e => setPassword(e.target.value)} disabled={busy} /></label>}
         <div className="flex items-center gap-2">
-          <button className="relay-button-primary min-h-11 px-4" disabled={busy}>{translate('auth.continue')}</button>
+          {action === 'reset' && <button type="button" data-dialog-cancel className="relay-button-secondary min-h-11 px-4" disabled={busy} onClick={() => { setAction(undefined); setPassword(''); }}>{translate('workbench.cancel')}</button>}
+          <button className={`${action === "reset" ? "ui-action-danger rounded-md" : "relay-button-primary"} min-h-11 px-4`} disabled={busy}>{translate('auth.continue')}</button>
           {error && <ErrorMark message={error} />}
         </div>
       </form>
@@ -100,5 +107,5 @@ export function AccountSecurityPanel() {
     {recovery && <FormDialog title={translate('auth.accountRecoveryCode')} onClose={() => {}}>
       <RecoveryConfirmation code={recovery} onConfirm={() => setRecovery(undefined)} />
     </FormDialog>}
-  </section>;
+  </>;
 }

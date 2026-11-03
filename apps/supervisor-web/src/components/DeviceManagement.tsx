@@ -209,7 +209,7 @@ function sanitizeGrantMetadata(
 
 export type DeviceManagementAction = 'add' | 'share' | 'isolate' | 'remove';
 /** One capability implementation for the Web, desktop dialogs and device access section. */
-export function DeviceManagement({ deviceId, action, embedded = false, onClose }: { onClose?: (() => void) | undefined; deviceId?: string | undefined; action?: DeviceManagementAction | undefined; embedded?: boolean }) {
+export function DeviceManagement({ deviceId, action, embedded = false, sharingOnly = false, dialogsOnly = false, onClose }: { sharingOnly?: boolean; dialogsOnly?: boolean; onClose?: (() => void) | undefined; deviceId?: string | undefined; action?: DeviceManagementAction | undefined; embedded?: boolean }) {
   const { locale: i18nLocale } = useI18n();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -327,7 +327,7 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
   const [dialogError, setDialogError] = useState<string | null>(null);
   // The page's tab and the shares' direction live in the address, so a link
   // or a reload returns to them.
-  const pageTab: PageTab = searchParams.get('tab') === 'shared' ? 'shared' : 'devices';
+  const pageTab: PageTab = sharingOnly || searchParams.get('tab') === 'shared' ? 'shared' : 'devices';
   const shareDirection: ShareDirection = searchParams.get('dir') === 'out' ? 'out' : 'in';
   const setPageView = (tab: PageTab, direction: ShareDirection = shareDirection) => {
     const next = new URLSearchParams(searchParams);
@@ -815,8 +815,8 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
 
   const content = (
     <div>
-      <div hidden={Boolean(action && action !== 'add')} className={embedded ? "space-y-6 device-management-embedded" : "product-page space-y-6"} data-page="devices">
-        {!embedded && <>
+      <div hidden={dialogsOnly || Boolean(action && action !== 'add')} className={embedded || sharingOnly ? "space-y-6 device-management-embedded" : "product-page space-y-6"} data-page="devices">
+        {!embedded && !sharingOnly && <>
         <ProductHeader title={translate("devices.devices")} backHref="/" backLabel={translate("devices.relayHome")} actions={<TourLauncherButton showLabel />} />
 
         <section className="product-page-header">
@@ -849,7 +849,7 @@ export function DeviceManagement({ deviceId, action, embedded = false, onClose }
         </div>
 
         </>}
-        {pageTab === 'devices' || embedded ? (
+        {!sharingOnly && (pageTab === 'devices' || embedded) ? (
         <section aria-labelledby={action ? undefined : "devices-heading"} role={action ? undefined : "tabpanel"} id="devices-page-panel-devices">
           {action !== 'add' && <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">

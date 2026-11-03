@@ -1,3 +1,4 @@
+import { devicesHref } from '../../lib/devicesRoute';
 import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { Check, CircleHelp, Compass, X } from 'lucide-react';
 import {
@@ -48,14 +49,14 @@ export function useTour() {
 const TARGET_GRACE_MS = 700;
 const MOBILE_QUERY = '(max-width: 639px)';
 const ROOT_ID = 'pockymoe-tour-root';
-const CONNECT_BUTTON = 'section[aria-labelledby="devices-heading"] article button.relay-button-primary:not(:disabled)';
+const CONNECT_BUTTON = 'section[aria-labelledby="devices-heading"] article button.relay-button-primary:not(:disabled), .pd-device-card:not(.is-offline) .pd-workspaces-arrow';
 
 export function pageFromPath(pathname: string): TourPage | null {
   const path = pathname.replace(/^\/devices\/[^/]+(?=\/)/, '');
   if (path === '/workspaces') return 'workspaces';
   if (path === '/workspaces/new') return 'workspaceNew';
   if (path === '/threads/import') return 'threadImport';
-  if (path === '/relay-devices') return 'relayDevices';
+  if (path === '/relay-devices' || path === '/desktop/devices' || path.startsWith('/desktop/devices/')) return 'relayDevices';
   if (/^\/threads\/[^/]+$/.test(path) && path !== '/threads/new') return 'thread';
   return null;
 }
@@ -247,7 +248,7 @@ export function TourProvider({ children }: { children: ReactNode }) {
   const deviceId = relayDeviceIdFromPath(location.pathname) ?? (mode === 'relay' ? readSelectedRelayDeviceId() : null);
   const pageHref = useCallback(
     (target: TourPage): string | null => {
-      if (target === 'relayDevices') return '/relay-devices';
+      if (target === 'relayDevices') return devicesHref();
       if (target === 'thread') return lastThreadHref.current;
       if (mode === 'relay' && !deviceId) return null;
       const path = target === 'workspaces' ? '/workspaces' : target === 'workspaceNew' ? '/workspaces/new' : '/threads/import';
@@ -327,8 +328,8 @@ export function TourProvider({ children }: { children: ReactNode }) {
             ? href
               ? { label: 'tour.goThere', run: () => navigate(href) }
               : step.page === 'thread'
-                ? { label: 'tour.openWorkspaces', run: () => navigate(pageHref('workspaces') ?? '/relay-devices') }
-                : { label: 'tour.openDevices', run: () => navigate('/relay-devices') }
+                ? { label: 'tour.openWorkspaces', run: () => navigate(pageHref('workspaces') ?? devicesHref()) }
+                : { label: 'tour.openDevices', run: () => navigate(devicesHref()) }
             : null
         }
         pagePrerequisite={

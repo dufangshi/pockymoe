@@ -1,3 +1,6 @@
+import { DevicesPageTabs, UnprotectedDevicesButton } from './DevicesNavigation';
+import { useAccountShareAttention } from '../../components/sharedAccess/useAccountShareAttention';
+import { sharedItems } from '../../components/sharedAccess/model';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { CheckCircle2, Monitor, RefreshCw, Timer } from 'lucide-react';
@@ -22,6 +25,7 @@ type DeviceError = { key: TranslationKey } | { message: string };
 export interface DevicesPageProps { onRevealDevice?(deviceId: string): void }
 export default function DevicesPage({ onRevealDevice }: DevicesPageProps) {
   const { t } = useI18n();
+  const { portal, attention } = useAccountShareAttention();
   const index = useDesktopSelector(index => index);
   const store = useDesktopStore();
   const navigate = useNavigate();
@@ -110,8 +114,12 @@ export default function DevicesPage({ onRevealDevice }: DevicesPageProps) {
     }
   }, [params, selected, setParams]);
   const rangeControls = <div className="pd-segment" role="group" aria-label={t('desktopDevices.timeRange')}>{(['today', '7d', '30d', 'all'] as const).map(r => <button key={r} aria-pressed={range === r} onClick={() => setParams(value => { const next = new URLSearchParams(value); next.set('range', r); return next; })}>{r === 'today' ? t('desktopDevices.today') : r === '7d' ? t('desktopDevices.sevenDays') : r === '30d' ? t('desktopDevices.thirtyDays') : t('desktopDevices.allTime')}</button>)}</div>;
+  const tabs = <DevicesPageTabs devices={devices.length} shared={sharedItems(portal, 'in').length + sharedItems(portal, 'out').length} pending={attention.size} />;
+  if (params.get('tab') === 'shared') return <div className="pd-page" data-testid="desktop-devices">{tabs}<DeviceManagement sharingOnly /></div>;
   return <UsageColors deviceIds={index.devices.map(device => device.id)} metrics={metrics}><div className="pd-page" data-page="devices" data-testid="desktop-devices">
-    <header className="pd-page-header"><h1>{t('desktopDevices.devices')}</h1><span className="pd-device-count" title={t('desktopDevices.deviceCount', { online: devices.filter(d => d.connected).length, total: devices.length })}>{devices.filter(d => d.connected).length}/{devices.length}</span><Select className="pd-select" aria-label={t('desktopDevices.statsDevice')} value={selected} options={[{ value: '', label: t('desktopDevices.allDevices') }, ...devices.map(device => ({ value: device.id, label: device.name }))]} onValueChange={value => navigate(value ? `/desktop/devices/${encodeURIComponent(value)}?range=${range}${origin ? `&origin=${origin}` : ''}` : `/desktop/devices?range=${range}${origin ? `&origin=${origin}` : ''}`)} />{rangeControls}<div className="pd-header-actions"><button className="relay-button-primary pd-add-device" onClick={() => setManagement({ action: 'add' })}>{t('devices.addDevice')}</button>{nameSaved ? <span role="status">{t('desktopDevices.nameSaved')}</span> : null}{partial || cached.length ? <Info label={t('desktopDevices.partialRecent')} message={`${partial ? t('desktopDevices.partialNote') : ''} ${cached.map(d => t('desktopDevices.deviceCachedAge', { device: d.name, age: age(saved(d.id, range)?.generatedAt ?? d.lastHeartbeatAt, +now) })).join(t('desktopDevices.listSeparator'))}`} /> : null}<button className="pd-icon-button" disabled={index.refreshing} onClick={refresh} aria-label={t('desktopDevices.refresh')} title={t('desktopDevices.refresh')}><RefreshCw size={14} data-icon="refresh" className={index.refreshing ? 'pd-spin' : ''} /></button>{error && !renaming ? <ErrorMark message={errorText!} onRetry={refresh} /> : null}</div></header>
+    {tabs}
+    <div role="tabpanel" id="devices-page-panel-devices" aria-labelledby="devices-page-tab-devices">
+    <header className="pd-page-header"><h1>{t('desktopDevices.devices')}</h1><span className="pd-device-count" title={t('desktopDevices.deviceCount', { online: devices.filter(d => d.connected).length, total: devices.length })}>{devices.filter(d => d.connected).length}/{devices.length}</span><Select className="pd-select" aria-label={t('desktopDevices.statsDevice')} value={selected} options={[{ value: '', label: t('desktopDevices.allDevices') }, ...devices.map(device => ({ value: device.id, label: device.name }))]} onValueChange={value => navigate(value ? `/desktop/devices/${encodeURIComponent(value)}?range=${range}${origin ? `&origin=${origin}` : ''}` : `/desktop/devices?range=${range}${origin ? `&origin=${origin}` : ''}`)} />{rangeControls}<div className="pd-header-actions"><UnprotectedDevicesButton devices={portal?.devices ?? []} /><button aria-controls="add-device-form" className="relay-button-primary pd-add-device" onClick={() => setManagement({ action: 'add' })}>{t('devices.addDevice')}</button>{nameSaved ? <span role="status">{t('desktopDevices.nameSaved')}</span> : null}{partial || cached.length ? <Info label={t('desktopDevices.partialRecent')} message={`${partial ? t('desktopDevices.partialNote') : ''} ${cached.map(d => t('desktopDevices.deviceCachedAge', { device: d.name, age: age(saved(d.id, range)?.generatedAt ?? d.lastHeartbeatAt, +now) })).join(t('desktopDevices.listSeparator'))}`} /> : null}<button className="pd-icon-button" disabled={index.refreshing} onClick={refresh} aria-label={t('desktopDevices.refresh')} title={t('desktopDevices.refresh')}><RefreshCw size={14} data-icon="refresh" className={index.refreshing ? 'pd-spin' : ''} /></button>{error && !renaming ? <ErrorMark message={errorText!} onRetry={refresh} /> : null}</div></header>
     {selected && !current && index.hydrated && !index.refreshing ? <div className="pd-empty"><Monitor size={28} /><h2>{t('desktopDevices.deviceMissing')}</h2><Link to="/desktop/devices">{t('desktopDevices.backToDevices')}</Link></div> : null}
     <section className={`pd-device-grid ${selected ? 'is-detail' : ''}`} aria-label={t('desktopDevices.overview')}>{scoped.map(d => {
       const metric = metrics[d.id];
@@ -125,6 +133,8 @@ export default function DevicesPage({ onRevealDevice }: DevicesPageProps) {
       </section>
     </> : null}
     {selected && current ? <DeviceManagement key={selected} embedded deviceId={selected} /> : null}
+    </div>
+    {!selected ? <DeviceManagement sharingOnly dialogsOnly /> : null}
     {management ? <DeviceManagement embedded deviceId={management.deviceId} action={management.action} onClose={() => { setManagement(null); void store.refresh(); }} /> : null}
     <RenameDialog open={Boolean(renaming)} title={t('desktopDevices.renameDevice')} label={t('desktopDevices.deviceName')} value={name} busy={busy} error={errorText} onChange={value => { setName(value); setError(null); }} onCancel={() => { void cancelRename(); }} onSubmit={rename} />
     <ConfirmDialog open={discarding} title={t('desktopDevices.discardTitle')} description={t('desktopDevices.discardDescription')} confirmLabel={t('desktopDevices.discard')} tone="primary" onCancel={() => setDiscarding(false)} onConfirm={() => { setDiscarding(false); setError(null); setRenaming(null); }} />
