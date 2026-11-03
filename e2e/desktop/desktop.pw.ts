@@ -25,8 +25,9 @@ function seeded(count: number): DesktopIndex {
   const activity = Object.fromEntries(devices.map(device => [device.id, { since: iso(86400000), hours: 24, threads: threads.filter(thread => thread.deviceId === device.id).map((thread, i) => ({ threadId: thread.id, turns: 4 + i * 2, activeMs: i < 4 ? 1200000 - i * 180000 : 0, totalMs: 3600000 + i * 60000, hourlyMs: Array.from({ length: 24 }, (_, hour) => hour % 4 === i % 4 ? 900000 : 0), lastPrompt: '检查线程地图的加载、导航与交互，确保所有主题下都清晰稳定。', tokenUsage: { totalTokens: 12000, inputTokens: 8000, cachedInputTokens: 2000, outputTokens: 4000, reasoningOutputTokens: 1000 }, priceEstimate: { currency: 'USD' as const, totalUsd: .36, inputUsd: .12, cachedInputUsd: .02, cacheWriteInputUsd: 0, outputUsd: .22 } })) }]));
   return { accountId: account.id, devices, workspaces, threads, activity, extras: {}, hydrated: true, refreshing: false, error: null, pulseKeys: [] };
 }
-async function setup(page: Page, count = 12, pack = 'classic', dark = false, locale = 'zh-CN', family = false) {
+async function setup(page: Page, count = 12, pack = 'classic', dark = false, locale = 'zh-CN', family = false, offline = false) {
   const state = seeded(count), sockets = new Map<string, WebSocketRoute>();
+  if (offline) state.devices[2]!.connected = false;
   if (family) {
     const root = state.threads.find(thread => thread.key === 'device-0:t-3')!;
     root.title = 'Running conversation with a long title that must not move its chevron';
@@ -55,7 +56,7 @@ async function setup(page: Page, count = 12, pack = 'classic', dark = false, loc
   await page.route('**/relay/api/config/runtime', route => route.fulfill({ json: { defaultBackend: 'acp', agentBackends: [], workspaceRoot: '/fixture' } }));
   await page.route('**/relay/api/plugins*', route => route.fulfill({ json: [] }));
   await page.route('**/relay/account/workbench**', route => route.fulfill({ json: { threads: [], notifications: [] } }));
-  await page.route('**/relay/devices/*/presence*', route => route.fulfill({ json: { connected: true } }));
+  await page.route('**/relay/devices/*/presence*', route => route.fulfill({ json: { connected: state.devices.find(device => route.request().url().includes(`/devices/${device.id}/`))?.connected ?? false } }));
   await page.route(/\/relay\/devices\/device-[0-2]$/, route => route.fulfill({ status: 405, headers: { allow: 'PATCH, DELETE' }, json: { code: 'method_not_allowed' } }));
   await page.route('**/relay/devices/*/api/**', async route => {
     const url = new URL(route.request().url()), deviceId = url.pathname.split('/')[3]!;
@@ -90,7 +91,7 @@ async function setup(page: Page, count = 12, pack = 'classic', dark = false, loc
   await expect(page.locator('.thread-map[data-presentation="page"]')).toBeVisible();
   await expect(page.locator('html')).toHaveAttribute('data-theme-preset', pack);
   await page.evaluate(() => document.fonts.ready);
-  await expect.poll(() => sockets.size).toBe(3);
+  await expect.poll(() => sockets.size).toBe(offline ? 2 : 3);
   return { state, send: (deviceId: string, event: unknown) => sockets.get(deviceId)!.send(JSON.stringify(event)) };
 }
 
@@ -99,15 +100,22 @@ test('warm index, live tile/sidebar updates, approval and revealInMap', async ({
   await expect(page.locator('[data-map-id="thread:device-0:t-0"]')).toHaveAttribute('data-waiting', 'true');
   expect(await page.evaluate(() => (window as any).desktopWarmEvidence)).toEqual({ badFrame: false, mapSeen: true });
   const tile = page.locator('[data-map-id="thread:device-0:t-3"]'); await expect(tile).toBeVisible();
+  const canvas = page.locator('.thread-map-canvas');
+  const stageBounds = await canvas.boundingBox();
+  await expect(page.locator('.thread-map-attention-wrap')).toHaveCount(0);
   const before = await page.locator('.thread-map-tile').evaluateAll(tiles => tiles.map(tile => ({ id: tile.getAttribute('data-map-id'), style: tile.getAttribute('style') })));
   const point = await tile.boundingBox(); await page.mouse.move(point!.x + 6, point!.y + 6);
   backend.send('device-0', { type: 'thread.turn.completed', threadId: 't-3', timestamp: new Date().toISOString(), payload: { turnId: 'live', status: 'completed', error: null } });
-  await expect(tile).toHaveAttribute('data-unread', 'true');
+  await expect(tile.locator('.matter-status-dot[data-status="unread"]')).toBeVisible();
   await expect(page.locator('[data-activity-group="completed"] [data-activity-key="device-0:t-3"]')).toBeVisible();
   expect(await page.locator('.thread-map-tile').evaluateAll(tiles => tiles.map(tile => ({ id: tile.getAttribute('data-map-id'), style: tile.getAttribute('style') })))).toEqual(before);
-  const approval = page.locator('.thread-map-attention-card').filter({ hasText: 'MacBook Pro' });
+  await page.locator('[data-map-id="thread:device-0:t-0"] .thread-map-quick-look').click();
+  expect(await canvas.boundingBox()).toEqual(stageBounds);
+  const approval = page.getByRole('dialog', { name: /详情/ });
   await approval.getByRole('button', { name: '批准', exact: true }).click();
   await expect(page.locator('[data-map-id="thread:device-0:t-0"]')).not.toHaveAttribute('data-waiting', 'true');
+  await page.keyboard.press('Escape');
+  expect(await canvas.boundingBox()).toEqual(stageBounds);
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('desktopMock:command', { detail: { id: 'reveal', type: 'revealInMap', key: 'device-1:t-2' } })));
   await expect(page.locator('[data-map-id="thread:device-1:t-2"]')).toBeVisible();
   await expect(page.locator('[data-map-id="thread:device-1:t-2"]')).toHaveAttribute('data-pulse', /waiting|done/);
@@ -117,7 +125,7 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
   test(`map screenshots ${pack} ${dark ? 'dark' : 'light'} ${width}`, async ({ page }) => {
     await page.setViewportSize({ width, height: 1000 });
     for (const count of process.env.DESKTOP_SCREEN_COUNT === '12' ? [12] : [12, 150, 600]) {
-      await setup(page, count, pack, dark, process.env.DESKTOP_LOCALE ?? 'zh-CN');
+      await setup(page, count, pack, dark, process.env.DESKTOP_LOCALE ?? 'zh-CN', false, true);
       const name = `${pack}-${dark ? 'dark' : 'light'}-${width}-${count}`;
       await page.screenshot({ path: `${evidence}/map-${name}.png` });
       if (count === 12) {
@@ -155,7 +163,8 @@ test('desktop language follows navigator and saved preference, updates live, and
   if (process.env.DESKTOP_COUNT_SHOTS === '1') await page.screenshot({ path: `${evidence}/online-count-en.png` });
   await expect(activity.locator('[data-activity-group="attention"]')).toContainText('Needs you');
   await expect(activity.locator('[data-activity-group="running"] .desktop-activity-time').first()).toHaveText(/^1:\d{2}:\d{2}$/);
-  await page.getByRole('button', { name: 'Settings', exact: true }).first().click();
+  await page.getByRole('button', { name: 'Relay account menu for Alex', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Settings', exact: true }).click();
   await page.getByRole('tab', { name: 'Preferences', exact: true }).click();
   await selectControl(page, page.getByRole('combobox', { name: 'Language', exact: true }), 'zh-CN');
   await expect.poll(() => page.evaluate(() => (window as any).desktopAppearanceLocale), { timeout: 1000 }).toBe('zh-CN');
@@ -166,7 +175,8 @@ test('desktop language follows navigator and saved preference, updates live, and
   await expect(activity.locator('[data-activity-group="attention"]')).toContainText('需要你');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
-  await page.getByRole('button', { name: '设置', exact: true }).first().click();
+  await page.locator('.desktop-map-scene [data-account-rail]').click();
+  await page.getByRole('menuitem', { name: '设置', exact: true }).click();
   await page.getByRole('tab', { name: '偏好设置', exact: true }).click();
   await selectControl(page, page.getByRole('combobox', { name: '语言', exact: true }), 'en');
   await expect.poll(() => page.evaluate(() => (window as any).desktopAppearanceLocale), { timeout: 1000 }).toBe('en');

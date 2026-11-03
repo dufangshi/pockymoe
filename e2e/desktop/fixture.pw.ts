@@ -49,15 +49,16 @@ test('real certified account across separate Web/API origins keeps map mounted a
   await expect.poll(async () => (await snapshot())?.items.find(item => item.key === `${device.id}:${threadId}`)?.state).toBe('running');
   control('request-approval', device.index, threadId);
   await expect.poll(async () => (await snapshot())?.items.find(item => item.key === `${device.id}:${threadId}`)?.request?.kind).toBe('approval');
-  // Older cold-start requests precede newly created ones in the shared strip.
-  // Approve its first pending permission; the fresh event can be in overflow.
   const requested = (await snapshot())!.items.find(item => item.request?.kind === 'approval')!;
-  const card = page.locator('.thread-map-attention-card[data-kind="approval"]').filter({ hasText: requested.title }).filter({ hasText: requested.deviceName });
+  await page.evaluate(key => (window as any).desktopRealState.command({ id: 'approval-reveal', type: 'revealInMap', key }), requested.key);
+  await page.locator(`[data-map-id="thread:${requested.key}"] .thread-map-quick-look`).click();
+  const card = page.getByRole('dialog', { name: /Details/ });
   await expect(card.getByRole('button', { name: 'Approve', exact: true })).toBeVisible();
   await page.screenshot({ path: `${evidenceDirectory}/real-approval-before.png` });
   await card.getByRole('button', { name: 'Approve', exact: true }).click();
   await expect.poll(async () => (await snapshot())?.items.find(item => item.key === requested.key)?.request?.id).not.toBe(requested.request!.id);
-  await expect(card).toHaveCount(0);
+  await expect(card.getByRole('button', { name: 'Approve', exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
   // Verify against a second uncached device read, not just the optimistic index:
   // a stale action must now be rejected because it no longer exists on device.
   await page.evaluate(command => (window as any).desktopRealState.command(command), { id: 'verify-cleared', type: 'resolveRequest', deviceId: requested.deviceId, threadId: requested.threadId, requestId: requested.request!.id, decision: 'approve' });
