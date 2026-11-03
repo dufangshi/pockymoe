@@ -1,3 +1,4 @@
+import { useHostSurface } from '../desktop/surface';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import type {
@@ -224,13 +225,14 @@ export function useThreadMapDevices(open: boolean) {
 
 function ThreadMapLayer({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const shell = useAppShellNav();
+  const surface = useHostSurface();
   const navigate = useNavigate();
   const location = useLocation();
   const { devices, retry } = useThreadMapDevices(open);
   const threadId = threadIdFromPath(location.pathname);
   const currentKey = threadId ? `${relayDeviceIdFromPath(location.pathname) ?? LOCAL}:${threadId}` : undefined;
   return (
-    <ThreadMapDialog open={open} onOpenChange={onOpenChange} devices={devices} currentKey={currentKey}
+    <ThreadMapDialog hostSurface={surface === 'pending' ? 'browser' : surface} open={open} onOpenChange={onOpenChange} devices={devices} currentKey={currentKey}
       hours={THREAD_MAP_HOURS} themeMode={shell?.themeMode} effectiveTheme={shell?.effectiveTheme}
       onRetry={retry}
       onNavigate={href => {

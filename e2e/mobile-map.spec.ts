@@ -1,0 +1,58 @@
+import { expect, test } from '@playwright/test';
+
+test('phone retains the nested treemap while filtering, zooming and fitting complete text lines', async ({ page }) => {
+  await page.goto('/map.html?presentation=dialog&dataset=phone&chrome=0&lang=en&theme=terminal&mode=dark');
+  const map = page.locator('.thread-map[data-phone]');
+  await expect(map).toBeVisible();
+  await expect(map.locator('.thread-map-stage > .thread-map-section')).toHaveCount(11);
+  expect(await map.locator('.thread-map-section[data-kind="workspace"]').count()).toBeGreaterThan(2);
+  expect(await map.locator('.thread-map-tile').count()).toBeGreaterThan(10);
+  expect(await map.locator('.thread-map-tile[data-running]').count()).toBeGreaterThan(0);
+  expect(await map.locator('.thread-map-tile[data-heat]:not([data-heat="0"])').count()).toBeGreaterThan(0);
+  await expect(map.locator('.thread-map-phone-title small')).toContainText('101 threads');
+  expect(await map.locator('.thread-map-section-usd').count()).toBeGreaterThan(0);
+  const textFits = () => map.locator('.thread-map-tile:has(.thread-map-tile-title)').evaluateAll(items => items.every(item => {
+    const box = item.getBoundingClientRect();
+    const title = item.querySelector('.thread-map-tile-title')!.getBoundingClientRect();
+    const meta = item.querySelector('.thread-map-tile-meta')?.getBoundingClientRect();
+    return box.width >= 95.9 && box.height >= 43.9 && title.top >= box.top && title.bottom <= box.bottom
+      && (!meta || meta.top >= title.bottom && meta.bottom <= box.bottom);
+  }));
+  await expect.poll(textFits).toBe(true);
+  expect(await map.locator('[data-phone-fold] [data-phone-fold]').count()).toBe(0);
+  expect(await map.locator('[data-phone-fold]').evaluateAll(items => items.every(item => item.querySelectorAll(':scope > .thread-map-section-summary').length <= 1))).toBe(true);
+  await map.locator('.thread-map-stage > .thread-map-section .thread-map-section-head').first().tap();
+  await expect(map.getByRole('button', { name: 'Up one level' })).toBeVisible();
+  const title = await map.locator('.thread-map-phone-title > span').innerText();
+  const search = map.getByRole('searchbox');
+  await search.fill('APP');
+  await expect(map.locator('[data-dimmed]')).toHaveCount(0);
+  await expect(map.locator('.thread-map-phone-title > span')).toHaveText('Thread map');
+  expect(await map.locator('.thread-map-tile').count()).toBeGreaterThan(0);
+  expect(await map.locator('.thread-map-section[data-kind="workspace"]').count()).toBeGreaterThan(0);
+  await search.fill('地图');
+  await expect(map.getByRole('status')).toContainText('matches');
+  await search.fill('no-such-thread-xyz');
+  await expect(map.locator('.thread-map-empty')).toContainText('no-such-thread-xyz');
+  await expect(map.locator('.thread-map-section, .thread-map-tile')).toHaveCount(0);
+  const clearEmpty = map.locator('.thread-map-empty').getByRole('button', { name: 'Clear search' });
+  await expect.poll(async () => (await clearEmpty.boundingBox())!.height).toBeGreaterThanOrEqual(43.9);
+  await clearEmpty.tap();
+  await expect(map.locator('.thread-map-phone-title > span')).toHaveText(title);
+  const legend = map.locator('.thread-map-phone-legend-toggle');
+  await legend.tap(); await expect(legend).toHaveAttribute('aria-expanded', 'true');
+  await expect(map.locator(':scope > .thread-map-legend')).toBeVisible();
+  await legend.tap(); await expect(map.locator(':scope > .thread-map-legend')).toHaveCount(0);
+  await map.getByRole('button', { name: 'Map actions' }).tap();
+  await page.getByRole('menuitemcheckbox', { name: 'List view' }).tap();
+  await expect(map.locator('.thread-map-phone-list')).toBeVisible();
+  await map.getByRole('button', { name: 'Map actions' }).tap();
+  await page.getByRole('menuitemcheckbox', { name: 'List view' }).tap();
+  await map.getByRole('button', { name: 'Map actions' }).tap();
+  await page.getByRole('menuitem', { name: 'Go to…', exact: true }).tap();
+  await page.getByRole('menu', { name: 'Go to…' }).getByRole('menuitem').nth(1).tap();
+  const tile = map.locator('.thread-map-tile-link').first();
+  await expect(tile).toBeVisible();
+  await expect.poll(textFits).toBe(true);
+  await tile.tap(); await expect(page.locator('.map-fixture-notice')).toContainText('打开');
+});

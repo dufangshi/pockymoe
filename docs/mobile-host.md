@@ -178,3 +178,30 @@ See [thread notifications](thread-notifications.md#live-activity-updates) for th
 content-free APNs schema, retention and delivery rules. The native client owns
 safe areas, keyboard viewport handling, launch fade, gestures and background
 service/activity rendering; Web tests with a mocked bridge cannot certify those.
+
+## Thread map
+
+The map dialog uses the zoomable treemap presentation in mobile hosts and in
+browsers narrower than 640px. Desktop hosts and wider browsers retain the dense
+map. Devices contain workspaces containing thread tiles. Area follows turns
+(with extra room for running conversations); fill shows run time. Device headers
+retain thread counts, running marks and cost. Small previews may be icon-only.
+Text labels appear only in tiles at least 96px wide and 44px tall; a metrics line
+appears only when a complete second line fits.
+
+The phone header has a 44px navigation row with a truncated summary under the
+title, a separate 36px search field (with 44px input and clear touch targets),
+and an action sheet for scope, Go to, list view and layout refresh. A one-line
+legend at the bottom expands on tap.
+
+Phone search filters by thread title, workspace and device name, ignoring case
+and supporting CJK text. Only matching conversations and their parents remain,
+laid out again as a treemap. A nonempty search looks across all scopes. Search has
+its own zoom position; clearing it restores the position from before search.
+No results shows the query and a clear action.
+
+Device and workspace headers zoom into their container. A single `+N` preview
+represents contents that do not fit and zooms into that container too, while
+running conversations remain visible when space permits. Tapping a thread tile
+opens it; Go to and list view offer full-size targets for small previews. Pinching
+changes levels and a downward drag dismisses the map.
