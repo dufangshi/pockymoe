@@ -104,7 +104,6 @@ export function WorkbenchReferencePane({
               agentLabel: detail.thread.agentId ?? detail.thread.provider,
               reasoningEffort: detail.thread.reasoningEffort,
               collaborationMode: detail.thread.collaborationMode,
-              sandboxMode: detail.thread.sandboxMode ?? null,
               fastMode: detail.thread.fastMode ?? false,
               modelOptions: controller.models,
               contextUsage: resolveThreadContextUsage(detail),

@@ -228,14 +228,13 @@ relay display name only and does not restart or reconnect a device.
 Settings contains Preferences, Notifications, Harness, Upstreams, Resources,
 Device, Workspace and Plugins. There are no Session or Advanced sections; stale
 section links fall back to the first section. The composer's model key selects
-model and effort; model menu → Harness settings opens workspace
-permissions and harness capabilities, including on Treer scoped surfaces. The
-thread's ⋯ menu opens Session details, including both session IDs, copy controls, source,
-status, creation time, workspace path and presence, and the active turn.
+model and effort. Model menu → Harness settings retains harness plugins and the
+DSH panel, including on Treer scoped surfaces. Access levels are not shown or
+editable in the UI; new threads retain full access. The thread menu has no
+Session details window.
 
-Under Settings → Harness, select a harness to maintain it and edit its host
-files. Configuration backups there create, rename and restore that harness's
-host files. Harnesses without editable host files say so.
+Under Settings → Harness, select a harness to maintain its installation. Host
+file editing and configuration backup management are not exposed there.
 
 Signed-in accounts use the same avatar menu in wide and phone navigation.
 In the desktop client's avatar menu, the name/email header also shows Pockymoe

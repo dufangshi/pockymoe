@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { seed } from './fixtures';
 import { join } from 'node:path';
-const evidence = join(process.cwd(), '.scratch/settings-trim');
+const evidence = join(process.cwd(), '.scratch/settings-cut');
 async function setup(page: Page, pack = 'classic', dark = false, width = 1440) {
   await page.setViewportSize({ width, height: 1000 });
   await page.addInitScript(() => { localStorage.setItem('pockymoe.onboarding.v1:' + JSON.stringify([location.origin, 'relay:devices-test']), JSON.stringify({welcomeDismissed:true,completed:[],resume:{}})); const url = new URL(location.href); url.searchParams.set('desktopMockUpdates', '1'); history.replaceState(null, '', url); });
@@ -14,13 +14,22 @@ async function setup(page: Page, pack = 'classic', dark = false, width = 1440) {
   await page.route('**/api/config/model-pricing', route => route.fulfill({ json: { models: {} } }));
   await page.route('**/api/agent-runtimes/*/agents*', route => route.fulfill({ json: [] }));
   await page.route('**/api/agent-runtimes', route => route.fulfill({ json: backends }));
-  await page.route('**/api/config/providers/*/files/*', route => route.fulfill({ json: { path: '/fixture/config.toml', exists: true, content: '# fixture' } }));
-  await page.route('**/api/config/providers/*/archives', route => route.fulfill({ json: [] }));
+  const removedRequests: string[] = [];
+  await page.route('**/api/config/providers/*/{files/*,archives}', route => {
+    removedRequests.push(route.request().url());
+    return route.fulfill({ json: [] });
+  });
+  await page.route('**/api/management/harnesses', route => route.fulfill({ json: [
+    { id: 'codex', name: 'Codex', transport: 'adapter', baseCommand: 'codex', adapterCommand: 'codex-acp',
+      base: { installed: true, version: '1.0.0', manager: 'npm', canUpdate: true, path: '/fixture/bin/codex' },
+      adapter: { installed: true, version: '1.0.0', manager: 'pockymoe', canUpdate: true, path: '/fixture/bin/codex-acp' } },
+    { id: 'claude', name: 'Claude Code', transport: 'adapter', base: null, adapter: null },
+  ] }));
   await page.route('**/relay/devices/device-0/api/threads/t-0?*', route => route.fulfill({ json: {
     workspace: { id: 'w-0', label: 'Fixture', absPath: '/fixture' }, workspacePathStatus: 'present',
     thread: { id: 't-0', workspaceId: 'w-0', title: 'Settings trim', provider: 'acp', agentId: 'codex', providerSessionId: 'harness-session-fixture', source: 'supervisor', model: 'gpt-6.1', reasoningEffort: 'high', sandboxMode: 'workspace-write', status: 'idle', isLoaded: true, createdAt: '2026-11-01T12:00:00Z', updatedAt: '2026-11-01T12:00:00Z' }, turns: [], pendingRequests: [], pendingSteers: [],
   } }));
-  await page.route('**/api/threads/*/capabilities*', route => route.fulfill({ json: { availability: 'available', effectiveCapabilities: { controls: {}, turns: {}, sessions: {}, branching: {}, management: {}, usage: {} }, negotiated: { harness: { notice: 'Harness fixture capabilities' } } } }));
+  await page.route('**/api/threads/*/capabilities*', route => route.fulfill({ json: { availability: 'available', effectiveCapabilities: { controls: {}, turns: {}, sessions: {}, branching: {}, management: {}, usage: {} }, negotiated: { harness: { notice: 'Harness fixture capabilities', profile: 'fixture', plugins: [{ id: 'fixture', name: 'Fixture plugin', enabled: true }] } } } }));
   await page.route('**/api/threads/*/models*', route => route.fulfill({ json: [] }));
   await page.evaluate(() => { history.pushState({}, '', '/devices/device-0/threads/t-0'); dispatchEvent(new PopStateEvent('popstate')); });
   await expect(page.getByTestId('thread-scroll-container')).toBeVisible();
@@ -28,6 +37,7 @@ async function setup(page: Page, pack = 'classic', dark = false, width = 1440) {
   await page.evaluate(() => document.fonts.ready);
   const later = page.getByRole('button', { name: '稍后', exact: true });
   if (await later.isVisible()) await later.click();
+  return removedRequests;
 }
 async function avatar(page: Page, width: number) {
   if (width < 640) {
@@ -38,7 +48,7 @@ async function avatar(page: Page, width: number) {
 }
 for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [false, true]) for (const width of [1440, 390]) {
   test(`settings trim ${pack} ${dark ? 'dark' : 'light'} ${width}`, async ({ page }) => {
-    await setup(page, pack, dark, width);
+    const removedRequests = await setup(page, pack, dark, width);
     const tag = `${pack}-${dark ? 'dark' : 'light'}-${width}`;
     await page.evaluate(() => window.dispatchEvent(new CustomEvent('desktopMock:update', { detail: { status: 'ready', version: '0.3.0' } })));
     const menu = await avatar(page, width);
@@ -56,13 +66,13 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
     await expect(settings.getByRole('tab', { name: '高级', exact: true })).toHaveCount(0);
     await page.screenshot({ animations: 'disabled', path: join(evidence, `${tag}-sections.png`) });
     await settings.getByRole('tab', { name: 'Harness', exact: true }).click();
-    await expect(settings.getByText('config.toml', { exact: true })).toBeVisible();
-    await settings.getByText('配置备份', { exact: true }).click();
-    await expect(settings.getByRole('button', { name: '创建备份', exact: true })).toBeVisible();
+    await expect(settings.getByRole('button', { name: '更新 Codex', exact: true })).toBeVisible();
+    await expect(settings.getByText('config.toml', { exact: true })).toHaveCount(0);
+    await expect(settings.getByText('配置备份', { exact: true })).toHaveCount(0);
+    await expect(settings.getByRole('button', { name: '创建备份', exact: true })).toHaveCount(0);
     await page.screenshot({ animations: 'disabled', path: join(evidence, `${tag}-harness.png`) });
     await settings.getByRole('button', { name: 'Claude Code', exact: true }).click();
-    await expect(settings.getByText('此 Harness 没有可编辑的宿主文件。')).toBeVisible();
-    await expect(settings.getByText('config.toml', { exact: true })).toHaveCount(0);
+    await expect(settings.getByText('此 Harness 没有可编辑的宿主文件。')).toHaveCount(0);
     await page.keyboard.press('Escape');
     if (width < 640) {
       await page.keyboard.press('Escape');
@@ -73,16 +83,9 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
     await threadMenu.evaluate(element => element.scrollIntoView({ block: 'center', behavior: 'instant' }));
     await threadMenu.hover();
     await threadMenu.click();
-    const details = page.getByRole('button', { name: '会话详情', exact: true });
-    await expect(details).toBeEnabled();
+    await expect(page.getByRole('button', { name: '会话详情', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('dialog', { name: '会话详情', exact: true })).toHaveCount(0);
     await page.screenshot({ animations: 'disabled', path: join(evidence, `${tag}-thread-menu.png`) });
-    await details.click();
-    const dialog = page.getByRole('dialog', { name: '会话详情', exact: true });
-    await expect(dialog).toContainText('harness-session-fixture');
-    await expect(dialog).toHaveCSS('opacity', '1');
-    if (width < 640) await expect.poll(async () => { const box = await dialog.boundingBox(); return Math.abs(box!.y + box!.height - 1000); }).toBeLessThan(1);
-    await expect(dialog.getByRole('button', { name: '复制 Harness 会话 ID', exact: true })).toBeVisible();
-    await page.screenshot({ animations: 'disabled', path: join(evidence, `${tag}-details.png`) });
     await page.keyboard.press('Escape');
     if (width < 640) await page.keyboard.press('Escape');
     await page.getByRole('textbox', { name: '提示词', exact: true }).click();
@@ -92,11 +95,13 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
     await page.screenshot({ animations: 'disabled', path: join(evidence, `${tag}-model-menu.png`) });
     await harnessEntry.click();
     const controls = page.getByRole('dialog', { name: 'Harness 设置', exact: true });
-    await expect(controls.getByRole('combobox', { name: '工作区权限', exact: true })).toBeVisible();
-    await expect(controls).toContainText('Harness fixture capabilities');
+    await expect(controls.getByRole('combobox', { name: '工作区权限', exact: true })).toHaveCount(0);
+    await expect(controls).not.toContainText('Harness fixture capabilities');
+    await expect(controls).toContainText('Fixture plugin');
     await expect(controls).toHaveCSS('opacity', '1');
     if (width < 640) await expect.poll(async () => { const box = await controls.boundingBox(); return Math.abs(box!.y + box!.height - 1000); }).toBeLessThan(1);
     await page.screenshot({ animations: 'disabled', path: join(evidence, `${tag}-thread-settings.png`) });
+    expect(removedRequests).toEqual([]);
   });
 }
 

@@ -40,7 +40,7 @@ const snapshot = {
 const loadCapabilities = vi.fn(async () => snapshot);
 
 describe('session settings fields', () => {
-  it('keeps explicit permissions and reasoning when opened and only writes requested settings', async () => {
+  it('keeps model and reasoning editable without permissions or capability notice', async () => {
     const onChange = vi.fn(async () => {});
     render(
       <HarnessSettingsFields
@@ -51,43 +51,21 @@ describe('session settings fields', () => {
         loadCapabilities={loadCapabilities}
       />,
     );
-    await screen.findByText('Ready');
+    await screen.findByRole('region', { name: 'Harness plugins' });
     expect(screen.getByRole('combobox', { name: 'Harness model' })).toHaveValue(
       'model',
     );
     expect(
       screen.getByRole('combobox', { name: 'Harness reasoning effort' }),
     ).toHaveValue('high');
-    const permissions = screen.getByRole('combobox', {
-      name: 'Workspace permissions',
-    });
-    expect(permissions).toHaveValue('read-only');
+    expect(screen.queryByRole('combobox', { name: 'Workspace permissions' })).toBeNull();
+    expect(screen.queryByText('Ready')).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
-    changeControl(permissions, { target: { value: 'workspace-write' } });
-    expect(onChange).toHaveBeenCalledWith({ sandboxMode: 'workspace-write' });
     changeControl(
       screen.getByRole('combobox', { name: 'Harness reasoning effort' }),
       { target: { value: 'medium' } },
     );
     expect(onChange).toHaveBeenLastCalledWith({ reasoningEffort: 'medium' });
-  });
-
-  it('shows full access for unset permissions without changing the thread', async () => {
-    const onChange = vi.fn(async () => {});
-    render(
-      <HarnessSettingsFields
-        thread={thread}
-        models={models}
-        busy={false}
-        onChange={onChange}
-        loadCapabilities={loadCapabilities}
-      />,
-    );
-    await screen.findByText('Ready');
-    expect(
-      screen.getByRole('combobox', { name: 'Workspace permissions' }),
-    ).toHaveValue('danger-full-access');
-    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('marks the whole portal dialog as owned and keeps running session settings editable', async () => {
@@ -179,7 +157,7 @@ describe('DeepSeek Harness panel', () => {
         runHarnessAction={runHarnessAction as never} />,
     );
     await screen.findByText('DeepSeek Harness 0.2.0-rc.2 · acp profile');
-    expect(screen.getByText('read-only')).toBeInTheDocument();
+    expect(screen.queryByText('read-only')).toBeNull();
     expect(screen.getByText('ship it · active · round 3')).toBeInTheDocument();
     expect(screen.getByRole('list', { name: 'Todo list' })).toHaveTextContent('write tests');
     expect(screen.getByRole('checkbox', { name: 'Enable Timer' })).toBeDisabled();
@@ -226,7 +204,7 @@ describe('DeepSeek Harness settings', () => {
   it('keeps a refused setting visible as an error and restores the stored value', async () => {
     const view = { ns: 'agent-loop', revision: 2, fields: [{ key: 'maxParallelToolCalls', type: 'number', value: null, overridden: false }] };
     const runHarnessAction = vi.fn(async (action: { kind: string }) => {
-      if (action.kind === 'settings') return { settings: [view] };
+      if (action.kind === 'settings') return { settings: [view, { ns: 'permission', revision: 1, fields: [{ key: 'defaultPreset', type: 'string', value: 'read-only', overridden: false }] }] };
       throw new Error('settings namespace "agent-loop" changed since it was read');
     });
     const snapshot = { negotiated: { harness: { kind: 'dsh', version: '0.2.0-rc.2', profile: 'acp', permissionPresets: [], plugins: [], bundles: [], providers: [] } } } as unknown as AgentCapabilitySnapshotDto;
@@ -239,6 +217,8 @@ describe('DeepSeek Harness settings', () => {
     fireEvent.click(screen.getByText('Profile settings'));
     fireEvent(screen.getByText('Profile settings').closest('details')!, new Event('toggle'));
     const input = await screen.findByRole('spinbutton', { name: 'agent-loop.maxParallelToolCalls' });
+    expect(screen.queryByLabelText('permission.defaultPreset')).toBeNull();
+    expect(screen.queryByText('read-only')).toBeNull();
     changeControl(input, { target: { value: '4' } });
     fireEvent.blur(input);
     await waitFor(() => expect(runHarnessAction).toHaveBeenCalledWith({
@@ -304,6 +284,7 @@ describe('DeepSeek Harness plugin controls', () => {
 
   it('runs DSH and plugin commands but leaves thread-owned ones to the thread', async () => {
     const commands = [
+      { name: 'permission', description: 'Change access', hint: '<preset>' },
       { name: 'plan', description: 'Plan mode', hint: null },
       { name: 'compact', description: 'Compact history', hint: null },
       { name: 'export', description: 'Download the log', hint: null },
@@ -319,6 +300,7 @@ describe('DeepSeek Harness plugin controls', () => {
     expect(section).toHaveTextContent('/compactThread control');
     expect(section).toHaveTextContent('/exportIn the native console');
     expect(screen.queryByRole('button', { name: 'Run /plan' })).toBeNull();
+    expect(section).not.toHaveTextContent('/permission');
     changeControl(screen.getByRole('textbox', { name: 'Arguments for /review' }), { target: { value: ' src ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Run /review' }));
     await waitFor(() => expect(runHarnessAction).toHaveBeenCalledWith({ kind: 'command', line: '/review src' }));
@@ -376,7 +358,7 @@ describe('DeepSeek Harness plugin controls', () => {
     expect(screen.getByRole('button', { name: 'Run /review' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Open console' })).toBeDisabled();
     // The thread's own settings stay editable for them.
-    expect(screen.getByRole('combobox', { name: 'Workspace permissions' })).toBeEnabled();
+    expect(screen.getByRole('combobox', { name: 'Harness model' })).toBeEnabled();
   });
 
   it('explains a plain ACP fallback and hides the console there', async () => {

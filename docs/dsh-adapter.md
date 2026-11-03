@@ -101,7 +101,7 @@ bridge 是 DSH 的又一个 carrier：它通过 `ctx.typertGateway.invoke()` 调
 - `setPluginEnabled`、`setBundleEnabled`；
 - `stop`、`restart`；
 - `selectRunMode`、`console`；
-- `command`：`/plan` `/permission` `/goal` `/compact` 由线程控件负责，面板执行会被拒绝，防止状态失配；回合进行中也拒绝。
+- `command`：`/plan` `/goal` `/compact` 由线程控件负责；`/permission` 不在 UI 展示，这些命令在面板执行会被拒绝，防止状态失配；回合进行中也拒绝。
 
 relay ACL 默认拒绝共享用户访问该路径（有回归测试）。`GET /api/agent-runtimes/acp/harness?agentId=deepseek&cwd=…` 返回新建线程用的运行模式目录，与模型目录一样属于可共享的只读元数据。
 
@@ -116,11 +116,11 @@ relay ACL 默认拒绝共享用户访问该路径（有回归测试）。`GET /a
 
 **面板：** `HarnessSettingsFields`（`/harness`）和插件的 `DshPluginPanel`（工作台抽屉）都渲染 `DshHarnessPanel`。插件面板在会话未运行时先发 `refresh` 启动会话；只读查看者不会触发启动。面板包含：
 
-- 会话状态：权限预设、plan、goal 轮次、todos；回合外自治运行时显示 Stop。
+- 会话状态：plan、goal 轮次、todos；回合外自治运行时显示 Stop。
 - 运行模式：第一轮前可切换，之后锁定并说明原因。名称和说明与 DSH 一致：标准 / PTC / 极简 / 创造模式；自定义模式显示它自己的名字。
-- 命令：会话里的全部命令（含 DSH 插件注册的），可带参数运行，并显示结果文本。线程负责的命令标“由线程控件管理”；`/export` 只在 Web 里有意义，标“在原生控制台中使用”。`/feedback` 会把会话历史上传给 DeepSeek，所以显示警告并要求确认。
+- 命令：会话里的命令（含 DSH 插件注册的，不显示 `/permission`），可带参数运行，并显示结果文本。线程负责的命令标“由线程控件管理”；`/export` 只在 Web 里有意义，标“在原生控制台中使用”。`/feedback` 会把会话历史上传给 DeepSeek，所以显示警告并要求确认。
 - 原生控制台：在新标签页打开（见下节）。
-- 配置文件设置：精选的 volatile 字段，带 revision 并发保护。
+- 配置文件设置：精选的 volatile 字段（不显示权限设置），带 revision 并发保护。
 - 插件与 bundle 开关：乐观更新，失败回滚。保存后显示“重连后生效”，并提供“重连以生效”（`restart` 后 `refresh`）。只有新进程确实反映出来的更改才会被清除。
 - 设置字段带类型；被拒绝的写入保留错误提示，并恢复为存储值。
 - 模型提供方列表。
