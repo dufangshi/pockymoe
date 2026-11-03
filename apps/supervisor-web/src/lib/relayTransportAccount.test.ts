@@ -411,3 +411,18 @@ it('never treats an unverified cached certificate timestamp as a freshness pin',
   expect((await transport.exchange(new Request(endpoint('version')))).response.ok).toBe(true);
   expect(state.store.get(`device-certificate:${a.accountKeyId}:${device}`)).toEqual(vectors.deviceCertificate.certificate);
 });
+
+it('renews an expired encrypted media descriptor while the same worker and browser session stay alive', async () => {
+  const request = () => new Request(endpoint('threads/thread-1/assets/image?path=.temp%2Fthreads%2Fphoto.png'));
+  const now = Date.now();
+  expect((await relayWorkerFetch(request(), 'https://pockymoe.test/devices/device-1/threads/thread-1')).ok).toBe(true);
+  const descriptors = () => state.fetch.mock.calls.filter(([input]) => String(input).includes('/transport/key'));
+  expect(descriptors()).toHaveLength(1);
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 600001);
+  try {
+    expect((await relayWorkerFetch(request(), 'https://pockymoe.test/devices/device-1/threads/thread-1')).ok).toBe(true);
+    expect(descriptors()).toHaveLength(2);
+    expect(wires.filter(wire => wire.path.includes('/assets/image'))).toHaveLength(2);
+    await verifyWires();
+  } finally { clock.mockRestore(); }
+});

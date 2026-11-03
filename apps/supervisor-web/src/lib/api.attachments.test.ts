@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { buildThreadImageAssetUrl, downloadThreadImage, setSelectedRelayDeviceId } from './api';
-import { encryptedBrowserFetch } from './relayTransport';
-vi.mock('./relayTransport', () => ({ encryptedBrowserFetch: vi.fn(), encryptedRelaySocket: vi.fn() }));
+import { buildThreadImageAssetUrl, downloadThreadImage, setSelectedRelayDeviceId, refreshChatImageUrl, setStoredAuthToken, connectSupervisorEvents } from './api';
+import { encryptedBrowserFetch, ensureRelayWorker } from './relayTransport';
+vi.mock('./relayTransport', () => ({ encryptedBrowserFetch: vi.fn(), encryptedRelaySocket: vi.fn(), ensureRelayWorker: vi.fn() }));
 afterEach(() => { localStorage.clear(); vi.unstubAllGlobals(); });
 it('downloads shared images through encrypted transport without relying on a service worker', async () => {
   localStorage.setItem('remote-codex-relay-mode', 'true');
@@ -17,4 +17,33 @@ it('downloads shared images through encrypted transport without relying on a ser
 it('asks for the thumbnail variant only when requested', () => {
   expect(buildThreadImageAssetUrl('t 1', { path: './a.jpg' })).toBe('/api/threads/t%201/assets/image?path=.%2Fa.jpg');
   expect(buildThreadImageAssetUrl('t 1', { path: './a.jpg', variant: 'thumbnail' })).toBe('/api/threads/t%201/assets/image?path=.%2Fa.jpg&variant=thumbnail');
+});
+
+it('re-resolves local authorization and leaves external images alone', async () => {
+  setStoredAuthToken('fixture-current');
+  const fresh = new URL(await refreshChatImageUrl('/api/threads/t/assets/image?path=a.png&token=fixture-old'));
+  expect(fresh.searchParams.get('token')).toBe('fixture-current');
+  expect(await refreshChatImageUrl('https://external.example/api/threads/t/assets/image?path=a.png')).toBe('https://external.example/api/threads/t/assets/image?path=a.png');
+});
+it('reinitializes relay media routing on recovery, keeping the original device and using cookies', async () => {
+  localStorage.setItem('remote-codex-relay-mode', 'true');
+  setSelectedRelayDeviceId('another-device');
+  const fresh = new URL(await refreshChatImageUrl('/relay/devices/original/api/threads/t/assets/image?path=a.png'));
+  expect(ensureRelayWorker).toHaveBeenCalled();
+  expect(fresh.pathname).toContain('/devices/original/');
+  expect(fresh.searchParams.has('relaySession')).toBe(false);
+  expect(fresh.searchParams.has('token')).toBe(false);
+});
+
+it('announces a fresh live connection so mounted failed images can recover', () => {
+  class Socket extends EventTarget { constructor(_url: string) { super(); } }
+  vi.stubGlobal('WebSocket', Socket);
+  const recovered = vi.fn();
+  window.addEventListener('pockymoe-images-reconnected', recovered);
+  try {
+    const socket = connectSupervisorEvents(() => {});
+    expect(recovered).not.toHaveBeenCalled();
+    socket.dispatchEvent(new Event('open'));
+    expect(recovered).toHaveBeenCalledTimes(1);
+  } finally { window.removeEventListener('pockymoe-images-reconnected', recovered); }
 });

@@ -27,6 +27,8 @@ import { useSearchMessages } from '../components/searchMessages';
 import { useWorkbenchNavigation } from './useWorkbenchNavigation';
 import { useThreadDirectory } from './useThreadDirectory';
 import { useScopedState } from './useScopedState';
+import { useOptimisticAttachmentPreviews } from './useOptimisticAttachmentPreviews';
+import { ImageRecoveryProvider } from '@pockymoe/thread-ui';
 import { useSubscriptionUsage } from './useSubscriptionUsage';
 import { useThreadTabStatus } from '../lib/useThreadTabStatus';
 import { DeviceEncryptionStatus } from '../components/DeviceEncryptionStatus';
@@ -126,6 +128,7 @@ import {
   updateThreadSettings,
   terminateShell,
   buildThreadImageAssetUrl,
+  refreshChatImageUrl,
   cancelPendingSteer,
   steerPendingPrompt,
   steerSubmittedPrompt,
@@ -411,18 +414,6 @@ function buildOptimisticAttachmentPreviews(
   });
 }
 
-function revokeOptimisticAttachmentPreviews(
-  previews: OptimisticAttachmentPreview[],
-) {
-  if (typeof URL.revokeObjectURL !== 'function') {
-    return;
-  }
-
-  for (const preview of previews) {
-    URL.revokeObjectURL(preview.url);
-  }
-}
-
 function relativeWorkspaceLinkPath(path: string, workspaceAbsPath: string) {
   const normalizedPath = path.trim().replace(/\\/g, '/').replace(/\/+$/, '');
   const normalizedRoot = workspaceAbsPath.trim().replace(/\\/g, '/').replace(/\/+$/, '');
@@ -702,12 +693,7 @@ export function ThreadDetailPage() {
     });
   const [optimisticTurn, setOptimisticTurn] = useScopedState<OptimisticTurnState | null>(routeKey, null);
   const [optimisticSteers, setOptimisticSteers] = useScopedState<OptimisticSteerState[]>(routeKey, []);
-  useEffect(() => {
-    const previews = optimisticTurn?.attachmentPreviews ?? [];
-    return () => {
-      revokeOptimisticAttachmentPreviews(previews);
-    };
-  }, [optimisticTurn]);
+  useOptimisticAttachmentPreviews(optimisticTurn?.attachmentPreviews);
   const [deletingThread, setDeletingThread] = useState<ThreadDto | null>(null);
   const [deletingThreadBusy, setDeletingThreadBusy] = useState(false);
   const [error, setError] = useScopedState<string | null>(routeKey, null);
@@ -4013,7 +3999,7 @@ export function ThreadDetailPage() {
   );
 
   return (
-    <>
+    <ImageRecoveryProvider value={refreshChatImageUrl}>
     {nativeResult && <LongTextDialog open title={nativeResult.title} text={nativeResult.text} onClose={() => setNativeResult(null)} />}
     {relayThreadIsOwner && relayRouteDeviceId && <HostFeatureGate feature="previews"><PortMappingsControl key={relayRouteDeviceId} deviceId={relayRouteDeviceId} open={portsOpen} onOpenChange={setPortsOpen} /></HostFeatureGate>}
     <ThreadDetailSurface
@@ -4142,6 +4128,6 @@ export function ThreadDetailPage() {
       {...(chatComposerProps ? { composerProps: chatComposerProps } : {})}
       {...(shellComposerProps ? { shellComposerProps } : {})}
     />
-    </>
+    </ImageRecoveryProvider>
   );
 }
