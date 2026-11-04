@@ -115,6 +115,42 @@ pub fn update_override(
     }) {
         return Err("Aliases must be a list of model IDs or names".into());
     }
+    if rates.get("displayName").is_some_and(|name| {
+        !name.as_str().is_some_and(|name| {
+            !name.trim().is_empty() && name.len() <= 200 && !name.chars().any(char::is_control)
+        })
+    }) {
+        return Err("Invalid displayName".into());
+    }
+    if rates.get("defaultReasoningEffort").is_some_and(|effort| {
+        !effort.as_str().is_some_and(|effort| {
+            matches!(
+                effort,
+                "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+            )
+        })
+    }) {
+        return Err("Invalid defaultReasoningEffort".into());
+    }
+    if rates.get("reasoningEfforts").is_some_and(|efforts| {
+        !efforts.as_array().is_some_and(|efforts| {
+            efforts.len() <= 10
+                && efforts.iter().all(|entry| {
+                    entry["reasoningEffort"].as_str().is_some_and(|effort| {
+                        matches!(
+                            effort,
+                            "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+                        )
+                    }) && entry["description"].as_str().is_some_and(|description| {
+                        !description.is_empty()
+                            && description.len() <= 200
+                            && !description.chars().any(char::is_control)
+                    })
+                })
+        })
+    }) {
+        return Err("Invalid reasoningEfforts".into());
+    }
     for alias in std::iter::once(json!(id)).chain(aliases.as_array().unwrap().iter().cloned()) {
         if let Some(existing) = match_model(catalog, alias.as_str().unwrap()) {
             if existing != id {
@@ -131,6 +167,9 @@ pub fn update_override(
         "cacheWriteInputUsdPerMillion",
         "cacheWriteOneHourInputUsdPerMillion",
         "aliases",
+        "displayName",
+        "defaultReasoningEffort",
+        "reasoningEfforts",
         "longContextThresholdTokens",
         "longContextInputMultiplier",
         "longContextOutputMultiplier",
@@ -148,6 +187,16 @@ pub fn update_override(
         .as_object_mut()
         .unwrap()
         .retain(|k, _| allowed.contains(&k.as_str()));
+    // A pricing edit usually contains only rates. Keep relay-owned model
+    // presentation metadata from the current catalog when it is omitted.
+    let canonical = match_model(catalog, id).unwrap_or_else(|| id.to_owned());
+    for field in ["displayName", "defaultReasoningEffort", "reasoningEfforts"] {
+        if rates.get(field).is_none() {
+            if let Some(value) = catalog["models"][&canonical].get(field) {
+                rates[field] = value.clone();
+            }
+        }
+    }
     // Nested rates originate from the catalog but are editable request input too.
     fn valid_nested(v: &Value) -> bool {
         match v {

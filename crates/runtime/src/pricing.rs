@@ -1,11 +1,80 @@
 //! Local overrides and durable account pricing snapshots; usage stays on device.
 use crate::Supervisor;
 use anyhow::{bail, Result};
+use pockymoe_protocol::{ModelOptionDto, ReasoningEffortOptionDto};
 use serde_json::{json, Value};
 
 pub(crate) use pockymoe_protocol::pricing::match_model;
 
+fn enrich_model_options_with_catalog(models: &mut [ModelOptionDto], catalog: &Value) {
+    for model in models {
+        let Some(key) = match_model(catalog, &model.model) else {
+            continue;
+        };
+        let metadata = &catalog["models"][&key];
+        if model.display_name.is_empty() || model.display_name == model.model {
+            if let Some(name) = metadata["displayName"]
+                .as_str()
+                .filter(|name| !name.is_empty())
+            {
+                model.display_name = name.to_owned();
+            }
+        }
+        // A harness or the upstream /models response is more precise than a
+        // shared LiteLLM capability hint. Use the shared list only when the
+        // active endpoint did not advertise per-model effort choices.
+        if !model.supported_reasoning_efforts.is_empty() {
+            continue;
+        }
+        let Some(efforts) = metadata["reasoningEfforts"].as_array() else {
+            continue;
+        };
+        let efforts: Vec<_> = efforts
+            .iter()
+            .filter_map(|entry| {
+                let value = entry["reasoningEffort"].as_str()?.trim();
+                (!value.is_empty()).then(|| ReasoningEffortOptionDto {
+                    reasoning_effort: value.to_owned(),
+                    description: entry["description"]
+                        .as_str()
+                        .filter(|description| !description.is_empty())
+                        .unwrap_or(value)
+                        .to_owned(),
+                })
+            })
+            .collect();
+        if efforts.is_empty() {
+            continue;
+        }
+        model.supported_reasoning_efforts = efforts;
+        model.default_reasoning_effort = metadata["defaultReasoningEffort"]
+            .as_str()
+            .filter(|effort| {
+                model
+                    .supported_reasoning_efforts
+                    .iter()
+                    .any(|option| option.reasoning_effort == *effort)
+            })
+            .map(str::to_owned)
+            .or_else(|| {
+                model
+                    .supported_reasoning_efforts
+                    .iter()
+                    .find(|option| option.reasoning_effort == "medium")
+                    .or_else(|| model.supported_reasoning_efforts.first())
+                    .map(|option| option.reasoning_effort.clone())
+            });
+    }
+}
+
 impl Supervisor {
+    /// Add account-wide presentation hints to model choices. Context windows
+    /// deliberately stay on the upstream/ACP path, where endpoint and config
+    /// specific limits are available.
+    pub fn enrich_model_options(&self, models: &mut [ModelOptionDto]) {
+        enrich_model_options_with_catalog(models, &self.model_pricing());
+    }
+
     pub fn model_pricing(&self) -> Value {
         let synced = self.cached_relay_model_pricing();
         let mut config = synced
@@ -149,5 +218,88 @@ impl Supervisor {
             });
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_catalog_enriches_opaque_model_options() {
+        let mut models = vec![ModelOptionDto {
+            id: "claude-opus-5-5".into(),
+            model: "claude-opus-5-5".into(),
+            display_name: "claude-opus-5-5".into(),
+            description: "upstream · claude".into(),
+            is_default: true,
+            hidden: false,
+            supported_reasoning_efforts: vec![],
+            default_reasoning_effort: None,
+            selection_kind: Some("model".into()),
+            acp_agent: None,
+        }];
+        let catalog = json!({"models": {"claude-opus-5-5": {
+            "displayName": "Opus 5.5",
+            "aliases": ["anthropic/claude-opus-5-5"],
+            "reasoningEfforts": [
+                {"reasoningEffort":"low", "description":"Low"},
+                {"reasoningEffort":"medium", "description":"Medium"},
+                {"reasoningEffort":"high", "description":"High"}
+            ],
+            "defaultReasoningEffort": "medium"
+        }}});
+
+        enrich_model_options_with_catalog(&mut models, &catalog);
+
+        assert_eq!(models[0].display_name, "Opus 5.5");
+        assert_eq!(
+            models[0].default_reasoning_effort.as_deref(),
+            Some("medium")
+        );
+        assert_eq!(
+            models[0]
+                .supported_reasoning_efforts
+                .iter()
+                .map(|option| option.reasoning_effort.as_str())
+                .collect::<Vec<_>>(),
+            ["low", "medium", "high"]
+        );
+    }
+
+    #[test]
+    fn upstream_model_metadata_wins_over_shared_hints() {
+        let mut models = vec![ModelOptionDto {
+            id: "claude-opus-5-5".into(),
+            model: "claude-opus-5-5".into(),
+            display_name: "Proxy Opus".into(),
+            description: "upstream · claude".into(),
+            is_default: true,
+            hidden: false,
+            supported_reasoning_efforts: vec![ReasoningEffortOptionDto {
+                reasoning_effort: "high".into(),
+                description: "Endpoint high".into(),
+            }],
+            default_reasoning_effort: Some("high".into()),
+            selection_kind: Some("model".into()),
+            acp_agent: None,
+        }];
+        let catalog = json!({"models": {"claude-opus-5-5": {
+            "displayName": "Opus 5.5",
+            "reasoningEfforts": [
+                {"reasoningEffort":"low", "description":"Low"},
+                {"reasoningEffort":"medium", "description":"Medium"}
+            ],
+            "defaultReasoningEffort": "medium"
+        }}});
+
+        enrich_model_options_with_catalog(&mut models, &catalog);
+
+        assert_eq!(models[0].display_name, "Proxy Opus");
+        assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            models[0].supported_reasoning_efforts[0].reasoning_effort,
+            "high"
+        );
     }
 }

@@ -84,6 +84,80 @@ fn hex_digest(s: &str) -> String {
     format!("{:x}", Sha256::digest(s.as_bytes()))
 }
 
+fn display_name(id: &str) -> String {
+    let mut words = id
+        .trim()
+        .trim_start_matches("claude-")
+        .replace(['_', '/'], "-")
+        .split('-')
+        .filter(|word| !word.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if words.is_empty() {
+        return id.to_owned();
+    }
+    let mut rendered = Vec::with_capacity(words.len());
+    let mut index = 0;
+    while index < words.len() {
+        if index + 1 < words.len()
+            && words[index].chars().all(|c| c.is_ascii_digit())
+            && words[index + 1].chars().all(|c| c.is_ascii_digit())
+        {
+            rendered.push(format!("{}.{}", words[index], words[index + 1]));
+            index += 2;
+            continue;
+        }
+        let word = &mut words[index];
+        if word.eq_ignore_ascii_case("gpt") {
+            *word = "GPT".into();
+        } else if word.len() > 1 {
+            let mut chars = word.chars();
+            if let Some(first) = chars.next() {
+                *word = first.to_uppercase().collect::<String>() + chars.as_str();
+            }
+        }
+        rendered.push(word.clone());
+        index += 1;
+    }
+    rendered.join(" ")
+}
+
+fn reasoning_efforts(entry: &Value) -> Option<Value> {
+    let mut values = Vec::new();
+    if let Some(levels) = entry["reasoning_effort_levels"].as_array() {
+        for level in levels.iter().filter_map(Value::as_str) {
+            let level = level.trim().to_ascii_lowercase();
+            if matches!(
+                level.as_str(),
+                "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+            ) && !values.iter().any(|known: &String| known == &level)
+            {
+                values.push(level);
+            }
+        }
+    } else if entry["supports_reasoning"] == true {
+        if entry["supports_none_reasoning_effort"] == true {
+            values.push("none".into());
+        }
+        if entry["supports_minimal_reasoning_effort"] == true {
+            values.push("minimal".into());
+        }
+        values.extend(["low", "medium", "high"].map(String::from));
+        if entry["supports_xhigh_reasoning_effort"] == true {
+            values.push("xhigh".into());
+        }
+        if entry["supports_max_reasoning_effort"] == true {
+            values.push("max".into());
+        }
+    }
+    (!values.is_empty()).then(|| {
+        json!(values
+            .into_iter()
+            .map(|value| json!({"reasoningEffort":value,"description":value}))
+            .collect::<Vec<_>>())
+    })
+}
+
 /// Convert only first-party text prices, never a reseller's price for that model.
 fn import_litellm(raw: &Value) -> Result<Value> {
     let mut models = serde_json::Map::new();
@@ -144,7 +218,12 @@ fn import_litellm(raw: &Value) -> Result<Value> {
         };
         let mut rates = json!({"inputUsdPerMillion":input,"outputUsdPerMillion":output,
             "cachedInputUsdPerMillion":convert("cache_read_input_token_cost").unwrap_or(input.clone()),
-            "aliases":[key],"sourceUrl":SOURCE});
+            "aliases":[key],"sourceUrl":SOURCE,
+            "displayName":display_name(id)});
+        if let Some(efforts) = reasoning_efforts(entry) {
+            rates["reasoningEfforts"] = efforts;
+            rates["defaultReasoningEffort"] = json!("medium");
+        }
         let fields = [
             ("input_cost_per_token", "inputUsdPerMillion"),
             ("output_cost_per_token", "outputUsdPerMillion"),
@@ -400,7 +479,8 @@ mod tests {
             "future-model":{"litellm_provider":"openai","mode":"chat","input_cost_per_token":0.000002,"output_cost_per_token":0.000008,"cache_read_input_token_cost":0.0000002,
                 "input_cost_per_token_above_200k_tokens":0.000004,"output_cost_per_token_above_200k_tokens":0.000012,
                 "input_cost_per_token_priority":0.000003},
-            "anthropic/claude-next":{"litellm_provider":"anthropic","mode":"chat","input_cost_per_token":0.000003,"output_cost_per_token":0.000015,
+            "anthropic/claude-opus-5-5":{"litellm_provider":"anthropic","mode":"chat","input_cost_per_token":0.000003,"output_cost_per_token":0.000015,
+                "supports_reasoning":true,"supports_xhigh_reasoning_effort":true,"supports_max_reasoning_effort":true,"max_input_tokens":1000000,
                 "cache_creation_input_token_cost":0.00000375,"cache_creation_input_token_cost_above_1hr":0.000006},
             "deepinfra/future-model":{"litellm_provider":"deepinfra","mode":"chat","input_cost_per_token":0.00000001,"output_cost_per_token":0.00000001},
             "openai/missing":{"litellm_provider":"openai","mode":"chat","input_cost_per_token":0.001},
@@ -416,8 +496,22 @@ mod tests {
         assert_eq!(rates["contextTiers"][0]["outputUsdPerMillion"], 12.0);
         assert_eq!(rates["serviceTiers"]["fast"]["inputUsdPerMillion"], 3.0);
         assert_eq!(
-            catalog["models"]["claude-next"]["cacheWriteOneHourInputUsdPerMillion"],
+            catalog["models"]["claude-opus-5-5"]["cacheWriteOneHourInputUsdPerMillion"],
             6.0
+        );
+        assert_eq!(
+            catalog["models"]["claude-opus-5-5"]["displayName"],
+            "Opus 5.5"
+        );
+        assert!(catalog["models"]["claude-opus-5-5"]["contextWindowTokens"].is_null());
+        assert_eq!(
+            catalog["models"]["claude-opus-5-5"]["reasoningEfforts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["reasoningEffort"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["low", "medium", "high", "xhigh", "max"]
         );
         assert!(import_litellm(&json!({"error":"unavailable"})).is_err());
     }
