@@ -40,6 +40,12 @@ is enabled. A background worker checks new inference events every 25ms while a
 visible prompt is active. It counts request fragments with a bundled
 `o200k_base` tokenizer and reuses hashes/counts across requests. This is an
 estimate, not a promise that the tokenizer matches every upstream model.
+Media references use a small diagnostic proxy and their base64 bytes are never
+tokenized as text. Encrypted reasoning bytes are omitted. A request stays pending
+until its provider response is correlated, so an uncalibrated large estimate
+cannot briefly replace the last native reading. If the local category estimate
+still exceeds the correlated Codex input total, the messages category is bounded
+to the remaining reported total and the snapshot is marked as adjusted.
 Responses are correlated with inference IDs before calibrating the input total;
 unattributed overhead remains separate instead of being distributed across
 categories. The response's native total updates occupancy after output.

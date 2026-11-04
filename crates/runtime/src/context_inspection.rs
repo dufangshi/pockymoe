@@ -243,6 +243,58 @@ pub(crate) struct CodexAnalyzer {
     residual: Option<i64>,
 }
 impl CodexAnalyzer {
+    /// Count model-visible content without charging raw media bytes. Codex's
+    /// Responses payload can carry megabytes of base64 image data while the
+    /// provider charges an image token representation. The exact image price
+    /// is model-owned, so use a small conservative diagnostic estimate.
+    fn content_tokens(&mut self, value: &Value) -> u64 {
+        const MEDIA_TOKENS: u64 = 256;
+        match value {
+            Value::Null | Value::Bool(_) | Value::Number(_) => 0,
+            Value::String(text) => self.count(text),
+            Value::Array(values) => values.iter().map(|value| self.content_tokens(value)).sum(),
+            Value::Object(object) => {
+                if object.contains_key("image_url") || object.contains_key("file_id") {
+                    return MEDIA_TOKENS;
+                }
+                if object.contains_key("audio_url") {
+                    return MEDIA_TOKENS;
+                }
+                // Encrypted reasoning is provider state, not model-visible text.
+                if object.contains_key("encrypted_content") {
+                    return 0;
+                }
+                if let Some(text) = object.get("text").and_then(Value::as_str) {
+                    return self.count(text);
+                }
+                if let Some(value) = object.get("content") {
+                    return self.content_tokens(value);
+                }
+                if let Some(value) = object.get("output") {
+                    return self.content_tokens(value);
+                }
+                if let Some(value) = object.get("summary") {
+                    return self.content_tokens(value);
+                }
+                // Function/custom tool calls carry JSON arguments as a string;
+                // IDs, statuses and type tags are framing rather than context.
+                if let Some(value) = object.get("arguments").or_else(|| object.get("input")) {
+                    return self.content_tokens(value);
+                }
+                object
+                    .iter()
+                    .filter(|(key, _)| {
+                        !matches!(
+                            key.as_str(),
+                            "id" | "type" | "status" | "role" | "call_id" | "name"
+                        )
+                    })
+                    .map(|(_, value)| self.content_tokens(value))
+                    .sum()
+            }
+        }
+    }
+
     fn tool(
         &mut self,
         tool: &Value,
@@ -302,10 +354,6 @@ impl CodexAnalyzer {
         }
         let mut totals: BTreeMap<String, u64> = BTreeMap::new();
         let mut groups: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-        let add =
-            |totals: &mut BTreeMap<String, u64>, category: &str, text: String, this: &mut Self| {
-                *totals.entry(category.into()).or_default() += this.count(&text);
-            };
         for tool in request["tools"].as_array().into_iter().flatten() {
             self.tool(tool, false, &mut totals, &mut groups);
         }
@@ -317,36 +365,67 @@ impl CodexAnalyzer {
                     }
                 }
                 "message" => {
-                    for part in item["content"].as_array().into_iter().flatten() {
-                        let text = part["text"].as_str();
-                        let cat = match text {
-                            Some(t) if t.starts_with("<skills_instructions>") => "skills",
-                            Some(t) if t.contains("<INSTRUCTIONS>") && t.len() < 64000 => {
-                                "memory_files"
-                            }
-                            _ if matches!(item["role"].as_str(), Some("developer" | "system")) => {
-                                "system_prompt"
-                            }
-                            _ => "messages",
-                        };
-                        add(
-                            &mut totals,
-                            cat,
-                            text.map(str::to_owned).unwrap_or_else(|| part.to_string()),
-                            self,
-                        );
+                    let content = item.get("content").unwrap_or(&Value::Null);
+                    let text = content
+                        .as_array()
+                        .and_then(|parts| parts.iter().find_map(|part| part["text"].as_str()))
+                        .or_else(|| content.as_str());
+                    let cat = match text {
+                        Some(t) if t.starts_with("<skills_instructions>") => "skills",
+                        Some(t) if t.contains("<INSTRUCTIONS>") && t.len() < 64000 => {
+                            "memory_files"
+                        }
+                        _ if matches!(item["role"].as_str(), Some("developer" | "system")) => {
+                            "system_prompt"
+                        }
+                        _ => "messages",
+                    };
+                    let tokens = self.content_tokens(content);
+                    if tokens > 0 {
+                        *totals.entry(cat.into()).or_default() += tokens;
                     }
                 }
                 "reasoning" | "compaction" | "context_compaction" => {
-                    // Ciphertext bytes are not model token counts. Leave opaque state
-                    // in the native residual, counting only visible summaries here.
-                    for field in ["summary", "content"] {
-                        if let Some(value) = item.get(field).filter(|v| !v.is_null()) {
-                            add(&mut totals, "messages", value.to_string(), self);
-                        }
+                    // Only visible summaries/content count; content_tokens skips
+                    // encrypted_content and raw media recursively.
+                    let tokens = item
+                        .get("summary")
+                        .map(|value| self.content_tokens(value))
+                        .unwrap_or_default()
+                        .saturating_add(
+                            item.get("content")
+                                .map(|value| self.content_tokens(value))
+                                .unwrap_or_default(),
+                        );
+                    if tokens > 0 {
+                        *totals.entry("messages".into()).or_default() += tokens;
                     }
                 }
-                _ => add(&mut totals, "messages", item.to_string(), self),
+                "custom_tool_call" | "function_call" => {
+                    let tokens = item
+                        .get("input")
+                        .or_else(|| item.get("arguments"))
+                        .map(|value| self.content_tokens(value))
+                        .unwrap_or_default();
+                    if tokens > 0 {
+                        *totals.entry("messages".into()).or_default() += tokens;
+                    }
+                }
+                "custom_tool_call_output" | "function_call_output" => {
+                    let tokens = item
+                        .get("output")
+                        .map(|value| self.content_tokens(value))
+                        .unwrap_or_default();
+                    if tokens > 0 {
+                        *totals.entry("messages".into()).or_default() += tokens;
+                    }
+                }
+                _ => {
+                    let tokens = self.content_tokens(item);
+                    if tokens > 0 {
+                        *totals.entry("messages".into()).or_default() += tokens;
+                    }
+                }
             }
         }
         let estimated: u64 = totals
@@ -547,9 +626,11 @@ impl CodexTraceReader {
                         snapshot["turnId"] = payload["codex_turn_id"].clone();
                         snapshot["requestId"] = payload["inference_call_id"].clone();
                         self.latest = Some(snapshot.clone());
-                        if window > 0 {
-                            out.push(snapshot);
-                        }
+                        // Do not publish this pre-response estimate. Codex can
+                        // report a very different native input total after the
+                        // request completes; publishing both values makes the
+                        // UI oscillate between two context readings. The
+                        // calibrated snapshot below is the first visible one.
                     }
                 }
                 // Requests contain private context and are unnecessary after aggregation.
@@ -575,8 +656,38 @@ impl CodexTraceReader {
             .filter(|v| v["id"] != "free_space" && v["id"] != "unattributed")
             .cloned()
             .collect::<Vec<_>>();
+        let estimated_sum: u64 = categories
+            .iter()
+            .filter(|v| v["kind"] == "used")
+            .filter_map(|v| v["tokens"].as_u64())
+            .sum();
         if total >= estimated {
             categories.push(json!({"id":"unattributed","kind":"used","tokens":total-estimated,"precision":"estimated"}));
+        } else if estimated_sum > total {
+            // A local estimate can exceed the provider's exact input count,
+            // especially when media or provider-specific framing is present.
+            // Never expose categories whose sum is larger than the reported
+            // context. Keep the stable system/tool buckets and bound messages
+            // to the remaining native total; if even those exceed it, expose
+            // one conservative unattributed total instead.
+            let fixed: u64 = categories
+                .iter()
+                .filter(|v| v["id"] != "messages" && v["kind"] == "used")
+                .filter_map(|v| v["tokens"].as_u64())
+                .sum();
+            if fixed > total {
+                categories = vec![
+                    json!({"id":"unattributed","kind":"used","tokens":total,"precision":"estimated"}),
+                ];
+            } else {
+                let remaining = total - fixed;
+                if let Some(messages) = categories.iter_mut().find(|v| v["id"] == "messages") {
+                    messages["tokens"] = json!(remaining);
+                } else {
+                    categories.push(json!({"id":"unattributed","kind":"used","tokens":remaining,"precision":"estimated"}));
+                }
+            }
+            snapshot["categoriesClamped"] = json!(true);
         }
         categories
             .push(json!({"id":"free_space","kind":"free","tokens":window.saturating_sub(total)}));
@@ -689,6 +800,53 @@ mod tests {
         assert!(!snapshot.to_string().contains("private-ciphertext"));
     }
     #[test]
+    fn codex_media_bytes_and_encrypted_reasoning_are_not_counted_as_text() {
+        let mut analyzer = CodexAnalyzer::default();
+        let huge = format!("data:image/png;base64,{}", "A".repeat(2_000_000));
+        let snapshot = analyzer
+            .analyze(
+                &json!({
+                    "input":[
+                        {"type":"message","role":"user","content":[{"type":"input_image","image_url":huge}]},
+                        {"type":"reasoning","encrypted_content":"opaque"},
+                        {"type":"custom_tool_call_output","output":[{"type":"input_image","image_url":huge}]}
+                    ]
+                }),
+                828_400,
+                "m",
+            )
+            .unwrap();
+        assert!(snapshot["estimatedInputTokens"].as_u64().unwrap() < 2_000);
+        assert!(!snapshot.to_string().contains("data:image"));
+        assert!(!snapshot.to_string().contains("opaque"));
+    }
+    #[test]
+    fn codex_calibration_never_leaves_categories_above_native_total() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reader = CodexTraceReader::new(dir.path().into(), "session".into());
+        reader.context = Some(json!({"modelContextWindow":1000}));
+        reader.latest = Some(
+            json!({"provider":"codex","model":"m","source":"codexTrace","precision":"estimated",
+            "estimatedInputTokens":900,"requestId":"call","categories":[
+                {"id":"system_prompt","kind":"used","tokens":100,"precision":"estimated"},
+                {"id":"messages","kind":"used","tokens":800,"precision":"estimated"}],"groups":[]}),
+        );
+        reader.reported = Some(("call".into(), 100, 100));
+        let snapshot = reader.calibrated_snapshot().unwrap();
+        assert_eq!(snapshot["usedTokens"], 100);
+        assert_eq!(snapshot["categoriesClamped"], true);
+        assert_eq!(
+            snapshot["categories"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|v| v["kind"] == "used")
+                .map(|v| v["tokens"].as_u64().unwrap())
+                .sum::<u64>(),
+            100
+        );
+    }
+    #[test]
     fn trace_correlates_response_and_discards_private_payloads() {
         let dir = tempfile::tempdir().unwrap();
         let bundle = dir.path().join("bundle");
@@ -713,9 +871,9 @@ mod tests {
         let mut reader = CodexTraceReader::new(dir.path().into(), "session".into());
         reader.native_usage(&json!({"modelContextWindow":1000}));
         let snapshots = reader.poll();
-        assert_eq!(snapshots.len(), 2);
-        assert_eq!(snapshots[1]["usedTokens"], 110);
-        assert!(!snapshots[1].to_string().contains("PRIVATE"));
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0]["usedTokens"], 110);
+        assert!(!snapshots[0].to_string().contains("PRIVATE"));
         assert!(!bundle.join("payloads/1.json").exists());
         assert!(!bundle.join("payloads/2.json").exists());
         assert!(reader.poll().is_empty());
