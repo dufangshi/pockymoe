@@ -44,3 +44,7 @@ verify 默认 `validation=auto`：从最近可信 runtime release SHA 到最终 
 部署前先运行地址 preflight（`--mask`）：三个地址 secrets 必须齐全，且派生的主机名也要注册 `::add-mask::`，不能用未遮罩的仓库 variables。Relay 的 `relay-rust-canary` 环境可继承仓库 secrets；同名环境 secret 会覆盖仓库值。
 
 Relay 部署还需 `POCKYMOE_RELAY_SSH_FINGERPRINT`、`POCKYMOE_RELAY_HOSTNAME` 和既有 `REMOTE_CODEX_RELAY_DEPLOY_HOST/USER/PASSWORD/PORT` secrets，先运行 `--mask --relay-host`。此部署已确认在 Cloudflare 后：审计 NPM 是否原样保留 visitor header，再通过运行容器到 Relay 的短暂 TCP 连接和宿主机 socket 表观察实际 peer（不能假设 loopback 或 bridge gateway）。同一原始备份下，仅补齐缺失的 peer 信任/visitor-header 配置，保留已有值与备份。失败只输出固定类别；源站不可绕过这一无法从内部证明的属性只输出 `origin-isolation-unverified` 警告，不能冒充认证或现场验证。转发配置与实际 peer 验证仍然是部署门禁。
+
+发布前最终 main SHA 的 `PR checks complete` 必须已成功，workflow 只接受可信 main push 的最新尝试；写入前再次核对。quarantine 的独立非必需 job 失败不阻塞聚合。紧急 `allow_unchecked_ci` 输入仅覆盖此 CI 聚合，日志记录最终 SHA 与原因摘要，不输出任意事故文本；所有资产/签名/扫描/祖先/不可变门禁仍必需。Relay build-only 和 runtime dry-run 不发布，不需要已有 main 聚合。正式发布/部署不取消写入中的运行。
+
+启用 main 保护后，主仓的版本和 `thread-ui.sha` 更新通过 PR 合并，再从 main dispatch；不要直接 push main。共享 UI 仓仍无必需 CI，保持先推送完整 SHA，再在主仓 PR 更新 pin。

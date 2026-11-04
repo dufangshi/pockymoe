@@ -3,6 +3,10 @@ name: Relay Deploy
 on:
   workflow_dispatch:
     inputs:
+      allow_unchecked_ci:
+        description: Emergency CI override reason (logged as a digest)
+        required: false
+        type: string
       deploy:
         description: Replace the public relay after building (disable for a build-only check)
         type: boolean
@@ -10,10 +14,11 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: relay-deploy-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   native:
@@ -25,6 +30,15 @@ jobs:
       RUST_VERSION: 1.89.0
     steps:
       - uses: actions/checkout@v6
+      - name: Require the final main SHA aggregate before deploying
+        if: inputs.deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERRIDE_REASON: ${{ inputs.allow_unchecked_ci }}
+        run: |
+          args=()
+          if [ -n "$OVERRIDE_REASON" ]; then args+=(--allow-unchecked-ci "$OVERRIDE_REASON"); fi
+          python3 scripts/required_aggregate.py --repository dufangshi/pockymoe --sha "$GITHUB_SHA" "${args[@]}"
       - name: Install pinned Rust toolchain
         run: rustup toolchain install "${RUST_VERSION}" --profile minimal
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
@@ -153,6 +167,15 @@ jobs:
           source: remote-codex-rust-relay-${{ github.sha }}.tgz
           target: /tmp
 
+      - name: Recheck the aggregate before writing the relay service
+        if: inputs.deploy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERRIDE_REASON: ${{ inputs.allow_unchecked_ci }}
+        run: |
+          args=()
+          if [ -n "$OVERRIDE_REASON" ]; then args+=(--allow-unchecked-ci "$OVERRIDE_REASON"); fi
+          python3 scripts/required_aggregate.py --repository dufangshi/pockymoe --sha "$GITHUB_SHA" "${args[@]}"
       - name: Replace only the Rust relay service
         if: inputs.deploy
         uses: appleboy/ssh-action@v1.0.3
