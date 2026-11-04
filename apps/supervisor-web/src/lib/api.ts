@@ -1316,6 +1316,24 @@ export async function refreshChatImageUrl(src: string): Promise<string> {
   return url.href;
 }
 
+/** Read only our image/file endpoints through the page transport, independent
+ * of worker control. The mounted shared image owns the returned bytes/URL. */
+export async function recoverChatImage(src: string, signal: AbortSignal): Promise<Blob | null> {
+  const url = new URL(src, window.location.href);
+  if (!['http:', 'https:'].includes(url.protocol) ||
+      ![window.location.origin, relayOrigin()].includes(url.origin) ||
+      !/\/api\/(?:threads\/[^/]+\/(?:assets\/image|linked-files\/raw)|workspaces\/[^/]+\/files\/raw)$/.test(url.pathname)) return null;
+  url.searchParams.delete('_imageRetry');
+  url.searchParams.delete('token');
+  url.searchParams.delete('relaySession');
+  const init = withAuthInit({ cache: 'no-store', credentials: 'include', signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) });
+  const response = deviceRoute(url)
+    ? await encryptedBrowserFetch(url.href, init, undefined, { registerWorker: false })
+    : await fetch(url.href, init);
+  if (!response.ok) throw new ApiError(response.status, await readApiErrorPayload(response));
+  return response.blob();
+}
+
 export function buildThreadImageAssetUrl(
   threadId: string,
   input: { path: string; variant?: 'thumbnail' | undefined },
