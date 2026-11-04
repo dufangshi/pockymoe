@@ -64,4 +64,22 @@ checks it with `scripts/check-static-web.mjs` and publishes it to GitHub Pages. 
 can also be dispatched manually from `main`. `relay-deploy.yml` builds and deploys
 only the relay.
 
+The isolated chat-image pipeline has its own config and starts a real API-only
+relay, static Web build and fake-harness Supervisor. Run it with assigned ports
+and one browser project, after building the Rust binary and shared UI:
+
+```sh
+E2E_RELAY_PORT=19260 E2E_WEB_PORT=19261 E2E_EXPECT_DIAGNOSIS=1 \
+  pnpm exec playwright test --config e2e/chat-image-pipeline.config.ts --project=desktop-chromium
+```
+
+`E2E_SUPERVISOR_BINARY` selects a legacy runtime; `E2E_ELECTRON_EXECUTABLE`
+selects an independently packaged desktop client with an isolated profile.
+`E2E_STATIC_WEB_DIST` optionally reuses a static build configured for that relay
+port. The test sends a generated PNG through the real composer, activates a
+worker update, switches threads without reloading, moves/restores the real
+attachment to verify diagnosis and Retry, and damages the thumbnail cache to
+verify original fallback. Image traces and video stay off for private local inputs;
+visual captures refuse private inputs and remain in ignored `.scratch/`.
+
 Runtime publication uses the manual `runtime-release.yml` workflow: workspace release gate, four native platforms and pinned Web build, complete asset assembly, then immutable GitHub publication. No npm publication job remains.
