@@ -13,6 +13,7 @@ import path from 'node:path';
 
 const MAX_AGE_HOURS = Number(process.env.CARRY_MAX_AGE_HOURS ?? 72);
 const MAX_MEGABYTES = Number(process.env.CARRY_MAX_MEGABYTES ?? 300);
+const FETCH_CONCURRENCY = 6;
 const HISTORY = 'asset-history.json';
 const NAME = /^[A-Za-z0-9_.-]+\.(?:js|css|woff2?|ttf|svg|png|webp)$/;
 // References between Vite's assets: "assets/x.js" in the entry and in preload
@@ -58,12 +59,19 @@ const queue = [];
 const html = await fetchBytes(new URL('/', origin));
 if (html) for (const match of new TextDecoder().decode(html).matchAll(PAGE_REFERENCE)) queue.push(match[1]);
 while (queue.length) {
-  const name = queue.shift();
-  if (live.has(name) || !NAME.test(name)) continue;
-  const bytes = await fetchBytes(new URL(`/assets/${name}`, origin));
-  live.set(name, bytes);
-  if (!bytes || !/\.(?:js|css)$/.test(name)) continue;
-  for (const match of new TextDecoder().decode(bytes).matchAll(REFERENCE)) if (!live.has(match[1])) queue.push(match[1]);
+  const batch = [];
+  while (queue.length && batch.length < FETCH_CONCURRENCY) {
+    const name = queue.shift();
+    if (live.has(name) || !NAME.test(name)) continue;
+    live.set(name, null); // Reserve before awaiting to deduplicate dependencies.
+    batch.push(name);
+  }
+  const results = await Promise.all(batch.map(async name => [name, await fetchBytes(new URL(`/assets/${name}`, origin))]));
+  for (const [name, bytes] of results) {
+    live.set(name, bytes);
+    if (!bytes || !/\.(?:js|css)$/.test(name)) continue;
+    for (const match of new TextDecoder().decode(bytes).matchAll(REFERENCE)) if (!live.has(match[1])) queue.push(match[1]);
+  }
 }
 for (const [name, bytes] of live) if (bytes) history.set(name, now);
 
@@ -73,19 +81,26 @@ let budget = MAX_MEGABYTES * 1024 * 1024;
 for (const name of current) budget -= (await stat(path.join(assetsDir, name))).size;
 const carried = {};
 let count = 0;
-for (const [name, at] of [...history].sort((a, b) => b[1] - a[1])) {
-  if (current.has(name) || at < oldest) continue;
-  const bytes = live.get(name) ?? await fetchBytes(new URL(`/assets/${name}`, origin));
-  if (!bytes || bytes.byteLength > budget) continue;
-  budget -= bytes.byteLength;
-  await mkdir(assetsDir, { recursive: true });
-  await writeFile(path.join(assetsDir, name), bytes);
-  carried[name] = at;
-  count += 1;
+const candidates = [...history].sort((a, b) => b[1] - a[1])
+  .filter(([name, at]) => !current.has(name) && at >= oldest);
+for (let offset = 0; offset < candidates.length && budget > 0; offset += FETCH_CONCURRENCY) {
+  const batch = candidates.slice(offset, offset + FETCH_CONCURRENCY);
+  const bytesByName = await Promise.all(batch.map(async ([name]) =>
+    live.get(name) ?? await fetchBytes(new URL(`/assets/${name}`, origin))));
+  // Preserve newest-first budget decisions independent of network completion order.
+  for (let index = 0; index < batch.length; index += 1) {
+    const [name, at] = batch[index], bytes = bytesByName[index];
+    if (!bytes || bytes.byteLength > budget) continue;
+    budget -= bytes.byteLength;
+    await mkdir(assetsDir, { recursive: true });
+    await writeFile(path.join(assetsDir, name), bytes);
+    carried[name] = at;
+    count += 1;
+  }
 }
 
 const files = { ...carried };
 for (const name of current) files[name] = now;
 await writeFile(path.join(dist, HISTORY), `${JSON.stringify({ version: 1, files })}\n`);
 const used = MAX_MEGABYTES - budget / 1024 / 1024;
-console.log(`carried ${count} earlier assets (${current.size} current, ${used.toFixed(1)} MB in all) from ${origin}`);
+console.log(`carried ${count} earlier assets (${current.size} current, ${used.toFixed(1)} MB in all)`);

@@ -27,13 +27,13 @@ GitHub Releases 是 runtime 的权威版本。不要发布新的 runtime/npm 包
 
 ```sh
 gh workflow run runtime-release.yml --ref PUSHED_REF \
-  -f channel=latest -f thread_ui_sha=FULL_PUBLISHED_UI_SHA
+  -f channel=latest -f validation=auto -f thread_ui_sha=FULL_PUBLISHED_UI_SHA
 gh run watch RUN_ID --interval 30 --exit-status
 ```
 
 `dry-run` 只在用户明确要求或已授权发布需要验证 job/artifact 链路时调用。保存唯一 run ID/headSha，只保留一个 watch 进程，工具单次等待不超过 60 秒。失败先读日志，不盲目重跑或覆盖同版本资产。
 
-verify、四平台 native、固定 UI 的 Web 构建并行，package 依赖全部成功后才能 release。核对 GitHub 版本、四平台资产、Web ZIP、setup.sh/setup.ps1、runtime-version.txt 和 SHA256SUMS，下载代表平台验证真实版本。GitHub 查询失败不等于尚未发布。没有 npm publish job。
+verify 默认 `validation=auto`：从最近可信 runtime release SHA 到最终 SHA 的完整 diff 选择受影响 crate 及其 workspace 消费者测试；数据库、迁移、登录/鉴权、更新代码都遵循相同规则，不强制全 workspace。只有显式 `validation=full` 才跑全 workspace。verify、四平台 native、固定 UI 的 Web 构建并行，package 依赖全部成功后才能 release。`channel=dry-run` 保留完整构建/组装/扫描链但不发布；不能跳过祖先检查、四平台、固定 Web pin、checksums、版本 smoke 和不可变发布约束。Windows 单测试使用共享生产 launcher 的小型 rustc smoke，不重新链接整个 Supervisor release 测试二进制。核对 GitHub 版本、四平台资产、Web ZIP、setup.sh/setup.ps1、runtime-version.txt 和 SHA256SUMS，下载代表平台验证真实版本。GitHub 查询失败不等于尚未发布。没有 npm publish job。
 
 公开网页及 setup 脚本是 GitHub Pages 静态站点（https://app.example.com）：main 上 Web 路径、setup 脚本或 `thread-ui.sha` 的推送（或手动 dispatch）触发 `pages-deploy.yml`，用 `thread-ui.sha` 中的共享 UI 完整 SHA 构建并部署。共享 UI 提交须先推送到其 main；Release 资产可用后，确认主仓 main 的 `thread-ui.sha` 是同一完整 SHA，不是则提交并推送。Relay（https://relay.example.com）只提供 API；Relay 代码有变更时从 main dispatch `relay-deploy.yml`，它只部署 Relay，没有 `thread_ui_sha` 输入。重启设备 Supervisor 不会更新公开网页。按用户已有授权执行发布/部署，技能不额外扩大授权。
 
@@ -44,3 +44,7 @@ verify、四平台 native、固定 UI 的 Web 构建并行，package 依赖全�
 部署前先运行地址 preflight（`--mask`）：三个地址 secrets 必须齐全，且派生的主机名也要注册 `::add-mask::`，不能用未遮罩的仓库 variables。Relay 的 `relay-rust-canary` 环境可继承仓库 secrets；同名环境 secret 会覆盖仓库值。
 
 Relay 部署还需 `POCKYMOE_RELAY_SSH_FINGERPRINT`、`POCKYMOE_RELAY_HOSTNAME` 和既有 `REMOTE_CODEX_RELAY_DEPLOY_HOST/USER/PASSWORD/PORT` secrets，先运行 `--mask --relay-host`。此部署已确认在 Cloudflare 后：审计 NPM 是否原样保留 visitor header，再通过运行容器到 Relay 的短暂 TCP 连接和宿主机 socket 表观察实际 peer（不能假设 loopback 或 bridge gateway）。同一原始备份下，仅补齐缺失的 peer 信任/visitor-header 配置，保留已有值与备份。失败只输出固定类别；源站不可绕过这一无法从内部证明的属性只输出 `origin-isolation-unverified` 警告，不能冒充认证或现场验证。转发配置与实际 peer 验证仍然是部署门禁。
+
+发布前最终 main SHA 的 `PR checks complete` 必须已成功，workflow 只接受可信 main push 的最新尝试；写入前再次核对。quarantine 的独立非必需 job 失败不阻塞聚合。紧急 `allow_unchecked_ci` 输入仅覆盖此 CI 聚合，日志记录最终 SHA 与原因摘要，不输出任意事故文本；所有资产/签名/扫描/祖先/不可变门禁仍必需。Relay build-only 和 runtime dry-run 不发布，不需要已有 main 聚合。正式发布/部署不取消写入中的运行。
+
+启用 main 保护后，主仓的版本和 `thread-ui.sha` 更新通过 PR 合并，再从 main dispatch；不要直接 push main。共享 UI 仓仍无必需 CI，保持先推送完整 SHA，再在主仓 PR 更新 pin。
