@@ -3,8 +3,10 @@
 Ordinary pull requests run `PR checks` (`.github/workflows/ci.yml`). Checks are
 selected from the PR's changed paths, and a newer push cancels the older PR run.
 The final merged SHA on `main` also produces the aggregate used by release and
-deployment gates; direct pushes are checked, but should be replaced with PRs
-before branch protection is enabled.
+deployment gates; direct pushes are rejected: `main` in this repository and in `dufangshi/pockymoe-app`
+requires the stable aggregate through branch protection, including for admins, and
+does not require branches to be up to date, because release gates check the final SHA.
+The shared UI repository has no required check; `thread-ui.sha` is checked here.
 
 | Changed area | Automatic checks |
 | --- | --- |
@@ -113,7 +115,7 @@ exact final SHA from the trusted main push workflow. Client publication similarl
 requires `Client checks complete` in the client repository. The latest run attempt
 must have a successful aggregate; missing, pending, failed or unqueryable results
 block publication. A separate non-required quarantine failure is ignored by this
-gate. No repository protection setting is changed by these workflows.
+gate. Branch protection is a repository setting and these workflows do not change it.
 
 An emergency `allow_unchecked_ci` dispatch reason (client CLI:
 `--allow-unchecked-ci REASON`) bypasses only this CI aggregate. The log records the
