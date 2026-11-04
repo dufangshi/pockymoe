@@ -125,3 +125,19 @@ not cancelled in the middle of writes; newer PR checks still cancel old PR runs.
 Before requiring the stable aggregate in branch protection, migrate documented
 direct pushes to main (including shared UI pin updates) to PRs. The shared UI
 repository has no workflow and must not be given a required check.
+
+## Build reuse boundaries
+
+Web PR, runtime Web and explicit full jobs cache the pnpm store using both the
+root and published shared UI lockfiles. Client Windows jobs separately cache
+public Electron and electron-builder downloads by OS, architecture and lockfile;
+PR merge-ref caches do not become trusted main release artifacts. Existing cargo
+caches remain in place. No signing key, account profile, injected fixture package
+or signed release artifact is cached or promoted across trust boundaries.
+
+Pages skips deployments for proven version-field-only pushes. Its earlier-asset
+carry uses at most six fetches at once, deduplicates dependencies and preserves
+newest-first byte/age limits; logs omit the deployment origin. Publication/deploy
+write jobs are not cancelled mid-write. Build artifact promotion across jobs or
+from local validation to publication is deferred until provenance and final-byte
+identity can be verified, rather than silently trusting a PR artifact.

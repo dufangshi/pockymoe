@@ -136,10 +136,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          package-manager-cache: false
       - uses: pnpm/action-setup@v4
         with:
           version: 10.11.1
@@ -155,6 +151,13 @@ jobs:
           git -C pockymoe-thread-ui cat-file -e "$pin^{commit}"
           git -C pockymoe-thread-ui merge-base --is-ancestor "$pin" FETCH_HEAD
           git -C pockymoe-thread-ui checkout --detach "$pin"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            pockymoe-thread-ui/pnpm-lock.yaml
       - name: Install thread UI dependencies
         run: pnpm --dir ./pockymoe-thread-ui install --frozen-lockfile
       - name: Install workspace dependencies
@@ -178,7 +181,7 @@ jobs:
           node-version: '24'
           package-manager-cache: false
       - name: Test npm scripts without building or installing the product
-        run: node --test scripts/publish-npm-release.test.mjs scripts/npm-launcher-download.test.mjs scripts/npm-launcher-relay.test.mjs scripts/supervisor-update.test.mjs
+        run: node --test scripts/carry-web-assets.test.mjs scripts/publish-npm-release.test.mjs scripts/npm-launcher-download.test.mjs scripts/npm-launcher-relay.test.mjs scripts/supervisor-update.test.mjs
       - name: Verify required aggregate publication policy
         run: python3 -m unittest discover -s scripts -p test_required_aggregate.py
       - name: Check setup and real systemd unit parsing without starting services
