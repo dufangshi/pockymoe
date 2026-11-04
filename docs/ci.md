@@ -77,7 +77,8 @@ E2E_RELAY_PORT=19260 E2E_WEB_PORT=19261 E2E_EXPECT_DIAGNOSIS=1 \
 selects an independently packaged desktop client with an isolated profile.
 `E2E_STATIC_WEB_DIST` optionally reuses a static build configured for that relay
 port. The test sends a generated PNG through the real composer, activates a
-worker update, switches threads without reloading, moves/restores the real
+worker update, checks native media without a controller, switches threads
+without reloading, moves/restores the real
 attachment to verify diagnosis and Retry, and damages the thumbnail cache to
 verify original fallback. Image traces and video stay off for private local inputs;
 visual captures refuse private inputs and remain in ignored `.scratch/`.

@@ -284,6 +284,37 @@ test('real composer image pipeline survives settlement, switch and Retry', async
     expect(facts.some(f => f.event === 'response' && f.status === 200 && f.worker === true)).toBe(true);
     facts.push({ event: 'settled', controller: await page.evaluate(() => !!navigator.serviceWorker.controller) });
     facts.push(...await page.evaluate(() => (window as unknown as { __imageFacts?: PipelineFact[] }).__imageFacts ?? []));
+    // The API-only origin has no worker. Read the same native image there
+    // with this browser's actual relay cookie (Electron: the same partition).
+    let uncontrolled: Page;
+    if (desktop) {
+      await desktop.evaluate(({ BrowserWindow }, url) => {
+        const probe = new BrowserWindow({ show: false, webPreferences: { partition: 'persist:remote-codex', sandbox: true, contextIsolation: true, nodeIntegration: false } });
+        void probe.loadURL(url);
+      }, `${relay}/healthz`);
+      await expect.poll(() => desktop!.windows().some(p => p.url() === `${relay}/healthz`)).toBe(true);
+      uncontrolled = desktop.windows().find(p => p.url() === `${relay}/healthz`)!;
+    } else {
+      uncontrolled = await context.newPage();
+      await uncontrolled.goto(`${relay}/healthz`);
+    }
+    try {
+      expect(await uncontrolled.evaluate(() => !!navigator.serviceWorker.controller)).toBe(false);
+      const probeUrl = new URL((await image.getAttribute('src'))!);
+      probeUrl.searchParams.set('_workerProbe', '1');
+      const response = uncontrolled.waitForResponse(r => new URL(r.url()).searchParams.get('_workerProbe') === '1');
+      const decoded = await uncontrolled.evaluate(url => new Promise<boolean>(done => {
+        const probe = new Image();
+        probe.onload = () => { probe.remove(); done(true); };
+        probe.onerror = () => { probe.remove(); done(false); };
+        document.body.append(probe); probe.src = url;
+      }), probeUrl.href);
+      const unhandled = await response;
+      expect(decoded).toBe(false);
+      expect(unhandled.status()).toBe(403);
+      expect(unhandled.fromServiceWorker()).toBe(false);
+      facts.push({ event: 'without-worker', status: unhandled.status(), type: unhandled.headers()['content-type'] });
+    } finally { await uncontrolled.close(); }
     // A new worker has no per-page map or cached transport keys. Let a real
     // update activate while this page stays mounted, then load media again.
     const workerFile = join(staticDist, 'relayServiceWorker.js');
