@@ -12,10 +12,13 @@ export async function diagnoseChatImage(src: string): Promise<string | null> {
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(path));
   const pathHash = Array.from(new Uint8Array(hash)).map(byte => byte.toString(16).padStart(2, '0')).join('');
   let status = 0, contentType = '', code = '';
+  const workerControlled = Boolean(navigator.serviceWorker?.controller);
+  let workerHandled: boolean | null = null;
   let missing = false;
   try {
     const response = await fetch(url, { credentials: 'include', cache: 'no-store', signal: AbortSignal.timeout(10_000) });
     status = response.status;
+    workerHandled = response.headers.get('x-pockymoe-relay-worker') === 'handled';
     // Only the MIME essence, never arbitrary header parameters, reaches logs.
     const type = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() ?? '';
     contentType = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type) ? type : '';
@@ -29,7 +32,7 @@ export async function diagnoseChatImage(src: string): Promise<string | null> {
         /no such file or directory|os error 2\b/i.test(body.message);
     } else await response.body?.cancel();
   } catch { /* Status zero records a network/worker failure without leaking it. */ }
-  console.info('chat-image-failure', { status, contentType, pathHash });
+  console.info('chat-image-failure', { status, contentType, pathHash, workerControlled, workerHandled });
   if (status === 401) return translate('chat.imageSessionExpired');
   if (status === 404 || missing) return translate('chat.imageFileMissing');
   if (['device_offline', 'device_unresponsive'].includes(code)) return translate('chat.imageDeviceOffline');

@@ -28,7 +28,7 @@ import { useWorkbenchNavigation } from './useWorkbenchNavigation';
 import { useThreadDirectory } from './useThreadDirectory';
 import { useScopedState } from './useScopedState';
 import { useOptimisticAttachmentPreviews } from './useOptimisticAttachmentPreviews';
-import { ImageRecoveryProvider, ImageDiagnosisProvider } from '@pockymoe/thread-ui';
+import { ImageFallbackProvider, ImageRecoveryProvider, ImageDiagnosisProvider } from '@pockymoe/thread-ui';
 import { diagnoseChatImage } from '../lib/chatImageDiagnosis';
 import { useSubscriptionUsage } from './useSubscriptionUsage';
 import { useThreadTabStatus } from '../lib/useThreadTabStatus';
@@ -130,6 +130,7 @@ import {
   terminateShell,
   buildThreadImageAssetUrl,
   refreshChatImageUrl,
+  recoverChatImage,
   cancelPendingSteer,
   steerPendingPrompt,
   steerSubmittedPrompt,
@@ -4001,6 +4002,7 @@ export function ThreadDetailPage() {
 
   return (
     <ImageRecoveryProvider value={refreshChatImageUrl}>
+    <ImageFallbackProvider value={recoverChatImage}>
     <ImageDiagnosisProvider value={diagnoseChatImage}>
     {nativeResult && <LongTextDialog open title={nativeResult.title} text={nativeResult.text} onClose={() => setNativeResult(null)} />}
     {relayThreadIsOwner && relayRouteDeviceId && <HostFeatureGate feature="previews"><PortMappingsControl key={relayRouteDeviceId} deviceId={relayRouteDeviceId} open={portsOpen} onOpenChange={setPortsOpen} /></HostFeatureGate>}
@@ -4131,6 +4133,7 @@ export function ThreadDetailPage() {
       {...(shellComposerProps ? { shellComposerProps } : {})}
     />
     </ImageDiagnosisProvider>
+    </ImageFallbackProvider>
     </ImageRecoveryProvider>
   );
 }

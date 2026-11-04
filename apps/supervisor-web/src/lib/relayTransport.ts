@@ -67,6 +67,9 @@ if (typeof navigator !== 'undefined' && navigator.serviceWorker)
   navigator.serviceWorker.addEventListener('message', (event) => {
     if (event.data?.type === 'remote-codex-transport')
       report(event.data.status);
+    if (event.data?.type === 'pockymoe-page-relay-request' && event.ports[0]) {
+      try { event.ports[0].postMessage({ origin: relayOrigin() }); } catch { /* Host configuration may still be starting. */ }
+    }
     if (event.data?.type === 'pockymoe-page-fetch' && event.ports[0])
       void answerPageFetch(event.data, event.ports[0]);
   });
@@ -132,7 +135,7 @@ export async function ensureRelayWorker() {
   })();
   try {
     await workerReady;
-    if (window.pockymoeHost) {
+    {
       // A worker restart loses per-page configuration. Acknowledge it before
       // media/download reads can start, even if registration was already ready.
       await new Promise<void>((resolve, reject) => {
@@ -150,13 +153,13 @@ export async function ensureRelayWorker() {
     throw e;
   }
 }
-export async function encryptedBrowserFetch(url: string, init: RequestInit, threadScope?: string) {
+export async function encryptedBrowserFetch(url: string, init: RequestInit, threadScope?: string, options: { registerWorker?: boolean } = {}) {
   const target = new URL(relayUrl(url), window.location.href);
   const deviceId = deviceRoute(target)?.deviceId;
   const read = () => exchange(
       new Request(target, init),
       threadScope ?? scopeFromPage(window.location.href, deviceId),
-      async () => { await ensureRelayWorker(); },
+      options.registerWorker === false ? undefined : async () => { await ensureRelayWorker(); },
     );
   const method = (init.method ?? 'GET').toUpperCase();
   return (await (deviceId && ['GET', 'HEAD'].includes(method)

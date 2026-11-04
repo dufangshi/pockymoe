@@ -15,7 +15,7 @@ vi.mock('./relayTransportCrypto', () => ({
   },
 }));
 vi.mock('./accountVaultState', () => ({ accountRevocations: state.revocations }));
-import { probeDeviceEncryption, getTransportStatus } from './relayTransport';
+import { encryptedBrowserFetch, probeDeviceEncryption, getTransportStatus } from './relayTransport';
 beforeEach(() => {
   // jsdom's AbortSignal is not one Node's own Request accepts; only the URL matters here.
   vi.stubGlobal('Request', class { url: string; constructor(input: URL | string) { this.url = String(input); } });
@@ -55,4 +55,12 @@ it('invalidates a locally revoked device status even when the relay revocation r
   state.revocations.mockImplementation(async (refresh?: boolean) => { if (refresh) throw new Error('offline'); return [{ kind: 'device', subjectId: 'removed' }]; });
   window.dispatchEvent(new Event('pockymoe-account-revocations-changed'));
   await vi.waitFor(() => expect(getTransportStatus('removed')).toMatchObject({ state: 'identity-changed', certificateVerified: false }));
+});
+
+it('lets page image reads encrypt without any worker-registration prerequisite', async () => {
+  await encryptedBrowserFetch('/relay/devices/device/api/threads/thread/assets/image?path=a.png', {}, undefined, { registerWorker: false });
+  expect(state.exchange.mock.calls[0]![2]).toBeUndefined();
+  state.exchange.mockClear();
+  await encryptedBrowserFetch('/relay/devices/device/api/version', {});
+  expect(state.exchange.mock.calls[0]![2]).toBeTypeOf('function');
 });

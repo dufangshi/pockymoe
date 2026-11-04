@@ -1,3 +1,4 @@
+import { exerciseImageAgeing } from './helpers/imageAgeing';
 import { _electron as electron, expect, test, type BrowserContext, type Page } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -12,6 +13,13 @@ import { extname, join, normalize, resolve } from 'node:path';
 // API-only relay, the static Web build served like GitHub Pages (no response
 // headers, 404.html fallback) on another origin, and a fake-runtime device.
 // Set E2E_STATIC_WEB_DIST to reuse a static build made for E2E_RELAY_PORT.
+// E2E_IMAGE_AGEING=1 runs the age matrix; E2E_IMAGE_BASELINE=1 records failures
+// without asserting the fix. E2E_IMAGE_AGEING_CORE_ONLY=1 selects the six ordinary
+// events. Add --headed + E2E_VERIFY_HIDDEN=1 for a real minimized Chromium window.
+// On macOS, compile e2e/fixtures/image-ageing/clock.c with clang -dynamiclib and
+// pass its absolute path as E2E_CLOCK_LIBRARY to verify actual key expiry.
+// E2E_ELECTRON_EXECUTABLE selects an isolated packaged app; its caller owns
+// deleting/unregistering that package once all runs finish.
 test.describe.configure({ mode: 'serial' });
 test.use({ actionTimeout: 15_000 });
 
@@ -48,10 +56,11 @@ let staticDist = '';
 let desktop: Awaited<ReturnType<typeof electron.launch>> | undefined;
 let context: BrowserContext;
 let page: Page;
+let clockFile = "";
 const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(POCKYMOE|REMOTE_CODEX|VITE)_/.test(name)));
 
 function start(command: string, args: string[], extra: Record<string, string>) {
-  const child = spawn(command, args, { cwd: resolve('.'), env: { ...env, HOME: join(root, 'home'), ...extra }, stdio: 'ignore', detached: process.platform !== 'win32' });
+  const child = spawn(command, args, { cwd: resolve('.'), env: { ...env, HOME: join(root, 'home'), ...extra }, stdio: 'ignore', detached: process.platform !== 'win32', timeout: 600_000 });
   processes.push(child);
   return child;
 }
@@ -107,6 +116,7 @@ test.beforeAll(async ({ browser }) => {
   expect(Number.isInteger(webPort) && webPort > 0 && webPort !== relayPort, 'Set assigned E2E_WEB_PORT').toBe(true);
   root = await mkdtemp(join(tmpdir(), 'pockymoe-static-origin-'));
   await mkdir(join(root, 'home'));
+  if (process.env.E2E_CLOCK_LIBRARY) { clockFile = join(root, 'clock-offset'); await writeFile(clockFile, '0'); }
   let dist = process.env.E2E_STATIC_WEB_DIST ?? '';
   if (!dist) {
     dist = join(root, 'web');
@@ -154,7 +164,8 @@ test.afterAll(async () => {
     if (child.pid && process.platform !== 'win32') {
       try { process.kill(-child.pid, 'SIGTERM'); } catch { /* process group already exited */ }
     } else child.kill('SIGTERM');
-    await exited;
+    const force = setTimeout(() => { if (child.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} } }, 3_000);
+    await exited; clearTimeout(force);
   }
   if (root && process.env.E2E_KEEP_FIXTURE !== '1') await rm(root, { recursive: true, force: true });
 });
@@ -200,13 +211,14 @@ test('separate static origin registers with a relay cookie and loads devices', a
 });
 
 
-test('real composer image pipeline survives settlement, switch and Retry', async () => {
-  test.setTimeout(180_000);
+test('real composer image pipeline and worker ageing recover without restart', async () => {
+  test.setTimeout(process.env.E2E_IMAGE_AGEING === '1' ? 360_000 : 180_000);
   const created = await relayApi('/relay/devices', 'POST', { name: 'Image pipeline device' });
   expect(created.status).toBe(200);
   const deviceId: string = created.data.device.id;
   const port = String(await freePort());
   const supervisor = start(resolve(process.env.E2E_SUPERVISOR_BINARY ?? 'target/debug/pockymoe'), ['relay-supervisor'], {
+    ...(clockFile ? { DYLD_INSERT_LIBRARIES: resolve(process.env.E2E_CLOCK_LIBRARY!), POCKYMOE_TEST_CLOCK_FILE: clockFile } : {}),
     HOST: '127.0.0.1', PORT: port, POCKYMOE_RELAY_SUPERVISOR_PORT: port,
     POCKYMOE_RELAY_SERVER_URL: relay, POCKYMOE_RELAY_AGENT_TOKEN: created.data.token,
     POCKYMOE_DATABASE_PATH: join(root, 'device.sqlite'), POCKYMOE_WORKSPACE_ROOT: join(root, 'workspaces'),
@@ -283,6 +295,12 @@ test('real composer image pipeline survives settlement, switch and Retry', async
     await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
     expect(facts.some(f => f.event === 'response' && f.status === 200 && f.worker === true)).toBe(true);
     facts.push({ event: 'settled', controller: await page.evaluate(() => !!navigator.serviceWorker.controller) });
+    if (process.env.E2E_IMAGE_AGEING === '1') {
+      await exerciseImageAgeing({ page, context, desktop, facts, workerFile: join(staticDist, 'relayServiceWorker.js'),
+        relay, source: (await image.getAttribute('src'))!, workspace: work, clockFile, png: await readFile(input), baseline: process.env.E2E_IMAGE_BASELINE === '1' });
+      return;
+    }
+
     facts.push(...await page.evaluate(() => (window as unknown as { __imageFacts?: PipelineFact[] }).__imageFacts ?? []));
     // The API-only origin has no worker. Read the same native image there
     // with this browser's actual relay cookie (Electron: the same partition).
@@ -355,7 +373,7 @@ test('real composer image pipeline survives settlement, switch and Retry', async
       await page.reload();
       const mark = page.locator('[data-role="user"] .image-recovery-error .error-mark').last();
       await expect(mark).toBeVisible();
-      expect(facts.some(f => f.event === 'response' && f.status === 400 && f.retry === true && f.worker === true)).toBe(true);
+      expect(facts.some(f => f.event === 'response' && f.status === 400 && f.worker === true)).toBe(true);
       if (process.env.E2E_EXPECT_DIAGNOSIS === '1') {
         await expect.poll(() => facts.filter(f => f.event === 'diagnosis').length).toBe(1);
         await mark.click();
@@ -380,8 +398,8 @@ test('real composer image pipeline survives settlement, switch and Retry', async
     await page.locator('[data-role="user"] .image-recovery-error .error-mark').last().click();
     await page.getByRole('button', { name: 'Retry', exact: true }).click();
     await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
-    expect((await image.getAttribute('src'))!).toContain('_imageRetry=');
-    expect(facts.some(f => f.event === 'response' && f.status === 200 && f.retry === true && f.worker === true)).toBe(true);
+    expect((await image.getAttribute('src'))!).toMatch(/^blob:/);
+    expect(facts.some(f => f.event === 'response' && f.status === 200 && f.worker === false)).toBe(true);
     // A damaged cached thumbnail is an actual image response that cannot decode;
     // the original endpoint still works and must rescue the tile.
     if (process.env.E2E_CORRUPT_THUMBNAIL !== '0') {
@@ -391,15 +409,14 @@ test('real composer image pipeline survives settlement, switch and Retry', async
       await writeFile(join(cache, cached[0]!), 'damaged thumbnail cache');
       await clearMediaCache();
       await page.reload();
-      await expect(image).toHaveAttribute('src', /_imageRetry=/);
-      await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
-      expect(new URL((await image.getAttribute('src'))!).searchParams.has('variant')).toBe(false);
+      await expect(image).toHaveAttribute('src', /^blob:/);
+      await expect.poll(() => image.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(320);
       facts.push({ event: 'original-fallback', status: 200 });
     }
   } finally {
     facts.push(...await page.evaluate(() => (window as unknown as { __imageFacts?: PipelineFact[] }).__imageFacts ?? []));
-    await mkdir('.scratch/chat-image-2', { recursive: true });
-    await writeFile(`.scratch/chat-image-2/pipeline-${desktop ? 'electron' : 'chromium'}-${process.env.E2E_SUPERVISOR_LABEL ?? 'main'}.json`, JSON.stringify(facts, null, 2));
+    await mkdir('.scratch/chat-image-3', { recursive: true });
+    await writeFile(`.scratch/chat-image-3/pipeline-${desktop ? 'electron' : 'chromium'}-${process.env.E2E_SUPERVISOR_LABEL ?? 'main'}.json`, JSON.stringify(facts, null, 2));
     console.log('Pipeline result:', JSON.stringify({ engine: desktop ? 'electron' : 'chromium', responses: facts.filter(f => f.event === 'response').length, diagnoses: facts.filter(f => f.event === 'diagnosis').length, originalFallback: facts.some(f => f.event === 'original-fallback') }));
   }
 });
