@@ -1,14 +1,17 @@
 name: PR checks
 
 on:
+  push:
+    branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   contents: read
   pull-requests: read
 
 concurrency:
-  group: pr-checks-${{ github.event.pull_request.number }}
+  group: pr-checks-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -41,49 +44,17 @@ jobs:
       thread_contract: ${{ steps.filter.outputs.thread_contract }}
       treer_packaging: ${{ steps.filter.outputs.treer_packaging }}
     steps:
-      - uses: dorny/paths-filter@v3
-        id: filter
+      - uses: actions/checkout@v6
         with:
-          filters: |
-            rust:
-              - '.cargo/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'rust-toolchain*'
-              - 'rustfmt.toml'
-              - '.rustfmt.toml'
-              - 'crates/**'
-              - 'migrations/**'
-            web:
-              - 'apps/supervisor-web/**'
-              - 'themes/**'
-              - 'packages/shared/**'
-              - 'packages/plugin-*/**'
-              - 'package.json'
-              - 'pnpm-lock.yaml'
-              - 'pnpm-workspace.yaml'
-              - 'tsconfig*.json'
-            npm:
-              - 'npm/**'
-              - 'scripts/*.mjs'
-              - 'scripts/setup.sh'
-              - 'scripts/*.py'
-              - 'package.json'
-            workflows:
-              - '.github/workflows/**'
-            windows_harness:
-              - 'crates/runtime/src/acp/rpc.rs'
-              - 'crates/runtime/src/acp/dependencies.rs'
-              - 'crates/runtime/src/management.rs'
-            thread_contract:
-              - 'crates/protocol/**'
-              - 'packages/shared/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '.github/workflows/ci.yml'
-            treer_packaging:
-              - 'integrations/treer/**'
-              - '.github/workflows/ci.yml'
+          fetch-depth: 0
+      - name: Test the change classifier
+        run: python3 scripts/ci-select.test.py
+      - name: Select relevant checks from the complete diff
+        id: filter
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/ci-select.py "$BASE_SHA" "$HEAD_SHA" --github-output "$GITHUB_OUTPUT"
 
   treer_packaging:
     name: Treer setup bundle and offline tests
@@ -172,15 +143,18 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 10.11.1
-      # A same-named thread UI branch carries changes that must land together.
-      - name: Check out thread UI dependency
-        env:
-          BRANCH: ${{ github.head_ref || github.ref_name }}
+      - name: Validate and check out the published thread UI pin
+        shell: bash
         run: |
-          repo=https://github.com/dufangshi/pockymoe-thread-ui-rust.git
-          ref=main
-          if git ls-remote --exit-code --heads "${repo}" "${BRANCH}" >/dev/null; then ref="${BRANCH}"; fi
-          git clone --depth 1 --branch "${ref}" "${repo}" ./pockymoe-thread-ui
+          set -euo pipefail
+          pin="$(cat thread-ui.sha)"
+          [[ "$pin" =~ ^[0-9a-f]{40}$ ]]
+          git init pockymoe-thread-ui
+          git -C pockymoe-thread-ui remote add origin https://github.com/dufangshi/pockymoe-thread-ui-rust.git
+          git -C pockymoe-thread-ui fetch --no-tags origin main
+          git -C pockymoe-thread-ui cat-file -e "$pin^{commit}"
+          git -C pockymoe-thread-ui merge-base --is-ancestor "$pin" FETCH_HEAD
+          git -C pockymoe-thread-ui checkout --detach "$pin"
       - name: Install thread UI dependencies
         run: pnpm --dir ./pockymoe-thread-ui install --frozen-lockfile
       - name: Install workspace dependencies
@@ -212,9 +186,14 @@ jobs:
           node --test scripts/setup.test.mjs scripts/native-setup.test.mjs
           python3 scripts/prepare-runtime-release.test.py
 
+  full:
+    name: Explicit full compatibility
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-ci')
+    uses: ./.github/workflows/platform-compatibility.yml
+
   result:
     name: PR checks complete
-    needs: [production_address, changes, workflows, rust, node, npm, windows_harness, thread_contract, treer_packaging]
+    needs: [production_address, changes, workflows, rust, node, npm, windows_harness, thread_contract, treer_packaging, full]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

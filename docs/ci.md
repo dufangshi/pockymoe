@@ -2,33 +2,43 @@
 
 Ordinary pull requests run `PR checks` (`.github/workflows/ci.yml`). Checks are
 selected from the PR's changed paths, and a newer push cancels the older PR run.
-There is no duplicate push workflow after merging to `main`.
+The final merged SHA on `main` also produces the aggregate used by release and
+deployment gates; direct pushes are checked, but should be replaced with PRs
+before branch protection is enabled.
 
 | Changed area | Automatic checks |
 | --- | --- |
 | Rust, Cargo configuration, migrations | Linux formatting and `cargo check --workspace --locked` |
 | Protocol crate, shared package, Cargo manifests/lockfile | Protocol wire tests and Rust/TS thread discriminant contract tests |
-| Supervisor Web, shared/plugin packages | Web typecheck and Vitest; build the external thread UI dependency required by Web |
+| Supervisor Web, shared/plugin packages, `thread-ui.sha` | Web typecheck and Vitest; build the external thread UI dependency required by Web |
 | Native bootstrap, legacy npm launcher or Node scripts | Native SH/legacy launcher, updater, and historical publishing-script unit tests; no product installation or release build |
 | Treer integration packaging | Bundled setup freshness, shell syntax and offline Python installer/configuration tests |
 | GitHub Actions workflows | actionlint; ShellCheck warnings/errors (not style or informational suggestions) |
 | Documentation, agent instructions, browser-only E2E files, Windows Device Manager | No automatic product build; agents validate relevant changes locally |
+
+Documentation-only and version-only changes retain the address guard, classifier
+regressions and aggregate, without product builds.
 
 Root Node manifests/lockfiles and TypeScript configuration select their affected
 package checks. Web changes do not compile Rust. npm-only changes need neither
 pnpm installation nor Web compilation.
 
 `PR checks complete` aggregates selected job results, including failures and
-cancellations, and can be used as a stable required status check. Direct pushes
-do not run PR checks; use a PR for automatic validation. Relevant local regression
+cancellations, and is the only main-repository check intended to be required.
+Version-only diffs parse the allowed root package/workspace/owned lockfile
+version fields; any dependency, removal or other field change selects its normal
+tier. Unknown inputs select Rust, Web and script checks conservatively.
+Shared UI validation consumes the exact full SHA in `thread-ui.sha` and verifies
+it belongs to the published shared UI main history, matching deployment. Relevant local regression
 tests remain part of implementing changes; passing compilation is not a substitute
 for a test of a changed behavior.
 
 ## Full validation: explicit request only
 
 `Full compatibility (manual)` retains the previous compatibility workflow at
-`.github/workflows/platform-compatibility.yml`. It has only `workflow_dispatch`:
-no PR, push, schedule, or automatic caller. It runs every retained suite without
+`.github/workflows/platform-compatibility.yml`. It accepts `workflow_dispatch` with `validation=full`, or an explicit `full-ci`
+PR label through the PR aggregate. There is no schedule or automatic full run.
+It runs every retained suite without
 path filtering, even when invoked on a documentation-only commit:
 
 - Rust workspace tests on Linux, macOS, and Windows; Linux formatting and Clippy.
@@ -36,7 +46,7 @@ path filtering, even when invoked on a documentation-only commit:
 - Web typecheck, tests, and production build.
 - Rust release binary build and native bootstrap verification.
 
-An agent may dispatch it only when the user explicitly asks for full validation.
+An agent may dispatch it or add `full-ci` only when the user explicitly asks for full validation.
 Ordinary instructions to fix, test, commit, push, or merge do not request it.
 Use a pushed ref, record the resulting run ID and `headSha`, and watch that run:
 
