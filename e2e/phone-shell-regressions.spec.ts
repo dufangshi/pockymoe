@@ -70,7 +70,7 @@ test('normal and one-handed composers sit against their intended bottom anchor',
     const composer = page.locator('.thread-graph-composer-host');
     await expect(composer).toBeVisible();
     const metrics = await page.evaluate(() => {
-      const composer = document.querySelector<HTMLElement>('.thread-graph-composer-host')!;
+      const composer = document.querySelector<HTMLElement>('[data-testid=chat-composer] .thread-graph-composer-shell')!;
       const dock = document.querySelector<HTMLElement>('.matter-phone-dock');
       const safe = document.createElement('i');
       safe.style.paddingBottom = 'env(safe-area-inset-bottom)';
@@ -92,7 +92,7 @@ test('normal and one-handed composers sit against their intended bottom anchor',
     await page.getByRole('textbox', { name: 'Prompt', exact: true }).tap();
     await page.waitForTimeout(200);
     const open = await page.evaluate(() => {
-      const c = document.querySelector<HTMLElement>('.thread-graph-composer-host')!.getBoundingClientRect();
+      const c = document.querySelector<HTMLElement>('[data-testid=chat-composer] .thread-graph-composer-shell')!.getBoundingClientRect();
       return { bottom: c.bottom, viewport: innerHeight, visual: visualViewport?.height ?? innerHeight, scroll: scrollY };
     });
     expect(open.scroll).toBe(0);
@@ -100,29 +100,6 @@ test('normal and one-handed composers sit against their intended bottom anchor',
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   }
   await writeFile('/tmp/rc-ios/evidence/phone-shell/composer-metrics.json', JSON.stringify(measurements, null, 2));
-});
-
-test('phone account menu follows the avatar anchor and stays inside safe bounds', async ({ page }) => {
-  test.fixme(true, 'The account gate requires an encrypted browser vault; RelayUserMenu.test.tsx covers the anchored phone menu geometry without credentials.');
-  await page.route('**/relay/**', route => route.fulfill({ json: {} }));
-  await page.route('**/relay/auth/session', route => route.fulfill({ json: { authenticated: true, user: { id: 'phone-owner', username: 'phone-owner', email: 'phone@example.test', role: 'user', enabled: true, createdAt: '2026-01-01T00:00:00Z' }, account: { mode: 'account', setupRequired: false, recovery: false, hasVault: true, recentAuth: true } } }));
-  await page.route('**/relay/auth/challenge', route => route.fulfill({ json: { ok: true } }));
-  await page.route('**/relay/portal', route => route.fulfill({ json: { devices: [], workspaces: [], shares: [] } }));
-  await page.addInitScript(() => localStorage.setItem('remote-codex.locale', 'en'));
-  await page.addInitScript(() => localStorage.setItem('pockymoe.relayMode', 'true'));
-  await page.goto('/relay-devices');
-  const avatar = page.locator('.product-topbar [aria-label^="Relay account menu for"]');
-  await expect(avatar).toBeVisible();
-  await avatar.tap();
-  const menu = page.getByRole('menu');
-  await expect(menu).toBeVisible();
-  const anchor = await avatar.boundingBox();
-  const box = await menu.boundingBox();
-  expect(anchor).not.toBeNull(); expect(box).not.toBeNull();
-  expect(box!.x + box!.width).toBeLessThanOrEqual(390 - 8);
-  expect(box!.y).toBeGreaterThanOrEqual(8);
-  expect(box!.y).toBeGreaterThan(anchor!.bottom);
-  await page.screenshot({ path: `/tmp/rc-ios/evidence/phone-shell/avatar-menu.png` });
 });
 
 test('phone shell theme matrix keeps composer and dock visible', async ({ page, request }) => {
@@ -138,8 +115,25 @@ test('phone shell theme matrix keeps composer and dock visible', async ({ page, 
         }, { dock, mode, pack });
         await page.goto(`/threads/${id}`);
         await expect(page.locator('.thread-graph-composer-host')).toBeVisible();
+        const later=page.getByRole('button',{name:'Later',exact:true});if(await later.isVisible())await later.tap();
         await page.screenshot({ path: `/tmp/rc-ios/evidence/phone-shell/${pack}-${mode}-${dock ? 'one-hand' : 'normal'}.png` });
       }
     }
   }
+});
+
+// Android shells provide their inset through a variable when env() is zero.
+test('Android variable reserves the safe area only once in the visible composer', async ({page,request}) => {
+ const id=await threadFixture(request);
+ for(const dock of [false,true]) {
+  await setPhone(page,dock);await page.goto(`/threads/${id}`);
+  await page.locator('[data-testid=chat-composer]').waitFor();
+  await page.evaluate(()=>document.documentElement.style.setProperty('--android-safe-area-bottom','34px'));
+  await expect.poll(()=>page.evaluate(()=>{
+   const box=document.querySelector('[data-testid=chat-composer] .thread-graph-composer-shell')!.getBoundingClientRect();
+   const dock=document.querySelector('.matter-phone-dock');
+   if(dock) {const d=dock.getBoundingClientRect();return {gap:d.top-box.bottom,padding:parseFloat(getComputedStyle(dock).paddingBottom)};}
+   return {gap:innerHeight-box.bottom,padding:34};
+  })).toEqual({gap:dock?0:43,padding:34});
+ }
 });
