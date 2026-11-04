@@ -66,6 +66,12 @@ async fn context_inspection_is_opt_in_and_returns_saved_thread_snapshot() {
     let details = json(&client, client.get(&endpoint)).await;
     assert_eq!(details["snapshot"]["usedTokens"], 100);
     assert_eq!(details["availability"], "available");
+    state.context_inspection.store(&session, json!({"provider":"codex","source":"codexTrace","usedTokens":520300,"windowTokens":828400,"categories":[{"id":"messages","kind":"used","tokens":4730000}]}));
+    let invalid = json(&client, client.get(&endpoint)).await;
+    assert!(
+        invalid["snapshot"].is_null(),
+        "old base64-inflated categories must not survive from the cache"
+    );
     // DSH is an ACP harness identified by agentId, not a top-level provider.
     state
         .db

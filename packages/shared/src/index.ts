@@ -915,7 +915,7 @@ export interface ContextInspectionSnapshotDto {
   windowTokens: number;
   updatedAt: string;
   stale?: boolean | null;
-  /** Native heuristic composition can differ from projected occupancy (DSH). */
+  /** Local category estimates can differ from native occupancy. */
   compositionTokens?: number | null;
   attributionDeltaTokens?: number | null;
   asOfSeq?: number | null;

@@ -90,7 +90,7 @@ pub(super) fn native_usage(
             let snapshot = tokio::task::spawn_blocking(move || {
                 let mut reader = reader.lock().unwrap();
                 reader.native_usage(&usage);
-                reader.calibrated_snapshot()
+                reader.matching_native_snapshot(&usage)
             })
             .await
             .ok()

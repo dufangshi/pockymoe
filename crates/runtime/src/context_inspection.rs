@@ -49,7 +49,12 @@ impl InspectionState {
         json!({"enabled":self.enabled()})
     }
     pub fn cached(&self, session: &str) -> Option<Value> {
-        self.snapshots.lock().unwrap().get(session).cloned()
+        self.snapshots
+            .lock()
+            .unwrap()
+            .get(session)
+            .filter(|v| usable_snapshot(v))
+            .cloned()
     }
     pub fn store(&self, session: &str, snapshot: Value) {
         self.snapshots
@@ -57,6 +62,24 @@ impl InspectionState {
             .unwrap()
             .insert(session.into(), snapshot);
     }
+}
+/// Old collectors could persist raw media token estimates above native usage.
+/// A separate composition is valid only when explicitly labeled as such.
+pub fn usable_snapshot(snapshot: &Value) -> bool {
+    if snapshot["source"] != "codexTrace" {
+        return true;
+    }
+    let Some(used) = snapshot["usedTokens"].as_u64() else {
+        return false;
+    };
+    let Some(categories) = snapshot["categories"].as_array() else {
+        return false;
+    };
+    let sum = categories
+        .iter()
+        .filter(|v| v["kind"] == "used")
+        .try_fold(0u64, |sum, v| sum.checked_add(v["tokens"].as_u64()?));
+    sum.is_some_and(|sum| sum <= used || snapshot["compositionTokens"].as_u64() == Some(sum))
 }
 pub fn save_settings(db: &Database, enabled: bool) -> Result<()> {
     db.with(|c| {
@@ -240,9 +263,32 @@ fn tokenizer() -> &'static tiktoken_rs::CoreBPE {
 #[derive(Default)]
 pub(crate) struct CodexAnalyzer {
     cache: HashMap<[u8; 32], u64>,
-    residual: Option<i64>,
 }
 impl CodexAnalyzer {
+    /// Count only readable content. Media and opaque provider state belong in
+    /// the correlated native residual, never in a tokenizer's base64 input.
+    fn content_tokens(&mut self, value: &Value) -> u64 {
+        match value {
+            Value::String(text) => self.count(text),
+            Value::Array(values) => values.iter().map(|value| self.content_tokens(value)).sum(),
+            Value::Object(object) => {
+                match object.get("type").and_then(Value::as_str) {
+                    Some(
+                        "input_text" | "output_text" | "text" | "summary_text" | "reasoning_text",
+                    )
+                    | None => object
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(|text| self.count(text))
+                        .unwrap_or(0),
+                    // Unknown block types are deliberately not stringified.
+                    _ => 0,
+                }
+            }
+            _ => 0,
+        }
+    }
+
     fn tool(
         &mut self,
         tool: &Value,
@@ -292,9 +338,6 @@ impl CodexAnalyzer {
         self.cache.insert(key, tokens);
         tokens
     }
-    pub(crate) fn calibrate(&mut self, estimated: u64, input: u64) {
-        self.residual = Some(input as i64 - estimated as i64);
-    }
     pub(crate) fn analyze(&mut self, request: &Value, window: u64, model: &str) -> Option<Value> {
         // Incremental transport requires a logical-window reconstruction. Never display a delta as the full window.
         if request["previous_response_id"].is_string() {
@@ -302,10 +345,6 @@ impl CodexAnalyzer {
         }
         let mut totals: BTreeMap<String, u64> = BTreeMap::new();
         let mut groups: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-        let add =
-            |totals: &mut BTreeMap<String, u64>, category: &str, text: String, this: &mut Self| {
-                *totals.entry(category.into()).or_default() += this.count(&text);
-            };
         for tool in request["tools"].as_array().into_iter().flatten() {
             self.tool(tool, false, &mut totals, &mut groups);
         }
@@ -317,9 +356,9 @@ impl CodexAnalyzer {
                     }
                 }
                 "message" => {
-                    for part in item["content"].as_array().into_iter().flatten() {
-                        let text = part["text"].as_str();
-                        let cat = match text {
+                    let parts = item["content"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+                    for part in parts {
+                        let cat = match part["text"].as_str() {
                             Some(t) if t.starts_with("<skills_instructions>") => "skills",
                             Some(t) if t.contains("<INSTRUCTIONS>") && t.len() < 64000 => {
                                 "memory_files"
@@ -329,24 +368,54 @@ impl CodexAnalyzer {
                             }
                             _ => "messages",
                         };
-                        add(
-                            &mut totals,
-                            cat,
-                            text.map(str::to_owned).unwrap_or_else(|| part.to_string()),
-                            self,
-                        );
-                    }
-                }
-                "reasoning" | "compaction" | "context_compaction" => {
-                    // Ciphertext bytes are not model token counts. Leave opaque state
-                    // in the native residual, counting only visible summaries here.
-                    for field in ["summary", "content"] {
-                        if let Some(value) = item.get(field).filter(|v| !v.is_null()) {
-                            add(&mut totals, "messages", value.to_string(), self);
+                        let tokens = self.content_tokens(part);
+                        if tokens > 0 {
+                            *totals.entry(cat.into()).or_default() += tokens;
                         }
                     }
                 }
-                _ => add(&mut totals, "messages", item.to_string(), self),
+                "reasoning" | "compaction" | "context_compaction" => {
+                    // Only visible summaries/content count; content_tokens skips
+                    // encrypted_content and raw media recursively.
+                    let tokens = item
+                        .get("summary")
+                        .map(|value| self.content_tokens(value))
+                        .unwrap_or_default()
+                        .saturating_add(
+                            item.get("content")
+                                .map(|value| self.content_tokens(value))
+                                .unwrap_or_default(),
+                        );
+                    if tokens > 0 {
+                        *totals.entry("messages".into()).or_default() += tokens;
+                    }
+                }
+                "custom_tool_call" | "function_call" => {
+                    let tokens = item
+                        .get("input")
+                        .or_else(|| item.get("arguments"))
+                        .map(|value| self.content_tokens(value))
+                        .unwrap_or_default();
+                    if tokens > 0 {
+                        *totals.entry("messages".into()).or_default() += tokens;
+                    }
+                }
+                "custom_tool_call_output" | "function_call_output" => {
+                    let tokens = item
+                        .get("output")
+                        .map(|value| self.content_tokens(value))
+                        .unwrap_or_default();
+                    if tokens > 0 {
+                        *totals.entry("messages".into()).or_default() += tokens;
+                    }
+                }
+                "agent_message" => {
+                    let tokens = self.content_tokens(&item["content"]);
+                    if tokens > 0 {
+                        *totals.entry("messages".into()).or_default() += tokens;
+                    }
+                }
+                _ => {}
             }
         }
         let estimated: u64 = totals
@@ -354,11 +423,7 @@ impl CodexAnalyzer {
             .filter(|(id, _)| !id.ends_with("_deferred"))
             .map(|(_, tokens)| *tokens)
             .sum();
-        let residual = self.residual.unwrap_or(0).max(0) as u64;
-        if residual > 0 {
-            totals.insert("unattributed".into(), residual);
-        }
-        let used = estimated.saturating_add(residual);
+        let used = estimated;
         let mut categories:Vec<_>=totals.into_iter().map(|(id,tokens)|json!({"kind":if id.ends_with("_deferred"){"deferred"}else{"used"},"id":id,"tokens":tokens,"precision":"estimated"})).collect();
         categories
             .push(json!({"id":"free_space","kind":"free","tokens":window.saturating_sub(used)}));
@@ -438,7 +503,6 @@ impl CodexTraceReader {
                 if payload["type"] == "compaction_installed"
                     && event["thread_id"].as_str() == Some(self.session.as_str())
                 {
-                    self.analyzer.residual = None;
                     self.latest = None;
                     self.reported = None;
                 }
@@ -464,19 +528,18 @@ impl CodexTraceReader {
                                 .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
                             {
                                 if self.latest.as_ref().is_some_and(|s| s["requestId"] == call) {
-                                    if let (Some(input), Some(total), Some(estimated)) = (
+                                    if let (Some(input), Some(total)) = (
                                         response
                                             .pointer("/token_usage/input_tokens")
                                             .and_then(Value::as_u64),
                                         response
                                             .pointer("/token_usage/total_tokens")
                                             .and_then(Value::as_u64),
-                                        self.latest
-                                            .as_ref()
-                                            .and_then(|s| s["estimatedInputTokens"].as_u64()),
                                     ) {
-                                        self.analyzer.calibrate(estimated, input);
                                         self.reported = Some((call.into(), input, total));
+                                        if let Some(snapshot) = self.latest.as_mut() {
+                                            snapshot["updatedAt"] = json!(now_rfc3339());
+                                        }
                                         if let Some(snapshot) = self.calibrated_snapshot() {
                                             out.push(snapshot);
                                         }
@@ -506,6 +569,11 @@ impl CodexTraceReader {
                     }
                     continue;
                 }
+                // Every request invalidates correlation with the preceding
+                // response, including deltas, unreadable/oversized payloads
+                // and failed calls. None may revive an old calibrated reading.
+                self.latest = None;
+                self.reported = None;
                 let Some(relative) = payload
                     .pointer("/request_payload/path")
                     .and_then(Value::as_str)
@@ -526,14 +594,6 @@ impl CodexTraceReader {
                     .and_then(|_| std::fs::read(&request_path).ok())
                     .and_then(|b| serde_json::from_slice::<Value>(&b).ok());
                 if let Some(request) = request {
-                    if self
-                        .latest
-                        .as_ref()
-                        .is_some_and(|s| s["model"] != payload["model"])
-                    {
-                        self.analyzer.residual = None;
-                        self.reported = None;
-                    }
                     let window = self
                         .context
                         .as_ref()
@@ -546,10 +606,12 @@ impl CodexTraceReader {
                     ) {
                         snapshot["turnId"] = payload["codex_turn_id"].clone();
                         snapshot["requestId"] = payload["inference_call_id"].clone();
-                        self.latest = Some(snapshot.clone());
-                        if window > 0 {
-                            out.push(snapshot);
-                        }
+                        self.latest = Some(snapshot);
+                        // Do not publish this pre-response estimate. Codex can
+                        // report a very different native input total after the
+                        // request completes; publishing both values makes the
+                        // UI oscillate between two context readings. The
+                        // calibrated snapshot below is the first visible one.
                     }
                 }
                 // Requests contain private context and are unnecessary after aggregation.
@@ -577,15 +639,27 @@ impl CodexTraceReader {
             .collect::<Vec<_>>();
         if total >= estimated {
             categories.push(json!({"id":"unattributed","kind":"used","tokens":total-estimated,"precision":"estimated"}));
+        } else {
+            // Keep the signed discrepancy explicit, as with DSH. Do not invent
+            // negative categories or spread a tokenizer mismatch over messages.
+            snapshot["compositionTokens"] = json!(estimated);
+            snapshot["attributionDeltaTokens"] = json!(i128::from(total) - i128::from(estimated));
         }
         categories
             .push(json!({"id":"free_space","kind":"free","tokens":window.saturating_sub(total)}));
         snapshot["categories"] = json!(categories);
         snapshot["usedTokens"] = json!(total);
         snapshot["windowTokens"] = json!(window);
-        snapshot["updatedAt"] = json!(now_rfc3339());
         self.latest = Some(snapshot.clone());
         Some(snapshot)
+    }
+    pub fn matching_native_snapshot(&mut self, usage: &Value) -> Option<Value> {
+        let native = crate::usage::context_usage(usage, "")?;
+        let (_, _, total) = self.reported.as_ref()?;
+        if native["tokensInContextWindow"].as_u64()? != *total {
+            return None;
+        }
+        self.calibrated_snapshot()
     }
 }
 
@@ -649,9 +723,8 @@ mod tests {
         let r =
             json!({"input":[{"type":"message","role":"user","content":[{"text":"hello world"}]}]});
         let first = a.analyze(&r, 1000, "m").unwrap();
-        a.calibrate(first["estimatedInputTokens"].as_u64().unwrap(), 100);
         let second = a.analyze(&r, 1000, "m").unwrap();
-        assert_eq!(second["usedTokens"], 100);
+        assert_eq!(second["usedTokens"], first["usedTokens"]);
         assert_eq!(a.cache.len(), 1);
         assert!(a
             .analyze(&json!({"previous_response_id":"r","input":[]}), 1000, "m")
@@ -689,7 +762,56 @@ mod tests {
         assert!(!snapshot.to_string().contains("private-ciphertext"));
     }
     #[test]
+    fn codex_media_bytes_and_encrypted_reasoning_are_not_counted_as_text() {
+        let mut analyzer = CodexAnalyzer::default();
+        let huge = format!("data:image/png;base64,{}", "A".repeat(2_000_000));
+        let snapshot = analyzer
+            .analyze(
+                &json!({
+                    "input":[
+                        {"type":"message","role":"user","content":[{"type":"input_image","image_url":huge}]},
+                        {"type":"reasoning","encrypted_content":"opaque"},
+                        {"type":"custom_tool_call_output","output":[{"type":"input_image","image_url":huge}]}
+                    ]
+                }),
+                828_400,
+                "m",
+            )
+            .unwrap();
+        assert_eq!(snapshot["estimatedInputTokens"], 0);
+        assert!(!snapshot.to_string().contains("data:image"));
+        assert!(!snapshot.to_string().contains("opaque"));
+    }
+    #[test]
+    fn codex_keeps_tokenizer_discrepancy_separate_from_native_occupancy() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reader = CodexTraceReader::new(dir.path().into(), "session".into());
+        reader.context = Some(json!({"modelContextWindow":1000}));
+        reader.latest = Some(
+            json!({"provider":"codex","model":"m","source":"codexTrace","precision":"estimated",
+            "estimatedInputTokens":900,"requestId":"call","categories":[
+                {"id":"system_prompt","kind":"used","tokens":100,"precision":"estimated"},
+                {"id":"messages","kind":"used","tokens":800,"precision":"estimated"}],"groups":[]}),
+        );
+        reader.reported = Some(("call".into(), 100, 100));
+        let snapshot = reader.calibrated_snapshot().unwrap();
+        assert_eq!(snapshot["usedTokens"], 100);
+        assert_eq!(snapshot["compositionTokens"], 900);
+        assert_eq!(snapshot["attributionDeltaTokens"], -800);
+        assert_eq!(
+            snapshot["categories"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|v| v["kind"] == "used")
+                .map(|v| v["tokens"].as_u64().unwrap())
+                .sum::<u64>(),
+            900
+        );
+    }
+    #[test]
     fn trace_correlates_response_and_discards_private_payloads() {
+        use std::io::Write;
         let dir = tempfile::tempdir().unwrap();
         let bundle = dir.path().join("bundle");
         std::fs::create_dir_all(bundle.join("payloads")).unwrap();
@@ -705,19 +827,54 @@ mod tests {
             json!({"thread_id":"session","payload":{"type":"inference_started","thread_id":"session","inference_call_id":"call","codex_turn_id":"turn","model":"m","request_payload":{"path":"payloads/1.json"}}}),
             json!({"thread_id":"session","payload":{"type":"inference_completed","inference_call_id":"call","response_payload":{"path":"payloads/2.json"}}}),
         ];
-        std::fs::write(
-            bundle.join("trace.jsonl"),
-            events.iter().map(|e| format!("{e}\n")).collect::<String>(),
-        )
-        .unwrap();
+        let trace = bundle.join("trace.jsonl");
+        std::fs::write(&trace, format!("{}\n", events[0])).unwrap();
         let mut reader = CodexTraceReader::new(dir.path().into(), "session".into());
         reader.native_usage(&json!({"modelContextWindow":1000}));
+        assert!(
+            reader.poll().is_empty(),
+            "request-start estimates must never update occupancy"
+        );
+        assert!(reader.calibrated_snapshot().is_none());
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&trace)
+            .unwrap()
+            .write_all(format!("{}\n", events[1]).as_bytes())
+            .unwrap();
         let snapshots = reader.poll();
-        assert_eq!(snapshots.len(), 2);
-        assert_eq!(snapshots[1]["usedTokens"], 110);
-        assert!(!snapshots[1].to_string().contains("PRIVATE"));
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0]["usedTokens"], 110);
+        assert!(!snapshots[0].to_string().contains("PRIVATE"));
         assert!(!bundle.join("payloads/1.json").exists());
         assert!(!bundle.join("payloads/2.json").exists());
         assert!(reader.poll().is_empty());
+        let timestamp = snapshots[0]["updatedAt"].clone();
+        assert_eq!(
+            reader
+                .matching_native_snapshot(&json!({"size":1000,"used":110}))
+                .unwrap()["updatedAt"],
+            timestamp
+        );
+        assert!(
+            reader
+                .matching_native_snapshot(&json!({"size":1000,"used":60}))
+                .is_none(),
+            "a new native total must not revive an old trace count"
+        );
+        // A delta does not describe a full context and must invalidate the
+        // preceding request/response association instead of re-emitting it.
+        std::fs::write(
+            bundle.join("payloads/delta.json"),
+            json!({"previous_response_id":"response","input":[]}).to_string(),
+        )
+        .unwrap();
+        std::fs::OpenOptions::new().append(true).open(&trace).unwrap()
+            .write_all(format!("{}\n",json!({"payload":{"type":"inference_started","thread_id":"session","inference_call_id":"delta","request_payload":{"path":"payloads/delta.json"}}})).as_bytes()).unwrap();
+        assert!(reader.poll().is_empty());
+        assert!(reader.calibrated_snapshot().is_none());
+        assert!(reader
+            .matching_native_snapshot(&json!({"size":1000,"used":110}))
+            .is_none());
     }
 }
