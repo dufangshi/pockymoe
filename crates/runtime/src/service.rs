@@ -4366,7 +4366,10 @@ impl Supervisor {
         agent_id: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<Vec<ModelOptionDto>> {
-        let models = self.runtime(provider)?.list_models(agent_id, cwd).await?;
+        let mut models = self.runtime(provider)?.list_models(agent_id, cwd).await?;
+        // Relay-owned LiteLLM metadata supplies stable names and per-model
+        // effort choices when a harness only exposes opaque model ids.
+        self.enrich_model_options(&mut models);
         let mut names: Value = self
             .db
             .get_kv("model_display_names")?
