@@ -124,8 +124,12 @@ export function RelayUserMenu({
       const nextPosition = popoverPosition(anchor, {
         width: 256,
         height: menu.scrollHeight + menu.offsetHeight - menu.clientHeight,
-      }, view, 8, 8, menuAlign === 'left' ? 'start' : 'end');
-      if (rail) {
+      }, view, 8, 8, (window.matchMedia('(max-width: 639px)').matches && rail) || menuAlign === 'right' ? 'end' : 'start');
+      // Desktop rail avatars live at the bottom-left and keep their upward
+      // menu. Phone anchors can be in the top bar or the bottom dock, so use
+      // the available side of the actual anchor instead of assuming rail
+      // always means "above".
+      if (rail && !window.matchMedia('(max-width: 639px)').matches) {
         const available = Math.max(0, anchor.top - view.top - 16);
         nextPosition.maxHeight = available;
         nextPosition.top = Math.max(view.top + 8, anchor.top - 8 - Math.min(menu.scrollHeight + menu.offsetHeight - menu.clientHeight, available));
