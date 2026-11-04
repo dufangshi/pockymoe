@@ -477,10 +477,12 @@ the finger, the rest of that tap does not press it. A split pins its two convers
 thread's place in that row: one tap brings the other forward, and tapping the
 shown one opens the thread sheet.
 
-The workspace drawer shows the app's mark and close, **All workspaces**, the
-**Thread map**, then shortcuts (folded until opened), **This workspace** and, from
-halfway down after a gap, recent conversations elsewhere; each half scrolls on its
-own. The desktop sidebar is laid out the same way. The tab bar and **This workspace**
+The workspace drawer shows the app's mark and close, **All workspaces**, then
+shortcuts (folded until opened), **This workspace** (at most half the height) and
+right after it recent conversations elsewhere; each part scrolls on its own. The
+**Thread map** sits at the drawer's foot, under the thumb. There is no Chat button
+in the drawer: Terminal and Files in the top bar toggle back to the conversation.
+The desktop sidebar lists the same way, with the thread map on its rail. The tab bar and **This workspace**
 list the conversations started in the current workspace, each with all its agent
 threads wherever they work; each row names the workspace its own thread works in. An agent thread working here for a conversation started
 elsewhere belongs to that workspace; while it is open it shows inside its
