@@ -100,6 +100,12 @@ test('sidebar survives opening a thread, workspaces and returning without a seco
   await page.getByRole('article', { name: 'MacBook Pro', exact: true }).locator('a.pd-device-title').click();
   await expect(page).toHaveURL(/\/desktop\/devices\/device-0/);
   await expect(page.locator('[data-retained-sidebar="yes"]')).toBeVisible();
+  const contentTop = (await page.getByTestId('desktop-devices').boundingBox())!.y;
+  await page.getByRole('button', { name: '切换快捷方式侧栏', exact: true }).click();
+  await expect(page.locator('.is-navigation-frame')).toHaveClass(/is-sidebar-hidden/);
+  expect((await page.getByTestId('desktop-devices').boundingBox())!.y).toBe(contentTop);
+  await page.getByRole('button', { name: '切换快捷方式侧栏', exact: true }).click();
+  await expect(page.locator('[data-retained-sidebar="yes"]')).toBeVisible();
   // There is one account-wide stream per online device; a focused transcript
   // may additionally own its thread-specific stream, never a second full index.
   const accountStreams = (await page.evaluate(() => (window as any).__deviceSockets as string[])).filter(url => !new URL(url).searchParams.get('threadId'));
