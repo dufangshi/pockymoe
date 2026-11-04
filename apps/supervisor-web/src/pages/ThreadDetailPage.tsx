@@ -28,7 +28,8 @@ import { useWorkbenchNavigation } from './useWorkbenchNavigation';
 import { useThreadDirectory } from './useThreadDirectory';
 import { useScopedState } from './useScopedState';
 import { useOptimisticAttachmentPreviews } from './useOptimisticAttachmentPreviews';
-import { ImageRecoveryProvider } from '@pockymoe/thread-ui';
+import { ImageRecoveryProvider, ImageDiagnosisProvider } from '@pockymoe/thread-ui';
+import { diagnoseChatImage } from '../lib/chatImageDiagnosis';
 import { useSubscriptionUsage } from './useSubscriptionUsage';
 import { useThreadTabStatus } from '../lib/useThreadTabStatus';
 import { DeviceEncryptionStatus } from '../components/DeviceEncryptionStatus';
@@ -4000,6 +4001,7 @@ export function ThreadDetailPage() {
 
   return (
     <ImageRecoveryProvider value={refreshChatImageUrl}>
+    <ImageDiagnosisProvider value={diagnoseChatImage}>
     {nativeResult && <LongTextDialog open title={nativeResult.title} text={nativeResult.text} onClose={() => setNativeResult(null)} />}
     {relayThreadIsOwner && relayRouteDeviceId && <HostFeatureGate feature="previews"><PortMappingsControl key={relayRouteDeviceId} deviceId={relayRouteDeviceId} open={portsOpen} onOpenChange={setPortsOpen} /></HostFeatureGate>}
     <ThreadDetailSurface
@@ -4128,6 +4130,7 @@ export function ThreadDetailPage() {
       {...(chatComposerProps ? { composerProps: chatComposerProps } : {})}
       {...(shellComposerProps ? { shellComposerProps } : {})}
     />
+    </ImageDiagnosisProvider>
     </ImageRecoveryProvider>
   );
 }
