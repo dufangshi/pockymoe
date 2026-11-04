@@ -93,4 +93,15 @@ attachment to verify diagnosis and Retry, and damages the thumbnail cache to
 verify original fallback. Image traces and video stay off for private local inputs;
 visual captures refuse private inputs and remain in ignored `.scratch/`.
 
-Runtime publication uses the manual `runtime-release.yml` workflow: workspace release gate, four native platforms and pinned Web build, complete asset assembly, then immutable GitHub publication. No npm publication job remains.
+Runtime publication uses the manual `runtime-release.yml` workflow: `validation=auto` by default: tests for affected packages and their workspace
+consumers, four native platforms and the published Web pin, complete asset assembly
+and scanning, then immutable GitHub publication. The diff is computed from the
+latest trusted runtime release SHA to the final SHA, including changes before the
+version bump. Database, migration, authentication and update paths select their
+affected packages like every other change; none forces a workspace run.
+`validation=full` explicitly selects the full workspace. `channel=dry-run` builds
+and verifies the complete artifacts without publishing. The Windows worker smoke
+compiles a tiny harness with rustc using the exact production launcher source;
+it does not relink the full Supervisor test binary in release mode. Ancestor,
+four-platform, hash/version, bootstrap, address and immutability gates remain
+mandatory. No npm publication job remains.

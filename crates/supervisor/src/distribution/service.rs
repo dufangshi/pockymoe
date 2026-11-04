@@ -260,13 +260,10 @@ fn worker_environment(
     inherited.remove("POCKYMOE_ENROLL");
     inherited
 }
-// Windows PowerShell 5.1 treats redirected native stderr as a PowerShell
-// error. Keep setup failures strict, but do not terminate the native worker on
-// ordinary tracing output; its exit code remains authoritative.
-fn windows_launcher_source(payload: &Path) -> String {
-    let payload = payload.to_string_lossy().replace('\'', "''");
-    format!("$ErrorActionPreference='Stop'\n$p=Get-Content -LiteralPath '{payload}' -Raw | ConvertFrom-Json\nRemove-Item -LiteralPath '{payload}', $PSCommandPath -Force\nRemove-Item Env:POCKYMOE_ENROLL_SECRET -ErrorAction SilentlyContinue\nforeach($v in $p.environment.PSObject.Properties){{[Environment]::SetEnvironmentVariable($v.Name,[string]$v.Value,'Process')}}\n$a=@($p.args)\n$ErrorActionPreference='Continue'\n& $p.binary @a *> $p.log\nexit $LASTEXITCODE\n")
-}
+// Share the production launcher with a dependency-free Windows smoke harness.
+#[path = "windows_launcher.rs"]
+mod windows_launcher;
+use windows_launcher::source as windows_launcher_source;
 /// Detach from the Supervisor's cgroup/job before it can be stopped.
 pub fn independent(
     binary: &Path,

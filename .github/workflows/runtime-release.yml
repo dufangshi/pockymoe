@@ -7,6 +7,12 @@ on:
         description: Full commit SHA from remote-codex-thread-ui-rust to release
         required: true
         type: string
+      validation:
+        description: Test affected packages or explicitly run the full workspace
+        required: true
+        default: auto
+        type: choice
+        options: [auto, full]
       channel:
         description: Verify artifacts only, or publish a stable GitHub Release
         required: true
@@ -38,8 +44,8 @@ jobs:
           fetch-depth: 0
 
       # A version with database migrations may not drop already-published code.
-      - name: Refuse releases that drop already-published commits
-        if: inputs.channel != 'dry-run'
+      - name: Resolve the trusted release and refuse dropped published commits
+        id: baseline
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -52,6 +58,7 @@ jobs:
             echo "::error::HEAD does not contain ${latest}, the current GitHub runtime release. Merge it before releasing."
             exit 1
           fi
+          echo "sha=$(git rev-parse "${latest}^{commit}")" >> "$GITHUB_OUTPUT"
 
       - name: Guard tracked source addresses
         run: python3 scripts/check-production-address.py --tracked
@@ -64,8 +71,13 @@ jobs:
           key: release-test
           cmd-format: rustup run ${{ env.RUST_VERSION }} {0}
 
-      - name: Test workspace and migrations
-        run: cargo +${{ env.RUST_VERSION }} test --workspace --locked
+      - name: Validate affected-package selection
+        run: python3 scripts/runtime-validation.test.py
+      - name: Test affected packages from the trusted release
+        env:
+          BASE_SHA: ${{ steps.baseline.outputs.sha }}
+          VALIDATION: ${{ inputs.validation }}
+        run: python3 scripts/runtime-validation.py --base "$BASE_SHA" --head "$GITHUB_SHA" --validation "$VALIDATION"
 
   native:
     name: Native ${{ matrix.key }}
@@ -161,7 +173,10 @@ jobs:
       - name: Verify Windows detached workers survive normal stderr and stop correctly
         if: runner.os == 'Windows'
         shell: bash
-        run: cargo +"${RUST_VERSION}" test --locked --release --lib --package pockymoe-supervisor --target '${{ matrix.cargo_target }}' distribution::service::tests::windows_native_stderr_survives -- --exact
+        run: |
+          set -euo pipefail
+          rustup run "$RUST_VERSION" rustc --edition=2021 scripts/windows-worker-smoke.rs -o windows-worker-smoke.exe
+          ./windows-worker-smoke.exe
 
       - name: Smoke native executable
         if: matrix.runnable
@@ -213,11 +228,14 @@ jobs:
         run: |
           set -euo pipefail
           [[ "${THREAD_UI_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo 'A full UI commit SHA is required' >&2; exit 1; }
+          test "$THREAD_UI_SHA" = "$(cat thread-ui.sha)"
           git init ./pockymoe-thread-ui
           git -C ./pockymoe-thread-ui remote add origin "${THREAD_UI_REPO}"
           git -C ./pockymoe-thread-ui fetch --depth 1 origin "${THREAD_UI_SHA}"
           git -C ./pockymoe-thread-ui checkout --detach FETCH_HEAD
           test "$(git -C ./pockymoe-thread-ui rev-parse HEAD)" = "${THREAD_UI_SHA}"
+          git -C ./pockymoe-thread-ui fetch --no-tags origin main
+          git -C ./pockymoe-thread-ui merge-base --is-ancestor "$THREAD_UI_SHA" FETCH_HEAD
           echo "Thread UI: ${THREAD_UI_SHA}" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Build pinned Web assets for the native runtime
