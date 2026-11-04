@@ -1,3 +1,5 @@
+import { DesktopStoreContext } from '../desktop/data/context';
+import type { DesktopIndexStore, DesktopIndex } from '../desktop/data';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ThreadDto, WorkspaceDto } from '@pockymoe/shared';
@@ -192,4 +194,24 @@ it('map agent counts exclude closed threads without losing their history or usag
   const root = device.workspaces[0]!.threads[0]!;
   expect(root.agentThreads).toBe(1);
   expect(root.children!.map(child => child.key)).toEqual(['local:open', 'local:closed']);
+});
+
+
+it('maps the shell index without device polling and releases only its visibility lease', async () => {
+  const index = { devices: [{ id: 'owned', name: 'Example device', connected: true, cachedAt: '2026-11-01' }],
+    workspaces: workspaces.map(workspace => ({ ...workspace, deviceId: 'owned' })),
+    threads: [{ ...thread('indexed'), deviceId: 'owned' }], activity: {},
+  } as unknown as DesktopIndex;
+  const visibility = vi.fn(), refreshDevice = vi.fn();
+  const unsubscribe = vi.fn();
+  const store = { getSnapshot: () => index, subscribe: () => unsubscribe, setMapVisible: visibility, refreshDevice } as unknown as DesktopIndexStore;
+  vi.mocked(request).mockClear();
+  const { result, unmount } = renderHook(() => useThreadMapDevices(true), { wrapper: ({ children }) => <DesktopStoreContext.Provider value={store}>{children}</DesktopStoreContext.Provider> });
+  await waitFor(() => expect(result.current.devices[0]?.workspaces[0]?.threads[0]?.key).toBe('owned:indexed'));
+  act(() => result.current.retry('owned'));
+  expect(refreshDevice).toHaveBeenCalledWith('owned');
+  expect(request).not.toHaveBeenCalled();
+  unmount();
+  expect(unsubscribe).toHaveBeenCalledOnce();
+  expect(visibility.mock.calls).toEqual([[true], [false]]);
 });

@@ -1,0 +1,24 @@
+import { act, renderHook } from '@testing-library/react';
+import { afterEach, expect, it, vi } from 'vitest';
+import type { DesktopIndexStore } from './data/store';
+import { useThreadReadState } from './useThreadReadState';
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+it('remembers the conversation and marks it read only after focused viewing; leaving cancels the timer', () => {
+  vi.useFakeTimers();
+  const focused = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  const rememberThread = vi.fn(), markRead = vi.fn();
+  const store = { rememberThread, markRead } as unknown as DesktopIndexStore;
+  const { rerender, unmount } = renderHook(({ path }) => useThreadReadState(store, path), { initialProps: { path: '/devices/example/threads/conversation' } });
+  expect(rememberThread).toHaveBeenCalledWith('example:conversation');
+  act(() => vi.advanceTimersByTime(1499)); expect(markRead).not.toHaveBeenCalled();
+  act(() => vi.advanceTimersByTime(1)); expect(markRead).toHaveBeenCalledWith('example:conversation');
+  markRead.mockClear();
+  focused.mockReturnValue(false);
+  act(() => window.dispatchEvent(new Event('blur')));
+  act(() => vi.advanceTimersByTime(2000)); expect(markRead).not.toHaveBeenCalled();
+  focused.mockReturnValue(true);
+  act(() => window.dispatchEvent(new Event('focus')));
+  rerender({ path: '/desktop/devices' });
+  act(() => vi.advanceTimersByTime(2000)); expect(markRead).not.toHaveBeenCalled();
+  unmount();
+});

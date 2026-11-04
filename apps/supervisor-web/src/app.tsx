@@ -96,6 +96,7 @@ import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/th
 const DesktopWindowFrame = lazy(() => import('./desktop/DesktopWindowFrame'));
 const DesktopEntry = lazy(() => import('./desktop/DesktopEntry'));
 const DesktopDevicesRoute = lazy(() => import('./desktop/DevicesRoute'));
+const WebEntry = lazy(() => import('./desktop/WebEntry'));
 const WebDevicesRoute = lazy(() => import('./desktop/WebDevicesRoute'));
 
 const PHONE_DOCK_STORAGE_KEY = 'pockymoe.phoneDock';
@@ -338,6 +339,14 @@ function AppShell({
     location.pathname === '/workspaces' ||
     /^\/devices\/[^/]+\/workspaces$/.test(location.pathname);
   const isSettingsRoute = location.pathname === '/relay-settings';
+  const [wideBrowser, setWideBrowser] = useState(() => window.matchMedia('(min-width: 640px)').matches);
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 640px)');
+    const update = () => setWideBrowser(media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  const webNavigation = surface === 'browser' && wideBrowser && relayModeActive() && (location.pathname.startsWith('/desktop/devices') || location.pathname === '/relay-account' || isThreadWorkspaceRoute || isWorkspacesRoute);
   const isNativeApp =
     new URLSearchParams(location.search).get('nativeApp') === '1';
 
@@ -420,6 +429,13 @@ function AppShell({
       </DesktopEntry></Suspense>
     </AppShellNavContext.Provider>
   );
+
+  if (webNavigation) return <AppShellNavContext.Provider value={shellNavValue}><ScopedTourProvider>
+    <Suspense fallback={<DesktopOpening />}><WebEntry>
+      <HostCapabilitiesProvider scope={relayDeviceIdFromPath(location.pathname) ?? 'local'}><HostScopeRouteGate><Outlet /></HostScopeRouteGate></HostCapabilitiesProvider>
+      <AppShellSettingsDialog />
+    </WebEntry></Suspense>
+  </ScopedTourProvider></AppShellNavContext.Provider>;
 
   return (
     <MobileActivity>

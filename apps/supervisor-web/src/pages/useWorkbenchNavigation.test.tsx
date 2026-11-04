@@ -1,3 +1,5 @@
+import type { DesktopIndexStore, DesktopIndex } from '../desktop/data';
+import { DesktopStoreContext } from '../desktop/data/context';
 import { browserStateKey } from '../lib/browserStateScope';
 import { HostCapabilitiesProvider } from '../lib/hostCapabilities';
 import type { ReactNode } from 'react';
@@ -555,4 +557,25 @@ describe('thread switch', () => {
     expect(result.current.currentKey).toBe('wsl:b');
     unmount();
   });
+});
+
+
+it('uses the shell index for owned sidebar threads without another device read', async () => {
+  const thread = { id: 'indexed-thread', workspaceId: 'app', title: 'Live indexed thread', status: 'running', deviceId: 'indexed-device', key: 'indexed-device:indexed-thread' } as DesktopIndex['threads'][number];
+  let index = { devices: [{ id: 'indexed-device', connected: true }], threads: [thread], syncedDeviceIds: ['indexed-device'] } as unknown as DesktopIndex;
+  let notify = () => {};
+  const store = { getSnapshot: () => index, subscribe: (listener: () => void) => { notify = listener; return () => {}; } } as DesktopIndexStore;
+  vi.mocked(request).mockClear();
+  vi.mocked(request).mockImplementation(async url => {
+    if (url === 'relay/account/workbench') return { threads: [{ deviceId: 'indexed-device', threadId: thread.id, title: thread.title, workspaceLabel: 'App', favorite: true }], notifications: [] };
+    throw new Error(`Unexpected device read: ${url}`);
+  });
+  const { result, unmount } = renderHook(() => useWorkbenchNavigation(null, [], 'other-device'), {
+    wrapper: ({ children }) => <DesktopStoreContext.Provider value={store}>{children}</DesktopStoreContext.Provider>,
+  });
+  await waitFor(() => expect(result.current.threads.find(row => row.key === thread.key)?.status).toBe('running'));
+  act(() => { index = { ...index, threads: [{ ...thread, status: 'idle' }] }; notify(); });
+  await waitFor(() => expect(result.current.threads.find(row => row.key === thread.key)?.status).toBe('idle'));
+  expect(vi.mocked(request).mock.calls.every(([url]) => url === 'relay/account/workbench')).toBe(true);
+  unmount();
 });

@@ -43,8 +43,7 @@ export function ActivityFamily({ root, item, members, favorites, onOpen, menu }:
     {expanded ? members.map(member => <ActivityRow key={member.key} item={member} favorite={favorites.has(member.key)} onOpen={onOpen} menu={menu} />) : null}
   </div>;
 }
-/** Desktop-only: the persistent account index also drives native alerts. Ordinary
- * browsers keep their existing sidebar (docs/ui-principles.md, desktop exception). */
+/** Shared activity sidebar; only the native host also uses this index for alerts. */
 export function ActivitySection({ navigation, onOpen }: { navigation: NavigationActions; onOpen(key: string): void }) {
   useI18n();
   const store = useDesktopStore();

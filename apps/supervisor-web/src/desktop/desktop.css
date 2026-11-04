@@ -92,17 +92,3 @@
 :root:root [data-desktop-surface] .desktop-client-update-button:focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 1px; }
 :root:root [data-desktop-surface] .desktop-client-update-failure { width: 40px; height: 40px; display: grid; place-items: center; }
 [data-desktop-surface] .desktop-route > [data-page="account"] { height: 100%; overflow-y: auto; }
-
-/* Global navigation keeps its positions across host pages. Contextual tools
-   follow Explorer; they never push shared navigation or the footer around. */
-[data-desktop-surface] .matter-rail > :is(button, a) { flex-shrink: 0; order: 6; }
-[data-desktop-surface] .matter-rail > .matter-brand { order: 0; }
-[data-desktop-surface] .matter-rail > [data-desktop-map-link] { order: 1; }
-[data-desktop-surface] .matter-rail > button:has([data-icon=devices]) { order: 2; }
-[data-desktop-surface] .matter-rail > button:has([data-icon=chat]) { order: 3; }
-[data-desktop-surface] .matter-rail > button:has([data-icon=explorer]) { order: 4; }
-[data-desktop-surface] .matter-rail > button:has([data-icon=terminal]) { order: 5; }
-[data-desktop-surface] .matter-rail > .matter-rail-bottom { order: 100; }
-/* The global footer has one account entry on every page. Device monitoring is
-   available on Devices cards; the tutorial is in the account menu. */
-[data-desktop-surface] .matter-rail-bottom :is(.device-monitor-button, .pm-tour-launcher) { display: none; }

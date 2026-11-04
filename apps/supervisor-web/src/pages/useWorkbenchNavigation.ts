@@ -1,9 +1,10 @@
+import { DesktopStoreContext } from '../desktop/data/context';
 import { NOTIFICATION_CHANGE } from '../lib/notificationSettings';
 import { useBrowserStateKey } from '../lib/browserStateScope';
 import { narrationQuery } from '../lib/transcriptPreferences';
 import { useHostScope } from '../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { ThreadDetailDto, ThreadDto, WorkspaceDto } from '@pockymoe/shared';
 import type {
   WorkbenchNotification,
@@ -123,6 +124,7 @@ export function useWorkbenchNavigation(
   } = {},
 ) {
   const hostScope = useHostScope();
+  const sharedIndex = useContext(DesktopStoreContext);
   const enabled = options.enabled !== false;
   const storageKey = useBrowserStateKey(LOCAL_KEY);
   // The order the reader dragged each workspace's conversations into, kept in
@@ -154,6 +156,28 @@ export function useWorkbenchNavigation(
   // Every thread listed by the devices navigation read, for the running sheet:
   // running threads count wherever they are, opened before or not.
   const [deviceLists, setDeviceLists] = useState<Record<string, ThreadDto[]>>({});
+  // Owned devices come from the shell's single live index. Shared grants keep
+  // their scoped fallback reads; they are deliberately absent from that index.
+  useEffect(() => {
+    if (!sharedIndex) return;
+    let lastThreads: unknown, lastDevices: unknown;
+    let owned = new Set<string>();
+    const sync = () => {
+      const index = sharedIndex.getSnapshot();
+      if (lastThreads === index.threads && lastDevices === index.devices) return;
+      lastThreads = index.threads; lastDevices = index.devices;
+      const replaced = new Set([...owned, ...index.devices.map(device => device.id)]);
+      owned = new Set(index.devices.map(device => device.id));
+      const keepShared = <T,>(previous: Record<string, T>) => Object.fromEntries(Object.entries(previous).filter(([key]) => !replaced.has(key.split(':')[0]!)));
+      const lists = Object.fromEntries(index.devices.map(device => [device.id, index.threads.filter(thread => thread.deviceId === device.id)]));
+      setDeviceLists(previous => ({ ...keepShared(previous), ...lists }));
+      setStatuses(previous => ({ ...keepShared(previous), ...Object.fromEntries(index.threads.map(thread => [thread.key, thread])) }));
+      const groups: Record<string, ThreadDto[]> = {};
+      for (const thread of index.threads) (groups[`${thread.deviceId}:${thread.rootThreadId ?? thread.id}`] ??= []).push(thread);
+      setFamilies(previous => ({ ...keepShared(previous), ...groups }));
+    };
+    sync(); return sharedIndex.subscribe(sync);
+  }, [sharedIndex]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [navigationReady, setNavigationReady] = useState(false);
@@ -221,7 +245,10 @@ export function useWorkbenchNavigation(
           // The page keeps the current device's list current from its events.
           const sharedDevice = sharesDeviceThreads ? deviceId : null;
           if (sharedDevice && threadsRef.current.length) deviceSnapshots.set(sharedDevice, threadsRef.current);
-          const pendingDevices = [...new Set(next.threads.map(r => r.deviceId).filter((id): id is string => !!id && id !== sharedDevice && reachable(unreachable, id)))];
+          const index = sharedIndex?.getSnapshot();
+          const indexedDevices = new Set(index?.devices.map(device => device.id));
+          for (const id of index?.syncedDeviceIds ?? []) deviceSnapshots.set(id, index!.threads.filter(thread => thread.deviceId === id));
+          const pendingDevices = [...new Set(next.threads.map(r => r.deviceId).filter((id): id is string => !!id && id !== sharedDevice && !indexedDevices.has(id) && reachable(unreachable, id)))];
           await Promise.all(Array.from({ length: Math.min(6, pendingDevices.length) }, async () => {
             while (alive && pendingDevices.length) {
               const id = pendingDevices.shift()!;
@@ -240,7 +267,7 @@ export function useWorkbenchNavigation(
           }));
           // Until the shared list has loaded, its threads wait for the next pass
           // instead of one summary request each.
-          const waiting = next.threads.filter(r => !sharedDevice || r.deviceId !== sharedDevice || deviceSnapshots.has(sharedDevice));
+          const waiting = next.threads.filter(r => (!sharedDevice || r.deviceId !== sharedDevice || deviceSnapshots.has(sharedDevice)) && (!indexedDevices.has(r.deviceId!) || deviceSnapshots.has(r.deviceId!)));
           const pending = waiting.filter(r => r.deviceId === sharedDevice || reachable(unreachable, r.deviceId!));
           const missing: ThreadReference[] = [];
           const updates: Record<string, ThreadActivity> = {};
@@ -339,7 +366,7 @@ export function useWorkbenchNavigation(
       window.removeEventListener('storage', onVisible);
       window.removeEventListener(NOTIFICATION_CHANGE, onVisible);
     };
-  }, [relay, deviceId, sharesDeviceThreads, storageKey, hostScope, enabled]);
+  }, [relay, deviceId, sharesDeviceThreads, storageKey, hostScope, enabled, sharedIndex]);
 
   const save = useCallback(
     async (favorite?: boolean, markRead = false, target?: ThreadReference) => {

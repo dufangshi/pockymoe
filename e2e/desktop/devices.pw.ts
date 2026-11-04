@@ -8,7 +8,7 @@ test('partial lifetime data, offline cache, device rename and unsupported relay 
   await page.getByRole('combobox', { name: '统计设备', exact: true }).click();
   await page.getByRole('option', { name: 'MacBook Pro', exact: true }).click();
   await expect(page.locator('.pd-usage-table tfoot')).toContainText('—');
-  await page.getByRole('button', { name: '全部', exact: true }).click();
+  await page.getByRole('group', { name: '统计时间范围', exact: true }).getByRole('button', { name: '全部', exact: true }).click();
   await expect(page.locator('.pd-usage-table tfoot')).toContainText('315');
   await page.locator('.pd-account-usage').scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${evidence}/partial-lifetime-classic-light.png` });
@@ -29,7 +29,7 @@ test('partial lifetime data, offline cache, device rename and unsupported relay 
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '重命名设备' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Studio Mac 的操作', exact: true }).click();
-  await expect(page.getByRole('menuitem', { name: '重命名', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('menuitem', { name: '重命名', exact: true })).toBeDisabled();
   await page.keyboard.press('Escape');
   await page.goto('/?desktopMockHost=1');
   await expect(page.locator('[data-desktop-surface]')).toBeVisible();

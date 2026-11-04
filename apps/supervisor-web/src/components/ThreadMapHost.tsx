@@ -1,5 +1,6 @@
+import { DesktopStoreContext } from '../desktop/data/context';
 import { useHostSurface } from '../desktop/surface';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import type {
   RelayPortalSummaryDto,
@@ -159,7 +160,20 @@ type DeviceEntry = { id: string | null; name: string; connected: boolean };
 
 /** The account's own devices (or this one, locally), read while the map is open. */
 export function useThreadMapDevices(open: boolean) {
+  const sharedIndex = useContext(DesktopStoreContext);
   const [devices, setDevices] = useState<ThreadMapDevice[]>([]);
+  useEffect(() => {
+    if (!sharedIndex || !open) return;
+    sharedIndex.setMapVisible(true);
+    const sync = () => {
+      const index = sharedIndex.getSnapshot();
+      setDevices(index.devices.map(device => ({ ...mapDevice(device.id, device.name,
+        index.workspaces.filter(workspace => workspace.deviceId === device.id), index.threads.filter(thread => thread.deviceId === device.id), index.activity[device.id] ?? null),
+        state: device.connected ? device.cachedAt ? 'ready' : 'loading' : 'offline' })));
+    };
+    sync(); const unsubscribe = sharedIndex.subscribe(sync);
+    return () => { unsubscribe(); sharedIndex.setMapVisible(false); };
+  }, [sharedIndex, open]);
   const entries = useRef<DeviceEntry[]>([]);
   const generation = useRef(0);
   const settle = useCallback((run: number, answers: readonly ThreadMapDevice[]) => {
@@ -203,14 +217,15 @@ export function useThreadMapDevices(open: boolean) {
     flush();
   }, [settle]);
   const retry = useCallback((id: string) => {
+    if (sharedIndex) { void sharedIndex.refreshDevice(id); return; }
     const entry = entries.current.find(item => (item.id ?? LOCAL) === id);
     if (!entry) return;
     const run = generation.current;
     setDevices(list => list.map(device => device.id === id ? { ...device, state: 'loading', error: null } : device));
     void readDevice(entry.id, entry.name).then(next => settle(run, [next]));
-  }, [settle]);
+  }, [settle, sharedIndex]);
   useEffect(() => {
-    if (!open) return;
+    if (!open || sharedIndex) return;
     void refresh();
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') void refresh();
@@ -219,7 +234,7 @@ export function useThreadMapDevices(open: boolean) {
       window.clearInterval(timer);
       generation.current++;
     };
-  }, [open, refresh]);
+  }, [open, refresh, sharedIndex]);
   return { devices, retry };
 }
 
