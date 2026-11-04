@@ -27,13 +27,13 @@ GitHub Releases 是 runtime 的权威版本。不要发布新的 runtime/npm 包
 
 ```sh
 gh workflow run runtime-release.yml --ref PUSHED_REF \
-  -f channel=latest -f thread_ui_sha=FULL_PUBLISHED_UI_SHA
+  -f channel=latest -f validation=auto -f thread_ui_sha=FULL_PUBLISHED_UI_SHA
 gh run watch RUN_ID --interval 30 --exit-status
 ```
 
 `dry-run` 只在用户明确要求或已授权发布需要验证 job/artifact 链路时调用。保存唯一 run ID/headSha，只保留一个 watch 进程，工具单次等待不超过 60 秒。失败先读日志，不盲目重跑或覆盖同版本资产。
 
-verify、四平台 native、固定 UI 的 Web 构建并行，package 依赖全部成功后才能 release。核对 GitHub 版本、四平台资产、Web ZIP、setup.sh/setup.ps1、runtime-version.txt 和 SHA256SUMS，下载代表平台验证真实版本。GitHub 查询失败不等于尚未发布。没有 npm publish job。
+verify 默认 `validation=auto`：从最近可信 runtime release SHA 到最终 SHA 的完整 diff 选择受影响 crate 及其 workspace 消费者测试；数据库、迁移、登录/鉴权、更新代码都遵循相同规则，不强制全 workspace。只有显式 `validation=full` 才跑全 workspace。verify、四平台 native、固定 UI 的 Web 构建并行，package 依赖全部成功后才能 release。`channel=dry-run` 保留完整构建/组装/扫描链但不发布；不能跳过祖先检查、四平台、固定 Web pin、checksums、版本 smoke 和不可变发布约束。Windows 单测试使用共享生产 launcher 的小型 rustc smoke，不重新链接整个 Supervisor release 测试二进制。核对 GitHub 版本、四平台资产、Web ZIP、setup.sh/setup.ps1、runtime-version.txt 和 SHA256SUMS，下载代表平台验证真实版本。GitHub 查询失败不等于尚未发布。没有 npm publish job。
 
 公开网页及 setup 脚本是 GitHub Pages 静态站点（https://app.example.com）：main 上 Web 路径、setup 脚本或 `thread-ui.sha` 的推送（或手动 dispatch）触发 `pages-deploy.yml`，用 `thread-ui.sha` 中的共享 UI 完整 SHA 构建并部署。共享 UI 提交须先推送到其 main；Release 资产可用后，确认主仓 main 的 `thread-ui.sha` 是同一完整 SHA，不是则提交并推送。Relay（https://relay.example.com）只提供 API；Relay 代码有变更时从 main dispatch `relay-deploy.yml`，它只部署 Relay，没有 `thread_ui_sha` 输入。重启设备 Supervisor 不会更新公开网页。按用户已有授权执行发布/部署，技能不额外扩大授权。
 
