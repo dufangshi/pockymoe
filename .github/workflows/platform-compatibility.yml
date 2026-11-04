@@ -3,6 +3,13 @@ name: Full compatibility (manual)
 on:
   # Agents dispatch this only when the user explicitly requests full validation.
   workflow_dispatch:
+    inputs:
+      validation:
+        type: choice
+        default: full
+        options: [full]
+        description: Explicit full compatibility validation
+  workflow_call:
 
 permissions:
   contents: read
