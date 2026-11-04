@@ -93,10 +93,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          package-manager-cache: false
 
       - uses: pnpm/action-setup@v4
         with:
@@ -112,6 +108,13 @@ jobs:
           git clone --depth 1 --branch "${ref}" "${THREAD_UI_REPO}" ./pockymoe-thread-ui
           echo "Thread UI: $(git -C ./pockymoe-thread-ui rev-parse HEAD)" >> "${GITHUB_STEP_SUMMARY}"
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            pockymoe-thread-ui/pnpm-lock.yaml
       - name: Install dependencies
         shell: bash
         run: |

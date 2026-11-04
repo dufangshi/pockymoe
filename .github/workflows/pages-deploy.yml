@@ -27,8 +27,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
+  changes:
     if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version_only: ${{ steps.select.outputs.version_only }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Avoid deploying a version-field-only change
+        id: select
+        env:
+          BASE_SHA: ${{ github.event.before || github.sha }}
+        run: python3 scripts/ci-select.py "$BASE_SHA" "$GITHUB_SHA" --github-output "$GITHUB_OUTPUT"
+  build:
+    needs: changes
+    if: github.ref == 'refs/heads/main' && needs.changes.outputs.version_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
