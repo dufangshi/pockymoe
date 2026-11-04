@@ -40,12 +40,18 @@ is enabled. A background worker checks new inference events every 25ms while a
 visible prompt is active. It counts request fragments with a bundled
 `o200k_base` tokenizer and reuses hashes/counts across requests. This is an
 estimate, not a promise that the tokenizer matches every upstream model.
-Media references use a small diagnostic proxy and their base64 bytes are never
-tokenized as text. Encrypted reasoning bytes are omitted. A request stays pending
-until its provider response is correlated, so an uncalibrated large estimate
-cannot briefly replace the last native reading. If the local category estimate
-still exceeds the correlated Codex input total, the messages category is bounded
-to the remaining reported total and the snapshot is marked as adjusted.
+Media bytes, encrypted state, item IDs and transport metadata are never
+stringified for text counting. Only readable content blocks and tool-call
+arguments are counted; images/audio and opaque reasoning remain in the native
+unattributed difference. A request stays pending until its provider response is
+correlated, so an uncalibrated estimate cannot briefly replace native occupancy.
+If the local tokenizer still estimates more than Codex reports, the category sum
+and signed discrepancy are displayed separately using `compositionTokens` and
+`attributionDeltaTokens`, without rescaling the messages category. Codex total
+occupancy is always the correlated native response total. The Web also discards
+old malformed Codex category caches that exceed their native occupancy without
+explicit separate-composition metadata. Refreshing cached Codex details does not
+re-emit them as a new occupancy reading.
 Responses are correlated with inference IDs before calibrating the input total;
 unattributed overhead remains separate instead of being distributed across
 categories. The response's native total updates occupancy after output.
