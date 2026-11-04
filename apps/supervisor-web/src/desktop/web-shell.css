@@ -1,0 +1,7 @@
+/* Browser navigation shares the workbench without native chrome or drag regions. */
+.web-navigation-shell { position: fixed; inset: 0; min-width: 0; overflow: hidden; }
+.web-navigation-route { flex: 1; min-height: 0; min-width: 0; height: 100%; overflow: auto; position: relative; }
+.web-navigation-route > .thread-ui-shell { height: 100%; max-height: 100%; min-height: 0; padding: 0; }
+.web-navigation-route .desktop-map-scene { position: relative; height: 100%; }
+.web-navigation-shell .matter-rail > button:has([data-icon=thread-map]):not([data-desktop-map-link]) { display: none; }
+.web-navigation-shell .matter-rail > button[data-desktop-map-link] { position: relative; }

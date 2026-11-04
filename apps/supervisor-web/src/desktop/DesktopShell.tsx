@@ -1,12 +1,12 @@
+import { useThreadReadState } from './useThreadReadState';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { LayoutDashboard, Monitor } from 'lucide-react';
+import { ShellRail } from './ShellRail';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { AppShellNavContext, useAppShellNav } from '../components/AppShellNavContext';
 import { appPathname, appUrl } from '../lib/webBase';
 import { threadHref } from '../lib/relayRoutes';
 import { useDesktopSelector, useDesktopStore } from './data';
-import { buildActivityItems } from './data/activity';
 import { ActivitySection } from './ActivitySection';
 import { ClientUpdateButton } from './ClientUpdateButton';
 import { DesktopSurfaceContext, hasWorkspaceContext, type NavigationActions } from './context';
@@ -52,17 +52,8 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
     const key = focusedKeyFromPath(location.pathname);
     const thread = store.getSnapshot().threads.find(thread => thread.key === key);
     host.window?.setTitle(thread?.title ?? (mapVisible ? translate('desktopShell.mapWindowTitle') : 'Pockymoe'));
-    if (!key) return;
-    store.rememberThread(key);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const focus = () => { clearTimeout(timer); if (document.hasFocus()) timer = setTimeout(() => store.markRead(key), 1500); };
-    const scroll = (event: Event) => {
-      const target = event.target;
-      if (target instanceof HTMLElement && target.matches('[data-testid="thread-scroll-container"], .thread-graph-scroll-container') && document.hasFocus() && target.scrollHeight - target.scrollTop - target.clientHeight < 8) store.markRead(key);
-    };
-    focus(); window.addEventListener('focus', focus); window.addEventListener('blur', focus); document.addEventListener('scroll', scroll, true);
-    return () => { clearTimeout(timer); window.removeEventListener('focus', focus); window.removeEventListener('blur', focus); document.removeEventListener('scroll', scroll, true); };
   }, [host, location.pathname, mapVisible, store, locale]);
+  useThreadReadState(store, location.pathname);
   useEffect(() => syncActivity(store, host, () => focusedKeyFromPath(route.current), capabilities.features.badge), [capabilities.features.badge, host, store]);
   useEffect(() => {
     if (typeof host.onCommand !== 'function') return;
@@ -81,10 +72,7 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
     };
     window.addEventListener('keydown', key); return () => window.removeEventListener('keydown', key);
   }, [openMap]);
-  const waitingCount = useMemo(() => new Set(buildActivityItems(index).filter(item => item.state === 'needsInput').map(item => item.rootThreadKey ?? item.key)).size, [index]);
-  // translate reads a stable shared store; locale explicitly invalidates cached labels.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const railLeading = useMemo(() => <><button data-desktop-map-link aria-label={waitingCount ? translate('desktopShell.mapWaiting', { count: waitingCount }) : translate('desktopShell.map')} aria-pressed={mapVisible} title={translate('desktopShell.mapShortcut', { shortcut: capabilities.platform === 'darwin' ? '⌘0' : 'Ctrl+0' })} onClick={openMap}><LayoutDashboard data-icon="thread-map" />{waitingCount ? <span className="desktop-map-badge">{waitingCount}</span> : null}</button><button aria-label={translate('desktopShell.devices')} title={translate('desktopShell.devices')} onClick={() => navigate('/desktop/devices')}><Monitor data-icon="devices" /></button></>, [mapVisible, navigate, openMap, waitingCount, locale]);
+  const railLeading = useMemo(() => <ShellRail openMap={openMap} mapVisible={mapVisible} mapShortcut={capabilities.platform === 'darwin' ? '⌘0' : 'Ctrl+0'} />, [openMap, mapVisible, capabilities.platform]);
   const railBottomLeading = useMemo(() => <ClientUpdateButton host={host} enabled={capabilities.features.updates === true} />, [host, capabilities.features.updates]);
 
   const workspaceControlsEnabled = hasWorkspaceContext(location.pathname, location.search);

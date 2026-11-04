@@ -244,6 +244,28 @@ unprotected. Device cards link to Workspaces; offline cards retain their state a
 cached-data explanation. Device details retain sharing, isolation, setup commands,
 token replacement and removal. Incoming shared access remains in Sharing.
 
+Wide signed-in browsers use the same Devices workbench, rail entries and activity
+section as the desktop client. The redundant ProductHeader is absent. Workspaces
+and account settings reuse their existing workbench frames too. One retained
+`PersistentWorkbenchNavigation` owns the browser rail/sidebar DOM across Devices,
+threads and workspaces, including sidebar folding, width and scroll. Sidebar
+threads open the browser conversation UI; focused viewing uses the same activity
+read marks as the client. Native window controls, updater,
+drag regions and pet remain outside the browser.
+
+The browser shell owns one account-scoped `DesktopIndexStore`; Devices consumes
+it rather than starting a route-local index. Navigation reads owned devices from
+that index, while shared grants retain their scoped fallback reads. The Web map
+dialog also consumes the index and enables activity reads only while open. Leaving
+Devices does not stop the shell; leaving the shell or signing out releases its
+connections. A focused transcript may still own its existing thread-specific
+stream, rather than another account-wide set of streams.
+
+The browser map remains its existing dialog over the workbench. Settings remains
+its existing settings window/full-screen route. Workspace/thread creation, import,
+share review, relay landing/help, authentication and admin pages retain their
+separate flows; they do not use the Devices/workspaces/account route frame.
+
 Old `/relay-devices` links on PC use a replace redirect preserving the complete
 query, including `tab`, `dir`, `shareDevice` and `action`. Signed-out visitors go to
 the sign-in portal. Phone-width browsers (under 640px on document load) and mobile

@@ -1,14 +1,23 @@
 import { ProductHeader } from '../components/ProductHeader';
 import { translate } from '@pockymoe/thread-ui/i18n';
-import { useEffect, useState } from 'react';
-import { Navigate, useLocation } from 'react-router-dom';
+import { useContext, useEffect, useState } from 'react';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { fetchRelaySession } from '../lib/api';
 import { useAppShellNav } from '../components/AppShellNavContext';
 import { DesktopIndexStore, DesktopStoreContext } from './data';
 import DevicesPage from './devices';
+import { DesktopMapPage } from './MapPage';
 
-/** The desktop's statistics page in a browser, on its own store while the page is open. */
+/** Wide browsers consume the persistent shell's index and the client's frame. */
 export default function WebDevicesRoute() {
+  const store = useContext(DesktopStoreContext);
+  const navigate = useNavigate();
+  return store ? <DesktopMapPage visible mapVisible={false} revealKey={null} onOpen={target => {
+    const thread = store.getSnapshot().threads.find(thread => thread.key === target);
+    if (thread) navigate(`/devices/${encodeURIComponent(thread.deviceId)}/threads/${encodeURIComponent(thread.id)}`);
+  }} /> : <StandaloneWebDevicesRoute />;
+}
+function StandaloneWebDevicesRoute() {
   const shell = useAppShellNav();
   const location = useLocation();
   const [store, setStore] = useState<DesktopIndexStore | null>(null);

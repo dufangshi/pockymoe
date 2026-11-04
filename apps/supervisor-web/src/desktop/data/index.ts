@@ -1,10 +1,11 @@
-import { createContext, useContext, useRef, useSyncExternalStore } from 'react';
+import { useContext, useRef, useSyncExternalStore } from 'react';
 import type { DesktopIndex } from './types';
 import { DesktopIndexStore } from './store';
 export * from './types';
 export * from './store';
 export * from './merge';
-export const DesktopStoreContext = createContext<DesktopIndexStore | null>(null);
+export { DesktopStoreContext } from './context';
+import { DesktopStoreContext } from './context';
 export function useDesktopStore() {
   const store = useContext(DesktopStoreContext); if (!store) throw new Error('Desktop store is required.'); return store;
 }

@@ -23,7 +23,7 @@ export function useDesktopWorkspaceLayout() {
   return Boolean(surface) && wide;
 }
 
-/** Desktop navigation lives in the sidebar. Phones and plain browsers retain
+/** Desktop navigation lives in the sidebar. Phones and local browsers retain
  * ProductHeader (§9 exception in docs/ui-principles.md). */
 export function WorkspacesFrame({ deviceId, children, sharedOnly }: { deviceId: string | null; children: ReactNode; sharedOnly: boolean }) {
   useI18n();
