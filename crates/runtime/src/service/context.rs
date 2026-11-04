@@ -28,12 +28,16 @@ impl Supervisor {
             );
         }
         let session = thread.provider_session_id.as_deref().unwrap_or("");
-        let mut snapshot = self.context_inspection.cached(session).or_else(|| {
-            thread
-                .context_usage
-                .as_ref()
-                .and_then(|v| v.get("details").cloned())
-        });
+        let mut snapshot = self
+            .context_inspection
+            .cached(session)
+            .or_else(|| {
+                thread
+                    .context_usage
+                    .as_ref()
+                    .and_then(|v| v.get("details").cloned())
+            })
+            .filter(crate::context_inspection::usable_snapshot);
         let mut reason = None;
         if refresh || snapshot.is_none() {
             match self
@@ -42,13 +46,18 @@ impl Supervisor {
                 .await
             {
                 Ok(Some(fresh)) => {
-                    crate::context_inspection::emit(
-                        &self.context_inspection,
-                        session,
-                        id,
-                        &self.bus,
-                        fresh.clone(),
-                    );
+                    // Codex inspect_context returns a trace cache, not a new
+                    // observation. Re-emitting it on panel open can overwrite
+                    // a newer native reading (e.g. after a delta/compaction).
+                    if provider != "codex" {
+                        crate::context_inspection::emit(
+                            &self.context_inspection,
+                            session,
+                            id,
+                            &self.bus,
+                            fresh.clone(),
+                        );
+                    }
                     snapshot = Some(fresh);
                 }
                 Ok(None) => reason = Some("waitingForNextRequest"),

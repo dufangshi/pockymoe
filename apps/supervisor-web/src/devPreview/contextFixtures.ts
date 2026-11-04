@@ -111,6 +111,26 @@ const high: ContextInspectionSnapshotDto = {
     { id: 'system_tools_deferred', label: 'System tools (deferred)', kind: 'deferred', tokens: 15579, precision: 'reported' },
   ],
 };
+// Synthetic regression for media-heavy Codex requests: native occupancy stays
+// at 62.8% while only readable content contributes to the local categories.
+const codexMedia: ContextInspectionSnapshotDto = {
+  ...codex, usedTokens: 520_300,
+  categories: [
+    { id: 'system_prompt', kind: 'used', tokens: 5_306 },
+    { id: 'system_tools', kind: 'used', tokens: 6_121 },
+    { id: 'mcp_tools', kind: 'used', tokens: 2_485 },
+    { id: 'memory_files', kind: 'used', tokens: 863 },
+    { id: 'skills', kind: 'used', tokens: 8_046 },
+    { id: 'messages', kind: 'used', tokens: 280_822 },
+    { id: 'unattributed', kind: 'used', tokens: 216_657 },
+    { id: 'free_space', kind: 'free', tokens: 308_100 },
+  ],
+};
+const codexMismatch: ContextInspectionSnapshotDto = {
+  ...codexMedia, compositionTokens: 540_300, attributionDeltaTokens: -20_000,
+  categories: codexMedia.categories.filter(entry => entry.id !== 'unattributed')
+    .map(entry => entry.id === 'messages' ? { ...entry, tokens: 517_479 } : entry),
+};
 // Recorded from the isolated native DSH scripted-provider integration.
 const dsh: ContextInspectionSnapshotDto = {
   provider: "deepseek",
@@ -194,6 +214,8 @@ export interface ContextPreviewScenario {
 const claudeModel = { id: 'claude-opus-5-5', name: 'Opus 5.5', agent: 'claude' };
 const codexModel = { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', agent: 'codex' };
 export const contextPreviewScenarios: ContextPreviewScenario[] = [
+  { id: 'codex-media', title: 'Regression demo · Codex media bytes excluded, native occupancy 62.8%', model: codexModel, usage: usage(520_300, 828_400, 3, codexMedia), summary: answer(codexMedia), settingsEnabled: true },
+  { id: 'codex-mismatch', title: 'Regression demo · Codex tokenizer mismatch kept separate', model: codexModel, usage: usage(520_300, 828_400, 3, codexMismatch), summary: answer(codexMismatch), settingsEnabled: true },
   { id: 'dsh', title: 'Recorded · DSH native composition and projected occupancy (scripted provider)', model: { id: '["context-research","research"]', name: 'DSH · Research', agent: 'deepseek' }, usage: usage(dsh.usedTokens, dsh.windowTokens, 2, dsh), summary: answer(dsh), settingsEnabled: true },
   { id: 'claude-summary', title: 'Recorded · Claude summary, Full count available', model: claudeModel, usage: usage(32898, 1_000_000, 14, claude('claudeSummary')), summary: answer(claude('claudeSummary')), full: answer({ ...claude('claudeFull'), updatedAt: ago(0) }), settingsEnabled: true },
   { id: 'claude-full', title: 'Recorded · Claude full count', model: claudeModel, usage: usage(32898, 1_000_000, 14, claude('claudeFull')), summary: answer(claude('claudeFull')), full: answer({ ...claude('claudeFull'), updatedAt: ago(0) }), settingsEnabled: true },
