@@ -4,7 +4,7 @@
    thread list, with a stitched seam, and the cream conversation card. Thread tabs
    are folder tabs that join the card. Agent mascots carry identity; their status is
    a badge on the avatar. Classic is untouched: the shared UI only adds neutral class
-   hooks, and the phone drawer tools render only with the
+   hooks, and the drawer's Home moves off the phone top bar only with the
    `workbench.phoneDrawerTools` flag. Avatars and the composer mascot read the
    `--theme-agent-avatar` / `--theme-agent-peek` art from theme.json `agents`. */
 
@@ -925,37 +925,6 @@
   :theme .thread-ui-shell .matter-workbench .matter-agent-threads-summary { min-height: 36px; padding-inline: 14px 12px !important; font-size: 12.5px !important; }
   :theme .thread-ui-shell .matter-workbench .matter-agent-threads .matter-thread-row { min-height: 48px; }
 
-  /* Drawer tools: workspaces and chat as felt tiles. */
-  :theme .thread-ui-shell .matter-workbench .matter-drawer-tools {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px;
-    margin: 0 2px 10px;
-  }
-  :theme .thread-ui-shell .matter-workbench .matter-drawer-tools > :is(a, button) {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 4px;
-    width: auto;
-    min-width: 0;
-    flex-direction: row;
-    height: 48px;
-    padding: 4px 10px;
-    border: 1.5px dashed rgb(242 193 92 / 28%);
-    border-radius: 14px;
-    background: rgb(255 255 255 / 5%);
-    color: var(--plum-chrome-soft);
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1.1;
-  }
-  :theme .thread-ui-shell .matter-workbench .matter-drawer-tools > :is(a, button):active { background: var(--plum-chrome-hover); }
-  :theme .thread-ui-shell .matter-workbench .matter-drawer-tools > :is(a, button) > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  :theme .thread-ui-shell .matter-workbench .matter-drawer-tools svg { width: 19px; height: 19px; }
-  :theme .thread-ui-shell .matter-workbench .matter-drawer-tools > button[aria-pressed='true'] { border-style: solid; border-color: transparent; background: var(--theme-accent-solid); color: var(--plum-chrome); }
-  :theme .thread-ui-shell .matter-workbench .matter-drawer-tools :where(button, a):focus-visible { outline: 2px solid var(--plum-shell-focus); outline-offset: 1px; }
 
   /* Tabs and card: the card runs edge to edge under taller folder tabs. */
   :theme .thread-ui-shell .matter-workbench .matter-main > :is(.workbench-panels, .matter-content) { margin: 0; border-radius: 16px 16px 0 0; box-shadow: 0 0 0 1px var(--plum-shell-card-edge); }
