@@ -21,6 +21,12 @@ describe('mobile back command', () => {
     const sheet = overlay('dialog'); const navigate = vi.fn();
     expect(handleMobileBack(navigate)).toBe(true); expect(sheet.isConnected).toBe(true); expect(navigate).not.toHaveBeenCalled();
   });
+  it('closes the settings sheet opened by a direct settings route', () => {
+    const sheet = overlay('dialog'); sheet.className = 'thread-graph-settings-dialog';
+    const close = vi.fn(); sheet.addEventListener('keydown', close);
+    expect(handleMobileBack(vi.fn())).toBe(true);
+    expect(close).toHaveBeenCalledOnce();
+  });
   it('uses only in-app history, including a cold deep-link root', () => {
     const navigate = vi.fn();
     expect(handleMobileBack(navigate)).toBe(false);

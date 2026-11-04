@@ -85,3 +85,35 @@ it('names share attention and opens the rail-specific settings dialog', async ()
   fireEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
   expect(settings).toHaveBeenCalledOnce(); expect(actions.settings).not.toHaveBeenCalled();
 });
+
+it('opens a phone top-bar avatar downward and right-aligned', async () => {
+  vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+  render(<MemoryRouter><RelayUserMenu rail /></MemoryRouter>);
+  const trigger = await screen.findByRole('button', { name: 'Relay account menu for demo' });
+  vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue(new DOMRect(340, 20, 44, 44));
+  fireEvent.click(trigger);
+  const menu = screen.getByRole('menu');
+  Object.defineProperty(menu, 'scrollHeight', { configurable: true, value: 320 });
+  await act(async () => { window.dispatchEvent(new Event('resize')); await Promise.resolve(); });
+  expect(menu.style.top).toBe('72px');
+  expect(menu.style.left).toBe('126px');
+});
+
+it('opens a phone bottom avatar upward and stays inside the viewport', async () => {
+  vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener() {}, removeEventListener() {} }));
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+  render(<MemoryRouter><RelayUserMenu rail /></MemoryRouter>);
+  const trigger = await screen.findByRole('button', { name: 'Relay account menu for demo' });
+  vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue(new DOMRect(8, 780, 44, 44));
+  fireEvent.click(trigger);
+  const menu = screen.getByRole('menu');
+  Object.defineProperty(menu, 'scrollHeight', { configurable: true, value: 320 });
+  await act(async () => { window.dispatchEvent(new Event('resize')); await Promise.resolve(); });
+  expect(menu.style.top).toBe('452px');
+  expect(menu.style.left).toBe('8px');
+  expect(Number.parseFloat(menu.style.top)).toBeGreaterThanOrEqual(8);
+  expect(Number.parseFloat(menu.style.top) + 320).toBeLessThanOrEqual(836);
+});
