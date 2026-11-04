@@ -105,3 +105,23 @@ compiles a tiny harness with rustc using the exact production launcher source;
 it does not relink the full Supervisor test binary in release mode. Ancestor,
 four-platform, hash/version, bootstrap, address and immutability gates remain
 mandatory. No npm publication job remains.
+
+## Publication aggregates
+
+Runtime publication and relay deployment require `PR checks complete` on the
+exact final SHA from the trusted main push workflow. Client publication similarly
+requires `Client checks complete` in the client repository. The latest run attempt
+must have a successful aggregate; missing, pending, failed or unqueryable results
+block publication. A separate non-required quarantine failure is ignored by this
+gate. No repository protection setting is changed by these workflows.
+
+An emergency `allow_unchecked_ci` dispatch reason (client CLI:
+`--allow-unchecked-ci REASON`) bypasses only this CI aggregate. The log records the
+final SHA and a reason digest without printing incident text. All artifact,
+signing/signature, address, ancestor and immutability gates remain mandatory.
+The aggregate is rechecked before the write. Releases and relay deployments are
+not cancelled in the middle of writes; newer PR checks still cancel old PR runs.
+
+Before requiring the stable aggregate in branch protection, migrate documented
+direct pushes to main (including shared UI pin updates) to PRs. The shared UI
+repository has no workflow and must not be given a required check.

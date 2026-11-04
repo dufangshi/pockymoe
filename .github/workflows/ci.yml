@@ -179,6 +179,8 @@ jobs:
           package-manager-cache: false
       - name: Test npm scripts without building or installing the product
         run: node --test scripts/publish-npm-release.test.mjs scripts/npm-launcher-download.test.mjs scripts/npm-launcher-relay.test.mjs scripts/supervisor-update.test.mjs
+      - name: Verify required aggregate publication policy
+        run: python3 -m unittest discover -s scripts -p test_required_aggregate.py
       - name: Check setup and real systemd unit parsing without starting services
         env:
           POCKYMOE_TEST_SYSTEMD: '1'

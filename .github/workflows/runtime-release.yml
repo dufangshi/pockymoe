@@ -7,6 +7,10 @@ on:
         description: Full commit SHA from remote-codex-thread-ui-rust to release
         required: true
         type: string
+      allow_unchecked_ci:
+        description: Emergency CI override reason (logged as a digest; other safety gates remain mandatory)
+        required: false
+        type: string
       validation:
         description: Test affected packages or explicitly run the full workspace
         required: true
@@ -24,6 +28,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: native-runtime-release-${{ github.ref }}
@@ -60,6 +65,15 @@ jobs:
           fi
           echo "sha=$(git rev-parse "${latest}^{commit}")" >> "$GITHUB_OUTPUT"
 
+      - name: Require the final main SHA aggregate before publication
+        if: inputs.channel == 'latest'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERRIDE_REASON: ${{ inputs.allow_unchecked_ci }}
+        run: |
+          args=()
+          if [ -n "$OVERRIDE_REASON" ]; then args+=(--allow-unchecked-ci "$OVERRIDE_REASON"); fi
+          python3 scripts/required_aggregate.py --repository dufangshi/pockymoe --sha "$GITHUB_SHA" "${args[@]}"
       - name: Guard tracked source addresses
         run: python3 scripts/check-production-address.py --tracked
 
@@ -297,12 +311,21 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
         with:
           name: pockymoe-runtime-${{ github.sha }}
           path: release-assets
+      - name: Recheck the required aggregate immediately before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OVERRIDE_REASON: ${{ inputs.allow_unchecked_ci }}
+        run: |
+          args=()
+          if [ -n "$OVERRIDE_REASON" ]; then args+=(--allow-unchecked-ci "$OVERRIDE_REASON"); fi
+          python3 scripts/required_aggregate.py --repository dufangshi/pockymoe --sha "$GITHUB_SHA" "${args[@]}"
       - name: Create or verify immutable release
         shell: bash
         env:
