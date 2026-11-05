@@ -966,6 +966,19 @@ pub fn apply_at(
     model: &str,
     root: &Path,
 ) -> Result<Value> {
+    apply_at_with_catalog(dir, c, harness, model, root, &Value::Null)
+}
+
+/// Project shared presentation/capability hints into DSH's native model
+/// definitions. The saved endpoint discovery remains an upstream-only record.
+pub fn apply_at_with_catalog(
+    dir: &Path,
+    c: &Connection,
+    harness: &str,
+    model: &str,
+    root: &Path,
+    catalog: &Value,
+) -> Result<Value> {
     c.validate_application(harness)?;
     let original = load(dir)?;
     let connections_before = read(dir)?;
@@ -1001,6 +1014,9 @@ pub fn apply_at(
             .insert(harness.into(), old.context_window);
     }
     let mut p = effective.profile(harness, &id, model)?;
+    if harness == "deepseek" {
+        super::discovery::enrich_models(&mut p.models, &p.model, catalog);
+    }
     p.live_revision = expected;
     if let Some(old) = previous {
         p.sort_index = old.sort_index;
@@ -1377,6 +1393,52 @@ mod tests {
         let native: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(native["env"]["ANTHROPIC_DEFAULT_OPUS_MODEL"], "manual-tier");
         assert_eq!(native["env"]["ANTHROPIC_CUSTOM_HEADERS"], "x-project: new");
+    }
+    #[test]
+    fn dsh_apply_projects_shared_metadata_and_reuses_only_its_own_connection_route() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("store");
+        let root = temp.path().join("dsh");
+        let first = saved(&dir, "openai_chat");
+        set_catalog(&dir, &first.id, &first.revision, catalog(&["openai_chat"])).unwrap();
+        let first = get(&dir, &first.id).unwrap();
+        let second = saved(&dir, "openai_responses");
+        let shared = json!({"models":{"other":{
+            "displayName":"Shared Other", "contextWindowTokens":9999999,
+            "reasoningEfforts":[{"reasoningEffort":"low","description":"Low"},{"reasoningEffort":"high","description":"High"}],
+            "defaultReasoningEffort":"high"
+        }}});
+        let a = apply_at_with_catalog(&dir, &first, "deepseek", "other", &root, &shared).unwrap();
+        apply_at_with_catalog(&dir, &second, "deepseek", "second-model", &root, &shared).unwrap();
+        let b = apply_at_with_catalog(&dir, &first, "deepseek", "other", &root, &shared).unwrap();
+        assert_eq!(a["profileId"], b["profileId"]);
+        let rows: Value = serde_yaml::from_str(
+            &std::fs::read_to_string(root.join("profiles/acp/cordis.patch.yml")).unwrap(),
+        )
+        .unwrap();
+        let pi = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "llm-pi-ai")
+            .unwrap();
+        let routes = pi["config"]["providers"].as_object().unwrap();
+        assert_eq!(routes.len(), 2);
+        let route = &routes[&format!("remote-codex-{}", a["profileId"].as_str().unwrap())];
+        let model = &route["models"][0];
+        assert_eq!(model["name"], "Shared Other");
+        assert_eq!(model["contextWindow"], 32768);
+        assert_eq!(
+            model["reasoningEfforts"],
+            json!({"low":"low","high":"high"})
+        );
+        assert!(route.get("reasoning").is_none());
+        // Relay hints never become fake endpoint discovery facts.
+        let source = get(&dir, &first.id).unwrap();
+        assert_eq!(
+            source.catalog.unwrap().model("other").unwrap().name,
+            "other"
+        );
     }
     #[test]
     fn restoring_reapplied_connection_recovers_the_prior_revision_and_model() {

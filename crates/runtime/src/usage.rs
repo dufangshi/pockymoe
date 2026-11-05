@@ -22,10 +22,7 @@ pub(crate) struct Tokens {
 /// protocol ID unchanged in session settings; persist only its model label in
 /// billing rows. Existing rows remain readable through the standalone Web fix.
 pub(crate) fn model_name(raw: &str) -> String {
-    serde_json::from_str::<Value>(raw)
-        .ok()
-        .and_then(|value| value.as_array()?.last()?.as_str().map(str::to_owned))
-        .unwrap_or_else(|| raw.to_owned())
+    pockymoe_protocol::pricing::model_id(raw).into_owned()
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -552,6 +549,28 @@ fn turn_models(value: &Value) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn historical_dsh_tuples_and_gateway_effort_aliases_price_cache_reads_once() {
+        let catalog = json!({"models":{"gemini-4-argon":{
+            "inputUsdPerMillion":2,"cachedInputUsdPerMillion":0.1,"outputUsdPerMillion":10,
+            "reasoningEfforts":[{"reasoningEffort":"high"}]
+        }}});
+        let usage = json!({"total":{"inputTokens":122000,"cachedInputTokens":42000,"outputTokens":9600},
+            "last":{"inputTokens":122000}});
+        for model in [
+            "gemini-4-argon",
+            r#"["remote-codex","gemini-4-argon"]"#,
+            r#"["remote-codex-channel","gemini-4-argon-high"]"#,
+        ] {
+            let price =
+                estimate_price_with_catalog(&usage, Some(model), None, &catalog, None).unwrap();
+            assert!(
+                (price["totalUsd"].as_f64().unwrap() - 0.2602).abs() < 1e-10,
+                "{model}: {price}"
+            );
+        }
+    }
 
     #[test]
     fn model_name_unwraps_acp_tuple_without_changing_plain_or_invalid_ids() {

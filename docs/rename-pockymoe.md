@@ -57,6 +57,11 @@ Kept unchanged, with the reason:
 
 ## Regenerating the rename
 
+DSH now creates `remote-codex-<consumer-profile-id>` provider slots to isolate
+OpenAI-compatible connections. The original `remote-codex` slot remains readable
+and is retained for old session tuples; this is routing isolation, not a rename
+of existing configuration.
+
 The rename commits are produced by `node scripts/rename-pockymoe.mjs <root>`. The script:
 
 - uses a keep list for the identifiers above;

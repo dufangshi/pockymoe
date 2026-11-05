@@ -371,12 +371,13 @@ pub async fn apply(
         .map_err(failure)?;
     upstreams::validate(&p, true).map_err(failure)?;
     let restarted = s.restart_harness(&input.harness).await.map_err(failure)?;
-    let mut result = saved::apply_at(
+    let mut result = saved::apply_at_with_catalog(
         &root,
         &c,
         &input.harness,
         &input.model,
         &s.upstream_home(&input.harness),
+        &s.model_pricing(),
     )
     .map_err(failure)?;
     result["restartedSessions"] = json!(restarted);

@@ -1,5 +1,17 @@
 //! Model identity and editable reference rates shared by Relay and devices.
 use serde_json::{json, Value};
+use std::borrow::Cow;
+
+/// DSH uses an ACP provider/model tuple as its selectable ID. Reporting and
+/// shared metadata use the model component; never change the selectable ID.
+pub fn model_id(raw: &str) -> Cow<'_, str> {
+    if let Ok([provider, model]) = serde_json::from_str::<[String; 2]>(raw) {
+        if !provider.is_empty() && !model.is_empty() {
+            return Cow::Owned(model);
+        }
+    }
+    Cow::Borrowed(raw)
+}
 
 pub fn normalized(value: &str) -> String {
     value
@@ -10,6 +22,34 @@ pub fn normalized(value: &str) -> String {
 }
 
 pub fn match_model(catalog: &Value, model: &str) -> Option<String> {
+    resolve_model(catalog, model).map(|(key, _)| key)
+}
+
+/// Exact IDs and configured aliases win. A gateway effort suffix is a reference
+/// alias only when the known base model explicitly offers that level. This is
+/// for presentation/accounting; callers must retain the upstream's wire ID.
+pub fn resolve_model(catalog: &Value, model: &str) -> Option<(String, Option<String>)> {
+    let model = model_id(model);
+    let model = model.trim();
+    if let Some(key) = match_plain_model(catalog, model) {
+        return Some((key, None));
+    }
+    let (base, effort) = model.rsplit_once('-')?;
+    let effort = effort.to_ascii_lowercase();
+    let effort = match effort.as_str() {
+        "off" => "none",
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" => &effort,
+        _ => return None,
+    };
+    let key = match_plain_model(catalog, base)?;
+    catalog["models"][&key]["reasoningEfforts"]
+        .as_array()?
+        .iter()
+        .any(|e| e["reasoningEffort"] == effort)
+        .then(|| (key, Some(effort.to_owned())))
+}
+
+fn match_plain_model(catalog: &Value, model: &str) -> Option<String> {
     let models = catalog["models"].as_object()?;
     for candidate in [
         model.trim(),
@@ -152,7 +192,7 @@ pub fn update_override(
         return Err("Invalid reasoningEfforts".into());
     }
     for alias in std::iter::once(json!(id)).chain(aliases.as_array().unwrap().iter().cloned()) {
-        if let Some(existing) = match_model(catalog, alias.as_str().unwrap()) {
+        if let Some(existing) = match_plain_model(catalog, alias.as_str().unwrap()) {
             if existing != id {
                 return Err(format!("Model name already belongs to {existing}"));
             }
@@ -187,16 +227,8 @@ pub fn update_override(
         .as_object_mut()
         .unwrap()
         .retain(|k, _| allowed.contains(&k.as_str()));
-    // A pricing edit usually contains only rates. Keep relay-owned model
-    // presentation metadata from the current catalog when it is omitted.
-    let canonical = match_model(catalog, id).unwrap_or_else(|| id.to_owned());
-    for field in ["displayName", "defaultReasoningEffort", "reasoningEfforts"] {
-        if rates.get(field).is_none() {
-            if let Some(value) = catalog["models"][&canonical].get(field) {
-                rates[field] = value.clone();
-            }
-        }
-    }
+    // Omitted presentation fields continue following the feed at read time;
+    // copying them into a saved rate override would pin stale capabilities.
     // Nested rates originate from the catalog but are editable request input too.
     fn valid_nested(v: &Value) -> bool {
         match v {
@@ -222,8 +254,18 @@ pub fn apply_overrides(catalog: &mut Value, overrides: &Value) {
     for (id, rates) in overrides.as_object().into_iter().flatten() {
         // An alias override replaces the canonical entry as well, ensuring it
         // cannot lose to the default entry just because of map ordering.
-        let key = match_model(catalog, id).unwrap_or_else(|| id.clone());
-        catalog["models"][&key] = rates.clone();
+        let key = match_plain_model(catalog, id).unwrap_or_else(|| id.clone());
+        let mut replacement = rates.clone();
+        // Older saved rate overrides predate the shared presentation fields.
+        // Let those fields continue to follow the feed unless explicitly set.
+        for field in ["displayName", "defaultReasoningEffort", "reasoningEfforts"] {
+            if replacement.get(field).is_none() {
+                if let Some(value) = catalog["models"][&key].get(field) {
+                    replacement[field] = value.clone();
+                }
+            }
+        }
+        catalog["models"][&key] = replacement;
         catalog["models"][&key]["custom"] = json!(true);
     }
 }
@@ -231,6 +273,63 @@ pub fn apply_overrides(catalog: &mut Value, overrides: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dsh_tuple_and_effort_suffix_match_reference_model_without_corrupting_exact_ids() {
+        let mut catalog = json!({"models":{
+            "gemini-4-argon":{"reasoningEfforts":[{"reasoningEffort":"low"},{"reasoningEffort":"high"}]},
+            "plain":{}, "gemini-4-argon-low":{"inputUsdPerMillion":3}
+        }});
+        assert_eq!(
+            resolve_model(
+                &catalog,
+                r#"["remote-codex-connection","gemini-4-argon-high"]"#
+            ),
+            Some(("gemini-4-argon".into(), Some("high".into())))
+        );
+        assert_eq!(
+            resolve_model(&catalog, "gemini-4-argon-low"),
+            Some(("gemini-4-argon-low".into(), None))
+        );
+        for unknown in [
+            "gemini-4-argon-ultra",
+            "gemini-4-argon-cyber",
+            "plain-high",
+            "gemini-4-argon-high-low",
+            "[1,2]",
+            "[]",
+        ] {
+            assert_eq!(match_model(&catalog, unknown), None, "{unknown}");
+        }
+        // A channel-specific override stays independent of its base model.
+        let mut overrides = json!({});
+        update_override(
+            &catalog,
+            &mut overrides,
+            &json!({"id":"gemini-4-argon-high", "rates":{
+                "inputUsdPerMillion":4,"cachedInputUsdPerMillion":1,"outputUsdPerMillion":20
+            }}),
+        )
+        .unwrap();
+        apply_overrides(&mut catalog, &overrides);
+        assert_eq!(
+            match_model(&catalog, "gemini-4-argon-high").as_deref(),
+            Some("gemini-4-argon-high")
+        );
+        assert!(catalog["models"]["gemini-4-argon"]
+            .get("inputUsdPerMillion")
+            .is_none());
+    }
+
+    #[test]
+    fn older_rate_overrides_keep_current_metadata_unless_explicitly_overridden() {
+        let mut catalog =
+            json!({"models":{"model":{"displayName":"Shared name", "reasoningEfforts":[]}}});
+        apply_overrides(&mut catalog, &json!({"model":{"inputUsdPerMillion":1}}));
+        assert_eq!(catalog["models"]["model"]["displayName"], "Shared name");
+        assert_eq!(catalog["models"]["model"]["reasoningEfforts"], json!([]));
+        apply_overrides(&mut catalog, &json!({"model":{"displayName":"My name"}}));
+        assert_eq!(catalog["models"]["model"]["displayName"], "My name");
+    }
     #[test]
     fn pricing_matches_exact_ids_before_aliases_and_ignores_pending_placeholders() {
         let catalog = json!({"models":{

@@ -3,6 +3,11 @@
 use super::*;
 use serde_yaml::Value as Yaml;
 const KEY_REF: &str = "REMOTE_CODEX_DSH_API_KEY"; // Legacy managed reference remains importable.
+fn provider_id(p: &Profile) -> String {
+    // Each consumer profile belongs to one connection and keeps its identity
+    // across model switches. Leave the old shared slot intact for session resume.
+    format!("remote-codex-{}", p.id)
+}
 fn credential_ref(p: &Profile) -> String {
     format!(
         "REMOTE_CODEX_DSH_{}",
@@ -88,13 +93,6 @@ fn dsh_efforts<'a>(efforts: impl Iterator<Item = &'a str>) -> serde_json::Map<St
         .collect()
 }
 
-fn dsh_level(effort: &str) -> Option<&str> {
-    match effort {
-        "none" | "off" => Some("off"),
-        effort => DSH_EFFORTS.contains(&effort).then_some(effort),
-    }
-}
-
 /// At most this many models are declared on the route; the selected and
 /// earlier ones always are.
 const MAX_MODELS: usize = 200;
@@ -127,8 +125,12 @@ fn compatible_model(
         Some(cap) if cap.efforts.is_empty() => model["reasoningEfforts"] = json!(false),
         Some(cap) => {
             let efforts = dsh_efforts(cap.efforts.iter().map(|e| e.reasoning_effort.as_str()));
-            if !efforts.is_empty() {
+            if efforts.keys().any(|level| level != "off") {
                 model["reasoningEfforts"] = Value::Object(efforts);
+            } else {
+                // DSH cannot expose an off-only map (nor Codex-only levels).
+                // Do not fall back to capabilities the endpoint ruled out.
+                model["reasoningEfforts"] = json!(false);
             }
         }
         None => {}
@@ -248,8 +250,9 @@ pub fn changes(p: &Profile, root: &Path) -> Result<Vec<(PathBuf, String)>> {
             "llm-deepseek",
             json!({"baseURL":p.base_url,"apiKeyEnv":key_ref,"models":models}),
         )?;
-        "deepseek-official"
+        "deepseek-official".to_owned()
     } else {
+        let provider = provider_id(p);
         // The form's untouched default window is not a fact about the model.
         let configured = (p.context_window != super::context_window()).then_some(p.context_window);
         let declared = |id: &str| {
@@ -266,9 +269,7 @@ pub fn changes(p: &Profile, root: &Path) -> Result<Vec<(PathBuf, String)>> {
             meta.as_ref(),
             None,
         )];
-        for previous in
-            previous_models(rows, "llm-pi-ai", &["providers", "remote-codex", "models"])?
-        {
+        for previous in previous_models(rows, "llm-pi-ai", &["providers", &provider, "models"])? {
             let Some(id) = previous["id"].as_str().filter(|id| *id != p.model) else {
                 continue;
             };
@@ -312,23 +313,11 @@ pub fn changes(p: &Profile, root: &Path) -> Result<Vec<(PathBuf, String)>> {
         if p.api_type == "responses" {
             route["compat"] = json!({"supportsMaxOutputTokens": false});
         }
-        // The model's own default level, used until a thread picks one.
-        if let Some(level) = selected
-            .and_then(|m| m.reasoning.as_ref())
-            .and_then(|cap| cap.default.as_deref())
-            .or(meta
-                .as_ref()
-                .and_then(|meta| meta.default_effort.as_deref()))
-            .and_then(dsh_level)
-        {
-            route["reasoning"] = json!(level);
-        }
-        set_entry(
-            rows,
-            "llm-pi-ai",
-            json!({"providers":{"remote-codex": route}}),
-        )?;
-        "remote-codex"
+        // `reasoning` is route-wide in DSH. A default learned for the selected
+        // model would also be sent after switching to a sibling that may not
+        // support it. Leave the endpoint default until the thread selects one.
+        set_entry(rows, "llm-pi-ai", json!({"providers":{&provider: route}}))?;
+        provider
     };
     for id in ["acp", "agent-default-model"] {
         set_entry(rows, id, json!({"provider":provider,"model":p.model}))?;
@@ -471,6 +460,99 @@ pub fn import_live(root: &Path, name: &str) -> Result<Profile> {
 mod tests {
     use super::*;
     #[test]
+    fn compatible_connections_keep_separate_routes_and_do_not_retarget_legacy_threads() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("dsh");
+        let store = temp.path().join("store");
+        let path = root.join("profiles/acp/cordis.patch.yml");
+        let legacy = json!({"displayName":"Legacy", "baseURL":"https://legacy.example/v1",
+            "apiKeyEnv":"LEGACY_KEY", "models":[{"id":"old-model"}]});
+        private_write(
+            &path,
+            serde_yaml::to_string(
+                &json!([{"id":"llm-pi-ai","config":{"providers":{"remote-codex":legacy}}}]),
+            )
+            .unwrap()
+            .as_bytes(),
+        )
+        .unwrap();
+        let mut first = super::super::tests::fixture("deepseek");
+        first.api_type = "responses".into();
+        first.model = "gpt-example".into();
+        first.name = "OpenAI channel".into();
+        first.base_url = "https://openai.example/v1".into();
+        let mut second = super::super::tests::fixture("deepseek");
+        second.api_type = "chat_completions".into();
+        second.model = "gemini-example".into();
+        second.name = "Gemini channel".into();
+        second.base_url = "https://gemini.example/v1".into();
+        for profile in [&first, &second] {
+            upsert(&store, profile.clone()).unwrap();
+            activate_at(&store, profile, &root).unwrap();
+        }
+        let rows = yaml_doc(&path, "").unwrap();
+        let pi = rows
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"].as_str() == Some("llm-pi-ai"))
+            .unwrap();
+        let providers = &pi["config"]["providers"];
+        assert_eq!(
+            serde_json::to_value(&providers["remote-codex"]).unwrap(),
+            legacy
+        );
+        for profile in [&first, &second] {
+            let route = &providers[provider_id(profile)];
+            assert_eq!(route["displayName"].as_str(), Some(profile.name.as_str()));
+            assert_eq!(route["baseURL"].as_str(), Some(profile.base_url.as_str()));
+            assert_eq!(
+                route["apiKeyEnv"].as_str(),
+                Some(credential_ref(profile).as_str())
+            );
+            assert_eq!(route["models"].as_sequence().unwrap().len(), 1);
+            assert_eq!(
+                route["models"][0]["id"].as_str(),
+                Some(profile.model.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn relay_hints_reach_native_efforts_without_replacing_endpoint_limits_or_explicit_facts() {
+        let catalog = json!({"models":{"gemini-4-argon":{
+            "displayName":"Gemini 4 Argon", "contextWindowTokens":9999999,
+            "reasoningEfforts":[{"reasoningEffort":"low","description":"Low"},{"reasoningEffort":"high","description":"High"}],
+            "defaultReasoningEffort":"high"
+        }}});
+        let mut models: Vec<DiscoveredModel> = serde_json::from_value(json!([
+            {"id":"gemini-4-argon","name":"gemini-4-argon","contextWindow":234567,"maxOutputTokens":12345},
+            {"id":"gemini-4-argon-high","name":"gemini-4-argon-high"}
+        ])).unwrap();
+        super::super::discovery::enrich_models(&mut models, "gemini-4-argon", &catalog);
+        let native = compatible_model(&models[0].id, None, Some(&models[0]), None, None);
+        assert_eq!(native["name"], "Gemini 4 Argon");
+        assert_eq!(native["contextWindow"], 234567);
+        assert_eq!(
+            native["reasoningEfforts"],
+            json!({"low":"low","high":"high"})
+        );
+        assert!(native.get("maxTokens").is_none());
+        assert_eq!(models[0].max_output_tokens, Some(12345));
+        let variant = compatible_model(&models[1].id, None, Some(&models[1]), None, None);
+        assert_eq!(variant["id"], "gemini-4-argon-high");
+        assert_eq!(variant["reasoningEfforts"], false);
+        assert!(variant.get("contextWindow").is_none());
+        models[0].name = "Endpoint name".into();
+        models[0].reasoning = Some(super::super::discovery::ReasoningCapabilities {
+            efforts: vec![],
+            default: None,
+        });
+        super::super::discovery::enrich_models(&mut models, "gemini-4-argon", &catalog);
+        assert_eq!(models[0].name, "Endpoint name");
+        assert!(models[0].reasoning.as_ref().unwrap().efforts.is_empty());
+    }
+    #[test]
     fn dsh_home_environment_is_isolated_and_live_import_tracks_the_selected_protocol() {
         const FLAG: &str = "POCKYMOE_UPSTREAM_DSH_TEST_CHILD";
         if std::env::var_os(FLAG).is_some() {
@@ -504,9 +586,7 @@ mod tests {
             for row in rows.iter_mut() {
                 if row["id"].as_str() == Some("llm-pi-ai") {
                     let providers = row["config"]["providers"].as_mapping_mut().unwrap();
-                    let entry = providers
-                        .remove(Yaml::String("remote-codex".into()))
-                        .unwrap();
+                    let entry = providers.remove(Yaml::String(provider_id(&p))).unwrap();
                     providers.insert(Yaml::String("existing-gateway".into()), entry);
                 }
                 if row["id"].as_str() == Some("acp") {
@@ -620,7 +700,7 @@ mod tests {
             .iter()
             .find(|v| v["id"].as_str() == Some("llm-pi-ai"))
             .unwrap();
-        let route = serde_json::to_value(&pi["config"]["providers"]["remote-codex"]).unwrap();
+        let route = serde_json::to_value(&pi["config"]["providers"][provider_id(&p)]).unwrap();
         let ids: Vec<_> = route["models"]
             .as_array()
             .unwrap()
@@ -652,14 +732,14 @@ mod tests {
             .iter()
             .find(|v| v["id"].as_str() == Some("llm-pi-ai"))
             .unwrap();
-        let ids: Vec<_> = pi["config"]["providers"]["remote-codex"]["models"]
+        let ids: Vec<_> = pi["config"]["providers"][provider_id(&p)]["models"]
             .as_sequence()
             .unwrap()
             .iter()
             .map(|m| m["id"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(ids, ["second", "first"]);
-        let route = &pi["config"]["providers"]["remote-codex"];
+        let route = &pi["config"]["providers"][provider_id(&p)];
         // Responses routes send no output cap (the model's own limit applies)
         // and retry unclassified gateway failures with backoff.
         assert_eq!(
@@ -724,7 +804,7 @@ mod tests {
             .unwrap();
         assert!(pi["config"]["providers"].get("personal").is_some());
         assert_eq!(
-            pi["config"]["providers"]["remote-codex"]["baseURL"].as_str(),
+            pi["config"]["providers"][provider_id(&compatible)]["baseURL"].as_str(),
             Some(compatible.base_url.as_str())
         );
         #[cfg(unix)]

@@ -26,6 +26,21 @@ A model not learned yet keeps the current model's levels. The Web fetches the
 list again when the model menu or Harness settings opens and after a switch,
 so learned levels show up there.
 
+DSH's ACP model values are opaque `[provider, model]` tuples. The provider is
+part of routing and is preserved when looking up a readable name in the shared
+Relay catalog. Applying a connection projects shared names and effort hints
+into DSH's native model definitions, after any explicit endpoint metadata. An
+explicit empty endpoint effort list disables the control. The menu then uses
+DSH's actual per-model capabilities; it does not offer additional levels that
+DSH would reject. A selected model's default effort is not written as a default
+for the entire provider: sibling models may support different levels.
+
+Some gateways expose fixed-effort IDs such as `gemini-4-argon-high`. Exact IDs
+and account aliases take precedence. Otherwise, a recognized effort suffix can
+use a known base model's display name and reference prices only when that base
+advertises the effort. The variant remains a separate selectable wire ID and
+does not inherit another effort selector. Arbitrary suffixes are not stripped.
+
 ## Changing them during a turn
 
 The composer and Harness settings window both accept a change while a turn runs, and it goes to
