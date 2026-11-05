@@ -113,6 +113,8 @@ longer relabels or reroutes the earlier connection's models. The old shared
 `remote-codex` provider is retained for existing ACP session values; it is not
 silently reassigned. On installations with the old mixed model list, apply each
 connection once and select its new provider/model entry in affected threads.
+Once new entries exist, duplicate old choices are omitted from the menu; a
+session's current old choice stays visible until it is explicitly switched.
 The old list cannot reliably reveal which endpoint originally owned each model.
 
 Metadata belongs to the device that gathered it. Synchronization does not copy

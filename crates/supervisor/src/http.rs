@@ -2548,7 +2548,7 @@ async fn thread_models(
 ) -> Result<Json<Value>, ApiErr> {
     let thread = state.get_thread(&id).map_err(map_err)?;
     let workspace = state.get_workspace(&thread.workspace_id).map_err(map_err)?;
-    let models = state
+    let mut models = state
         .list_models(
             thread.provider,
             thread.agent_id.as_deref(),
@@ -2556,6 +2556,9 @@ async fn thread_models(
         )
         .await
         .map_err(map_err)?;
+    if thread.agent_id.as_deref() == Some("deepseek") {
+        pockymoe_runtime::acp::visible_deepseek_models(&mut models, thread.model.as_deref());
+    }
     Ok(Json(serde_json::to_value(models).unwrap()))
 }
 

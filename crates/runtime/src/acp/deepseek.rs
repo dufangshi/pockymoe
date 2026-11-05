@@ -512,6 +512,26 @@ pub(super) fn catalog(
         .collect()
 }
 
+/// Keep legacy IDs resumable while preferring isolated routes in a thread's
+/// menu. The requesting thread's current ID may differ from the discovery
+/// session's default, so callers supply it explicitly.
+pub fn visible_models(models: &mut Vec<ModelOptionDto>, current: Option<&str>) {
+    let isolated_models: std::collections::HashSet<String> = models
+        .iter()
+        .filter_map(|model| {
+            let [provider, id] = serde_json::from_str::<[String; 2]>(&model.model).ok()?;
+            provider.starts_with("remote-codex-").then_some(id)
+        })
+        .collect();
+    models.retain(|model| {
+        model.is_default
+            || current == Some(model.model.as_str())
+            || serde_json::from_str::<[String; 2]>(&model.model)
+                .map(|[provider, id]| provider != "remote-codex" || !isolated_models.contains(&id))
+                .unwrap_or(true)
+    });
+}
+
 /// Typed panel actions. The HTTP body never reaches DSH as a raw Remote call.
 #[derive(Debug, PartialEq)]
 pub(super) enum PanelAction {
@@ -993,6 +1013,31 @@ mod tests {
         assert_eq!(models[1].default_reasoning_effort.as_deref(), Some("max"));
         assert!(models[2].supported_reasoning_efforts.is_empty());
         assert_eq!(models[2].default_reasoning_effort, None);
+    }
+
+    #[test]
+    fn reapplied_connections_replace_duplicate_legacy_choices_without_rerouting_current_session() {
+        let current = r#"["remote-codex","current"]"#;
+        let ids = [
+            current,
+            r#"["remote-codex","duplicate"]"#,
+            r#"["remote-codex","legacy-only"]"#,
+            r#"["remote-codex-first","duplicate"]"#,
+            r#"["remote-codex-second","duplicate"]"#,
+            r#"["remote-codex-first","current"]"#,
+        ];
+        let options = json!([{"id":"model","category":"model","type":"select","currentValue":current,
+            "options":ids.iter().map(|id| json!({"value":id,"name":id})).collect::<Vec<_>>()}]);
+        let mut models = catalog(
+            super::super::runtime::models_from_config_options(&options),
+            &Value::Null,
+            None,
+        );
+        // The requesting thread need not be the live session used for discovery.
+        models[0].is_default = false;
+        visible_models(&mut models, Some(current));
+        let models: Vec<_> = models.iter().map(|m| m.model.as_str()).collect();
+        assert_eq!(models, [ids[0], ids[2], ids[3], ids[4], ids[5]]);
     }
 
     #[test]

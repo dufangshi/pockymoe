@@ -13,6 +13,7 @@ mod codex_permissions;
 mod context;
 pub use codex_bridge::run as run_codex_app_server_bridge;
 mod deepseek;
+pub use deepseek::visible_models as visible_deepseek_models;
 pub(crate) mod dependencies;
 mod elicitation;
 mod grok;
