@@ -30,6 +30,12 @@ or account overrides automatically price historical usage when summaries reload;
 price changes refresh open thread views. Raw token records are not rewritten.
 Historical estimates always follow the current reference prices.
 
+DSH provider/model tuples are decoded before price lookup, including historical
+records. Fixed-effort gateway suffixes use the base model's reference price only
+when no exact price/alias exists and the known base explicitly supports that
+effort. A separately configured price for the full variant ID takes precedence
+and does not overwrite the base price. The upstream request ID is unchanged.
+
 Existing device overrides can be imported from the selected device in Account
 settings. Import keeps existing account overrides and retains the original local
 configuration. Standalone local mode continues to edit prices in

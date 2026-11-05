@@ -8,17 +8,36 @@ pub(crate) use pockymoe_protocol::pricing::match_model;
 
 fn enrich_model_options_with_catalog(models: &mut [ModelOptionDto], catalog: &Value) {
     for model in models {
-        let Some(key) = match_model(catalog, &model.model) else {
+        let Some((key, variant)) = pockymoe_protocol::pricing::resolve_model(catalog, &model.model)
+        else {
             continue;
         };
         let metadata = &catalog["models"][&key];
-        if model.display_name.is_empty() || model.display_name == model.model {
+        let raw = pockymoe_protocol::pricing::model_id(&model.model);
+        let provider_prefix = model
+            .display_name
+            .strip_suffix(raw.as_ref())
+            .filter(|prefix| prefix.ends_with(" · "))
+            .map(str::to_owned);
+        if model.display_name.is_empty() || model.display_name == raw || provider_prefix.is_some() {
             if let Some(name) = metadata["displayName"]
                 .as_str()
                 .filter(|name| !name.is_empty())
             {
-                model.display_name = name.to_owned();
+                model.display_name = format!(
+                    "{}{name}{}",
+                    provider_prefix.unwrap_or_default(),
+                    variant
+                        .as_ref()
+                        .map(|effort| format!(" · {effort}"))
+                        .unwrap_or_default()
+                );
             }
+        }
+        // DSH validates against its native definition. Shared effort hints must
+        // be projected there on apply, never offered only in the menu.
+        if matches!(raw, std::borrow::Cow::Owned(_)) {
+            continue;
         }
         // A harness or the upstream /models response is more precise than a
         // shared LiteLLM capability hint. Use the shared list only when the
@@ -95,7 +114,9 @@ impl Supervisor {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(json!({}));
         for (id, name) in names.as_object().into_iter().flatten() {
-            if let Some(key) = match_model(&config, id)
+            if let Some(key) = pockymoe_protocol::pricing::resolve_model(&config, id)
+                .filter(|(_, variant)| variant.is_none())
+                .map(|(key, _)| key)
                 .or_else(|| name.as_str().and_then(|n| match_model(&config, n)))
             {
                 let mut aliases = config["models"][&key]["aliases"]
@@ -224,6 +245,30 @@ impl Supervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dsh_presentation_preserves_channel_and_wire_id_without_inventing_native_controls() {
+        let wire = r#"["remote-codex-channel","gemini-4-argon-high"]"#;
+        let mut models: Vec<ModelOptionDto> = serde_json::from_value(json!([{
+            "id":wire, "model":wire, "displayName":"Gemini channel · gemini-4-argon-high",
+            "description":"", "isDefault":true,"hidden":false,
+            "supportedReasoningEfforts":[],"defaultReasoningEffort":null
+        }]))
+        .unwrap();
+        let catalog = json!({"models":{"gemini-4-argon":{
+            "displayName":"Gemini 4 Argon", "reasoningEfforts":[{"reasoningEffort":"high","description":"High"}]
+        }}});
+        enrich_model_options_with_catalog(&mut models, &catalog);
+        assert_eq!(
+            models[0].display_name,
+            "Gemini channel · Gemini 4 Argon · high"
+        );
+        assert_eq!(models[0].model, wire);
+        assert!(models[0].supported_reasoning_efforts.is_empty());
+        models[0].display_name = "Gemini channel · My custom model".into();
+        enrich_model_options_with_catalog(&mut models, &catalog);
+        assert_eq!(models[0].display_name, "Gemini channel · My custom model");
+    }
 
     #[test]
     fn relay_catalog_enriches_opaque_model_options() {

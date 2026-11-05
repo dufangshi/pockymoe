@@ -29,6 +29,55 @@ pub struct ReasoningCapabilities {
     pub default: Option<String>,
 }
 
+/// Relay hints fill only missing facts. Context and output limits deliberately
+/// remain on the endpoint/native path, where request configuration is known.
+pub(super) fn enrich_models(models: &mut Vec<DiscoveredModel>, selected: &str, catalog: &Value) {
+    if !models
+        .iter()
+        .any(|m| m.id == selected || m.aliases.iter().any(|a| a == selected))
+    {
+        models.push(DiscoveredModel {
+            id: selected.into(),
+            name: selected.into(),
+            ..Default::default()
+        });
+    }
+    for model in models {
+        let Some((key, variant)) = pockymoe_protocol::pricing::resolve_model(catalog, &model.id)
+        else {
+            continue;
+        };
+        let metadata = &catalog["models"][key];
+        if model.name.is_empty() || model.name == model.id {
+            if let Some(name) = metadata["displayName"].as_str().filter(|s| !s.is_empty()) {
+                model.name = match &variant {
+                    Some(effort) => format!("{name} · {effort}"),
+                    None => name.into(),
+                };
+            }
+        }
+        if model.reasoning.is_none() {
+            // A fixed-effort gateway ID stays selectable as advertised. Do not
+            // offer another effort on top of it or strip its suffix on wire.
+            if variant.is_some() {
+                model.reasoning = Some(ReasoningCapabilities {
+                    efforts: vec![],
+                    default: None,
+                });
+                continue;
+            }
+            if let Ok(efforts) = serde_json::from_value(metadata["reasoningEfforts"].clone()) {
+                model.reasoning = Some(ReasoningCapabilities {
+                    efforts,
+                    default: metadata["defaultReasoningEffort"]
+                        .as_str()
+                        .map(str::to_owned),
+                });
+            }
+        }
+    }
+}
+
 impl DiscoveredModel {
     pub fn option(&self, profile: &Profile, fallback: Option<&ModelOptionDto>) -> ModelOptionDto {
         let (efforts, default) = match &self.reasoning {

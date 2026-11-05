@@ -100,10 +100,20 @@ Applying a connection uses the declared context window of the selected model; a
 window carried over from an imported native configuration applies only to models
 without one. DSH declares every model the upstream lists (up to 200, the selected
 and earlier ones first) with its declared name, context window, input modalities
-and reasoning levels. Missing facts fall back to Codex's model catalog, then to
-what DSH already had. The output limit is not written, because DSH would send it
+and reasoning levels. Missing names and reasoning levels first use the shared
+Relay model catalog. Other missing facts fall back to Codex's model catalog,
+then to what DSH already had. Shared pricing context sizes never replace
+endpoint/native limits. The output limit is not written, because DSH would send it
 as every request's output cap. Applying writes the metadata as last gathered;
 apply again after loading models to pick up changes.
+
+Each OpenAI-compatible DSH connection has its own stable provider ID, endpoint,
+credential reference and retained model list. Applying another connection no
+longer relabels or reroutes the earlier connection's models. The old shared
+`remote-codex` provider is retained for existing ACP session values; it is not
+silently reassigned. On installations with the old mixed model list, apply each
+connection once and select its new provider/model entry in affected threads.
+The old list cannot reliably reveal which endpoint originally owned each model.
 
 Metadata belongs to the device that gathered it. Synchronization does not copy
 it; the destination gathers its own after importing.
