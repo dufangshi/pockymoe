@@ -13,7 +13,8 @@ transport. An unavailable environment never requests host execution.
 A connection selects an existing Dokploy environment, an explicitly versioned
 Linux image with compatible glibc, Git and the required harness dependencies, a
 local Unix Docker socket and explicit `allowedRoots`. Remote storage without a
-replication adapter is rejected. The Docker socket and Dokploy key are never
+replication adapter is rejected. Rootless Docker and daemon UID remapping need
+a storage ownership adapter and are rejected. The Docker socket and Dokploy key are never
 mounted or passed to the worker. Connection responses expose `configured`, not
 the key. Omitting `apiKey` when updating preserves the saved key. Changing
 storage, image or limits requires destroying the connection's retained
@@ -44,7 +45,9 @@ itself runs in a container, the provider resolves the most specific inspected
 bind or named-volume mount to its daemon source. Paths in the Supervisor image
 layer are rejected. Random file challenges prove that each directory source is
 the same storage the Supervisor sees; the current executable is checked by
-SHA-256 before its read-only worker bind. Same-spelling empty directories on a
+SHA-256 before its read-only worker bind. The probe itself uses the non-root
+checkout UID:GID, so private directory permissions are exercised without
+adding capabilities. Same-spelling empty directories on a
 different host do not pass this check. The CLI probe cannot represent source
 paths containing commas and rejects them.
 
@@ -80,16 +83,21 @@ Ordinary bind storage has no disk hard quota; `diskQuotaSupported` is `false`.
 `EnvironmentManager::new(database_path)` owns the private sidecar
 `<database_path>.environments`. Directories use mode `0700`, records use `0600`,
 and a process lock prevents a second manager from overwriting the same store.
-Resource records and connection credentials are replaced atomically. Public
+Resource records and connection credentials are replaced atomically. A failed
+persistence operation disables that manager's execution authority until
+Supervisor recovery. Public
 errors omit raw Dokploy response bodies and redact the configured key.
 
 Creating an environment produces a stopped resource record. Start verifies
 storage and budgets, creates or recovers the deterministic Dokploy Compose
 identity, deploys it, and verifies the actual container. Stop fences the old
-generation, clears queued deployments and checks that no owned container is
+generation, clears queued deployments and waits for active deployments before
+running a fixed `compose -p <owned-app> -f docker-compose.yml stop` command
+through the Dokploy deployment runner. It checks that no owned container is
 running. Rebuild stops the old generation and deploys a new worker using the
-same project and state paths. Destroy uses `deleteVolumes: false` and verifies
-that Dokploy removed its containers. It retains project data, state, bridge
+same project and state paths. Destroy first runs a fixed Compose
+`down --remove-orphans` command and confirms container removal before calling
+`compose.delete` with `deleteVolumes: false`. It retains project data, state, bridge
 directories and the destroyed resource record. Destroying a resource does not
 implicitly remove thread bindings; a bound destroyed resource remains
 unavailable until the owner explicitly changes the binding.
@@ -103,6 +111,14 @@ remaining containers are reported as a failure rather than a successful
 destroy. External administrators can still change Docker resources after an
 inspection; the execution transport must validate generation and container
 identity on use.
+
+`reconcile(id)` and `reconcile_all()` inspect running resources without resuming
+work. Exit, OOM, missing or replaced containers, weakened limits or isolation,
+and an unreachable Docker daemon change the resource to `interrupted`, advance
+generation and clear the execution target and observed limits. An already
+interrupted resource stays fenced until an explicit lifecycle action. The
+integration calls these methods before reporting live state or authorizing
+execution; the synchronous getters return the last observed state.
 
 The integration owns `Arc<EnvironmentManager>` on the Supervisor, registers the
 environment HTTP routes, enforces thread authorization and idle/native-session

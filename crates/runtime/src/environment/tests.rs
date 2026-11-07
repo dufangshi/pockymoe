@@ -7,9 +7,54 @@ struct FixtureState {
     compose: Option<Value>,
     container: Option<Value>,
     calls: Vec<(String, Value)>,
+    ignore_lifecycle: bool,
 }
 
 struct FixtureDocker(Arc<Mutex<FixtureState>>);
+
+struct WrongProofDocker(FixtureDocker);
+
+struct UnavailableDocker;
+
+#[async_trait]
+impl EnvironmentDocker for UnavailableDocker {
+    async fn host_info(&self, _: &LocalDockerContext) -> Result<DockerHostInfo> {
+        bail!("fixture daemon unavailable")
+    }
+    async fn bind_sha256(
+        &self,
+        _: &LocalDockerContext,
+        _: &Path,
+        _: Option<&Path>,
+    ) -> Result<String> {
+        bail!("fixture daemon unavailable")
+    }
+    async fn inspect_environment(&self, _: &LocalDockerContext, _: &str) -> Result<Vec<Value>> {
+        bail!("fixture daemon unavailable")
+    }
+}
+
+#[async_trait]
+impl EnvironmentDocker for WrongProofDocker {
+    async fn host_info(&self, context: &LocalDockerContext) -> Result<DockerHostInfo> {
+        self.0.host_info(context).await
+    }
+    async fn bind_sha256(
+        &self,
+        _: &LocalDockerContext,
+        _: &Path,
+        _: Option<&Path>,
+    ) -> Result<String> {
+        Ok("0".repeat(64))
+    }
+    async fn inspect_environment(
+        &self,
+        context: &LocalDockerContext,
+        id: &str,
+    ) -> Result<Vec<Value>> {
+        self.0.inspect_environment(context, id).await
+    }
+}
 
 #[async_trait]
 impl EnvironmentDocker for FixtureDocker {
@@ -126,8 +171,24 @@ async fn api_fixture() -> (
                             compose.clone()
                         }
                         "/api/compose.deploy" => {
-                            state.container =
-                                Some(container_fixture(state.compose.as_ref().unwrap()));
+                            let command = state.compose.as_ref().unwrap()["command"]
+                                .as_str()
+                                .unwrap_or("")
+                                .to_owned();
+                            if command.ends_with(" down --remove-orphans") {
+                                if !state.ignore_lifecycle {
+                                    state.container = None;
+                                }
+                            } else if command.ends_with(" stop") {
+                                if !state.ignore_lifecycle {
+                                    if let Some(container) = &mut state.container {
+                                        container["State"]["Running"] = json!(false);
+                                    }
+                                }
+                            } else {
+                                state.container =
+                                    Some(container_fixture(state.compose.as_ref().unwrap()));
+                            }
                             json!(true)
                         }
                         "/api/compose.cleanQueues" => json!({"success":true}),
@@ -239,6 +300,48 @@ async fn lifecycle_is_persistent_generation_fenced_and_retains_data() {
         .unwrap();
     assert_eq!(running.state, "running");
     assert!(running.observed_limits.is_some());
+    let record = manager.record(&running.id).unwrap();
+    let original = fixture.lock().unwrap().container.as_ref().unwrap().clone();
+    let bad_fields = [
+        ("/HostConfig/Privileged", json!(true)),
+        ("/HostConfig/NetworkMode", json!("bridge")),
+        ("/HostConfig/PidMode", json!("host")),
+        ("/HostConfig/IpcMode", json!("host")),
+        ("/HostConfig/Init", json!(false)),
+        ("/HostConfig/ReadonlyRootfs", json!(false)),
+        ("/HostConfig/CapDrop", json!([])),
+        ("/HostConfig/CapAdd", json!(["SYS_ADMIN"])),
+        (
+            "/HostConfig/SecurityOpt",
+            json!(["no-new-privileges:true", "seccomp=unconfined"]),
+        ),
+        ("/HostConfig/Memory", json!(0)),
+        ("/HostConfig/MemorySwap", json!(-1)),
+        ("/HostConfig/PidsLimit", json!(0)),
+        ("/HostConfig/Ulimits/0/Hard", json!(1048576)),
+        (
+            "/HostConfig/PortBindings",
+            json!({"45680/tcp":[{"HostPort":"45680"}]}),
+        ),
+        ("/Config/User", json!("0:0")),
+        ("/Config/Labels/ca.pockymoe.generation", json!("0")),
+        ("/Mounts/0/Source", json!("/etc")),
+        ("/Mounts/0/Propagation", json!("rshared")),
+    ];
+    for (pointer, value) in bad_fields {
+        let mut container = original.clone();
+        *container.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            docker::verify_container(&container, &expected(&record)).is_err(),
+            "accepted weakened field {pointer}"
+        );
+    }
+    let mut extra_group = original.clone();
+    extra_group["HostConfig"]["GroupAdd"] = json!(["0"]);
+    assert!(docker::verify_container(&extra_group, &expected(&record)).is_err());
+    let mut extra_mount = original.clone();
+    extra_mount["Mounts"].as_array_mut().unwrap().push(json!({"Type":"bind","Source":"/var/run/docker.sock","Destination":"/socket","RW":true,"Propagation":"rprivate"}));
+    assert!(docker::verify_container(&extra_mount, &expected(&record)).is_err());
     manager
         .validate_generation(&running.id, running.generation)
         .unwrap();
@@ -415,4 +518,218 @@ async fn sidecar_is_private_locked_and_invalid_input_never_contacts_docker() {
         })
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn wrong_storage_identity_never_reaches_a_dokploy_mutation() {
+    let root = tempfile::tempdir().unwrap();
+    let project = fixture_project(root.path(), "project");
+    let (url, fixture, task) = api_fixture().await;
+    let manager = EnvironmentManager::new(&root.path().join("db"));
+    manager
+        .set_docker_driver(Arc::new(WrongProofDocker(FixtureDocker(fixture.clone()))))
+        .unwrap();
+    let conn = manager
+        .save_connection("new", &connection(&url, &project))
+        .await
+        .unwrap();
+    let environment = manager
+        .create(
+            &CreateEnvironmentRequest {
+                connection_id: conn.id,
+                thread_id: "thread".into(),
+                name: None,
+            },
+            &project,
+            &project,
+        )
+        .await
+        .unwrap();
+    assert!(manager
+        .action(&environment.id, EnvironmentAction::Start)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("not the Supervisor storage"));
+    assert_eq!(manager.get(&environment.id).unwrap().state, "error");
+    assert!(fixture.lock().unwrap().calls.is_empty());
+    assert!(!std::fs::read_dir(&project).unwrap().any(|entry| entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".pockymoe-storage-proof-")));
+    task.abort();
+}
+
+#[tokio::test]
+async fn upstream_error_bodies_and_credentials_are_not_public() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let root = tempfile::tempdir().unwrap();
+    let project = fixture_project(root.path(), "project");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        socket.read(&mut request).await.unwrap();
+        let body = "sensitive upstream body fixture-secret-should-not-escape";
+        socket.write_all(format!("HTTP/1.1 401 Unauthorized\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+    });
+    let manager = EnvironmentManager::new(&root.path().join("db"));
+    let conn = manager
+        .save_connection("new", &connection(&url, &project))
+        .await
+        .unwrap();
+    let response = manager.test_connection(&conn.id).await.unwrap();
+    assert!(!response.ok);
+    assert!(response.detail.contains("401"));
+    assert!(!response.detail.contains("sensitive"));
+    assert!(!response.detail.contains("fixture-secret"));
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn reconcile_fences_oom_exit_replacement_and_unreachable_daemon() {
+    let root = tempfile::tempdir().unwrap();
+    let project = fixture_project(root.path(), "project");
+    let (url, fixture, task) = api_fixture().await;
+    let manager = EnvironmentManager::new(&root.path().join("db"));
+    manager
+        .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
+        .unwrap();
+    let conn = manager
+        .save_connection("new", &connection(&url, &project))
+        .await
+        .unwrap();
+    let environment = manager
+        .create(
+            &CreateEnvironmentRequest {
+                connection_id: conn.id,
+                thread_id: "thread".into(),
+                name: None,
+            },
+            &project,
+            &project,
+        )
+        .await
+        .unwrap();
+    for fault in ["oom", "exit", "replacement", "unreachable"] {
+        let running = manager
+            .action(&environment.id, EnvironmentAction::Start)
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.reconcile(&environment.id).await.unwrap().generation,
+            running.generation
+        );
+        match fault {
+            "oom" => {
+                fixture.lock().unwrap().container.as_mut().unwrap()["State"] =
+                    json!({"Running":false,"OOMKilled":true,"ExitCode":137})
+            }
+            "exit" => {
+                fixture.lock().unwrap().container.as_mut().unwrap()["State"] =
+                    json!({"Running":false,"OOMKilled":false,"ExitCode":42})
+            }
+            "replacement" => {
+                fixture.lock().unwrap().container.as_mut().unwrap()["Id"] = json!("b".repeat(64))
+            }
+            "unreachable" => manager
+                .set_docker_driver(Arc::new(UnavailableDocker))
+                .unwrap(),
+            _ => unreachable!(),
+        }
+        let snapshot = manager.reconcile_all().await.unwrap();
+        let interrupted = snapshot
+            .environments
+            .iter()
+            .find(|e| e.id == environment.id)
+            .unwrap();
+        assert_eq!(interrupted.state, "interrupted");
+        assert!(interrupted.generation > running.generation);
+        assert!(interrupted.container_id.is_none() && interrupted.observed_limits.is_none());
+        assert!(interrupted.last_error.is_some());
+        assert!(manager
+            .validate_generation(&environment.id, running.generation)
+            .is_err());
+        assert_eq!(
+            manager.reconcile(&environment.id).await.unwrap().generation,
+            interrupted.generation
+        );
+        assert!(manager.record(&environment.id).unwrap().resource_active);
+        manager
+            .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
+            .unwrap();
+    }
+    task.abort();
+}
+
+#[tokio::test]
+async fn incomplete_cleanup_retains_provider_record_and_capacity() {
+    let root = tempfile::tempdir().unwrap();
+    let project = fixture_project(root.path(), "project");
+    let (url, fixture, task) = api_fixture().await;
+    let manager = EnvironmentManager::new(&root.path().join("db"));
+    manager
+        .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
+        .unwrap();
+    let conn = manager
+        .save_connection("new", &connection(&url, &project))
+        .await
+        .unwrap();
+    let environment = manager
+        .create(
+            &CreateEnvironmentRequest {
+                connection_id: conn.id,
+                thread_id: "thread".into(),
+                name: None,
+            },
+            &project,
+            &project,
+        )
+        .await
+        .unwrap();
+    let running = manager
+        .action(&environment.id, EnvironmentAction::Start)
+        .await
+        .unwrap();
+    fixture.lock().unwrap().ignore_lifecycle = true;
+    assert!(manager
+        .action(&running.id, EnvironmentAction::Destroy)
+        .await
+        .is_err());
+    assert!(fixture.lock().unwrap().compose.is_some());
+    assert!(manager.record(&running.id).unwrap().resource_active);
+    assert!(manager
+        .validate_generation(&running.id, running.generation)
+        .is_err());
+    fixture.lock().unwrap().ignore_lifecycle = false;
+    assert_eq!(
+        manager
+            .action(&running.id, EnvironmentAction::Destroy)
+            .await
+            .unwrap()
+            .state,
+        "destroyed"
+    );
+    assert!(!manager.record(&running.id).unwrap().resource_active);
+    task.abort();
+}
+
+#[tokio::test]
+async fn persistence_failure_disables_all_execution_authority() {
+    let root = tempfile::tempdir().unwrap();
+    let manager = EnvironmentManager::new(&root.path().join("db"));
+    let path = manager.directory.join("resources.json");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(path).unwrap();
+    assert!(manager
+        .save_budget(&EnvironmentBudgetDto {
+            max_running: 3,
+            ..EnvironmentBudgetDto::default()
+        })
+        .await
+        .is_err());
+    assert!(manager.snapshot().await.is_err());
+    assert!(manager.for_thread("anything").is_err());
 }

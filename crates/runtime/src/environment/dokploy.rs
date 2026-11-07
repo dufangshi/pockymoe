@@ -49,7 +49,7 @@ impl DokployClient {
         } else {
             request.json(&payload)
         };
-        let response = request
+        let mut response = request
             .send()
             .await
             .map_err(|_| anyhow::anyhow!("Dokploy {procedure} transport failed"))?;
@@ -66,14 +66,18 @@ impl DokployClient {
                 .is_none_or(|n| n <= 8 * 1024 * 1024),
             "Dokploy response exceeds the size limit"
         );
-        let body = response
-            .bytes()
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|_| anyhow::anyhow!("Dokploy {procedure} response could not be read"))?;
-        ensure!(
-            body.len() <= 8 * 1024 * 1024,
-            "Dokploy response exceeds the size limit"
-        );
+            .map_err(|_| anyhow::anyhow!("Dokploy {procedure} response could not be read"))?
+        {
+            ensure!(
+                body.len() + chunk.len() <= 8 * 1024 * 1024,
+                "Dokploy response exceeds the size limit"
+            );
+            body.extend_from_slice(&chunk);
+        }
         serde_json::from_slice(&body)
             .map_err(|_| anyhow::anyhow!("Dokploy {procedure} returned invalid JSON"))
     }
@@ -155,10 +159,25 @@ impl DokployClient {
         Ok(())
     }
 
-    pub async fn stop(&self, id: &str) -> Result<()> {
-        self.request(Method::POST, "compose.stop", json!({"composeId":id}))
-            .await?;
-        Ok(())
+    /// Dokploy v0.30.6 stop/delete omit an explicit Compose file/cwd. Execute
+    /// the fixed lifecycle command through its deployment runner, which runs in
+    /// the managed raw Compose code directory. Never accept a caller command.
+    pub async fn stop_or_down(&self, id: &str, app_name: &str, destroy: bool) -> Result<()> {
+        ensure!(
+            !app_name.is_empty()
+                && app_name.len() <= 63
+                && app_name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'),
+            "invalid managed Compose project identity"
+        );
+        let operation = if destroy {
+            "down --remove-orphans"
+        } else {
+            "stop"
+        };
+        self.request(Method::POST,"compose.update",json!({"composeId":id,"command":format!("compose -p {app_name} -f docker-compose.yml {operation}")})).await?;
+        self.deploy(id).await
     }
 
     pub async fn clean_queues(&self, id: &str) -> Result<()> {

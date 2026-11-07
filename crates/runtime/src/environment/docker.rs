@@ -13,6 +13,8 @@ pub const GENERATION_LABEL: &str = "ca.pockymoe.generation";
 pub struct LocalDockerContext {
     /// Only a local Unix socket is accepted. None means the local default.
     pub docker_host: Option<String>,
+    /// Numeric checkout owner for private, capability-free storage probes.
+    pub probe_user: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -131,16 +133,7 @@ impl EnvironmentDocker for CliEnvironmentDocker {
                 &["info".into(), "--format".into(), "{{json .}}".into()],
             )
             .await?;
-        ensure!(
-            info["OSType"] == "linux",
-            "execution environments require a Linux Docker daemon"
-        );
-        for capability in ["MemoryLimit", "PidsLimit", "CpuCfsQuota"] {
-            ensure!(
-                info[capability] == true,
-                "Docker daemon cannot enforce required resource limits"
-            );
-        }
+        validate_daemon(&info)?;
         let cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default();
         let containerized = Path::new("/.dockerenv").exists()
             || Path::new("/run/.containerenv").exists()
@@ -202,6 +195,16 @@ impl EnvironmentDocker for CliEnvironmentDocker {
         source: &Path,
         relative_path: Option<&Path>,
     ) -> Result<String> {
+        let user = context.probe_user.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("bind identity probe requires the non-root storage owner")
+        })?;
+        let (uid, gid) = user
+            .split_once(':')
+            .ok_or_else(|| anyhow::anyhow!("invalid bind probe owner"))?;
+        ensure!(
+            uid.parse::<u32>().is_ok_and(|uid| uid != 0) && gid.parse::<u32>().is_ok(),
+            "invalid bind probe owner"
+        );
         let source = source
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("bind path must be UTF-8"))?;
@@ -233,6 +236,8 @@ impl EnvironmentDocker for CliEnvironmentDocker {
                     "--rm".into(),
                     "--name".into(),
                     name.clone(),
+                    "--user".into(),
+                    user.into(),
                     "--network".into(),
                     "none".into(),
                     "--read-only".into(),
@@ -320,6 +325,37 @@ impl EnvironmentDocker for CliEnvironmentDocker {
     }
 }
 
+fn validate_daemon(info: &Value) -> Result<()> {
+    ensure!(
+        info["OSType"] == "linux",
+        "execution environments require a Linux Docker daemon"
+    );
+    for capability in [
+        "MemoryLimit",
+        "SwapLimit",
+        "PidsLimit",
+        "CpuCfsQuota",
+        "CpuCfsPeriod",
+    ] {
+        ensure!(
+            info[capability] == true,
+            "Docker daemon cannot enforce required resource limits"
+        );
+    }
+    ensure!(
+        info["SecurityOptions"]
+            .as_array()
+            .is_some_and(
+                |options| !options.iter().any(|option| option
+                    .as_str()
+                    .is_some_and(|value| value.starts_with("name=rootless")
+                        || value.starts_with("name=userns")))
+            ),
+        "Docker rootless/UID remapping requires a storage ownership adapter"
+    );
+    Ok(())
+}
+
 /// Resolve the most specific Supervisor mount, preserving the container path
 /// as the eventual sandbox target. A local socket does not imply equal paths.
 pub fn resolve_daemon_source(path: &Path, host: &DockerHostInfo) -> Result<PathBuf> {
@@ -343,10 +379,6 @@ pub fn resolve_daemon_source(path: &Path, host: &DockerHostInfo) -> Result<PathB
         ensure!(
             matches!(mount["Type"].as_str(), Some("bind" | "volume")),
             "Supervisor source is not persistent bind or volume storage"
-        );
-        ensure!(
-            mount["RW"].as_bool() == Some(true),
-            "Supervisor storage is read-only"
         );
         let source = mount["Source"]
             .as_str()
@@ -426,6 +458,14 @@ pub(super) fn verify_container(
         "added capabilities rejected"
     );
     ensure!(
+        host["GroupAdd"].as_array().is_none_or(Vec::is_empty),
+        "supplementary container groups rejected"
+    );
+    ensure!(
+        host["UsernsMode"].as_str().is_none_or(|v| v != "host"),
+        "host user namespace override rejected"
+    );
+    ensure!(
         host["Devices"].as_array().is_none_or(Vec::is_empty),
         "host devices rejected"
     );
@@ -434,13 +474,12 @@ pub(super) fn verify_container(
         "device requests rejected"
     );
     ensure!(
-        host["SecurityOpt"]
-            .as_array()
-            .is_some_and(|v| v.iter().any(|v| matches!(
+        host["SecurityOpt"].as_array().is_some_and(|v| !v.is_empty()
+            && v.iter().all(|v| matches!(
                 v.as_str(),
                 Some("no-new-privileges:true" | "no-new-privileges")
             ))),
-        "no-new-privileges is missing"
+        "container security options differ from no-new-privileges"
     );
     ensure!(
         host["PortBindings"]
@@ -538,7 +577,8 @@ mod tests {
             memory_bytes: 1,
             supervisor_container: Some(json!({"Mounts":[
                 {"Type":"bind","Source":"/srv/projects","Destination":"/work","RW":true},
-                {"Type":"volume","Source":"/var/lib/docker/volumes/private/_data","Destination":"/work/state","RW":true}
+                {"Type":"volume","Source":"/var/lib/docker/volumes/private/_data","Destination":"/work/state","RW":true},
+                {"Type":"bind","Source":"/srv/worker","Destination":"/opt/worker","RW":false}
             ]})),
             host_namespace_verified: false,
         };
@@ -552,6 +592,10 @@ mod tests {
         );
         assert!(resolve_daemon_source(Path::new("/worktree/repo"), &host).is_err());
         assert!(resolve_daemon_source(Path::new("/bin/pockymoe"), &host).is_err());
+        assert_eq!(
+            resolve_daemon_source(Path::new("/opt/worker"), &host).unwrap(),
+            Path::new("/srv/worker")
+        );
     }
 
     #[test]
@@ -564,5 +608,67 @@ mod tests {
             host_namespace_verified: false,
         };
         assert!(resolve_daemon_source(Path::new("/work"), &host).is_err());
+    }
+
+    #[test]
+    fn daemon_requires_enforceable_limits_and_native_storage_uid_mapping() {
+        let info = json!({"OSType":"linux","MemoryLimit":true,"SwapLimit":true,"PidsLimit":true,"CpuCfsQuota":true,"CpuCfsPeriod":true,"SecurityOptions":["name=seccomp,profile=builtin"]});
+        validate_daemon(&info).unwrap();
+        for field in [
+            "MemoryLimit",
+            "SwapLimit",
+            "PidsLimit",
+            "CpuCfsQuota",
+            "CpuCfsPeriod",
+        ] {
+            let mut invalid = info.clone();
+            invalid[field] = json!(false);
+            assert!(validate_daemon(&invalid).is_err());
+        }
+        for option in ["name=rootless", "name=userns"] {
+            let mut invalid = info.clone();
+            invalid["SecurityOptions"] = json!([option]);
+            assert!(validate_daemon(&invalid).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_proof_has_the_storage_owner_and_no_inherited_credentials() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("docker-fixture");
+        std::fs::write(&executable,r#"#!/usr/bin/python3
+import hashlib, os, pathlib, sys
+args=sys.argv[1:]
+if set(os.environ)-{'PATH','LC_CTYPE'}: sys.exit(10)
+required=['--user','--network','--read-only','--cap-drop','--security-opt','--memory','--pids-limit','--host','--config']
+if not all(value in args for value in required): sys.exit(11)
+if args[args.index('--user')+1]!='1000:1000': sys.exit(12)
+if args[args.index('--network')+1]!='none': sys.exit(13)
+if args[args.index('--cap-drop')+1]!='ALL': sys.exit(14)
+mount=args[args.index('--mount')+1]
+source=next(value[4:] for value in mount.split(',') if value.startswith('src='))
+if 'readonly' not in mount.split(','): sys.exit(15)
+relative=args[-1].removeprefix('/probe').lstrip('/')
+path=pathlib.Path(source)/relative if relative else pathlib.Path(source)
+print(hashlib.sha256(path.read_bytes()).hexdigest())
+"#).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let proof = root.path().join("proof");
+        std::fs::write(&proof, b"same-storage-fixture").unwrap();
+        let driver = CliEnvironmentDocker {
+            executable,
+            probe_image: "fixture-probe:1".into(),
+        };
+        let context = LocalDockerContext {
+            docker_host: Some("unix:///fixture/docker.sock".into()),
+            probe_user: Some("1000:1000".into()),
+        };
+        let actual = driver
+            .bind_sha256(&context, root.path(), Some(Path::new("proof")))
+            .await
+            .unwrap();
+        assert_eq!(actual, super::super::storage::file_sha256(&proof).unwrap());
     }
 }

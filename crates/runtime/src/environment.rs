@@ -129,7 +129,11 @@ impl EnvironmentManager {
             .map_err(|message| anyhow::anyhow!("{message}"))?;
         let mut next = store.clone();
         let result = f(&mut next)?;
-        persist(&self.directory, &next)?;
+        if persist(&self.directory, &next).is_err() {
+            let message="environment state could not be persisted; this manager is unavailable until Supervisor recovery";
+            *guard = Err(message.into());
+            bail!("{message}");
+        }
         *guard = Ok(next);
         Ok(result)
     }
@@ -146,6 +150,76 @@ impl EnvironmentManager {
                 budget: store.budget.clone(),
             })
         })
+    }
+
+    /// Observe current execution authority without adopting a replacement
+    /// container, reconnecting old sessions, or replaying work.
+    pub async fn reconcile(&self, id: &str) -> Result<EnvironmentDto> {
+        let _operation = self.operation.lock().await;
+        let record = self.record(id)?;
+        if record.dto.state != "running" {
+            return Ok(record.dto);
+        }
+        let docker = self.driver()?;
+        let observation=async {
+            let values=docker.inspect_environment(&self.context(&record.dto.connection_id)?,id).await
+                .map_err(|_|anyhow::anyhow!("local Docker is unavailable; retained environment resources require explicit recovery"))?;
+            ensure!(values.len()==1,"environment container is missing or its ownership is ambiguous");
+            let container=&values[0];
+            if container["State"]["Running"]!=true {
+                if container["State"]["OOMKilled"]==true { bail!("environment container exited after an out-of-memory kill"); }
+                if let Some(code)=container["State"]["ExitCode"].as_i64() { bail!("environment container exited with code {code}"); }
+                bail!("environment container is no longer running");
+            }
+            ensure!(record.dto.container_id.as_deref()==container["Id"].as_str(),"environment container was replaced outside its generation");
+            docker::verify_container(container,&expected(&record))
+        }.await;
+        match observation {
+            Ok(ref observed) if record.dto.observed_limits.as_ref() == Some(observed) => {
+                Ok(record.dto)
+            }
+            Ok(observed) => self.write(|store| {
+                let record = store
+                    .environments
+                    .get_mut(id)
+                    .context("environment not found")?;
+                record.dto.observed_limits = Some(observed);
+                Ok(record.dto.clone())
+            }),
+            Err(error) => self.write(|store| {
+                let record = store
+                    .environments
+                    .get_mut(id)
+                    .context("environment not found")?;
+                record.dto.generation = record
+                    .dto
+                    .generation
+                    .checked_add(1)
+                    .context("environment generation exhausted")?;
+                record.dto.state = "interrupted".into();
+                record.dto.container_id = None;
+                record.dto.observed_limits = None;
+                record.dto.last_error = Some(error.to_string());
+                record.dto.updated_at = now_rfc3339();
+                record.resource_active = true;
+                Ok(record.dto.clone())
+            }),
+        }
+    }
+
+    pub async fn reconcile_all(&self) -> Result<EnvironmentsDto> {
+        let ids = self.read(|store| {
+            Ok(store
+                .environments
+                .values()
+                .filter(|record| record.dto.state == "running")
+                .map(|record| record.dto.id.clone())
+                .collect::<Vec<_>>())
+        })?;
+        for id in ids {
+            self.reconcile(&id).await?;
+        }
+        self.snapshot().await
     }
 
     pub fn get(&self, id: &str) -> Result<EnvironmentDto> {
@@ -253,6 +327,7 @@ impl EnvironmentManager {
     fn context(&self, connection_id: &str) -> Result<LocalDockerContext> {
         Ok(LocalDockerContext {
             docker_host: self.docker_host(connection_id)?,
+            probe_user: None,
         })
     }
 
@@ -369,9 +444,7 @@ impl EnvironmentManager {
                 "configured Dokploy environment was not found in project.all"
             );
             let docker = self.driver()?;
-            docker.host_info(&self.context(id)?).await.map_err(|_| {
-                anyhow::anyhow!("trusted local Docker storage/resource inspection failed")
-            })?;
+            docker.host_info(&self.context(id)?).await?;
             Ok::<_, anyhow::Error>(())
         }
         .await;
@@ -540,9 +613,7 @@ impl EnvironmentManager {
         let connection = self.connection(&record.dto.connection_id)?;
         let context = self.context(&record.dto.connection_id)?;
         let docker = self.driver()?;
-        let host = docker.host_info(&context).await.map_err(|_| {
-            anyhow::anyhow!("trusted local Docker resource/namespace inspection failed")
-        })?;
+        let host = docker.host_info(&context).await?;
         if record.dto.state == "running" && !rebuild {
             let values = docker
                 .inspect_environment(&context, id)
@@ -704,6 +775,10 @@ impl EnvironmentManager {
         docker: &dyn EnvironmentDocker,
         context: &LocalDockerContext,
     ) -> Result<Vec<EnvironmentMountDto>> {
+        let context = &LocalDockerContext {
+            docker_host: context.docker_host.clone(),
+            probe_user: Some(record.uid_gid.clone()),
+        };
         let workspace = storage::canonical_directory(Path::new(&record.dto.workspace_path))?;
         let working = storage::canonical_directory(Path::new(
             record
@@ -809,7 +884,7 @@ impl EnvironmentManager {
             Ok(())
         })?;
         let api = DokployClient::new(&connection)?;
-        let mut compose_id = match record.dto.compose_id {
+        let mut compose_id = match record.dto.compose_id.clone() {
             Some(id) => Some(id),
             None => find_owned_compose(
                 &api.projects().await?,
@@ -832,10 +907,29 @@ impl EnvironmentManager {
                     ensure!(tokio::time::Instant::now()<deadline,"Dokploy deployment remains active; stop/destroy cannot safely release its resources");
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
+                // Re-apply our own safe raw spec before the fixed stop/down
+                // command. The runner supplies the correct Compose cwd.
+                api.update(
+                    id,
+                    &compose::render(&record.dto, &record.image, &record.uid_gid)?,
+                )
+                .await?;
+                api.stop_or_down(id, &record.app_name, destroy).await?;
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+                while !api.jobs_idle(id).await? {
+                    ensure!(
+                        tokio::time::Instant::now() < deadline,
+                        "Dokploy lifecycle command remains active; resources are retained"
+                    );
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
                 if destroy {
+                    let remaining = docker
+                        .inspect_environment(&context, &record.dto.id)
+                        .await
+                        .map_err(|_| anyhow::anyhow!("destroyed environment inspection failed"))?;
+                    ensure!(remaining.is_empty(),"Dokploy did not remove the owned environment containers; data and capacity are retained for recovery");
                     api.delete(id).await?;
-                } else {
-                    api.stop(id).await?;
                 }
             } else {
                 compose_id = None;

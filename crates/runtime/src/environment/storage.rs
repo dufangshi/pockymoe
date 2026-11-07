@@ -50,11 +50,24 @@ fn authorized(path: &Path, roots: &[PathBuf]) -> Result<()> {
 }
 
 fn small_text(path: &Path) -> Result<String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(path)
+        .context("Git metadata pointer cannot be opened without following symlinks")?;
     ensure!(
-        path.symlink_metadata()?.file_type().is_file(),
-        "Git metadata pointer must be a regular file, not a symlink"
+        file.metadata()?.is_file(),
+        "Git metadata pointer must be a regular file"
     );
-    let bytes = std::fs::read(path).context("Git metadata pointer cannot be read")?;
+    let mut bytes = Vec::new();
+    file.take(64 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .context("Git metadata pointer cannot be read")?;
     ensure!(
         bytes.len() <= 64 * 1024,
         "Git metadata pointer is too large"
@@ -207,6 +220,15 @@ pub(super) async fn verified_mount(
             .context("cannot create same-storage identity challenge")?;
         probe.write_all(uuid::Uuid::new_v4().as_bytes())?;
         probe.write_all(uuid::Uuid::new_v4().as_bytes())?;
+        #[cfg(unix)]
+        {
+            let (uid, gid) = context
+                .probe_user
+                .as_deref()
+                .and_then(|v| v.split_once(':'))
+                .context("storage proof owner is unavailable")?;
+            std::os::unix::fs::chown(probe.path(), Some(uid.parse()?), Some(gid.parse()?))?;
+        }
         probe.as_file_mut().sync_all()?;
         let hash = file_sha256(probe.path())?;
         let relative = probe.path().file_name().map(PathBuf::from);
@@ -281,6 +303,24 @@ mod tests {
             assert!(
                 authorized(&project.join("escape").canonicalize().unwrap(), &[project]).is_err()
             );
+        }
+    }
+
+    #[test]
+    fn git_pointer_reads_are_bounded_and_do_not_follow_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let large = root.path().join("large");
+        let file = std::fs::File::create(&large).unwrap();
+        file.set_len(128 * 1024 * 1024).unwrap();
+        assert!(small_text(&large)
+            .unwrap_err()
+            .to_string()
+            .contains("too large"));
+        #[cfg(unix)]
+        {
+            let link = root.path().join("link");
+            std::os::unix::fs::symlink(&large, &link).unwrap();
+            assert!(small_text(&link).is_err());
         }
     }
 }
