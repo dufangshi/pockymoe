@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useMemo, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 
 import type { ThreadWorkspaceAdapter } from '@pockymoe/thread-ui';
 import {
@@ -22,10 +22,12 @@ import {
   createWorkspaceFile,
 } from '../lib/api';
 import { pathInsideWorkspace } from '../lib/shareRules';
+import { environmentResourceRevision } from '../lib/environmentApi';
 
 interface UseThreadWorkspaceAdapterInput {
   setError: Dispatch<SetStateAction<string | null>>;
   workspaceId: string | null;
+  threadId?: string | undefined;
   deviceId?: string | null;
   allowLinkedFiles?: boolean;
   access?: 'none' | 'read' | 'write';
@@ -39,6 +41,7 @@ interface UseThreadWorkspaceAdapterInput {
 export function useThreadWorkspaceAdapter({
   setError,
   workspaceId,
+  threadId,
   deviceId,
   access = 'write',
   allowLinkedFiles = false,
@@ -46,6 +49,16 @@ export function useThreadWorkspaceAdapter({
 }: UseThreadWorkspaceAdapterInput): ThreadWorkspaceAdapter | null {
   const { locale: i18nLocale } = useI18n();
   const resourceScopeKey = workspaceResourceScope(deviceId);
+  const [environmentRevision, setEnvironmentRevision] = useState(() => threadId ? environmentResourceRevision(threadId, deviceId) : 0);
+  useEffect(() => {
+    setEnvironmentRevision(threadId ? environmentResourceRevision(threadId, deviceId) : 0);
+    const changed = (event: Event) => {
+      const detail = (event as CustomEvent<{ threadId: string; deviceId?: string | null }>).detail;
+      if (detail?.threadId === threadId && (detail.deviceId ?? 'local') === (deviceId ?? 'local')) setEnvironmentRevision(environmentResourceRevision(threadId, deviceId));
+    };
+    window.addEventListener('pockymoe:environment-changed', changed);
+    return () => window.removeEventListener('pockymoe:environment-changed', changed);
+  }, [threadId, deviceId]);
   return useMemo<ThreadWorkspaceAdapter | null>(() => {
     if (!workspaceId || access === 'none') {
       return null;
@@ -59,11 +72,11 @@ export function useThreadWorkspaceAdapter({
     const insideOrRoot = (path: string) => { if (path !== '' && path !== '.') inside(path); };
     const linkedFiles = allowLinkedFiles && !confined;
     return {
-      resourceScopeKey,
+      resourceScopeKey: threadId ? JSON.stringify([resourceScopeKey, threadId, environmentRevision]) : resourceScopeKey,
       textRangeRead: false,
       readDocument: async (input) => {
         inside(input.path);
-        try { return await fetchWorkspaceDocument(workspaceId, input.path, input.signal, deviceId); }
+        try { return await fetchWorkspaceDocument(workspaceId, input.path, input.signal, deviceId, threadId ?? input.threadId); }
         catch (error) {
           if (error instanceof ApiError && [404,501].includes(error.statusCode)) {
             return {path:input.path,name:input.path.split('/').pop()??input.path,language:'text',workspaceRevision:'unsupported',fileIdentity:'',contentHash:null,content:null,size:0,encoding:'unknown',bom:false,eol:'lf',readOnlyReason:'safeUnavailable',truncated:false};
@@ -74,7 +87,7 @@ export function useThreadWorkspaceAdapter({
       ...(linkedFiles ? {statLinkedFile: (input: {threadId: string; path: string}) => fetchLinkedFile(input.threadId, input.path, deviceId)} : {}),
       listTree: async (input) => {
         insideOrRoot(input.path ?? '');
-        return fetchWorkspaceFileTree(workspaceId, { path: input.path ?? '' }, deviceId);
+        return fetchWorkspaceFileTree(workspaceId, { path: input.path ?? '' }, deviceId, threadId ?? input.threadId);
       },
       readFile: async (input) => {
         inside(input.path);
@@ -84,7 +97,7 @@ export function useThreadWorkspaceAdapter({
         if (/\.(drawio|dio)$/i.test(input.path)) {
           const { blob } = isLinked(input.path) && linkedFiles
             ? await downloadLinkedFile(input.threadId, input.path, deviceId)
-            : await downloadWorkspaceFile(workspaceId, { path: input.path }, deviceId);
+            : await downloadWorkspaceFile(workspaceId, { path: input.path }, deviceId, undefined, threadId ?? input.threadId);
           if (blob.size > 8 * 1024 * 1024) throw new Error(translate("files.diagramPreviewSupportsFilesUpTo8"));
           return { path: input.path, name: input.path.replace(/\\/g, '/').split('/').pop() ?? input.path,
             content: await blob.text(), language: 'xml', size: blob.size, truncated: false, nextOffset: blob.size };
@@ -93,12 +106,12 @@ export function useThreadWorkspaceAdapter({
           path: input.path,
           ...(input.offset !== undefined ? { offset: input.offset } : {}),
           ...(input.limit !== undefined ? { limit: input.limit } : {}),
-        }, deviceId);
+        }, deviceId, threadId ?? input.threadId);
       },
       getRawFileUrl: (input) =>
         // A URL cannot fail in place: an outside path gets an empty one.
         confined && !pathInsideWorkspace(input.path) ? 'data:,'
-          : isLinked(input.path) && linkedFiles ? buildLinkedFileUrl(input.threadId, input.path, deviceId) : buildWorkspaceRawFileUrl(workspaceId, { path: input.path }, deviceId),
+          : isLinked(input.path) && linkedFiles ? buildLinkedFileUrl(input.threadId, input.path, deviceId) : buildWorkspaceRawFileUrl(workspaceId, { path: input.path }, deviceId, threadId ?? input.threadId),
       // Frames and new tabs pointing at a relay URL bypass the Web origin's
       // encrypted transport; previews such as PDFs load their bytes here.
       readRawFile: async (input) => {
@@ -106,14 +119,14 @@ export function useThreadWorkspaceAdapter({
         if (isLinked(input.path) && !linkedFiles) throw new Error(translate("files.linkedFileAccessIsUnavailable"));
         const result = isLinked(input.path)
           ? await downloadLinkedFile(input.threadId, input.path, deviceId, input.signal)
-          : await downloadWorkspaceFile(workspaceId, { path: input.path }, deviceId, input.signal);
+          : await downloadWorkspaceFile(workspaceId, { path: input.path }, deviceId, input.signal, threadId ?? input.threadId);
         return result.blob;
       },
       ...(access === 'write'
         ? {
             createFile: async (input) => {
               inside(input.path);
-              try { return await createWorkspaceFile(workspaceId, input.path, deviceId); }
+              try { return await createWorkspaceFile(workspaceId, input.path, deviceId, threadId ?? input.threadId); }
               catch (error) {
                 if (error instanceof ApiError) {
                   const code = error.payload.code;
@@ -125,16 +138,16 @@ export function useThreadWorkspaceAdapter({
               }
             },
             uploadFile: (input) =>
-              uploadWorkspaceFile(workspaceId, { file: input.file }, deviceId),
-            renameNode: async (input) => { inside(input.fromPath); inside(input.toPath); await renameWorkspaceNode(workspaceId, input, deviceId); },
-            deleteNode: async (input) => { inside(input.path); await deleteWorkspaceNode(workspaceId, input.path, deviceId); },
+              uploadWorkspaceFile(workspaceId, { file: input.file }, deviceId, threadId ?? input.threadId),
+            renameNode: async (input) => { inside(input.fromPath); inside(input.toPath); await renameWorkspaceNode(workspaceId, input, deviceId, threadId ?? input.threadId); },
+            deleteNode: async (input) => { inside(input.path); await deleteWorkspaceNode(workspaceId, input.path, deviceId, threadId ?? input.threadId); },
             saveDocument: (input) => {
               inside(input.path);
               if (isLinked(input.path)) throw new Error(translate("files.linkedFilesAreReadOnlyPreviews"));
               const {threadId: _threadId, workspaceId: _workspaceId, ...save} = input;
-              return saveWorkspaceDocument(workspaceId,save,deviceId);
+              return saveWorkspaceDocument(workspaceId,save,deviceId,threadId ?? input.threadId);
             },
-            getSaveOperation: (input) => fetchWorkspaceSaveOperation(workspaceId,input.operationId,deviceId),
+            getSaveOperation: (input) => fetchWorkspaceSaveOperation(workspaceId,input.operationId,deviceId,threadId ?? input.threadId),
           }
         : {}),
       downloadNode: async (input) => {
@@ -144,7 +157,7 @@ export function useThreadWorkspaceAdapter({
           if (isLinked(input.path) && !linkedFiles) throw new Error(translate("files.linkedFileAccessIsUnavailable"));
           const result = isLinked(input.path)
             ? await downloadLinkedFile(input.threadId, input.path, deviceId)
-            : await downloadWorkspaceFile(workspaceId, { path: input.path }, deviceId);
+            : await downloadWorkspaceFile(workspaceId, { path: input.path }, deviceId, undefined, threadId ?? input.threadId);
           if (window.pockymoeHost && await (await import('../desktop/download')).nativeSave(result.blob, result.filename)) return;
           const url = URL.createObjectURL(result.blob);
           const anchor = document.createElement('a');
@@ -165,5 +178,5 @@ export function useThreadWorkspaceAdapter({
         }
       },
     };
-  }, [access, allowLinkedFiles, confined, deviceId, setError, workspaceId, i18nLocale, resourceScopeKey]);
+  }, [access, allowLinkedFiles, confined, deviceId, setError, workspaceId, threadId, environmentRevision, i18nLocale, resourceScopeKey]);
 }

@@ -1255,8 +1255,10 @@ export function fetchWorkspaceFileTree(
   workspaceId: string,
   input: { path?: string | null } = {},
   deviceId?: string | null,
+  threadId?: string,
 ) {
   const params = new URLSearchParams();
+  if (threadId) params.set('threadId', threadId);
   if (input.path) {
     params.set('path', input.path);
   }
@@ -1266,6 +1268,7 @@ export function fetchWorkspaceFileTree(
     {
       cache: 'no-store',
     },
+    threadId,
   );
 }
 
@@ -1273,8 +1276,10 @@ export function fetchWorkspaceFilePreview(
   workspaceId: string,
   input: { path: string; offset?: number; limit?: number },
   deviceId?: string | null,
+  threadId?: string,
 ) {
   const params = new URLSearchParams({ path: input.path });
+  if (threadId) params.set('threadId', threadId);
   if (input.offset !== undefined) {
     params.set('offset', String(input.offset));
   }
@@ -1287,6 +1292,7 @@ export function fetchWorkspaceFilePreview(
     {
       cache: 'no-store',
     },
+    threadId,
   );
 }
 
@@ -1294,8 +1300,10 @@ export function buildWorkspaceRawFileUrl(
   workspaceId: string,
   input: { path: string },
   deviceId?: string | null,
+  threadId?: string,
 ) {
   const params = new URLSearchParams({ path: input.path });
+  if (threadId) params.set('threadId', threadId);
   return buildDeviceApiUrl(deviceId,
     `api/workspaces/${encodeURIComponent(workspaceId)}/files/raw?${params.toString()}`,
   );
@@ -1357,8 +1365,10 @@ export function downloadWorkspaceFile(
   input: { path: string },
   deviceId?: string | null,
   signal?: AbortSignal,
+  threadId?: string,
 ) {
   const params = new URLSearchParams({ path: input.path });
+  if (threadId) params.set('threadId', threadId);
   return deviceDownload(deviceId,
     `api/workspaces/${encodeURIComponent(workspaceId)}/files/download?${params.toString()}`,
     {
@@ -1372,15 +1382,17 @@ export function uploadWorkspaceFile(
   workspaceId: string,
   input: { file: File },
   deviceId?: string | null,
+  threadId?: string,
 ) {
   const formData = new FormData();
   formData.append('file', input.file, input.file.name);
   return deviceRequest<ThreadWorkspaceUploadResultDto>(deviceId,
-    `api/workspaces/${encodeURIComponent(workspaceId)}/files/upload`,
+    withWorkspaceThread(`api/workspaces/${encodeURIComponent(workspaceId)}/files/upload`, threadId),
     {
       method: 'POST',
       body: formData,
     },
+    threadId,
   );
 }
 
@@ -1423,20 +1435,23 @@ export function createWorkspaceThread(workspaceId: string, input: CreateThreadIn
 
 export function renameWorkspaceNode(workspaceId: string, input: {fromPath: string; toPath: string},
   deviceId?: string | null,
+  threadId?: string,
 ) {
-  return deviceRequest(deviceId, `api/workspaces/${encodeURIComponent(workspaceId)}/files/move`, {method:'PATCH',body:JSON.stringify(input)});
+  return deviceRequest(deviceId, withWorkspaceThread(`api/workspaces/${encodeURIComponent(workspaceId)}/files/move`, threadId), {method:'PATCH',body:JSON.stringify(input)}, threadId);
 }
 export function createWorkspaceFile(workspaceId: string, path: string,
   deviceId?: string | null,
+  threadId?: string,
 ) {
-  return deviceRequest<{ path: string }>(deviceId, `api/workspaces/${encodeURIComponent(workspaceId)}/files`, {
+  return deviceRequest<{ path: string }>(deviceId, withWorkspaceThread(`api/workspaces/${encodeURIComponent(workspaceId)}/files`, threadId), {
     method: 'POST', body: JSON.stringify({ path }),
-  });
+  }, threadId);
 }
 export function deleteWorkspaceNode(workspaceId: string, path: string,
   deviceId?: string | null,
+  threadId?: string,
 ) {
-  return deviceRequest(deviceId, `api/workspaces/${encodeURIComponent(workspaceId)}/files?${new URLSearchParams({path})}`, {method:'DELETE'});
+  return deviceRequest(deviceId, withWorkspaceThread(`api/workspaces/${encodeURIComponent(workspaceId)}/files?${new URLSearchParams({path})}`, threadId), {method:'DELETE'}, threadId);
 }
 
 export function fetchThreadDetail(
@@ -2151,15 +2166,20 @@ function isShellEventEnvelope(
 export function workspaceResourceScope(deviceId?: string | null) {
   return JSON.stringify([window.location.origin, deviceId === undefined ? readSelectedRelayDeviceId() : deviceId, workspaceActorScope]);
 }
+function withWorkspaceThread(path: string, threadId?: string) {
+  return threadId ? `${path}${path.includes('?') ? '&' : '?'}${new URLSearchParams({ threadId })}` : path;
+}
 export function fetchWorkspaceDocument(workspaceId: string, path: string, signal?: AbortSignal,
   deviceId?: string | null,
+  threadId?: string,
 ) {
-  return deviceRequest<WorkspaceDocumentSnapshot>(deviceId, `api/workspaces/${encodeURIComponent(workspaceId)}/files/document?${new URLSearchParams({path})}`, { cache: 'no-store', ...(signal ? {signal} : {}) });
+  return deviceRequest<WorkspaceDocumentSnapshot>(deviceId, withWorkspaceThread(`api/workspaces/${encodeURIComponent(workspaceId)}/files/document?${new URLSearchParams({path})}`, threadId), { cache: 'no-store', ...(signal ? {signal} : {}) }, threadId);
 }
 export async function saveWorkspaceDocument(workspaceId: string, input: WorkspaceDocumentSaveInput,
   deviceId?: string | null,
+  threadId?: string,
 ): Promise<WorkspaceSaveReceipt> {
-  try { return await deviceRequest<WorkspaceSaveReceipt>(deviceId, `api/workspaces/${encodeURIComponent(workspaceId)}/files/save`, {method:'POST', body: JSON.stringify(input)}); }
+  try { return await deviceRequest<WorkspaceSaveReceipt>(deviceId, withWorkspaceThread(`api/workspaces/${encodeURIComponent(workspaceId)}/files/save`, threadId), {method:'POST', body: JSON.stringify(input)}, threadId); }
   catch (error) {
     if (error instanceof ApiError && error.payload.details && ['conflict','failedBeforeWrite'].includes(String(error.payload.details.status))) return error.payload.details as unknown as WorkspaceSaveReceipt;
     if (error instanceof ApiError && [400,401,403,404,409,410,413,415,422,501,507].includes(error.statusCode)) return {status:'failedBeforeWrite',operationId:input.operationId,draftRevision:input.draftRevision,path:input.path,code:error.statusCode===401||error.statusCode===403?'forbidden':error.payload.code,message:error.payload.message};
@@ -2168,6 +2188,7 @@ export async function saveWorkspaceDocument(workspaceId: string, input: Workspac
 }
 export function fetchWorkspaceSaveOperation(workspaceId: string, operationId: string,
   deviceId?: string | null,
+  threadId?: string,
 ) {
-  return deviceRequest<WorkspaceSaveReceipt>(deviceId, `api/workspaces/${encodeURIComponent(workspaceId)}/files/operations/${encodeURIComponent(operationId)}`, { cache:'no-store' });
+  return deviceRequest<WorkspaceSaveReceipt>(deviceId, withWorkspaceThread(`api/workspaces/${encodeURIComponent(workspaceId)}/files/operations/${encodeURIComponent(operationId)}`, threadId), { cache:'no-store' }, threadId);
 }

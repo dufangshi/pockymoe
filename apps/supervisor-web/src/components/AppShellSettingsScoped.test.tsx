@@ -21,7 +21,7 @@ function open(scoped: boolean, initialId = 'preferences') {
 
 it('keeps every tab for a standalone Supervisor', () => {
   expect(appSettingsSections().map(section => section.id)).toEqual(
-    ['preferences', 'notifications', 'harnesses', 'upstreams', 'resources', 'device', 'workspace', 'plugins']);
+    ['preferences', 'notifications', 'harnesses', 'upstreams', 'resources', 'environments', 'device', 'workspace', 'plugins']);
 });
 
 it('marks only fully account-scoped tabs', () => {
@@ -67,7 +67,7 @@ it.each(['session', 'advanced', 'unknown'])('falls back from an obsolete section
   expect(screen.queryByRole('tab', { name: 'Advanced' })).toBeNull();
 });
 
-it.each(['preferences', 'notifications', 'harnesses', 'upstreams', 'resources', 'device', 'workspace', 'plugins'])('renders a nonempty settings body for %s', id => {
+it.each(['preferences', 'notifications', 'harnesses', 'upstreams', 'resources', 'environments', 'device', 'workspace', 'plugins'])('renders a nonempty settings body for %s', id => {
   open(false, id);
   const panel = screen.getByRole('tabpanel');
   const body = panel.querySelector(':scope > header + *');

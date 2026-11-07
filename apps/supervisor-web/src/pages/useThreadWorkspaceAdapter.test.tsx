@@ -1,4 +1,4 @@
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 const source = vi.hoisted(() => ({ key: 'owner:device-a' }));
 vi.mock('../lib/api', () => ({
@@ -24,12 +24,13 @@ vi.mock('../lib/api', () => ({
 }));
 import { useThreadWorkspaceAdapter } from './useThreadWorkspaceAdapter';
 import * as api from '../lib/api';
+import { notifyEnvironmentChanged } from '../lib/environmentApi';
 describe('workspace adapter source identity', () => {
   it('creates only in the workspace bound to the writable adapter', async () => {
     vi.mocked(api.createWorkspaceFile).mockResolvedValue({ path: 'docs/new.md' });
     const { result } = renderHook(() => useThreadWorkspaceAdapter({ setError: vi.fn(), workspaceId: 'bound-workspace' }));
     await result.current?.createFile?.({ threadId: 'thread', workspaceId: 'untrusted-workspace', path: 'docs/new.md' });
-    expect(api.createWorkspaceFile).toHaveBeenCalledWith('bound-workspace', 'docs/new.md', undefined);
+    expect(api.createWorkspaceFile).toHaveBeenCalledWith('bound-workspace', 'docs/new.md', undefined, 'thread');
   });
   it('changes source when the device changes even if workspace IDs are identical', () => {
     const setError = vi.fn();
@@ -59,6 +60,18 @@ describe('workspace adapter source identity', () => {
     expect(result.current?.textRangeRead).toBe(false);
   });
 });
+it('binds file requests and cache identity to the captured thread and invalidates after an environment switch', async () => {
+  const { result } = renderHook(() => useThreadWorkspaceAdapter({ setError: vi.fn(), workspaceId: 'w', deviceId: 'device', threadId: 'bound-thread' }));
+  const before = result.current!;
+  await before.listTree({ threadId: 'wrong-thread', workspaceId: 'wrong-workspace' });
+  expect(api.fetchWorkspaceFileTree).toHaveBeenCalledWith('w', { path: '' }, 'device', 'bound-thread');
+  await before.saveDocument!({ threadId: 'wrong-thread', workspaceId: 'w', path: 'a.md', operationId: 'op', draftRevision: 1, content: 'draft' } as never);
+  expect(api.saveWorkspaceDocument).toHaveBeenCalledWith('w', expect.objectContaining({ path: 'a.md' }), 'device', 'bound-thread');
+  act(() => notifyEnvironmentChanged('bound-thread', 'other-device'));
+  expect(result.current!.resourceScopeKey).toBe(before.resourceScopeKey);
+  act(() => notifyEnvironmentChanged('bound-thread', 'device'));
+  expect(result.current!.resourceScopeKey).not.toBe(before.resourceScopeKey);
+});
 it('captures both device and workspace through focus changes and an in-flight save', async () => {
   const setError = vi.fn();
   const {result,rerender} = renderHook(({deviceId,workspaceId}) => useThreadWorkspaceAdapter({setError,deviceId,workspaceId}), {initialProps:{deviceId:'device-a',workspaceId:'workspace-a'}});
@@ -67,13 +80,13 @@ it('captures both device and workspace through focus changes and an in-flight sa
   const b = result.current!;
   await a.listTree({threadId:'thread-a',workspaceId:'untrusted'});
   await b.listTree({threadId:'thread-b',workspaceId:'untrusted'});
-  expect(api.fetchWorkspaceFileTree).toHaveBeenCalledWith('workspace-a',{path:''},'device-a');
-  expect(api.fetchWorkspaceFileTree).toHaveBeenCalledWith('workspace-b',{path:''},'device-b');
+  expect(api.fetchWorkspaceFileTree).toHaveBeenCalledWith('workspace-a',{path:''},'device-a','thread-a');
+  expect(api.fetchWorkspaceFileTree).toHaveBeenCalledWith('workspace-b',{path:''},'device-b','thread-b');
   const save = {threadId:'thread-a',workspaceId:'untrusted',path:'a.md',operationId:'op',draftRevision:1,content:'draft'};
   await a.saveDocument!(save as never);
-  expect(api.saveWorkspaceDocument).toHaveBeenCalledWith('workspace-a',expect.objectContaining({path:'a.md',operationId:'op'}),'device-a');
+  expect(api.saveWorkspaceDocument).toHaveBeenCalledWith('workspace-a',expect.objectContaining({path:'a.md',operationId:'op'}),'device-a','thread-a');
   await b.createFile!({threadId:'thread-b',workspaceId:'untrusted',path:'b.md'});
-  expect(api.createWorkspaceFile).toHaveBeenCalledWith('workspace-b','b.md','device-b');
+  expect(api.createWorkspaceFile).toHaveBeenCalledWith('workspace-b','b.md','device-b','thread-b');
 });
 it('keeps a thread or workspace share inside its workspace root', async () => {
   vi.mocked(api.fetchWorkspaceFileTree).mockClear();
@@ -88,7 +101,7 @@ it('keeps a thread or workspace share inside its workspace root', async () => {
   const adapter = result.current!;
   // The tree starts at the workspace root.
   await adapter.listTree({ threadId: 't', workspaceId: 'shared-ws' });
-  expect(api.fetchWorkspaceFileTree).toHaveBeenCalledWith('shared-ws', { path: '' }, 'device');
+  expect(api.fetchWorkspaceFileTree).toHaveBeenCalledWith('shared-ws', { path: '' }, 'device', 't');
   expect(adapter.statLinkedFile).toBeUndefined();
   for (const path of ['/etc', '..', 'src/../../home']) {
     await expect(adapter.listTree({ threadId: 't', workspaceId: 'shared-ws', path })).rejects.toThrow('Only files in this shared workspace are available.');
@@ -104,5 +117,5 @@ it('keeps a thread or workspace share inside its workspace root', async () => {
   expect(api.fetchLinkedFilePreview).not.toHaveBeenCalled();
   expect(api.downloadWorkspaceFile).not.toHaveBeenCalled();
   await adapter.readFile({ threadId: 't', workspaceId: 'shared-ws', path: 'docs/readme.md' });
-  expect(api.fetchWorkspaceFilePreview).toHaveBeenCalledWith('shared-ws', { path: 'docs/readme.md' }, 'device');
+  expect(api.fetchWorkspaceFilePreview).toHaveBeenCalledWith('shared-ws', { path: 'docs/readme.md' }, 'device', 't');
 });
