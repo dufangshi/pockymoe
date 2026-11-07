@@ -113,7 +113,39 @@ fn overlap(a: &Path, b: &Path) -> bool {
 // Only metadata is inspected before approval. A bind of a directory also binds
 // its Unix sockets/hardlinks; those must not become an alternate control-plane
 // entry point hidden below an otherwise innocent configuration directory.
-fn inspect_credential_tree(root: &Path) -> Result<()> {
+fn codex_helper_alias(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    let parts = relative
+        .iter()
+        .filter_map(|p| p.to_str())
+        .collect::<Vec<_>>();
+    if parts.len() != 4
+        || parts[0] != "tmp"
+        || !matches!(parts[1], "arg0" | "arg0-linux")
+        || !parts[2].starts_with("codex-arg0")
+        || !parts[2]
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        || !matches!(
+            parts[3],
+            "apply_patch" | "applypatch" | "codex-linux-sandbox" | "codex-execve-wrapper"
+        )
+    {
+        return false;
+    }
+    // Codex creates these nonsecret dispatch aliases itself. They resolve in
+    // the container's mount namespace, not the source's Host namespace. Do not
+    // follow one during metadata review or allow aliases to any other file.
+    let Ok(target) = std::fs::read_link(path) else {
+        return false;
+    };
+    target.file_name().is_some_and(|n| n == "codex")
+        && target.to_str().is_some_and(|v| normal_absolute(v).is_ok())
+}
+
+fn inspect_credential_tree(root: &Path, purpose: CredentialMountPurpose) -> Result<()> {
     let mut pending = vec![root.to_owned()];
     let mut count = 0usize;
     while let Some(path) = pending.pop() {
@@ -122,6 +154,12 @@ fn inspect_credential_tree(root: &Path) -> Result<()> {
         let metadata = path
             .symlink_metadata()
             .context("credential directory metadata is unreadable")?;
+        if metadata.file_type().is_symlink()
+            && purpose == CredentialMountPurpose::Codex
+            && codex_helper_alias(root, &path)
+        {
+            continue;
+        }
         ensure!(!metadata.file_type().is_symlink() && (metadata.is_dir() || metadata.is_file()),"credential directories cannot contain symlinks, sockets or special files; propose a narrower source");
         #[cfg(unix)]
         {
@@ -267,7 +305,7 @@ impl EnvironmentManager {
             let target = normal_absolute(&mount.target)?;
             self.validate_credential_source_policy(&source)?;
             let identity = source_identity(&source)?;
-            inspect_credential_tree(&source)?;
+            inspect_credential_tree(&source, mount.purpose)?;
             let native_file = !identity.directory
                 && match mount.purpose {
                     CredentialMountPurpose::Codex => {
@@ -581,7 +619,7 @@ impl EnvironmentManager {
             ensure!(request.dto.state=="pending","conflict: request is no longer pending");
             if approve {
                 self.validate_credential_sources(&request.profile)?;
-                for grant in &request.profile.credentials {inspect_credential_tree(Path::new(&grant.proposal.source))?;}
+                for grant in &request.profile.credentials {inspect_credential_tree(Path::new(&grant.proposal.source), grant.proposal.purpose)?;}
                 for other in s.requests.values().filter(|r|r.dto.id!=id && r.dto.approved_at.is_some() && !matches!(r.dto.state.as_str(),"cancelled"|"rejected")) {
                     let released=other.dto.environment_id.as_ref().and_then(|e|s.environments.get(e)).is_some_and(|e|e.dto.state=="destroyed");
                     if released {continue;}
@@ -793,7 +831,7 @@ impl EnvironmentManager {
         context: &LocalDockerContext,
         host: &DockerHostInfo,
     ) -> Result<EnvironmentMountDto> {
-        inspect_credential_tree(Path::new(&grant.proposal.source))?;
+        inspect_credential_tree(Path::new(&grant.proposal.source), grant.proposal.purpose)?;
         let source = docker::resolve_daemon_source(Path::new(&grant.proposal.source), host)?;
         let (device, inode, directory) =
             docker.bind_identity(context, &source).await.map_err(|_| {
@@ -1032,6 +1070,26 @@ mod tests {
         std::fs::rename(source, source.with_extension("retired")).unwrap();
         std::fs::create_dir(source).unwrap();
         assert!(lab.manager.validate_credential_sources(&profile).is_err());
+    }
+
+    #[test]
+    fn native_codex_generated_helper_aliases_survive_reapproval_without_following_host_links() {
+        let root = tempfile::tempdir().unwrap();
+        let helper = root.path().join("tmp/arg0-linux/codex-arg0Fixture");
+        std::fs::create_dir_all(&helper).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                "/opt/pockymoe/harnesses/vendor/codex",
+                helper.join("apply_patch"),
+            )
+            .unwrap();
+            assert!(inspect_credential_tree(root.path(), CredentialMountPurpose::Codex).is_ok());
+            assert!(inspect_credential_tree(root.path(), CredentialMountPurpose::Generic).is_err());
+            std::os::unix::fs::symlink("/proc/self/environ", helper.join("codex-linux-sandbox"))
+                .unwrap();
+            assert!(inspect_credential_tree(root.path(), CredentialMountPurpose::Codex).is_err());
+        }
     }
 
     #[test]

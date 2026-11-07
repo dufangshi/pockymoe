@@ -340,6 +340,12 @@ system/special files, nested symlinks or hardlinks, Docker/SSH sockets, worker/b
 targets are rejected. Symlink/non-normal source paths and source replacement
 require new review. Directory contents are part of the explicit grant, including
 nested files. Directory metadata review is bounded to 100,000 entries; narrow a larger grant.
+The only nested-link exception is Codex's generated `tmp/arg0[-linux]/codex-arg0*/`
+helper aliases (`apply_patch`, `applypatch`, `codex-linux-sandbox`,
+`codex-execve-wrapper`) to an absolute `codex` executable. Review never follows
+those links; they resolve inside the container namespace. Other links, sockets
+and hardlinks remain unsupported. This permits reapproval/rebuild after native
+Codex has created its own dispatch helpers.
 Metadata-only dev/inode/type checks prove the daemon source and the
 running bind match Supervisor storage without reading/hashing credential bodies or
 writing a challenge into an RO directory. Source identity is checked on admission
