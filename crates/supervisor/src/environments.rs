@@ -82,6 +82,11 @@ async fn create(
     State(state): State<Arc<Supervisor>>,
     Json(input): Json<CreateEnvironmentRequest>,
 ) -> Result<Json<EnvironmentDto>, ApiErr> {
+    require(
+        !state.config.treer_enabled,
+        "unsupported_host_environment: Treer requires an isolated execution adapter",
+    )
+    .map_err(map_err)?;
     let thread = state.get_thread(&input.thread_id).map_err(map_err)?;
     let workspace = state.get_workspace(&thread.workspace_id).map_err(map_err)?;
     let cwd = state
@@ -164,6 +169,11 @@ async fn bind(
     Path(id): Path<String>,
     Json(input): Json<BindInput>,
 ) -> Result<Json<Value>, ApiErr> {
+    require(
+        input.environment_id.is_none() || !state.config.treer_enabled,
+        "unsupported_host_environment: Treer requires an isolated execution adapter",
+    )
+    .map_err(map_err)?;
     let thread = state.get_thread(&id).map_err(map_err)?;
     require(
         thread.status == "idle" || thread.status == "failed" || thread.status == "interrupted",
@@ -485,7 +495,6 @@ async fn model(
     let credential_provider = match selected {
         "claude" => "claude",
         "codex" | "custom" => "codex",
-        fixture if fixture.starts_with("env-fixture") => "codex",
         _ => "unsupported",
     };
     require(

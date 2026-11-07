@@ -425,6 +425,16 @@ fn operation(input: Value) -> Result<Value> {
             let (p, bytes) = crate::files::read_bytes(root, path)?;
             Ok(json!({"path":p,"bytes":STANDARD.encode(bytes)}))
         }
+        "readThreadImage" => {
+            let (bytes, _) = crate::files::read_thread_image(
+                root,
+                input["threadId"]
+                    .as_str()
+                    .context("thread identity required")?,
+                path,
+            )?;
+            Ok(json!({"bytes":STANDARD.encode(bytes)}))
+        }
         "writeText" => {
             crate::files::write_file(
                 root,

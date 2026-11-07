@@ -189,13 +189,17 @@ OAuth/auth refresh and model-provider WebSocket protocols are not supported;
 selecting an API profile is an explicit user configuration, never an automatic
 login or billing conversion.
 
+Capabilities use only the selected harness's API profile and protocol: Codex
+Responses or Claude Messages. Custom ACP commands use the explicitly configured
+Codex Responses profile and cannot select a Claude credential.
+
 Git status/diff/stage/commit and managed worktrees execute through worker Git.
 Host SSH agents, `.ssh`, `gh` tokens, Git helpers and credentialed/global MCP are
 not mounted or copied. Local Git operations work; authenticated remote Git and
 HTTP MCP need separate credential adapters and are rejected or fail with the
 network disabled. Networkless project/image stdio MCP naturally executes inside
 the container. Host plugins, native thread forks, host-home role templates,
-legacy delegate `--worktree`, cross-device file transfers and download archives
+legacy delegate `--worktree`, cross-device file transfers and workspace downloads
 have explicit unsupported errors. A child can use the managed-worktree CLI
 within the environment's dedicated root instead. Unrecognized environment CLI
 operations are refused by an allowlist.
@@ -214,6 +218,15 @@ managed worktree updates the file backend and next harness cwd. Preview mappings
 store environment + generation + port and forward through worker TCP, retaining
 existing Relay sharing, leases, revocation and HTTP/WS/SSE transport. Rebuilding
 invalidates an old mapping's execution target; create a current mapping again.
+Changing a thread binding revokes its old preview leases and waits for their
+active streams to close before acknowledging the change. Arbitrary linked host
+file previews are unavailable for isolated threads. Attachment images are read
+and validated inside the worker; the UI serves the original instead of creating
+a host thumbnail cache. Use scoped file reads for individual workspace files;
+the existing file/archive download endpoint is explicitly unsupported.
+Treer/externally hosted harness integration has no execution adapter in this
+version. Creating or binding an isolated environment with that integration is
+rejected; enabling it later also blocks execution of retained isolated bindings.
 
 Egress has no container network route. A separate authenticated CONNECT bridge
 allows only configured exact DNS names on port 443, resolves and pins public IPs,

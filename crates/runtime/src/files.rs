@@ -439,6 +439,22 @@ pub fn read_thread_image(
     thread_id: &str,
     rel: &str,
 ) -> Result<(Vec<u8>, &'static str)> {
+    if let Some(value) = crate::execution::file_request(
+        "readThreadImage",
+        root,
+        rel,
+        serde_json::json!({"threadId":thread_id}),
+    )? {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(
+            value["bytes"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("invalid image response"))?,
+        )?;
+        let mime = raster_image_mime(&bytes)
+            .ok_or_else(|| anyhow::anyhow!("attachment is not a supported raster image"))?;
+        return Ok((bytes, mime));
+    }
     let mut image = open_thread_image(root, thread_id, rel)?;
     Ok((image.read_all()?, image.mime))
 }
@@ -479,6 +495,10 @@ impl ThreadImageFile {
 }
 
 pub fn open_thread_image(root: &Path, thread_id: &str, rel: &str) -> Result<ThreadImageFile> {
+    anyhow::ensure!(
+        crate::execution::current().is_none(),
+        "unsupported_environment_image_handle: use worker image read"
+    );
     let path = assert_within(root, Path::new(rel))?;
     // Historical uploads already use this per-thread namespace. Resolve symlinks
     // before checking ownership, so a link to another thread/private file fails.

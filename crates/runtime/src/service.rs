@@ -1692,6 +1692,10 @@ impl Supervisor {
             input.parent_thread_id.is_none(),
             "child threads inherit their parent's environment"
         );
+        ensure!(
+            !self.config.treer_enabled && self.thread_host.get().is_none(),
+            "unsupported_host_environment: the host integration has no isolated execution adapter"
+        );
         self.create_thread_inner(
             input,
             crate::interaction::AgentOptions::default(),

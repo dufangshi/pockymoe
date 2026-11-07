@@ -423,7 +423,12 @@ pub fn file_request(op: &str, root: &Path, path: &str, extra: Value) -> Result<O
 
 impl crate::Supervisor {
     pub fn execution_context(&self, thread: &str) -> Result<Option<ExecutionContext>> {
-        Ok(self.environments.for_thread(thread)?.map(|env| {
+        let bound = self.environments.for_thread(thread)?;
+        ensure!(
+            bound.is_none() || (!self.config.treer_enabled && self.thread_host.get().is_none()),
+            "unsupported_host_environment: the host integration has no isolated execution adapter"
+        );
+        Ok(bound.map(|env| {
             let saved = self.get_thread(thread).ok();
             let working_directory = saved
                 .as_ref()
@@ -451,7 +456,7 @@ pub(crate) fn isolated_harness_environment(harness: &str) -> Result<Vec<(&'stati
     let context = current().context("missing environment context")?;
     context.checked()?;
     ensure!(crate::acp::mcp_servers::list_redacted()?.is_empty(),"unsupported_environment_mcp: configure stdio MCP in the environment profile; host registry credentials are not projected");
-    if harness == "custom" || harness.starts_with("env-fixture") {
+    if harness == "custom" {
         return Ok(Vec::new());
     }
     let profile=crate::upstreams::active_profile(&context.upstream_directory,harness)?

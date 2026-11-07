@@ -1701,7 +1701,7 @@ async fn workspace_create_file(
 ) -> Result<impl IntoResponse, ApiErr> {
     let path = body.path;
     let returned_path = path.clone();
-    tokio::task::spawn_blocking(move || state.workspace_create_file(&id, &path))
+    pockymoe_runtime::execution::spawn_blocking(move || state.workspace_create_file(&id, &path))
         .await
         .map_err(|e| map_err(e.into()))?
         .map_err(
@@ -2202,6 +2202,24 @@ async fn thread_image(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiErr> {
+    if pockymoe_runtime::execution::current().is_some() {
+        let (bytes, mime) = state.thread_image(&id, &query.path).map_err(map_err)?;
+        // Environment images are read and validated by the worker. Serving the
+        // original also avoids a host file handle or host thumbnail cache.
+        return Ok((
+            [
+                (header::CONTENT_TYPE, mime),
+                (header::CACHE_CONTROL, "private, no-store"),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                (
+                    header::CONTENT_SECURITY_POLICY,
+                    "sandbox; default-src 'none'",
+                ),
+            ],
+            bytes,
+        )
+            .into_response());
+    }
     let mut image = state.open_thread_image(&id, &query.path).map_err(map_err)?;
     let thumbnail = query.variant.as_deref() == Some("thumbnail");
     let etag = pockymoe_runtime::thread_images::etag(
@@ -3058,11 +3076,12 @@ async fn workspace_download(
     let requested_path = query
         .path
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "bad_request", "path is required"))?;
-    let download =
-        tokio::task::spawn_blocking(move || state.workspace_download(&id, &requested_path))
-            .await
-            .map_err(|error| map_err(error.into()))?
-            .map_err(map_err)?;
+    let download = pockymoe_runtime::execution::spawn_blocking(move || {
+        state.workspace_download(&id, &requested_path)
+    })
+    .await
+    .map_err(|error| map_err(error.into()))?
+    .map_err(map_err)?;
     match download {
         WorkspaceDownload::File { path, file } => {
             let filename = path

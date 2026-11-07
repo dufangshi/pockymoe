@@ -525,8 +525,7 @@ impl AcpRuntime {
         let isolated = crate::execution::current().is_some();
         if isolated {
             anyhow::ensure!(
-                matches!(def.id.as_str(), "codex" | "claude" | "custom")
-                    || def.id.starts_with("env-fixture"),
+                matches!(def.id.as_str(), "codex" | "claude" | "custom"),
                 "unsupported_isolated_harness: {}",
                 def.id
             );
@@ -1973,8 +1972,7 @@ impl AgentRuntime for AcpRuntime {
         if crate::execution::current().is_some() {
             crate::execution::current().unwrap().checked()?;
             anyhow::ensure!(
-                matches!(def.id.as_str(), "codex" | "claude" | "custom")
-                    || def.id.starts_with("env-fixture"),
+                matches!(def.id.as_str(), "codex" | "claude" | "custom"),
                 "unsupported_isolated_harness: {}",
                 def.id
             );
