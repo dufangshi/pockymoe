@@ -455,6 +455,10 @@ pub(crate) async fn remove(
 }
 
 pub(crate) fn remove_mapping(state: &Supervisor, id: &str) -> Result<()> {
+    remove_mapping_handles(state, id).map(|_| ())
+}
+
+fn remove_mapping_handles(state: &Supervisor, id: &str) -> Result<Vec<tokio::task::AbortHandle>> {
     state.db.with(|conn| {
         let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
         let saved: String = tx.query_row("SELECT COALESCE((SELECT value FROM kv WHERE key=?1),'[]')", [KEY], |r| r.get(0))?;
@@ -469,6 +473,7 @@ pub(crate) fn remove_mapping(state: &Supervisor, id: &str) -> Result<()> {
         tx.commit()?;
         Ok(())
     })?;
+    let mut pending = Vec::new();
     if let Some(handles) = active()
         .lock()
         .unwrap()
@@ -476,9 +481,30 @@ pub(crate) fn remove_mapping(state: &Supervisor, id: &str) -> Result<()> {
     {
         for handle in handles {
             handle.handle.abort();
+            pending.push(handle.handle);
         }
     }
     changed(state);
+    Ok(pending)
+}
+
+/// Binding completion must not leave an already connected host preview usable
+/// until the periodic lease watcher runs. Drain every old stream before ACK.
+pub(crate) async fn revoke_thread_mappings(state: &Supervisor, thread: &str) -> Result<()> {
+    let mut pending = Vec::new();
+    for mapping in snapshot(state)
+        .into_iter()
+        .filter(|mapping| mapping.thread_id.as_deref() == Some(thread))
+    {
+        pending.extend(remove_mapping_handles(state, &mapping.id)?);
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while pending.iter().any(|handle| !handle.is_finished()) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("preview teardown is not confirmed; retry environment binding"))?;
     Ok(())
 }
 
@@ -893,7 +919,7 @@ mod owner_mapping_tests {
     }
     #[tokio::test]
     async fn revocation_and_stop_close_active_preview_tcp_and_websocket() {
-        for revoke in [true, false] {
+        for action in ["revoke", "stop", "bind"] {
             let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let (_dir, state) = crate::tunnel::tests::state_with_relay_url(&format!(
                 "http://{}",
@@ -901,9 +927,13 @@ mod owner_mapping_tests {
             ));
             let owner = live_owner(&state);
             let app = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let mapping =
-                create_local_mapping(&state, app.local_addr().unwrap().port(), "local", None)
-                    .unwrap();
+            let mapping = create_local_mapping(
+                &state,
+                app.local_addr().unwrap().port(),
+                "local",
+                (action == "bind").then_some("bound-thread"),
+            )
+            .unwrap();
             let lease =
                 create_lease(&state, &mapping.id, MappingAuthority::Tunnel(Some(&owner))).unwrap();
             open(
@@ -918,14 +948,24 @@ mod owner_mapping_tests {
                 socket.next().await.unwrap().unwrap().into_data().as_ref(),
                 b"live stream"
             );
-            if revoke {
+            if action == "revoke" {
                 crate::owner_trust::apply_revocations(
                     &state,
                     &[crate::owner_trust::tests::browser_revocation(&owner)],
                 )
                 .unwrap();
-            } else {
+            } else if action == "stop" {
                 remove_mapping(&state, &mapping.id).unwrap();
+            } else {
+                let owner_only =
+                    create_local_mapping(&state, 1, "separate owner service", None).unwrap();
+                revoke_thread_mappings(&state, "bound-thread")
+                    .await
+                    .unwrap();
+                assert!(!snapshot(&state).iter().any(|saved| saved.id == mapping.id));
+                assert!(snapshot(&state)
+                    .iter()
+                    .any(|saved| saved.id == owner_only.id));
             }
             let count = tokio::time::timeout(
                 std::time::Duration::from_secs(1),

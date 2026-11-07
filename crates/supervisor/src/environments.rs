@@ -218,6 +218,9 @@ async fn bind(
         .environments
         .bind_thread(&id, input.environment_id.as_deref())
         .map_err(map_err)?;
+    crate::ports::revoke_thread_mappings(&state, &id)
+        .await
+        .map_err(map_err)?;
     if let Some(context) = state.execution_context(&id).map_err(map_err)? {
         let env = context
             .manager
@@ -468,17 +471,35 @@ async fn model(
         "unsupported_environment_model_provider",
     )
     .map_err(map_err)?;
+    let thread = g.state.get_thread(&context.thread_id).map_err(map_err)?;
+    let selected = thread
+        .agent_id
+        .as_deref()
+        .unwrap_or(if thread.provider == Provider::Acp {
+            "codex"
+        } else {
+            thread.provider.as_str()
+        });
+    // Custom ACP commands use the explicitly configured Codex Responses profile;
+    // a capability cannot select another harness's credential or billing profile.
+    let credential_provider = match selected {
+        "claude" => "claude",
+        "codex" | "custom" => "codex",
+        fixture if fixture.starts_with("env-fixture") => "codex",
+        _ => "unsupported",
+    };
+    require(
+        harness == credential_provider,
+        "environment_model_provider_not_authorized",
+    )
+    .map_err(map_err)?;
     require(
         request.method() == axum::http::Method::POST
-            && matches!(
-                path.as_str(),
-                "responses"
-                    | "v1/responses"
-                    | "messages"
-                    | "v1/messages"
-                    | "chat/completions"
-                    | "v1/chat/completions"
-            ),
+            && match harness.as_str() {
+                "codex" => matches!(path.as_str(), "responses" | "v1/responses"),
+                "claude" => matches!(path.as_str(), "messages" | "v1/messages"),
+                _ => false,
+            },
         "unsupported_environment_model_endpoint",
     )
     .map_err(map_err)?;
@@ -495,7 +516,6 @@ async fn model(
     .map_err(|_| map_err(anyhow::anyhow!("environment_model_request_timeout")))?
     .map_err(|_| map_err(anyhow::anyhow!("environment_model_request_invalid")))?;
     let payload: Value = serde_json::from_slice(&body).map_err(|e| map_err(e.into()))?;
-    let thread = g.state.get_thread(&context.thread_id).map_err(map_err)?;
     let allowed = thread.model.as_deref().unwrap_or(&profile.model);
     require(
         payload["model"].as_str() == Some(allowed),
