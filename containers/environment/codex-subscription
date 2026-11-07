@@ -1,0 +1,9 @@
+#!/bin/sh
+# The auth file is a direct approved bind. Native Codex owns its OAuth refresh.
+# Startup flags also cover account/read before ACP creates a session. No API key
+# or gateway login is injected, and conflicting provider/profile config fails in
+# the Rust worker before this executable starts.
+exec /opt/pockymoe/harnesses/node_modules/.bin/codex \
+  -c 'forced_login_method="chatgpt"' \
+  -c 'cli_auth_credentials_store="file"' \
+  -c 'model_provider="openai"' "$@"

@@ -16,7 +16,7 @@ RUN test "$(dpkg --print-architecture)" = amd64 \
     && rm -f /etc/apt/sources.list \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates curl git python3 ripgrep \
+        ca-certificates curl git gh python3 ripgrep \
         libatomic1 libgcc-s1 libssl3t64 libstdc++6 \
     && rm -rf /var/lib/apt/lists/* \
     && ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
@@ -26,7 +26,9 @@ RUN test "$(dpkg --print-architecture)" = amd64 \
 
 WORKDIR /opt/pockymoe/harnesses
 COPY package.json package-lock.json verify-install.mjs ./
+COPY codex-subscription /opt/pockymoe/bin/codex-subscription
 RUN touch /tmp/pockymoe-npm-globalrc \
+    && chmod 0555 /opt/pockymoe/bin/codex-subscription \
     && npm ci --omit=dev --include=optional --os=linux --cpu=x64 --libc=glibc \
         --registry=https://registry.npmjs.org --no-audit --no-fund \
         --userconfig=/dev/null --globalconfig=/tmp/pockymoe-npm-globalrc \

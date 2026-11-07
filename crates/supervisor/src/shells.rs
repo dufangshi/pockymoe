@@ -58,6 +58,7 @@ struct LiveShell {
     events: broadcast::Sender<String>,
     thread_id: String,
     execution: Option<pockymoe_runtime::execution::ExecutionContext>,
+    host_receipt: Option<std::path::PathBuf>,
     workspace_id: String,
     cwd: String,
     tmux_session_name: String,
@@ -119,6 +120,11 @@ impl ShellHub {
         })?;
         let id = Uuid::new_v4().to_string();
         let execution = pockymoe_runtime::execution::current();
+        let guardian = if execution.is_none() {
+            pockymoe_runtime::execution::host_process::terminal(&id)?
+        } else {
+            None
+        };
         let mut cmd = if let Some(context) = &execution {
             let env = context.checked()?;
             let docker = context.std_docker()?;
@@ -142,6 +148,11 @@ impl ShellHub {
                 &id,
             ]);
             cmd
+        } else if let Some((exe, path)) = &guardian {
+            let mut command = CommandBuilder::new(exe);
+            command.args(["environment-worker", "host-shell", &id, &default_shell()]);
+            command.env("POCKYMOE_HOST_PROCESS_RECEIPT", path);
+            command
         } else {
             CommandBuilder::new(default_shell())
         };
@@ -154,6 +165,15 @@ impl ShellHub {
             terminal_env(&mut cmd, |name| std::env::var_os(name));
         }
         let child = pair.slave.spawn_command(cmd)?;
+        let host_receipt = guardian.map(|(_, path)| path);
+        if let Some(path) = &host_receipt {
+            pockymoe_runtime::execution::host_process::register_terminal(
+                path,
+                child
+                    .process_id()
+                    .ok_or_else(|| anyhow!("Host terminal PID missing"))?,
+            )?;
+        }
         let mut reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
         let (tx, _) = broadcast::channel(64);
@@ -234,9 +254,14 @@ impl ShellHub {
                 if let Some(context) = &shell.execution {
                     let _ = context.kill_sync(&output_id);
                 }
+                if let Some(path) = &shell.host_receipt {
+                    let _ = pockymoe_runtime::execution::host_process::stop_terminal(path);
+                }
                 let mut child = shell.child.lock().unwrap();
                 if child.try_wait().ok().flatten().is_none() {
-                    let _ = child.kill();
+                    if shell.host_receipt.is_none() {
+                        let _ = child.kill();
+                    }
                 }
                 let _ = child.wait();
             }
@@ -257,6 +282,7 @@ impl ShellHub {
                 child: Mutex::new(child),
                 events: tx,
                 execution,
+                host_receipt,
                 thread_id: thread_id.into(),
                 workspace_id: workspace_id.into(),
                 cwd: cwd.into(),
@@ -340,6 +366,9 @@ impl ShellHub {
             .execution
             .as_ref()
             .map(|context| context.kill_sync(id));
+        if let Some(path) = &shell.host_receipt {
+            pockymoe_runtime::execution::host_process::stop_terminal(path)?;
+        }
         let mut child = shell.child.lock().unwrap();
         if child.try_wait()?.is_none() {
             let _ = child.kill();

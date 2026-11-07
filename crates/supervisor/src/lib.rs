@@ -3,6 +3,7 @@ mod automations;
 mod bounded_channel;
 mod connections;
 pub mod distribution;
+mod environment_requests;
 mod environments;
 mod environments_egress;
 mod export;
@@ -57,6 +58,7 @@ pub async fn serve(state: Arc<Supervisor>) -> Result<()> {
     state.spawn_execution_observer();
     state.spawn_harness_release();
     state.spawn_storage_retention();
+    environment_requests::spawn_controller(&state);
     let addr: SocketAddr = format!("{}:{}", state.config.host, state.config.port).parse()?;
     let listener = TcpListener::bind(addr).await?;
     let cli = state.configure_cli(format!(

@@ -96,7 +96,13 @@ fn git(root: &Path, args: &[&str]) -> Result<GitOutput> {
     ] {
         cmd.env_remove(key);
     }
-    let mut child = cmd.spawn().context("Git is unavailable")?;
+    let process_id = uuid::Uuid::new_v4().to_string();
+    let host = crate::execution::host_process::enabled_context();
+    // Git inherits PATH/locale/tool configuration, with explicit identity and
+    // worktree overrides removed above. This Command deliberately has no env_clear.
+    let mut child = crate::execution::host_process::spawn_sync(&mut cmd, &process_id, true)
+        .context("Git is unavailable")?;
+    let _transport = child.stdin.take();
     let out = child.stdout.take().unwrap();
     let err = child.stderr.take().unwrap();
     let stdout = std::thread::spawn(move || drain(out));
@@ -107,7 +113,11 @@ fn git(root: &Path, args: &[&str]) -> Result<GitOutput> {
             break Some(status);
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
+            if let Some(context) = &host {
+                context.stop_process_sync(&process_id)?;
+            } else {
+                let _ = child.kill();
+            }
             let _ = child.wait();
             break None;
         }
@@ -540,6 +550,7 @@ impl Supervisor {
         });
     }
     pub async fn worktree_use(&self, thread: &str, id: &str) -> Result<Value> {
+        ensure!(!self.environments.request_blocks_turn(thread)?,"environment_migration_pending: cancel the waiting request or use owner failure recovery before changing the worktree");
         self.worktree_copy(thread, id)?;
         let target = self.get_thread(thread)?;
         ensure!(

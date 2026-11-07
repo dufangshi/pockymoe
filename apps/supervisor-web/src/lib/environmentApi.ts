@@ -59,6 +59,27 @@ export interface ThreadEnvironmentDto {
   limitations: string[];
 }
 export type EnvironmentAction = 'start' | 'stop' | 'rebuild' | 'destroy';
+export interface EnvironmentRequestDto {
+  id: string; threadId: string; digest: string;
+  state: 'pending' | 'waitingIdle' | 'provisioning' | 'ready' | 'failed' | 'rejected' | 'cancelled';
+  environmentId: string | null; lastError: string | null; approvedAt: string | null;
+  continuationQueued: boolean; createdAt: string; updatedAt: string;
+  spec: {
+    connection: EnvironmentConnectionDto; threadId: string; workspaceId: string;
+    workspacePath: string; workingPath: string; harness: string; model: string | null; reasoningEffort: string | null;
+    name: string; limits: EnvironmentLimits; egressHosts: string[];
+    authentication: { codex: 'apiBroker' | 'nativeFile'; claude: 'apiBroker' | 'nativeFile' };
+    credentialMounts: { source: string; target: string; readOnly: boolean; purpose: 'generic' | 'codex' | 'claude' | 'github'; environment: Record<string, string> }[];
+    credentialMountKinds: ('directory' | 'file')[];
+    handoff: string; migration: 'sameThreadFreshSession';
+  };
+}
+export function fetchEnvironmentRequests(deviceId?: string | null, threadId?: string, signal?: AbortSignal) {
+  return deviceRequest<EnvironmentRequestDto[]>(deviceId, `api/environment-requests${threadId ? `?threadId=${encodeURIComponent(threadId)}` : ''}`, { cache: 'no-store', ...(signal ? { signal } : {}) }, threadId);
+}
+export function decideEnvironmentRequest(request: Pick<EnvironmentRequestDto, 'id' | 'digest' | 'threadId'>, action: 'approve' | 'reject' | 'retry' | 'recoverHost', deviceId?: string | null) {
+  return deviceRequest<EnvironmentRequestDto>(deviceId, `api/environment-requests/${encodeURIComponent(request.id)}/${action}`, { method: 'POST', body: JSON.stringify({ digest: request.digest }) }, request.threadId);
+}
 const resourceRevisions = new Map<string, number>();
 const resourceKey = (id: string, deviceId?: string | null) => JSON.stringify([deviceId ?? 'local', id]);
 export const environmentResourceRevision = (id: string, deviceId?: string | null) => resourceRevisions.get(resourceKey(id, deviceId)) ?? 0;

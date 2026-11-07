@@ -110,10 +110,10 @@ async fn connect(g: Gateway, mut socket: tokio::net::UnixStream) -> Result<()> {
         context.environment_id == g.environment_id && context.generation == g.generation,
         "stale proxy generation"
     );
-    let connection = g.state.environments.get_connection(&env.connection_id)?;
     ensure!(
-        connection
-            .allowed_egress_hosts
+        g.state
+            .environments
+            .egress_hosts(&env.id)?
             .iter()
             .any(|allowed| allowed.eq_ignore_ascii_case(host)),
         "destination not authorized"

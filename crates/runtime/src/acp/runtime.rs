@@ -667,6 +667,13 @@ impl AcpRuntime {
         } else {
             None
         };
+        if isolated
+            && extra_env
+                .iter()
+                .any(|(k, v)| *k == "POCKYMOE_ENV_CODEX_NATIVE" && v == "1")
+        {
+            ensure!(init["agentInfo"]["name"].as_str()==Some("@agentclientprotocol/codex-acp") && init["agentInfo"]["version"].as_str()==Some("2.5.0"),"unsupported_environment_codex_adapter: native file authentication requires codex-acp 2.5.0 / Codex 0.167.0");
+        }
         let mut negotiated = negotiate(&init);
         if codex_bridge.is_some() {
             negotiated.fork = true;
@@ -4611,9 +4618,12 @@ async fn handle_agent_request(
     method: &str,
     params: Value,
 ) -> Result<()> {
-    crate::execution::scope(
-        process.execution.clone(),
-        handle_agent_request_unscoped(inner, process, req_id, method, params),
+    crate::execution::host_process::scope(
+        process.host_guard.clone(),
+        crate::execution::scope(
+            process.execution.clone(),
+            handle_agent_request_unscoped(inner, process, req_id, method, params),
+        ),
     )
     .await
 }

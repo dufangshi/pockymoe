@@ -14,6 +14,8 @@ use tokio::{
 };
 
 pub mod admission;
+mod credentials;
+pub mod host_process;
 pub mod worker;
 
 #[derive(Clone)]
@@ -65,11 +67,16 @@ pub struct RunRequest {
     pub cwd: String,
     #[serde(default)]
     pub env: Vec<(String, String)>,
+    /// Keep the transport pipe alive while the finite command observes EOF.
+    #[serde(default)]
+    pub stdin_closed: bool,
 }
 
 impl ExecutionContext {
     pub fn checked(&self) -> Result<pockymoe_protocol::EnvironmentDto> {
         let env = self.manager.get(&self.environment_id)?;
+        self.manager
+            .check_credential_sources(&self.environment_id)?;
         ensure!(
             env.provider == "dokploy",
             "unsupported_environment_provider: {}",
@@ -334,7 +341,7 @@ impl ExecutionContext {
     pub fn launch_env(&self) -> Vec<(String, String)> {
         let token = issue_capability(self);
         let proxy = format!("http://{token}:sandbox@127.0.0.1:45681");
-        vec![
+        let mut env = vec![
             ("POCKYMOE_TOKEN".into(), token.clone()),
             ("REMOTE_CODEX_TOKEN".into(), token),
             ("POCKYMOE_THREAD_ID".into(), self.thread_id.clone()),
@@ -344,7 +351,11 @@ impl ExecutionContext {
             ("HTTPS_PROXY".into(), proxy.clone()),
             ("https_proxy".into(), proxy),
             ("NO_PROXY".into(), "127.0.0.1,localhost".into()),
-        ]
+        ];
+        if let Ok(pointers) = self.manager.credential_environment(&self.environment_id) {
+            env.extend(pointers);
+        }
+        env
     }
 }
 
@@ -424,6 +435,7 @@ pub fn file_request(op: &str, root: &Path, path: &str, extra: Value) -> Result<O
 
 impl crate::Supervisor {
     pub fn execution_context(&self, thread: &str) -> Result<Option<ExecutionContext>> {
+        self.environments.require_fenced_binding(thread)?;
         let bound = self.environments.for_thread(thread)?;
         let saved = self.get_thread(thread).ok();
         if let Some(saved) = &saved {
@@ -476,6 +488,40 @@ pub(crate) fn isolated_harness_environment(harness: &str) -> Result<Vec<(&'stati
     ensure!(crate::acp::mcp_servers::list_redacted()?.is_empty(),"unsupported_environment_mcp: configure stdio MCP in the environment profile; host registry credentials are not projected");
     if harness == "custom" {
         return Ok(Vec::new());
+    }
+    let authentication = context.manager.authentication(&context.environment_id)?;
+    if matches!(
+        (harness, authentication.codex, authentication.claude),
+        (
+            "codex",
+            pockymoe_protocol::EnvironmentAuthMode::NativeFile,
+            _
+        ) | (
+            "claude",
+            _,
+            pockymoe_protocol::EnvironmentAuthMode::NativeFile
+        )
+    ) {
+        let key = if harness == "codex" {
+            "CODEX_HOME"
+        } else {
+            "CLAUDE_CONFIG_DIR"
+        };
+        let directory = context
+            .manager
+            .credential_environment(&context.environment_id)?
+            .into_iter()
+            .find(|(k, _)| k == key)
+            .context("native credential mapping is missing its directory pointer")?
+            .1;
+        return Ok(if harness == "codex" {
+            vec![("CODEX_HOME",directory),("POCKYMOE_ENV_CODEX_NATIVE","1".into()),("CODEX_PATH","/opt/pockymoe/bin/codex-subscription".into()),("MODEL_PROVIDER","openai".into()),("CODEX_CONFIG",serde_json::json!({"model_provider":"openai","forced_login_method":"chatgpt","cli_auth_credentials_store":"file"}).to_string())]
+        } else {
+            vec![
+                ("CLAUDE_CONFIG_DIR", directory),
+                ("POCKYMOE_ENV_CLAUDE_NATIVE", "1".into()),
+            ]
+        });
     }
     let profile=crate::upstreams::active_profile(&context.upstream_directory,harness)?
         .context("unsupported_environment_auth: select an API upstream; native subscription credentials are not projected")?;
@@ -568,7 +614,10 @@ pub fn spawn_blocking<T: Send + 'static>(
     action: impl FnOnce() -> T + Send + 'static,
 ) -> tokio::task::JoinHandle<T> {
     let context = current();
-    tokio::task::spawn_blocking(move || blocking_scope(context, action))
+    let host = host_process::current();
+    tokio::task::spawn_blocking(move || {
+        host_process::blocking_scope(host, || blocking_scope(context, action))
+    })
 }
 
 #[cfg(test)]

@@ -1,5 +1,112 @@
 //! Public execution-environment wire contract. Credentials occur only in input.
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+/// A proposal carries paths and policy only. No token, environment secret or
+/// credential contents belong in this contract.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EnvironmentAuthMode {
+    #[default]
+    ApiBroker,
+    NativeFile,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EnvironmentAuthentication {
+    #[serde(default)]
+    pub codex: EnvironmentAuthMode,
+    #[serde(default)]
+    pub claude: EnvironmentAuthMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CredentialMountPurpose {
+    #[default]
+    Generic,
+    Codex,
+    Claude,
+    Github,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialMountProposal {
+    pub source: String,
+    pub target: String,
+    pub read_only: bool,
+    #[serde(default)]
+    pub purpose: CredentialMountPurpose,
+    /// Non-secret configuration pointers, each equal to the target or a child.
+    #[serde(default)]
+    pub environment: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProposeEnvironmentRequest {
+    pub connection_id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub limits: Option<EnvironmentLimitsDto>,
+    #[serde(default)]
+    pub egress_hosts: Vec<String>,
+    #[serde(default)]
+    pub authentication: EnvironmentAuthentication,
+    #[serde(default)]
+    pub credential_mounts: Vec<CredentialMountProposal>,
+    /// An agent's handoff is context, never additional owner authorization.
+    #[serde(default)]
+    pub handoff: String,
+    #[serde(default)]
+    pub client_request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentRequestSpec {
+    pub connection: EnvironmentConnectionDto,
+    pub thread_id: String,
+    pub workspace_id: String,
+    pub workspace_path: String,
+    pub working_path: String,
+    pub harness: String,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub name: String,
+    pub limits: EnvironmentLimitsDto,
+    pub egress_hosts: Vec<String>,
+    pub authentication: EnvironmentAuthentication,
+    pub credential_mounts: Vec<CredentialMountProposal>,
+    pub handoff: String,
+    pub migration: String,
+    pub credential_mount_kinds: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentRequestDto {
+    pub id: String,
+    pub thread_id: String,
+    pub spec: EnvironmentRequestSpec,
+    pub digest: String,
+    pub state: String,
+    pub environment_id: Option<String>,
+    pub last_error: Option<String>,
+    pub approved_at: Option<String>,
+    pub continuation_queued: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EnvironmentRequestDecision {
+    pub digest: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,7 +168,7 @@ pub struct EnvironmentDto {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentConnectionDto {
     pub id: String,

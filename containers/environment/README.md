@@ -1,4 +1,4 @@
-# API harness environment image
+# Harness environment image
 
 This Linux x86_64 image provides Ubuntu 24.04, Git, Python 3, CA certificates,
 Node and the Codex/Claude ACP adapters. It exposes `codex`, `codex-acp`, `claude`
@@ -57,8 +57,14 @@ Keep both native binaries and the adapters in the immutable image. Do not run
 prove a native ACP conversation, model compatibility or memory/PID capacity;
 verify those separately with the actual bound worker and enforced limits.
 
-The worker sends model traffic through the Supervisor's protocol gateway. It
-receives only a short-lived gateway capability. Do not pass provider keys,
+By default the worker sends model traffic through the Supervisor protocol gateway
+and receives only a short-lived gateway capability. Optional owner-approved native
+file logins instead bind their exact source paths directly and let the pinned
+native CLI refresh them over approved HTTPS destinations; see
+[credential grants](../../docs/environments.md#optional-direct-credential-grants).
+The image contains gh for optional file-backed HTTPS authentication and a
+`codex-subscription` launcher that pins ChatGPT/file/openai startup; it contains no
+login material. Do not pass provider keys,
 mount Docker sockets or CLI homes, add privileges, or enable a host fallback.
 E2B and remote storage replication are outside this image's implementation.
 

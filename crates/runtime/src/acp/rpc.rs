@@ -60,6 +60,7 @@ impl Drop for PendingGuard {
 /// One ACP stdio process. stdin is locked only for the write, so multiple
 /// sessions on the same process can request/notify concurrently.
 pub struct AcpProcess {
+    pub(crate) host_guard: Option<crate::execution::host_process::HostProcessContext>,
     pub(crate) execution: Option<crate::execution::ExecutionContext>,
     pub(crate) context_inspection: bool,
     context_trace_root: Option<std::path::PathBuf>,
@@ -116,6 +117,11 @@ impl AcpProcess {
 
     pub async fn shutdown(&self) -> Result<()> {
         close_rpc_state(&self.state, "Harness restarted".into()).await;
+        if let Some(guard) = &self.host_guard {
+            guard.quiesce_process(&self.id).await?;
+            self.cleanup_context_trace();
+            return Ok(());
+        }
         if let Some(context) = &self.execution {
             let _ = context.kill(&self.id).await;
         }
@@ -134,6 +140,11 @@ impl AcpProcess {
     /// exit, then SIGKILL for anything left. Windows ends the tree at once.
     pub async fn terminate(&self, grace: Duration) -> Result<()> {
         close_rpc_state(&self.state, "Harness released".into()).await;
+        if let Some(guard) = &self.host_guard {
+            guard.quiesce_process(&self.id).await?;
+            self.cleanup_context_trace();
+            return Ok(());
+        }
         if let Some(context) = &self.execution {
             let _ = context.kill(&self.id).await;
         }
@@ -261,10 +272,12 @@ impl AcpProcess {
                     argv,
                     cwd: cwd.into(),
                     env,
+                    stdin_closed: false,
                 })
                 .await?
         } else {
-            cmd.spawn()
+            crate::execution::host_process::spawn(&mut cmd, &process_id, true, false)
+                .await
                 .with_context(|| format!("spawn ACP `{command}`"))?
         };
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("missing stdin"))?;
@@ -289,6 +302,10 @@ impl AcpProcess {
         let (updates_tx, updates_rx) = mpsc::channel(16);
         let (req_tx, req_rx) = mpsc::channel(16);
         let reader_state = state.clone();
+        let host_guard = execution
+            .is_none()
+            .then(crate::execution::host_process::enabled_context)
+            .flatten();
         let pid = if execution.is_some() {
             None
         } else {
@@ -298,6 +315,7 @@ impl AcpProcess {
         let reader_child = child.clone();
         let reader_execution = execution.clone();
         let reader_process_id = process_id.clone();
+        let reader_guard = host_guard.clone();
         tokio::spawn(async move {
             let reason = match read_loop(stdout, reader_state.clone(), updates_tx, req_tx).await {
                 Ok(()) => "ACP stdout closed".to_string(),
@@ -310,6 +328,10 @@ impl AcpProcess {
             if let Some(context) = reader_execution {
                 let _ = context.kill(&reader_process_id).await;
             }
+            if let Some(guard) = reader_guard {
+                let _ = guard.quiesce_process(&reader_process_id).await;
+                return;
+            }
             let mut child = reader_child.lock().await;
             if child.try_wait().ok().flatten().is_none() {
                 terminate_tree(&child);
@@ -319,6 +341,7 @@ impl AcpProcess {
         spawn_exit_monitor(child.clone(), state.clone());
         Ok((
             Self {
+                host_guard,
                 context_inspection: extra_env
                     .iter()
                     .any(|(k, v)| *k == "POCKYMOE_CONTEXT_INSPECTION" && v == "1"),
@@ -639,6 +662,11 @@ fn terminate_tree(child: &Child) {
 impl Drop for AcpProcess {
     fn drop(&mut self) {
         self.cleanup_context_trace();
+        // Dropping stdin closes the guardian transport; it must survive long
+        // enough to reap descendants and write its receipt, not receive SIGKILL.
+        if self.host_guard.is_some() {
+            return;
+        }
         if let Ok(mut child) = self.child.try_lock() {
             terminate_tree(&child);
             let _ = child.start_kill();

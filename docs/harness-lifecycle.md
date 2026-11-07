@@ -8,6 +8,14 @@ the npm `codex` launcher → the native `codex app-server`; a Claude tree is
 MCP server. A live native Codex process holds the thread's writer lock, so the
 Codex app reports the thread as in use until the process exits.
 
+On Linux the CLI-hosted Supervisor places Host ACP and callback commands under a
+local subreaper guardian. The recorded root PID includes this guardian; it owns
+native/tool descendants and writes a private exit receipt only after reaping them.
+This lets an owner-approved [environment migration](environments.md) prove old
+writers ended across a Supervisor restart. A missing PID is not proof, and legacy
+recovering sessions without receipts cannot migrate automatically. The guardian
+is not an isolation environment.
+
 The runtime records each load on its session (`acp/release.rs`); the
 Supervisor decides when to release (`service/harness_release.rs`).
 

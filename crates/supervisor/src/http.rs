@@ -1867,6 +1867,8 @@ async fn start_workspace_thread(
     State(state): State<AppState>,
     scope: Option<axum::Extension<crate::treer::Scope>>,
     principal: Option<axum::Extension<crate::owner_trust::BrowserPrincipal>>,
+    headers: HeaderMap,
+    uri: Uri,
     Json(mut body): Json<Value>,
 ) -> Result<Json<Value>, ApiErr> {
     match body.get("workspaceId") {
@@ -1882,7 +1884,7 @@ async fn start_workspace_thread(
     }
     let body: StartThreadRequest = serde_json::from_value(body)
         .map_err(|error| err(StatusCode::BAD_REQUEST, "bad_request", &error.to_string()))?;
-    start_thread(State(state), scope, principal, Json(body)).await
+    start_thread(State(state), scope, principal, headers, uri, Json(body)).await
 }
 
 #[derive(Deserialize)]
@@ -1896,16 +1898,18 @@ async fn start_thread(
     State(state): State<AppState>,
     scope: Option<axum::Extension<crate::treer::Scope>>,
     principal: Option<axum::Extension<crate::owner_trust::BrowserPrincipal>>,
+    headers: HeaderMap,
+    uri: Uri,
     Json(body): Json<StartThreadRequest>,
 ) -> Result<Json<Value>, ApiErr> {
     let thread = if let Some(connection) = body.environment_connection_id {
-        if principal.is_some_and(|p| !p.is_owner()) {
-            return Err(err(
-                StatusCode::FORBIDDEN,
-                "owner_required",
-                "Only the device owner can create an environment.",
-            ));
-        }
+        crate::environment_requests::require_owner(
+            &state,
+            principal.as_ref().map(|p| &p.0),
+            scope.is_some(),
+            &headers,
+            &uri,
+        )?;
         if scope.is_some() {
             return Err(map_err(anyhow::anyhow!("unsupported_host_environment: host-integrated browser threads need an environment policy adapter")));
         }

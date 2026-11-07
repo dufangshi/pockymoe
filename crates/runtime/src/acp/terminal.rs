@@ -14,6 +14,7 @@ const DEFAULT_OUTPUT_BYTE_LIMIT: usize = 1024 * 1024;
 
 struct LiveTerminal {
     execution: Option<crate::execution::ExecutionContext>,
+    host_guard: Option<crate::execution::host_process::HostProcessContext>,
     process_id: String,
     /// The harness process that created it.
     owner: String,
@@ -59,6 +60,10 @@ impl AgentTerminals {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         let execution = crate::execution::current();
+        let host_guard = execution
+            .is_none()
+            .then(crate::execution::host_process::enabled_context)
+            .flatten();
         let process_id = Uuid::new_v4().to_string();
         let mut child = if let Some(context) = &execution {
             let mut argv = vec![executable];
@@ -82,10 +87,12 @@ impl AgentTerminals {
                     argv,
                     cwd: cwd.to_string_lossy().into(),
                     env: worker_env,
+                    stdin_closed: true,
                 })
                 .await?
         } else {
-            cmd.spawn()
+            crate::execution::host_process::spawn(&mut cmd, &process_id, true, true)
+                .await
                 .map_err(|err| anyhow!("failed to spawn ACP terminal command `{command}`: {err}"))?
         };
         // Keep the worker transport's stdin open until the finite command exits.
@@ -116,6 +123,7 @@ impl AgentTerminals {
             id.clone(),
             LiveTerminal {
                 execution,
+                host_guard,
                 process_id,
                 owner: owner.into(),
                 output,
@@ -179,6 +187,8 @@ impl AgentTerminals {
                 tokio::spawn(async move {
                     let _ = context.kill(&id).await;
                 });
+            } else if let Some(context) = &term.host_guard {
+                context.stop_process_sync(&term.process_id)?;
             } else {
                 terminate_process(term.child_id)?;
             }
@@ -194,6 +204,8 @@ impl AgentTerminals {
                     tokio::spawn(async move {
                         let _ = context.kill(&id).await;
                     });
+                } else if let Some(context) = term.host_guard {
+                    let _ = context.stop_process_sync(&term.process_id);
                 } else {
                     let _ = terminate_process(term.child_id);
                 }

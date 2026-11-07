@@ -197,3 +197,70 @@ uses the actual destroy API, and stops only the Supervisor it starts. It preserv
 the lab, the project files, the linked worktree and the acceptance evidence.
 Never run host-wide prune, Swarm init/leave, global upgrade, or remove lab support
 services from this harness.
+
+## Agent proposals and same-thread reincarnation
+
+The additive suite uses a new `pocky-env-af-` dedicated Dokploy 0.30.6 lab and
+its private account; it never reuses the old acceptance account or an installed
+Supervisor/device identity. Prepare that lab privately using the deployment
+skill, then supply its non-secret manifest and the reviewed binary:
+
+```sh
+python3 e2e/environments/host_guardian.py --binary target/debug/pockymoe \
+  --evidence .scratch/guardian-READY_COMMIT
+python3 e2e/environments/reincarnation.py --lab-manifest /private/lab/manifest.json \
+  --binary target/debug/pockymoe --ready-commit READY_COMMIT --retain
+python3 e2e/environments/native_credentials.py --run-manifest /path/to/run/manifest.json
+python3 e2e/environments/reincarnation_failures.py --run-manifest /path/to/run/manifest.json
+```
+
+`reincarnation.py` starts a real Rust Supervisor in a container on the original
+shared storage. Its separate service-host fixture survives a Supervisor SIGKILL;
+otherwise killing container PID 1 would test namespace destruction instead of
+Supervisor recovery. The ACP protocol fixture submits actual CLI commands,
+returns while its old turn is active, and starts native/callback writers. Real
+owner approval waits for those writers and admitted operations, then the same
+thread continues in the actual Dokploy worker with a new native session. It
+checks original file writes, managed worktrees, Git commits, CLI identity,
+model/effort, bounded owner constraints and exactly one continuation. Its
+`fixture` model is protocol data and never a paid model selection.
+
+`native_credentials.py` generates synthetic Codex/Claude/gh file stores and a
+private CA. The real Codex 0.167 app-server refreshes its ChatGPT file auth; the
+real Claude SDK CLI refreshes its Linux file auth and streams a deterministic
+response; real gh and its Git HTTPS helper use file auth. These are **protocol
+fixtures, not real subscription-service validation**. TLS leaf and root are
+separate, credentials bind directly to their original directories, and evidence
+contains booleans/metadata only. A public-range IP is used solely inside the
+nested daemon's disposable bridge so the normal exact-host/public-IP CONNECT
+checks remain active; production DNS/firewall and product code are unchanged.
+The daemon, private CA, fake upstream and synthetic credentials are task-only.
+The suite also checks no auth file is opened before approval, real RO failures,
+source bind metadata and exclusive RW ownership.
+
+`reincarnation_failures.py` verifies real Supervisor SIGKILL/restart, durable
+pending/ready states, no replay, rejection, CLI cancellation, changed connection
+failure, owner retry and explicit Host recovery. Run it after the native suite;
+it changes only its own connection policy and dedicated threads. Keep at most
+three live environments; destroy prior probes through the owner API when their
+checks finish. Never raise the lab's limits to mask an exhausted budget.
+
+The owner Web path uses real API calls, not route mocks:
+
+```sh
+python3 e2e/environments/prepare_owner_ui.py /path/to/run/manifest.json
+POCKY_ENV_RUN_MANIFEST=/path/to/run/manifest.json corepack pnpm exec playwright test \
+  --config apps/supervisor-web/e2e/environment-owner.config.ts --project desktop-chromium
+```
+
+It logs in with the generated private test owner, reviews/approves the actual CLI
+proposal and checks Host PTY resize, old-domain cleanup and rejection of stale
+input. It disables traces/video to avoid persisting the login. Separate
+`dokploy.spec.ts --grep 'agent proposal review'` tests all three themes in both
+color modes, once per explicit desktop/mobile Chromium project. Those visual
+fixtures do not substitute for the real owner path above.
+
+All drivers retain source projects, commits, private state and redacted evidence.
+Destroy only environments listed in the dedicated manifest, remove its test
+Supervisor/TLS containers and task network, then use that lab's scoped cleanup.
+Do not delete project/state evidence or operate the production daemon resources.

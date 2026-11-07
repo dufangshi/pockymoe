@@ -1,11 +1,34 @@
 //! Trusted local Docker operations are supplied by the Supervisor, never the worker.
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, ensure, Result};
+use anyhow::{bail, ensure, Context, Result};
 use async_trait::async_trait;
 use pockymoe_protocol::{EnvironmentLimitsDto, EnvironmentMountDto};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+fn parse_bind_identity(raw: &[u8]) -> Result<(u64, u64, bool)> {
+    let fields = std::str::from_utf8(raw)
+        .context("invalid credential source proof")?
+        .trim()
+        .split(':')
+        .collect::<Vec<_>>();
+    ensure!(fields.len() == 3, "invalid credential source proof");
+    let mode = u32::from_str_radix(fields[2], 16).context("invalid credential source type")?;
+    ensure!(
+        matches!(mode & 0o170000, 0o040000 | 0o100000),
+        "credential source is a special file"
+    );
+    Ok((
+        fields[0]
+            .parse()
+            .context("invalid credential source device")?,
+        fields[1]
+            .parse()
+            .context("invalid credential source inode")?,
+        mode & 0o170000 == 0o040000,
+    ))
+}
 
 pub const ENVIRONMENT_LABEL: &str = "ca.pockymoe.environment";
 pub const GENERATION_LABEL: &str = "ca.pockymoe.generation";
@@ -53,6 +76,20 @@ pub trait EnvironmentDocker: Send + Sync {
         daemon_source: &Path,
         relative_path: Option<&Path>,
     ) -> Result<String>;
+
+    /// Device/inode/type through a read-only, capability-free bind. Credential
+    /// proofs never hash/read the secret or write a challenge into its directory.
+    async fn bind_identity(&self, _: &LocalDockerContext, _: &Path) -> Result<(u64, u64, bool)> {
+        bail!("credential source identity proofs are unsupported by this Docker adapter")
+    }
+    async fn container_bind_identity(
+        &self,
+        _: &LocalDockerContext,
+        _: &str,
+        _: &str,
+    ) -> Result<(u64, u64, bool)> {
+        bail!("running credential mount proofs are unsupported by this Docker adapter")
+    }
 
     /// All containers, including stopped containers, with ENVIRONMENT_LABEL=id.
     /// Return full Engine inspect objects, not a filtered list of running ones.
@@ -202,6 +239,101 @@ pub(super) fn validate_docker_host(value: Option<&str>) -> Result<()> {
 
 #[async_trait]
 impl EnvironmentDocker for CliEnvironmentDocker {
+    async fn container_bind_identity(
+        &self,
+        context: &LocalDockerContext,
+        container: &str,
+        target: &str,
+    ) -> Result<(u64, u64, bool)> {
+        ensure!(
+            container.len() == 64
+                && container.bytes().all(|b| b.is_ascii_hexdigit())
+                && target.starts_with('/')
+                && !target.contains(['\0', '\n', '\r']),
+            "invalid owned credential mount target"
+        );
+        let raw = self
+            .output(
+                context,
+                &[
+                    "exec".into(),
+                    container.into(),
+                    "/usr/bin/stat".into(),
+                    "-c".into(),
+                    "%d:%i:%f".into(),
+                    "--".into(),
+                    target.into(),
+                ],
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("running credential mount identity probe failed"))?;
+        parse_bind_identity(&raw)
+    }
+    async fn bind_identity(
+        &self,
+        context: &LocalDockerContext,
+        source: &Path,
+    ) -> Result<(u64, u64, bool)> {
+        let user = context
+            .probe_user
+            .as_deref()
+            .context("credential probe requires a non-root owner")?;
+        let (uid, gid) = user
+            .split_once(':')
+            .context("invalid credential probe owner")?;
+        ensure!(
+            uid.parse::<u32>().is_ok_and(|id| id != 0) && gid.parse::<u32>().is_ok(),
+            "invalid credential probe owner"
+        );
+        let source = source
+            .to_str()
+            .filter(|p| Path::new(p).is_absolute() && !p.contains([',', '\0', '\n', '\r']))
+            .context("credential source cannot be represented by Docker")?;
+        let name = format!("pockymoe-credential-probe-{}", uuid::Uuid::new_v4());
+        let args = vec![
+            "run".into(),
+            "--rm".into(),
+            "--name".into(),
+            name.clone(),
+            "--user".into(),
+            user.into(),
+            "--network".into(),
+            "none".into(),
+            "--read-only".into(),
+            "--cap-drop".into(),
+            "ALL".into(),
+            "--security-opt".into(),
+            "no-new-privileges:true".into(),
+            "--cpus".into(),
+            "0.1".into(),
+            "--memory".into(),
+            "33554432".into(),
+            "--memory-swap".into(),
+            "33554432".into(),
+            "--pids-limit".into(),
+            "16".into(),
+            "--mount".into(),
+            format!("type=bind,src={source},dst=/probe,readonly,bind-propagation=rprivate"),
+            "--entrypoint".into(),
+            "stat".into(),
+            self.probe_image.clone(),
+            "-c".into(),
+            "%d:%i:%f".into(),
+            "/probe".into(),
+        ];
+        let result = self.output(context, &args).await;
+        if result.is_err() {
+            let _ = self
+                .output(
+                    context,
+                    &["container".into(), "rm".into(), "--force".into(), name],
+                )
+                .await;
+        }
+        let raw = result?;
+        parse_bind_identity(&raw)
+    }
+
     async fn quiesce(&self, context: &LocalDockerContext, target: &QuiesceTarget) -> Result<()> {
         validate_full_container_id(&target.container_id)?;
         ensure!(

@@ -7,7 +7,7 @@ import { environmentText as t, type EnvironmentMessage } from '../../lib/environ
 import { GIB, environmentError, environmentTransitioning } from './model';
 import { EnvironmentConfirmation } from './EnvironmentConfirmation';
 
-function Limits({ value }: { value: EnvironmentLimits }) {
+export function Limits({ value }: { value: EnvironmentLimits }) {
   return <dl className="environment-stats">
     <div><dt>{t('cpu')}</dt><dd>{formatNumber(value.cpu)}</dd></div>
     <div><dt>{t('memory')}</dt><dd>{formatNumber(value.memoryBytes / GIB)}</dd></div>

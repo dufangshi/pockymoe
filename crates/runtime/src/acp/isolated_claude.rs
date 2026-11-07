@@ -48,6 +48,7 @@ const CLEARED_AUTH: &[&str] = &[
 #[derive(Clone)]
 pub(super) struct Route {
     capability: String,
+    native_directory: Option<String>,
 }
 
 impl Route {
@@ -58,6 +59,18 @@ impl Route {
             "unsupported_environment_claude_adapter: require claude-agent-acp 0.101.0 with programmatic settings"
         );
         let get = |name| env.iter().find(|(key, _)| *key == name).map(|(_, v)| v);
+        if get("POCKYMOE_ENV_CLAUDE_NATIVE").is_some_and(|v| v == "1") {
+            let directory = get("CLAUDE_CONFIG_DIR")
+                .filter(|p| p.starts_with('/'))
+                .context(
+                    "unsupported_environment_claude_auth: explicit native file directory required",
+                )?
+                .clone();
+            return Ok(Self {
+                capability: String::new(),
+                native_directory: Some(directory),
+            });
+        }
         ensure!(
             get("ANTHROPIC_BASE_URL").map(String::as_str) == Some(BROKER),
             "unsupported_environment_claude_route: fixed environment broker required"
@@ -66,7 +79,10 @@ impl Route {
             .filter(|value| !value.trim().is_empty())
             .context("unsupported_environment_claude_auth: gateway capability required")?
             .clone();
-        Ok(Self { capability })
+        Ok(Self {
+            capability,
+            native_directory: None,
+        })
     }
 
     pub(super) fn pin(&self, mut meta: Value) -> Result<Value> {
@@ -89,8 +105,18 @@ impl Route {
         for key in DISABLED_PROVIDERS {
             env.insert((*key).into(), json!("0"));
         }
-        env.insert("ANTHROPIC_BASE_URL".into(), json!(BROKER));
+        env.insert(
+            "ANTHROPIC_BASE_URL".into(),
+            json!(if self.native_directory.is_some() {
+                "https://api.anthropic.com"
+            } else {
+                BROKER
+            }),
+        );
         env.insert("ANTHROPIC_AUTH_TOKEN".into(), json!(self.capability));
+        if let Some(directory) = &self.native_directory {
+            env.insert("CLAUDE_CONFIG_DIR".into(), json!(directory));
+        }
         env.insert("NO_PROXY".into(), json!("127.0.0.1,localhost,::1"));
         env.insert("no_proxy".into(), json!("127.0.0.1,localhost,::1"));
         env.insert("DISABLE_AUTOUPDATER".into(), json!("1"));
@@ -154,6 +180,29 @@ pub(super) fn startup_error(error: anyhow::Error, isolated: bool) -> anyhow::Err
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_subscription_clears_api_oauth_env_helpers_and_keeps_the_direct_config_directory() {
+        let route = Route::verified(
+            &json!({"agentInfo":{"name":ADAPTER,"version":VERSION}}),
+            &[
+                ("POCKYMOE_ENV_CLAUDE_NATIVE", "1".into()),
+                ("CLAUDE_CONFIG_DIR", "/credentials/claude".into()),
+                ("ANTHROPIC_AUTH_TOKEN", "old-api-route".into()),
+            ],
+        )
+        .unwrap();
+        let pinned=route.pin(json!({"claudeCode":{"options":{"settings":{"apiKeyHelper":"unsafe helper","env":{"ANTHROPIC_API_KEY":"old-api-route","CLAUDE_CODE_OAUTH_TOKEN":"old-api-route"}}}}})).unwrap();
+        assert!(!pinned.to_string().contains("old-api-route"));
+        for env in [
+            &pinned["claudeCode"]["options"]["env"],
+            &pinned["claudeCode"]["options"]["settings"]["env"],
+        ] {
+            assert_eq!(env["ANTHROPIC_BASE_URL"], "https://api.anthropic.com");
+            assert_eq!(env["CLAUDE_CONFIG_DIR"], "/credentials/claude");
+            assert_eq!(env["ANTHROPIC_AUTH_TOKEN"], "");
+        }
+    }
 
     fn route() -> Route {
         Route::verified(

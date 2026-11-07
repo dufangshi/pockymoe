@@ -1214,6 +1214,8 @@ impl Supervisor {
         }
         crate::child_process::hide_tokio(&mut cmd);
         let execution = self.execution_context(&thread_id)?;
+        let host_guard = (execution.is_none() && crate::execution::host_process::is_enabled())
+            .then(|| self.environments.host_process_context(&thread_id));
         let process_id = Uuid::new_v4().to_string();
         let spawned = if let Some(context) = &execution {
             let argv = if let Some(shell) = &input.command.shell {
@@ -1238,10 +1240,15 @@ impl Supervisor {
                             ("REMOTE_CODEX_COMMAND_ID".into(), id.into()),
                         ])
                         .collect(),
+                    stdin_closed: true,
                 })
                 .await
         } else {
-            cmd.spawn().map_err(Into::into)
+            crate::execution::host_process::scope(
+                Some(self.environments.host_process_context(&thread_id)),
+                crate::execution::host_process::spawn(&mut cmd, &process_id, false, true),
+            )
+            .await
         };
         let mut child = match spawned {
             Ok(c) => c,
@@ -1285,10 +1292,12 @@ impl Supervisor {
             let _ = context.kill(&process_id).await;
         }
         // Clean up the owned process group, including descendants retaining pipes.
-        if let Some(pid) = pid {
+        if let Some(context) = &host_guard {
+            context.quiesce_process(&process_id).await?;
+        } else if let Some(pid) = pid {
             kill_command_tree(pid).await;
         }
-        if state == "timedOut" {
+        if state == "timedOut" && host_guard.is_none() {
             let _ = child.kill().await;
             let _ = child.wait().await;
         }

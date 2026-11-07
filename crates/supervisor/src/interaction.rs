@@ -149,6 +149,13 @@ async fn run_as(
     let all = input["all"] == true;
     let wait = clamp_wait(input["timeoutSeconds"].as_u64());
     match input.get("operation").and_then(Value::as_str).unwrap_or("") {
+        "environmentConnections"
+        | "environmentRequest"
+        | "environmentRequests"
+        | "environmentRequestShow"
+        | "environmentRequestCancel" => {
+            crate::environment_requests::cli(state, &input, caller.as_deref(), peer).await
+        }
         "previewCreate" | "previewList" | "previewCheck" | "previewStop" => {
             // Only the authenticated credential names the thread, never `fromThreadId`.
             crate::preview_cli::run(state, &input, caller.as_deref()).await

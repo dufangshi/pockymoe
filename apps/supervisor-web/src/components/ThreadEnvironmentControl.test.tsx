@@ -5,10 +5,11 @@ import { ThreadEnvironmentControl } from './ThreadEnvironmentControl';
 import { ApiError } from '../lib/api';
 import * as api from '../lib/environmentApi';
 import { environmentsFixture, isolatedEnvironment } from '../test/environmentFixtures';
-vi.mock('../lib/environmentApi', async original => ({ ...await original<typeof import('../lib/environmentApi')>(), fetchEnvironments: vi.fn(), fetchThreadEnvironment: vi.fn(), createEnvironment: vi.fn(), bindThreadEnvironment: vi.fn() }));
+vi.mock('../lib/environmentApi', async original => ({ ...await original<typeof import('../lib/environmentApi')>(), fetchEnvironments: vi.fn(), fetchEnvironmentRequests: vi.fn(), fetchThreadEnvironment: vi.fn(), createEnvironment: vi.fn(), bindThreadEnvironment: vi.fn() }));
 const thread = { id: 'thread-one', status: 'idle' as const, provider: 'codex' as const, agentId: 'codex', providerSessionId: 'native-session', updatedAt: '2026-11-07' };
 beforeEach(() => {
   vi.clearAllMocks(); setLocale('en', false);
+  vi.mocked(api.fetchEnvironmentRequests).mockResolvedValue([]);
   vi.mocked(api.fetchEnvironments).mockResolvedValue(environmentsFixture());
   vi.mocked(api.fetchThreadEnvironment).mockResolvedValue({ environment: null, supportedHarnesses: ['codex'], limitations: [] });
   vi.mocked(api.createEnvironment).mockResolvedValue({ ...isolatedEnvironment, id: 'created-env', name: 'New environment' });

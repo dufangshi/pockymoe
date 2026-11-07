@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { EnvironmentRequests } from './environments/EnvironmentRequests';
 import { useLocation } from 'react-router-dom';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { formatNumber, useI18n } from '@pockymoe/thread-ui/i18n';
@@ -26,6 +27,7 @@ function DeviceEnvironmentSettings({ deviceId }: { deviceId: string | null }) {
   const [editBudget, setEditBudget] = useState(false);
   const [saved, setSaved] = useState(false);
   return <div className="environment-settings" data-testid="dokploy-settings">
+    <EnvironmentRequests deviceId={deviceId} onChanged={() => void refresh()} />
     <div className="environment-toolbar"><span role="status" className="environment-hint">{loading ? t('loading') : saved ? t('saved') : ''}</span>
       <div className="environment-actions"><button type="button" className="host-secondary-button" disabled={loading} onClick={() => void refresh()}>{t('refresh')}</button>
         {error && <ErrorMark message={error} onRetry={() => void refresh()} kind={error === t('unsupported') || error === t('forbidden') ? 'unavailable' : 'error'} />}</div>

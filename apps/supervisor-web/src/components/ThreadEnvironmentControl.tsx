@@ -9,6 +9,7 @@ import { EnvironmentWindow } from './environments/EnvironmentWindow';
 import { EnvironmentCard } from './environments/EnvironmentCard';
 import { EnvironmentConfirmation } from './environments/EnvironmentConfirmation';
 import { environmentError, useEnvironmentSnapshot } from './environments/model';
+import { EnvironmentRequests } from './environments/EnvironmentRequests';
 
 type Props = {
   thread: Pick<ThreadDto, 'id' | 'status' | 'agentId' | 'provider' | 'providerSessionId' | 'updatedAt' | 'parentThreadId'>;
@@ -97,6 +98,7 @@ function ThreadEnvironmentDialog({ thread, deviceId, canManage, onClose }: Props
   };
   return <EnvironmentWindow title={t('title')} onClose={onClose} busy={busy} dirty={dirty}>
     <div className="environment-form" data-testid="thread-environment">
+      <EnvironmentRequests threadId={thread.id} deviceId={deviceId} canManage={canManage} onChanged={() => { setRevision(value => value + 1); void refresh(); }} />
       <div className="environment-toolbar"><h3>{t('current')}</h3><button type="button" className="host-secondary-button" disabled={loading || bindingLoading || busy}
         onClick={() => { void refresh(); setRevision(value => value + 1); }}>{t('refresh')}</button></div>
       {(loading || bindingLoading) && <p role="status" className="environment-hint">{t('loading')}</p>}

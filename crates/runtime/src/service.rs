@@ -4,6 +4,7 @@ mod child_delete;
 mod claude_history;
 mod claude_reply_phases;
 mod context;
+mod environment_requests;
 mod generation;
 mod harness_release;
 mod inbox_reminder;
@@ -2210,6 +2211,7 @@ impl Supervisor {
     }
 
     pub fn ensure_prompt_allowed(&self, thread: &ThreadDto) -> Result<()> {
+        ensure!(!self.environments.request_blocks_turn(&thread.id)?, "environment_migration_pending: wait for the approved environment or ask its owner to recover it");
         ensure!(
             !self.integration_thread_paused(&thread.id)
                 || (self.thread_host.get().is_some() && thread.closed_at.is_some()),
@@ -3401,6 +3403,9 @@ impl Supervisor {
             return Ok(());
         };
         loop {
+            if self.environments.request_blocks_turn(thread_id)? {
+                return Ok(());
+            }
             if self
                 .update_draining
                 .load(std::sync::atomic::Ordering::SeqCst)
@@ -3421,7 +3426,7 @@ impl Supervisor {
                 Ok(conn
                     .query_row(
                         "SELECT id,submitted_prompt,payload_json,turn_id FROM thread_pending_steers
-                 WHERE thread_id=?1 AND delivery='continuation' ORDER BY created_at,rowid LIMIT 1",
+                 WHERE thread_id=?1 AND delivery='continuation' ORDER BY CASE WHEN id LIKE 'environment-continuation:%' THEN 0 ELSE 1 END,created_at,rowid LIMIT 1",
                         params![thread_id],
                         |r| {
                             Ok((
@@ -3790,6 +3795,7 @@ impl Supervisor {
         collab: Option<String>,
         sandbox: Option<String>,
     ) -> Result<ThreadDto> {
+        ensure!(!self.environments.request_blocks_turn(id)?,"environment_migration_pending: cancel the waiting request or use owner failure recovery before changing execution settings");
         let thread = self.get_thread(id)?;
         let approval = sandbox.as_deref().map(|mode| {
             if mode == "danger-full-access" {

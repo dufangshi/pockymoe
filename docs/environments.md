@@ -2,7 +2,8 @@
 
 An execution environment runs the Pockymoe worker in a Linux Docker container
 managed by Dokploy. The host Supervisor keeps thread identity, approvals,
-database, credentials and the execution gateway. The environment is not a
+database, API-broker credentials and the execution gateway. Optional owner-approved
+native/file credential binds are described below. The environment is not a
 registered device. Lifecycle operations use the Dokploy REST API, validated
 against Dokploy v0.30.6. The trusted control plane uses Docker CLI for storage
 proofs, inspection, verified stopping of fenced writers and worker exec stdio.
@@ -21,8 +22,8 @@ the key. Omitting `apiKey` when updating preserves the saved key. Changing
 storage, image or limits requires destroying the connection's retained
 environments first; the name and key can be updated independently.
 
-The [API harness image recipe](../containers/environment/README.md) supplies a
-pinned Ubuntu 24.04 x86_64 image with Git, Python, Node and native Codex/Claude
+The [harness image recipe](../containers/environment/README.md) supplies a
+pinned Ubuntu 24.04 x86_64 image with Git, gh, Python, Node and native Codex/Claude
 ACP dependencies. Build and validate it on a dedicated test host before use.
 
 The Supervisor derives project paths from the trusted thread record. Creating
@@ -160,14 +161,62 @@ provider does not register HTTP routes or start the worker gateway itself.
 
 ## Thread entry and execution compatibility
 
-Settings → Environments configures Dokploy connections, exact HTTPS egress
-hosts, per-container limits and a Supervisor budget. Keys are write-only.
-A new thread can select a connection using `environmentConnectionId` on
-`POST /api/threads/start` (also the workspace start route). This creates and binds
-a stopped environment before recording the unloaded thread. Start the
-environment before its first prompt. Existing threads use the thread environment
-control and explicitly confirm `resetSession: true` before switching; conversation
-history is retained. Inherited child bindings cannot switch to host execution.
+The default workflow is agent-first. `pockymoe environment connections` discovers
+non-secret connection policy for the authenticated thread. `environment request
+--spec FILE --request-id ID` submits metadata and returns immediately; `requests`,
+`show ID` and `cancel ID` inspect/revoke its receipt. The spec includes resources,
+exact HTTPS hosts, optional credential source/target/RO-RW/config pointers and an
+untrusted handoff. Thread, workspace, selected worktree, harness, model and effort
+come from Supervisor records. There is no thread override or agent approve CLI.
+Unknown/secret-value fields are rejected. Proposal validation reads filesystem
+metadata, not credential contents, and does not create a deployed environment.
+
+The owner reviews the prepared proposal in the thread's Isolation window or
+Settings → Environments and approves/rejects its immutable SHA-256 digest. It
+covers normalized paths, their original filesystem identities and connection
+policy. A changed spec requires a new request. Tool/yolo approval, gateway/CLI
+capabilities and sharing grants cannot approve. A valid owner-signed browser or
+the administrator session configured at **server startup** is required. Unsigned
+loopback and a self-bootstrapped local passcode are not owner proof. The same
+check protects legacy direct connection/lifecycle/binding and isolated-thread
+creation controls; they cannot bypass this ceremony from a Host agent.
+
+Requests persist as `pending`, `waitingIdle`, `provisioning`, `ready`, `failed`,
+`rejected` or `cancelled` in the private sidecar. Approval is idempotent. It waits
+for the current turn and admitted tasks; it never holds the proposing command
+open waiting for its own admission. After an exclusive transition revalidates
+settings/worktree and closed descendants, it persists a Host fence, ends the old
+harness and background descendants, closes PTYs and revokes CLI/previews. It then
+clears `providerSessionId`, provisions/binds Dokploy and initializes a fresh native
+session. The original thread ID, journal, queue, approvals, model and effort stay
+on the original Supervisor. The new session receives bounded public journal
+text, original/latest owner instructions and the agent's untrusted handoff. This
+is a text projection, not a new LLM summary or copied native state. A deterministic
+continuation receipt prevents replay after a crash, including after consumption.
+
+Host Linux ACP, callback commands, controlled commands and PTYs use a local
+subreaper guardian with a private metadata-only exit receipt. Transport EOF on
+Supervisor death ends/reaps its native/tool descendants before recording success.
+Migration accepts that durable proof, never a missing PID alone. Startup recovering
+turns without a receipt from a legacy binary cannot migrate automatically. A
+killed/uncertain guardian blocks migration for explicit process recovery; unfinished
+commands are marked interrupted and never replayed. This guardian is not an OS
+isolation environment or a second registered device.
+
+Failures retain the execution fence and actionable state. The owner can retry
+the same grant after stopping/rebuilding retained computation, or explicitly
+**Restore Host execution**: end the old process domain, destroy this request's
+computation, retain project/state and clear its binding/fence. It does not replay
+the old command. Connection/source changes can be recovered this way before
+submitting a new proposal. There is no automatic Host fallback. Approved waiting
+requests can be cancelled before the fence. Execution settings, worktree and
+manual binding changes are blocked during approved migration.
+
+Owner direct management remains available. A new thread can select
+`environmentConnectionId` on `POST /api/threads/start` (also the workspace route)
+to create/bind a stopped resource; start it before prompting. Existing direct
+switches explicitly confirm `resetSession: true`. Inherited child bindings cannot
+switch to Host.
 
 Binding changes are mutually exclusive with admitted commands, hooks and HTTP
 file request bodies. A busy request returns HTTP 409; retry after the operation
@@ -177,7 +226,8 @@ switching a parent. Historical children without the same environment as their
 ancestor cannot resume or probe the host; create a new child from the isolated
 parent instead.
 
-The first adapter supports Codex and Claude API upstream profiles and custom
+The adapter supports Codex and Claude API upstream profiles, approved native
+Linux file logins and custom
 ACP commands present in the configured image. Readiness comes from that
 image's actual ACP transport, rather than host installation. The image must
 contain compatible glibc, the harness/adapter and its tools. Project configuration
@@ -193,9 +243,9 @@ opaque one-hour thread/environment/generation capabilities. Reconnecting or a
 new admitted load renews them; stop, rebuild and binding changes revoke them.
 The worker cannot choose another model, redirect an upstream request, forward
 arbitrary host headers or open the general local HTTP service. Subscription
-OAuth/auth refresh and model-provider WebSocket protocols are not supported;
-selecting an API profile is an explicit user configuration, never an automatic
-login or billing conversion.
+OAuth/auth refresh is not proxied by the API broker. Selecting an API profile is
+an explicit user configuration, never an automatic login or billing conversion.
+Native file mode below uses the native CLI and separately approved HTTPS egress.
 
 For Claude Messages, the broker preserves the SDK's date-shaped
 `anthropic-version` and bounded `anthropic-beta` feature selectors. Missing
@@ -209,10 +259,12 @@ beta feature is supported by the installed native harness.
 
 Isolated Claude requires `claude-agent-acp` 0.101.0. Before creating or restoring
 a session, the thin ACP adapter verifies its reported identity/version and pins
-the loopback broker and short-lived capability in both SDK environment options
-and programmatic settings. It clears API helpers, subscription OAuth and
-alternate provider routing without disabling project rules, tools or settings
-sources. An unverified version or incompatible metadata fails with an
+its selected auth route in both SDK environment options and programmatic
+settings. API mode pins the loopback broker/capability and clears subscription
+environment overrides. Native mode pins the approved CLAUDE_CONFIG_DIR and public
+Anthropic route, clears API/helper/ambient OAuth env precedence, and lets the
+native CLI read and refresh its file login. Both retain project rules, tools and
+settings sources. An unverified version or incompatible metadata fails with an
 `unsupported_environment_claude_*` error; there is no environment-only fallback.
 The requested model must be accepted by the adapter's advertised model picker;
 a rejected model selection also fails explicitly before a prompt is sent.
@@ -229,10 +281,11 @@ Responses or Claude Messages. Custom ACP commands use the explicitly configured
 Codex Responses profile and cannot select a Claude credential.
 
 Git status/diff/stage/commit and managed worktrees execute through worker Git.
-Host SSH agents, `.ssh`, `gh` tokens, Git helpers and credentialed/global MCP are
-not mounted or copied. Local Git operations work; authenticated remote Git and
-HTTP MCP need separate credential adapters and are rejected or fail with the
-network disabled. Networkless project/image stdio MCP naturally executes inside
+Host SSH agents, `.ssh`, global Git helpers and credentialed/global MCP are not
+projected. Local Git operations work; optional approved gh file login installs a
+container-local HTTPS credential helper. Other remote Git/MCP authentication needs
+its own precise file/config mount and approved HTTPS destinations, otherwise it
+fails without network or credentials. SSH forwarding remains unsupported. Networkless project/image stdio MCP naturally executes inside
 the container. Host plugins, native thread forks, host-home role templates,
 legacy delegate `--worktree`, cross-device file transfers and workspace downloads
 have explicit unsupported errors. A child can use the managed-worktree CLI
@@ -274,3 +327,69 @@ host network is supplied. The same container remains a shared-kernel Docker
 security boundary, not a VM or an untrusted multi-tenant host boundary. E2B is a
 future remote provider and would require an explicit storage/transport adapter;
 local absolute paths do not become remote mounts.
+
+
+## Optional direct credential grants
+
+All non-broker credentials are absent by default. Agent proposals may request up
+to 16 existing regular files/directories with exact absolute source/target paths,
+RO/RW, purpose (`generic`, `codex`, `claude`, `github`) and allowlisted config-path
+pointers. Targets are under `/credentials`; the only state exceptions are native
+read-only auth-file slots. Whole HOME, private control-plane/DB/identity storage,
+system/special files, nested symlinks or hardlinks, Docker/SSH sockets, worker/bridge/identity paths and overlapping
+targets are rejected. Symlink/non-normal source paths and source replacement
+require new review. Directory contents are part of the explicit grant, including
+nested files. Directory metadata review is bounded to 100,000 entries; narrow a larger grant.
+Metadata-only dev/inode/type checks prove the daemon source and the
+running bind match Supervisor storage without reading/hashing credential bodies or
+writing a challenge into an RO directory. Source identity is checked on admission
+and reconciliation; replacement fences/quiesces the environment.
+
+A direct bind exposes the approved long-term credential to environment processes;
+it does **not** keep that credential Host-only. No credential is copied to state.
+RW grants reserve overlapping sources exclusively across Pockymoe environments
+until computation destruction, even while stopped/failed. Native sessions have
+one supported active process per tool/config in an environment; in-process native
+subagents remain supported. Arbitrary external Host programs do not honor our lock.
+
+`nativeFile` Codex requires a real ChatGPT `auth.json` file store and an approved
+`CODEX_HOME` directory, pinned Codex 0.167.0/codex-acp 2.5.0 and a compatible model.
+It forces ChatGPT/file/openai startup and removes API-only overrides. Conflicting
+custom providers/profiles in native config are rejected instead of changing
+billing. `nativeFile` Claude requires Linux `.credentials.json` under the approved
+`CLAUDE_CONFIG_DIR` and claude-agent-acp 0.101.0 / SDK 0.3.318. The native CLI owns
+its OAuth refresh. OS keyring/auto-with-only-keyring and macOS Keychain credentials
+are not exported or treated as file authentication.
+
+A native directory must be writable for native state and atomic auth replacement;
+its config/history are explicitly included. Alternatively a single RO auth file can
+bind to `/pockymoe/state/codex/auth.json` or
+`/pockymoe/state/claude/.credentials.json` with its tool home pointing to that state
+parent. This does not authorize the source parent and cannot persist OAuth refresh.
+A Host atomic replacement of a single file changes its inode and invalidates the
+grant; a direct directory bind sees native atomic replacements inside it.
+
+`github` projects a file-backed `hosts.yml` directory via `GH_CONFIG_DIR`. The image
+supplies gh and the worker installs a non-secret HTTPS Git helper invoking that
+gh. Ambient GH_TOKEN/GITHUB_TOKEN cannot override it. Keyring-only hosts.yml and
+SSH protocol fail explicitly. The pinned gh 2.45 needs `config.yml` schema
+`version: 1` on a read-only directory. Migrate the original configuration on Host
+first, or submit a new request approving that directory read-write; the worker
+rejects the older read-only schema and never copies credentials to bypass it.
+Generic grants support tool config-path variables
+and CA file pointers (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, CURL_CA_BUNDLE), not arbitrary
+Host environment forwarding, executable paths, API token values or identities.
+
+Native Codex requires exact `auth.openai.com` and `chatgpt.com`; Claude requires
+`api.anthropic.com` and `platform.claude.com`. gh/Git and optional features need their
+own explicit HTTPS hosts. The approved request's list replaces connection default
+egress for this environment. TCP/UDP/SSH, private/metadata/management IPs and non-443
+CONNECT remain denied. An expired capability must be renewed by a fresh admitted
+session; a native auth refresh is distinct from gateway capability renewal.
+
+Authentication source contracts checked 2026-11-07: [Codex file/keyring/auth and
+refresh](https://learn.chatgpt.com/docs/auth), [Claude Linux file/Keychain and env
+precedence](https://code.claude.com/docs/en/authentication), [gh auth storage](https://cli.github.com/manual/gh_auth_login)
+and [gh config/token environment](https://cli.github.com/manual/gh_help_environment).
+The gh read-only migration contract comes from its
+[versioned multiple-account migration documentation](https://github.com/cli/cli/blob/v2.45.0/docs/multiple-accounts.md#immutable-config-users).

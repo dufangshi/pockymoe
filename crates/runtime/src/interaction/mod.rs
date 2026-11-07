@@ -196,7 +196,14 @@ impl Supervisor {
                 }
             }
         }
-        crate::execution::scope(execution, CLI_ENV.scope(env, future)).await
+        let host = execution
+            .is_none()
+            .then(|| self.environments.host_process_context(thread_id));
+        crate::execution::host_process::scope(
+            host,
+            crate::execution::scope(execution, CLI_ENV.scope(env, future)),
+        )
+        .await
     }
 
     /// Every live integration binding owns its own external credentials.

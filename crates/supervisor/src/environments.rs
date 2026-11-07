@@ -27,6 +27,7 @@ fn require(condition: bool, message: &str) -> Result<()> {
 
 pub(crate) fn routes() -> Router<Arc<Supervisor>> {
     Router::new()
+        .merge(crate::environment_requests::routes())
         .route("/api/environments", get(list).post(create))
         .route("/api/environments/connections/{id}", put(connection))
         .route(
@@ -156,7 +157,7 @@ async fn thread(
     state.get_thread(&id).map_err(map_err)?;
     state.execution_context(&id).map_err(map_err)?;
     Ok(Json(
-        json!({"environment":state.environments.for_thread(&id).map_err(map_err)?,"supportedHarnesses":["codex","claude","custom"],"limitations":["API gateway authentication only; native subscription credentials, SSH and credentialed MCP are not projected","Disk quota for original bind storage is unavailable","Environment capability expires after one hour; reconnect the harness to renew"]}),
+        json!({"environment":state.environments.for_thread(&id).map_err(map_err)?,"supportedHarnesses":["codex","claude","custom"],"limitations":["API broker is the default. Optional Codex/Claude native Linux file login, gh and exact credential mounts require an agent request and separate owner approval. OS keyring/Keychain and SSH forwarding are unsupported","Disk quota for original bind storage is unavailable","Environment capability expires after one hour; reconnect the harness to renew"]}),
     ))
 }
 #[derive(Deserialize)]
@@ -177,6 +178,7 @@ async fn bind(
     )
     .map_err(map_err)?;
     let _transition = state.try_change_execution(&id).map_err(map_err)?;
+    require(!state.environments.request_blocks_turn(&id).map_err(map_err)?,"environment_migration_pending: use the request's owner failure recovery before changing its binding").map_err(map_err)?;
     let thread = state.get_thread(&id).map_err(map_err)?;
     let threads = state.list_threads(None, true).map_err(map_err)?;
     for descendant in threads
@@ -389,6 +391,11 @@ async fn gateway_cli(
         matches!(
             op,
             "info"
+                | "environmentConnections"
+                | "environmentRequest"
+                | "environmentRequests"
+                | "environmentRequestShow"
+                | "environmentRequestCancel"
                 | "skill"
                 | "guide"
                 | "list"
@@ -754,6 +761,25 @@ pub(crate) async fn execution_scope(
     let segments = path.split('/').collect::<Vec<_>>();
     let binding_route =
         segments.get(2) == Some(&"threads") && segments.get(4) == Some(&"environment");
+    // Legacy owner controls must not become an unsigned Host agent's shortcut
+    // around the separate environment/credential approval ceremony.
+    if request.method() != axum::http::Method::GET
+        && (binding_route
+            || path.starts_with("/api/environments")
+            || path.starts_with("/api/environment-requests"))
+    {
+        if let Err(error) = crate::environment_requests::require_owner(
+            &state,
+            request
+                .extensions()
+                .get::<crate::owner_trust::BrowserPrincipal>(),
+            request.extensions().get::<crate::treer::Scope>().is_some(),
+            request.headers(),
+            request.uri(),
+        ) {
+            return error.into_response();
+        }
+    }
     let selected_thread = if !binding_route && segments.get(2) == Some(&"threads") {
         match segments.get(3).map(|id| decode_route_id(id)).transpose() {
             Ok(id) => id,
@@ -820,7 +846,16 @@ pub(crate) async fn execution_scope(
         Ok(None)
     })();
     let response = match selected {
-        Ok(context) => execution::scope(context, next.run(request)).await,
+        Ok(context) => {
+            let host = if context.is_none() {
+                selected_thread
+                    .as_deref()
+                    .map(|id| state.environments.host_process_context(id))
+            } else {
+                None
+            };
+            execution::host_process::scope(host, execution::scope(context, next.run(request))).await
+        }
         Err(error) => (
             StatusCode::CONFLICT,
             Json(json!({"code":"environment_context_required","message":error.to_string()})),

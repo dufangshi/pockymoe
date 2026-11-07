@@ -12,13 +12,56 @@ pub async fn run(mode: &str, args: &[String]) -> Result<()> {
         cfg!(target_os = "linux"),
         "unsupported_environment_platform"
     );
+    if matches!(mode, "host-run" | "host-shell") {
+        let path = super::host_process::receipt_path()?;
+        let id = args.first().context("Host process identity required")?;
+        #[cfg(unix)]
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        #[cfg(unix)]
+        let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+        super::host_process::await_registered(&path, id).await?;
+        let action = async {
+            if mode == "host-run" {
+                process(id, Some(path.clone())).await
+            } else {
+                let program = args.get(1).context("Host shell required")?;
+                execute(
+                    RunRequest {
+                        id: id.clone(),
+                        argv: vec![program.clone()],
+                        cwd: std::env::current_dir()?.to_string_lossy().into(),
+                        env: Vec::new(),
+                        stdin_closed: false,
+                    },
+                    None,
+                    Some(path.clone()),
+                )
+                .await
+            }
+        };
+        #[cfg(unix)]
+        let result = tokio::select! {
+            result=action=>result,
+            _=terminate.recv()=>Err(anyhow::anyhow!("Host process launch cancelled")),
+            _=hangup.recv()=>Err(anyhow::anyhow!("Host process transport closed")),
+        };
+        #[cfg(not(unix))]
+        let result = action.await;
+        // Errors/EOF before a launch frame can also be proved child-free.
+        // Never infer this from a dead guardian PID: the registered guardian
+        // itself reaps descendants and signs the receipt while still alive.
+        terminate_descendants(std::process::id()).await?;
+        super::host_process::stopped(&path)?;
+        return result;
+    }
     ensure!(
         std::env::var_os("POCKYMOE_ENVIRONMENT_WORKER").is_some(),
         "worker_requires_managed_environment"
     );
     match mode {
         "serve" => serve().await,
-        "run" => process(args.first().context("process identity required")?).await,
+        "run" => process(args.first().context("process identity required")?, None).await,
         "request" => {
             let mut input = Vec::new();
             tokio::io::stdin()
@@ -41,15 +84,16 @@ pub async fn run(mode: &str, args: &[String]) -> Result<()> {
             let id = args.first().context("process identity required")?.clone();
             let env = std::env::vars()
                 .filter(|(k, _)| {
-                    matches!(
-                        k.as_str(),
-                        "POCKYMOE_TOKEN"
-                            | "POCKYMOE_THREAD_ID"
-                            | "POCKYMOE_URL"
-                            | "HTTPS_PROXY"
-                            | "https_proxy"
-                            | "NO_PROXY"
-                    )
+                    super::credentials::pointer_variable(k)
+                        || matches!(
+                            k.as_str(),
+                            "POCKYMOE_TOKEN"
+                                | "POCKYMOE_THREAD_ID"
+                                | "POCKYMOE_URL"
+                                | "HTTPS_PROXY"
+                                | "https_proxy"
+                                | "NO_PROXY"
+                        )
                 })
                 .collect();
             execute(
@@ -58,7 +102,9 @@ pub async fn run(mode: &str, args: &[String]) -> Result<()> {
                     argv: vec!["/bin/sh".into()],
                     cwd: std::env::current_dir()?.to_string_lossy().into(),
                     env,
+                    stdin_closed: false,
                 },
+                None,
                 None,
             )
             .await
@@ -133,7 +179,7 @@ async fn serve() -> Result<()> {
         });
     }
 }
-async fn process(expected: &str) -> Result<()> {
+async fn process(expected: &str, host: Option<std::path::PathBuf>) -> Result<()> {
     let mut input = BufReader::new(tokio::io::stdin());
     let mut line = String::new();
     input.read_line(&mut line).await?;
@@ -145,9 +191,13 @@ async fn process(expected: &str) -> Result<()> {
         "invalid process identity"
     );
     ensure!(!request.argv.is_empty(), "empty command");
-    execute(request, Some(input)).await
+    execute(request, Some(input), host).await
 }
-async fn execute(request: RunRequest, input: Option<BufReader<tokio::io::Stdin>>) -> Result<()> {
+async fn execute(
+    request: RunRequest,
+    input: Option<BufReader<tokio::io::Stdin>>,
+    host: Option<std::path::PathBuf>,
+) -> Result<()> {
     ensure!(
         uuid::Uuid::parse_str(&request.id).is_ok() && !request.argv.is_empty(),
         "invalid process request"
@@ -163,10 +213,17 @@ async fn execute(request: RunRequest, input: Option<BufReader<tokio::io::Stdin>>
             "worker trace protection unavailable"
         );
     }
-    if request
-        .env
-        .iter()
-        .any(|(k, v)| k == "POCKYMOE_ENV_CODEX" && v == "1")
+    let mut request = request;
+    let _native_credential_locks = if host.is_none() {
+        super::credentials::prepare(&mut request)?
+    } else {
+        Vec::new()
+    };
+    if host.is_none()
+        && request
+            .env
+            .iter()
+            .any(|(k, v)| k == "POCKYMOE_ENV_CODEX" && v == "1")
     {
         std::fs::create_dir_all("/pockymoe/state/codex")?;
         std::fs::write("/pockymoe/state/codex/config.toml", "model_provider = \"pockymoe_environment\"\n[model_providers.pockymoe_environment]\nname = \"Pockymoe Environment\"\nbase_url = \"http://127.0.0.1:45680/model/codex\"\nenv_key = \"OPENAI_API_KEY\"\nwire_api = \"responses\"\nrequires_openai_auth = false\nsupports_websockets = false\n")?;
@@ -177,22 +234,27 @@ async fn execute(request: RunRequest, input: Option<BufReader<tokio::io::Stdin>>
     let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
     let is_terminal = input.is_none();
     let mut command = tokio::process::Command::new(&request.argv[0]);
+    command.args(&request.argv[1..]).current_dir(&request.cwd);
+    if host.is_none() {
+        command
+            .env_clear()
+            .env("PATH", "/opt/pockymoe/bin:/usr/local/bin:/usr/bin:/bin")
+            .env("HOME", "/pockymoe/state")
+            .env("CODEX_HOME", "/pockymoe/state/codex")
+            .env("CLAUDE_CONFIG_DIR", "/pockymoe/state/claude")
+            .env("TMPDIR", "/tmp")
+            .env("LANG", "C.UTF-8")
+            .env("TERM", "xterm-256color")
+            .env("DISABLE_AUTOUPDATER", "1")
+            .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+            .env("POCKYMOE_ENVIRONMENT_WORKER", "1");
+    }
     command
-        .args(&request.argv[1..])
-        .current_dir(&request.cwd)
-        .env_clear()
-        .env("PATH", "/opt/pockymoe/bin:/usr/local/bin:/usr/bin:/bin")
-        .env("HOME", "/pockymoe/state")
-        .env("CODEX_HOME", "/pockymoe/state/codex")
-        .env("CLAUDE_CONFIG_DIR", "/pockymoe/state/claude")
-        .env("TMPDIR", "/tmp")
-        .env("LANG", "C.UTF-8")
-        .env("TERM", "xterm-256color")
-        .env("DISABLE_AUTOUPDATER", "1")
-        .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-        .env("POCKYMOE_ENVIRONMENT_WORKER", "1")
+        .env_remove("POCKYMOE_HOST_PROCESS_RECEIPT")
         .envs(request.env)
-        .stdin(if is_terminal {
+        .stdin(if request.stdin_closed {
+            Stdio::null()
+        } else if is_terminal {
             Stdio::inherit()
         } else {
             Stdio::piped()
@@ -211,18 +273,25 @@ async fn execute(request: RunRequest, input: Option<BufReader<tokio::io::Stdin>>
             libc::tcsetpgrp(0, pid as i32);
         }
     }
-    std::fs::create_dir_all("/tmp/pockymoe-processes")?;
-    let record = Path::new("/tmp/pockymoe-processes").join(&request.id);
+    let record = if host.is_none() {
+        std::fs::create_dir_all("/tmp/pockymoe-processes")?;
+        Some(Path::new("/tmp/pockymoe-processes").join(&request.id))
+    } else {
+        None
+    };
     let self_pid = std::process::id();
-    std::fs::write(
-        &record,
-        format!("{} {}", self_pid, process_start(self_pid)?),
-    )?;
+    if let Some(record) = &record {
+        std::fs::write(record, format!("{} {}", self_pid, process_start(self_pid)?))?;
+    }
     let mut stdin = child.stdin.take();
     let transport = async move {
         if let Some(mut input) = input {
             if let Some(mut stdin) = stdin.take() {
                 let _ = tokio::io::copy(&mut input, &mut stdin).await;
+            } else {
+                // The command sees EOF, but its parent's live transport still
+                // owns the process domain and must cancel it on disconnect.
+                let _ = tokio::io::copy(&mut input, &mut tokio::io::sink()).await;
             }
         } else {
             std::future::pending::<()>().await
@@ -245,10 +314,20 @@ async fn execute(request: RunRequest, input: Option<BufReader<tokio::io::Stdin>>
     };
     // A subreaper retains double-forked / setsid descendants. The worker lives
     // until its entire descendant tree is killed, rather than just the CLI pipe.
-    terminate_descendants(self_pid, pid);
-    let _ = child.kill().await;
-    let _ = child.wait().await;
-    let _ = std::fs::remove_file(&record);
+    // No unverified negative process-group signal: the initial child may have
+    // exited and its PID/group could already have been reused.
+    let cleanup = terminate_descendants(self_pid).await;
+    if let Some(record) = record {
+        let _ = std::fs::remove_file(record);
+    }
+    if let Some(path) = host {
+        if cleanup.is_ok() {
+            super::host_process::stopped(&path)?;
+        } else {
+            eprintln!("Host process cleanup could not prove quiescence");
+            std::process::exit(1);
+        }
+    }
     std::process::exit(code)
 }
 fn process_start(pid: u32) -> Result<String> {
@@ -262,50 +341,91 @@ fn process_start(pid: u32) -> Result<String> {
         .context("missing process start time")?
         .into())
 }
-fn terminate_descendants(parent: u32, group: u32) {
-    #[cfg(unix)]
-    for _ in 0..8 {
-        let mut all = Vec::<(u32, u32)>::new();
-        if let Ok(entries) = std::fs::read_dir("/proc") {
-            for entry in entries.flatten() {
-                let Some(pid) = entry
-                    .file_name()
-                    .to_str()
-                    .and_then(|n| n.parse::<u32>().ok())
-                else {
-                    continue;
-                };
-                if let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) {
-                    if let Some(ppid) = stat
-                        .rsplit_once(") ")
-                        .and_then(|(_, v)| v.split_whitespace().nth(1))
-                        .and_then(|v| v.parse().ok())
-                    {
-                        all.push((pid, ppid));
+async fn terminate_descendants(parent: u32) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let mut all = Vec::<(u32, u32, String)>::new();
+            if let Ok(entries) = std::fs::read_dir("/proc") {
+                for entry in entries.flatten() {
+                    let Some(pid) = entry
+                        .file_name()
+                        .to_str()
+                        .and_then(|n| n.parse::<u32>().ok())
+                    else {
+                        continue;
+                    };
+                    if let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) {
+                        if let Some(ppid) = stat
+                            .rsplit_once(") ")
+                            .and_then(|(_, v)| v.split_whitespace().nth(1))
+                            .and_then(|v| v.parse().ok())
+                        {
+                            if let Ok(start) = process_start(pid) {
+                                all.push((pid, ppid, start));
+                            }
+                        }
                     }
                 }
             }
-        }
-        let mut descendants = std::collections::HashSet::from([parent]);
-        loop {
-            let before = descendants.len();
-            for (pid, ppid) in &all {
-                if descendants.contains(ppid) {
-                    descendants.insert(*pid);
+            let mut descendants = std::collections::HashSet::from([parent]);
+            loop {
+                let before = descendants.len();
+                for (pid, ppid, _) in &all {
+                    if descendants.contains(ppid) {
+                        descendants.insert(*pid);
+                    }
+                }
+                if before == descendants.len() {
+                    break;
                 }
             }
-            if before == descendants.len() {
+            for (pid, _, start) in all
+                .iter()
+                .filter(|(pid, _, _)| *pid != parent && descendants.contains(pid))
+            {
+                let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, *pid, 0) as i32 };
+                if fd < 0 {
+                    continue;
+                }
+                let fd = unsafe { std::fs::File::from_raw_fd(fd) };
+                if process_start(*pid).ok().as_ref() == Some(start) {
+                    unsafe {
+                        libc::syscall(
+                            libc::SYS_pidfd_send_signal,
+                            fd.as_raw_fd(),
+                            libc::SIGKILL,
+                            std::ptr::null::<libc::siginfo_t>(),
+                            0,
+                        );
+                    }
+                }
+            }
+            // Reap adopted children too. ECHILD, rather than an empty proc snapshot,
+            // proves there is no child left that can fork or retain a file writer.
+            loop {
+                let result = unsafe { libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) };
+                if result > 0 {
+                    continue;
+                }
+                if result < 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD)
+                {
+                    return Ok(());
+                }
                 break;
             }
+            ensure!(
+                tokio::time::Instant::now() < deadline,
+                "process descendants did not quiesce"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        unsafe {
-            libc::kill(-(group as i32), libc::SIGKILL);
-            for pid in descendants.into_iter().filter(|p| *p != parent) {
-                libc::kill(pid as i32, libc::SIGKILL);
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
     }
+    #[cfg(not(target_os = "linux"))]
+    anyhow::bail!("process cleanup requires Linux");
 }
 fn kill(id: &str) -> Result<()> {
     use std::io::Read;

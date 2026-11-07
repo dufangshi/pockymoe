@@ -3,7 +3,9 @@
 mod compose;
 pub mod docker;
 mod dokploy;
+pub(crate) mod requests;
 mod storage;
+pub use requests::EnvironmentRequestContext;
 
 use std::{
     collections::BTreeMap,
@@ -56,6 +58,10 @@ struct EnvironmentRecord {
     /// False in legacy records: a lost writer ID requires an owned Dokploy Stop.
     #[serde(default)]
     quiesce_confirmed: bool,
+    #[serde(default)]
+    profile: requests::EnvironmentProfile,
+    #[serde(default)]
+    request_id: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -65,6 +71,8 @@ struct Store {
     environments: BTreeMap<String, EnvironmentRecord>,
     bindings: BTreeMap<String, String>,
     budget: EnvironmentBudgetDto,
+    #[serde(default)]
+    requests: BTreeMap<String, requests::RequestRecord>,
 }
 
 impl Default for Store {
@@ -75,6 +83,7 @@ impl Default for Store {
             environments: BTreeMap::new(),
             bindings: BTreeMap::new(),
             budget: EnvironmentBudgetDto::default(),
+            requests: BTreeMap::new(),
         }
     }
 }
@@ -90,6 +99,15 @@ pub struct EnvironmentManager {
 }
 
 impl EnvironmentManager {
+    pub fn host_process_context(
+        &self,
+        thread_id: &str,
+    ) -> crate::execution::host_process::HostProcessContext {
+        crate::execution::host_process::HostProcessContext {
+            directory: self.directory.join("host-processes"),
+            thread_id: thread_id.into(),
+        }
+    }
     pub fn new(database_path: &Path) -> Self {
         let mut name = database_path.as_os_str().to_os_string();
         name.push(".environments");
@@ -188,6 +206,7 @@ impl EnvironmentManager {
         }
         let docker = self.driver()?;
         let observation=async {
+            self.validate_credential_sources(&record.profile)?;
             let values=docker.inspect_environment(&self.context(&record.dto.connection_id)?,id).await
                 .map_err(|_|anyhow::anyhow!("local Docker is unavailable; retained environment resources require explicit recovery"))?;
             ensure!(values.len()==1,"environment container is missing or its ownership is ambiguous");
@@ -595,7 +614,38 @@ impl EnvironmentManager {
         trusted_workspace: &Path,
         trusted_working: &Path,
     ) -> Result<EnvironmentDto> {
+        self.create_configured(
+            input,
+            trusted_workspace,
+            trusted_working,
+            Default::default(),
+            None,
+            None,
+        )
+        .await
+    }
+
+    async fn create_configured(
+        &self,
+        input: &CreateEnvironmentRequest,
+        trusted_workspace: &Path,
+        trusted_working: &Path,
+        profile: requests::EnvironmentProfile,
+        limits: Option<EnvironmentLimitsDto>,
+        request_id: Option<String>,
+    ) -> Result<EnvironmentDto> {
         let _operation = self.operation.lock().await;
+        if let Some(id) = &request_id {
+            if let Some(existing) = self.read(|store| {
+                Ok(store
+                    .environments
+                    .values()
+                    .find(|e| e.request_id.as_ref() == Some(id))
+                    .map(|e| e.dto.clone()))
+            })? {
+                return Ok(existing);
+            }
+        }
         ensure!(
             !input.thread_id.is_empty()
                 && input.thread_id.len() <= 128
@@ -659,12 +709,12 @@ impl EnvironmentManager {
             workspace_path: workspace.to_string_lossy().into_owned(),
             worktree_path: (working != workspace).then(|| working.to_string_lossy().into_owned()),
             mounts: Vec::new(),
-            limits: EnvironmentLimitsDto {
+            limits: limits.unwrap_or(EnvironmentLimitsDto {
                 cpu: connection.public.cpu_limit,
                 memory_bytes: connection.public.memory_limit_bytes,
                 pids: connection.public.pids_limit,
                 nofile: connection.public.nofile_limit,
-            },
+            }),
             observed_limits: None,
             last_error: None,
             disk_quota_supported: false,
@@ -695,6 +745,8 @@ impl EnvironmentManager {
                     resource_active: false,
                     pending_quiesce: None,
                     quiesce_confirmed: true,
+                    profile,
+                    request_id,
                 },
             );
             Ok(dto)
@@ -933,6 +985,13 @@ impl EnvironmentManager {
                     .filter(|v| !v.is_empty())
                     .context("container identity is unavailable")?
                     .to_owned();
+                self.verify_running_credentials(
+                    &record.profile,
+                    docker.as_ref(),
+                    &context,
+                    &container_id,
+                )
+                .await?;
                 self.write(|store| {
                     let record = store
                         .environments
@@ -997,7 +1056,26 @@ impl EnvironmentManager {
         private_dir(&bridge)?;
         set_owner(&state, &record.uid_gid)?;
         set_owner(&bridge, &record.uid_gid)?;
+        // A single RO auth-file bind needs a writable *private state* parent
+        // for the CLI's other state. Pre-create it with the checkout owner so
+        // Docker does not create a root-owned mountpoint. This does not bind,
+        // copy or widen authorization of the original credential parent.
+        for grant in &record.profile.credentials {
+            if !grant.identity_is_directory()
+                && grant.proposal.target.starts_with("/pockymoe/state/")
+            {
+                let target = Path::new(&grant.proposal.target).strip_prefix("/pockymoe/state")?;
+                let parent = state.join(
+                    target
+                        .parent()
+                        .context("native auth state parent missing")?,
+                );
+                private_dir(&parent)?;
+                set_owner(&parent, &record.uid_gid)?;
+            }
+        }
         let mut mounts = Vec::new();
+        self.validate_credential_sources(&record.profile)?;
         for path in paths {
             self.validate_project_source(&path)?;
             ensure!(
@@ -1061,6 +1139,17 @@ impl EnvironmentManager {
             storage::verified_mount(docker, context, host, &binary, compose::WORKER_PATH, true)
                 .await?,
         );
+        for grant in &record.profile.credentials {
+            let proposal = &grant.proposal;
+            ensure!(
+                !mounts.iter().any(|m| {
+                    let target = Path::new(&proposal.target);
+                    target == Path::new(&m.target) || (Path::new(&m.target).starts_with(target))
+                }),
+                "credential target overlaps project or control-plane mounts"
+            );
+            mounts.push(self.credential_mount(grant, docker, context, host).await?);
+        }
         Ok(mounts)
     }
 

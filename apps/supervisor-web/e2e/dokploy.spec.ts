@@ -2,15 +2,15 @@ import { expect, test, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { environmentsFixture, isolatedEnvironment } from '../src/test/environmentFixtures';
-import type { EnvironmentDto } from '../src/lib/environmentApi';
+import { environmentsFixture, isolatedEnvironment, requestFixture } from '../src/test/environmentFixtures';
+import type { EnvironmentDto, EnvironmentRequestDto } from '../src/lib/environmentApi';
 import { progressStorageKey } from '../src/components/onboarding/tourStorage';
 
 const screenshots = fileURLToPath(new URL('../../../.scratch/dokploy-ui/screenshots/', import.meta.url));
 const workspace = { id: 'workspace-one', hostId: 'test-device', label: 'Environment UI', absPath: '/projects/pockymoe', isFavorite: false, createdAt: '2026-11-07', lastOpenedAt: null };
 const makeThread = () => ({ id: 'thread-one', workspaceId: workspace.id, provider: 'codex', agentId: 'codex', providerSessionId: 'existing-native-session', parentThreadId: null as string | null, source: 'created', title: 'Dokploy environment flow', model: 'gpt-6.1-sol', reasoningEffort: 'max', collaborationMode: 'default', approvalMode: 'yolo', status: 'idle', summaryText: null, lastError: null, activeTurnId: null, isLoaded: true, isPinned: false, createdAt: '2026-11-07', updatedAt: '2026-11-07', lastTurnStartedAt: null, lastTurnCompletedAt: null });
 
-async function mockApi(page: Page, { acp = false, missingCreatedModels = false } = {}) {
+async function mockApi(page: Page, { acp = false, missingCreatedModels = false, proposals = [] as EnvironmentRequestDto[] } = {}) {
   const snapshot = environmentsFixture();
   let binding: EnvironmentDto | null = null;
   const writes: { path: string; body: Record<string, unknown> | null }[] = [];
@@ -36,6 +36,11 @@ async function mockApi(page: Page, { acp = false, missingCreatedModels = false }
         snapshot.environments.push(binding);
       }
       result = createdThread;
+    } else if (p === '/api/environment-requests') result = proposals;
+    else if (p.startsWith('/api/environment-requests/')) {
+      const proposal = proposals.find(value => value.id === p.split('/')[3])!;
+      if (body?.digest !== proposal.digest || Object.keys(body).length !== 1) { await route.fulfill({ status: 409, json: { code: 'digest_mismatch' } }); return; }
+      proposal.state = p.endsWith('/approve') ? 'waitingIdle' : 'rejected'; result = proposal;
     } else if (p === '/api/environments' && request.method() === 'GET') result = snapshot;
     else if (p === '/api/environments' && request.method() === 'POST') {
       const env = { ...isolatedEnvironment, id: 'created-env', name: String(body?.name || 'New environment'), state: 'creating' as const };
@@ -381,5 +386,34 @@ for (const theme of ['classic', 'plum-pocket', 'terminal']) for (const mode of [
     await page.screenshot({ path: path.join(directory, `${theme}-${mode}-thread.png`), animations: 'disabled' });
     const overflow = await threadWindow.evaluate(node => node.scrollWidth > node.clientWidth + 1);
     expect(overflow).toBe(false);
+  });
+}
+
+for (const theme of ['classic', 'plum-pocket', 'terminal']) for (const mode of ['light', 'dark']) {
+  test(`agent proposal review ${theme} ${mode}`, async ({ page }, testInfo) => {
+    await page.addInitScript(({ theme, mode }) => { localStorage.setItem('pockymoe-theme-preset', theme); localStorage.setItem('remote-codex-theme-mode', mode); }, { theme, mode });
+    const proposal = requestFixture();
+    const mock = await mockApi(page, { proposals: [proposal] });
+    const settings = await openSettings(page);
+    const card = settings.getByRole('article', { name: 'Agent proposal', exact: true });
+    await expect(card).toBeVisible();
+    await expect(card.getByText('Native subscription file login (direct long-term credential bind)')).toBeVisible();
+    for (const value of ['/private/native-codex', '/credentials/codex', '/private/service-file', '/outside/linked-worktree']) await expect(card.getByTitle(value).first()).toBeVisible();
+    expect(mock.writes.filter(write => write.path.includes('environment-requests'))).toHaveLength(0);
+    const directory = path.join(screenshots, 'agent-proposal', testInfo.project.name);
+    await mkdir(directory, { recursive: true });
+    await card.getByText('Optional credential mappings', { exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(directory, `${theme}-${mode}-grants.png`), animations: 'disabled' });
+    const approve = card.getByRole('button', { name: 'Approve and migrate when idle' });
+    await approve.scrollIntoViewIfNeeded();
+    await expect(page.locator('html')).toHaveAttribute('data-theme-preset', theme);
+    await expect(page.locator('html')).toHaveAttribute('data-theme-effective', mode);
+    expect(await settings.evaluate(node => node.scrollWidth > node.clientWidth + 1)).toBe(false);
+    const bounds = await approve.boundingBox(); expect(bounds!.x).toBeGreaterThanOrEqual(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width + 1);
+    await page.screenshot({ path: path.join(directory, `${theme}-${mode}-decision.png`), animations: 'disabled' });
+    await approve.click();
+    await expect(card.getByText('Approved, waiting for the current turn to exit', { exact: true })).toBeVisible();
+    expect(mock.writes.find(write => write.path.endsWith('/approve'))!.body).toEqual({ digest: proposal.digest });
+    await expect(approve).toHaveCount(0);
   });
 }

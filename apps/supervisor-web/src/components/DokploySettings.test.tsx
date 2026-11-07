@@ -6,9 +6,10 @@ import { setLocale } from '@pockymoe/thread-ui/i18n';
 import { DokploySettings } from './DokploySettings';
 import * as api from '../lib/environmentApi';
 import { environmentConnection, environmentsFixture, isolatedEnvironment } from '../test/environmentFixtures';
-vi.mock('../lib/environmentApi', async original => ({ ...await original<typeof import('../lib/environmentApi')>(), fetchEnvironments: vi.fn(), saveEnvironmentConnection: vi.fn(), saveEnvironmentBudget: vi.fn(), testEnvironmentConnection: vi.fn(), actOnEnvironment: vi.fn() }));
+vi.mock('../lib/environmentApi', async original => ({ ...await original<typeof import('../lib/environmentApi')>(), fetchEnvironments: vi.fn(), fetchEnvironmentRequests: vi.fn(), saveEnvironmentConnection: vi.fn(), saveEnvironmentBudget: vi.fn(), testEnvironmentConnection: vi.fn(), actOnEnvironment: vi.fn() }));
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear(); setLocale('en', false);
+  vi.mocked(api.fetchEnvironmentRequests).mockResolvedValue([]);
   vi.mocked(api.fetchEnvironments).mockResolvedValue(environmentsFixture());
   vi.mocked(api.saveEnvironmentConnection).mockResolvedValue(environmentConnection);
   vi.mocked(api.testEnvironmentConnection).mockResolvedValue({ ok: true, detail: 'redacted' });
