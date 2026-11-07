@@ -20,6 +20,7 @@ mod grok;
 pub mod mcp_servers;
 pub(crate) use grok::billing_usage as grok_billing_usage;
 pub(crate) mod mapper;
+mod working_locations;
 pub(crate) use mapper::TurnMapper;
 mod modes;
 mod prompt;

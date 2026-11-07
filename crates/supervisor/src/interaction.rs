@@ -143,6 +143,21 @@ async fn run_as(
         "automationCreate" | "automationPreview" | "automationList" | "automationShow"
         | "automationRuns" | "automationPause" | "automationResume" | "automationCancel"
         | "commandRun" | "commandShow" => crate::automations::cli(state, &input, requester).await,
+        "worktreeCreate" | "worktreeList" | "worktreeCurrent" | "worktreeShow"
+        | "worktreeAdopt" | "worktreeUse" | "worktreeRemove" => {
+            anyhow::ensure!(
+                !peer,
+                "forbidden: worktree management requires a local credential"
+            );
+            reach(id)?;
+            if let Some(caller) = caller.as_deref() {
+                anyhow::ensure!(
+                    caller == id && from.is_none_or(|from| from == caller),
+                    "forbidden: worktree operation must use the authenticated thread"
+                );
+            }
+            crate::worktrees::cli(state, input.clone()).await
+        }
         "pluginList" | "pluginInstall" | "pluginUpdate" | "pluginRemove" | "pluginEnable"
         | "pluginRun" | "pluginRuns" | "modelComplete" | "workspaceEnsure" | "mcpList"
         | "mcpSet" | "mcpRemove" => {

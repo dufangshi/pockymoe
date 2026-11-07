@@ -932,6 +932,12 @@ fn tool_item(turn_id: &str, body: &Value) -> ThreadHistoryItemDto {
         mapped.preview_text = Some(title);
     }
     mapped.detail_text = (!detail.is_empty()).then_some(detail);
+    let locations = super::working_locations::extract(body);
+    if !locations.is_empty() {
+        mapped
+            .extra
+            .insert("workingLocations".into(), Value::Array(locations));
+    }
     if mapped.kind == ThreadItemKind::FileChange {
         apply_file_changes(&mut mapped, body);
     }

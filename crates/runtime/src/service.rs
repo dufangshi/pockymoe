@@ -503,6 +503,23 @@ impl Supervisor {
         // Replace the hook on repeated registration, and avoid keeping the
         // supervisor alive through its own event bus.
         let supervisor = Arc::downgrade(self);
+        // Git probes are best effort and can be slow on a filesystem. Keep
+        // them off the synchronous persistence/stream-delivery path, with one
+        // bounded worker rather than an unbounded task per tool event.
+        let (locations, mut pending_locations) =
+            tokio::sync::mpsc::channel::<(String, String, Vec<Value>)>(256);
+        let observer = supervisor.clone();
+        tokio::spawn(async move {
+            while let Some((thread, tool, locations)) = pending_locations.recv().await {
+                let Some(supervisor) = observer.upgrade() else {
+                    break;
+                };
+                let _ = tokio::task::spawn_blocking(move || {
+                    supervisor.observe_worktree_locations(&thread, &tool, &locations);
+                })
+                .await;
+            }
+        });
         self.bus.set_persister(Arc::new(move |event| {
             let Some(supervisor) = supervisor.upgrade() else {
                 return Ok(());
@@ -607,6 +624,15 @@ impl Supervisor {
                     };
                     let item = serde_json::from_value::<ThreadHistoryItemDto>(item)?;
                     supervisor.upsert_history_item(&event.thread_id, turn_id, &item)?;
+                    if let Some(evidence) =
+                        item.extra.get("workingLocations").and_then(Value::as_array)
+                    {
+                        let _ = locations.try_send((
+                            event.thread_id.clone(),
+                            item.id.clone(),
+                            evidence.iter().take(8).cloned().collect(),
+                        ));
+                    }
                     crate::history::defer_tool_details(&mut event.payload);
                     Ok(())
                 }
@@ -1763,6 +1789,11 @@ impl Supervisor {
             return Err(error);
         }
         let thread = self.get_thread(&id)?;
+        if let Some(worktree) = &worktree {
+            if let Err(error) = self.register_created_worktree(&id, &worktree.path) {
+                tracing::warn!(%error, "could not index created worktree");
+            }
+        }
         self.host_thread_created(&thread, origin).await?;
         self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
             event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,

@@ -8,7 +8,7 @@ mod transcript;
 pub use agents::{
     clamp_wait, create_worktree, list_roles, load_role, remove_worktree, AgentOptions, RoleTemplate,
 };
-pub(crate) use agents::{stage_role, take_role};
+pub(crate) use agents::{stage_role, take_role, validate_name};
 pub use isolation::{AgentIsolation, AgentRequester};
 pub use peer::RemoteSender;
 pub use transcript::TranscriptQuery;

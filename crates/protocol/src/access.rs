@@ -165,6 +165,13 @@ pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool
         if access.scope != "device" && access.thread_id.as_deref() != Some(thread_id.as_str()) {
             return false;
         }
+        if pathname == format!("/api/threads/{thread_id}/working-context")
+            || pathname
+                .strip_prefix(&format!("/api/threads/{thread_id}/git/"))
+                .is_some_and(|action| matches!(action, "status" | "diff" | "commits"))
+        {
+            return method == "GET" && linked_files_allowed(access);
+        }
         if pathname
             .strip_prefix(&format!("/api/threads/{thread_id}/linked-files/"))
             .is_some_and(|action| matches!(action, "stat" | "preview" | "raw"))
@@ -946,6 +953,40 @@ mod tests {
             &device,
             "GET",
             "/api/threads/root/linked-files/delete?path=x"
+        ));
+    }
+
+    #[test]
+    fn worktree_git_reads_keep_external_files_out_of_workspace_shares() {
+        for path in [
+            "/api/threads/root/working-context",
+            "/api/threads/root/git/status?workingCopyId=outside",
+            "/api/threads/root/git/diff",
+            "/api/threads/root/git/commits",
+        ] {
+            assert!(access_allows(&owner_access(), "GET", path));
+            assert!(access_allows(
+                &shared("device", "read", "write"),
+                "GET",
+                path
+            ));
+            for access in [
+                shared("thread", "control", "write"),
+                shared("workspace", "control", "write"),
+                shared("device", "control", "read"),
+            ] {
+                assert!(!access_allows(&access, "GET", path), "{path}");
+            }
+            assert!(!access_allows(
+                &shared("device", "control", "write"),
+                "POST",
+                path
+            ));
+        }
+        assert!(!access_allows(
+            &shared("device", "read", "write"),
+            "GET",
+            "/api/threads/root/git/arbitrary"
         ));
     }
     #[test]

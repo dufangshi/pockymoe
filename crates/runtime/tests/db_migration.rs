@@ -521,7 +521,7 @@ async fn migrates_node_0030_history_and_policies_idempotently() {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
-            assert_eq!(runtime_migration_count, 21);
+            assert_eq!(runtime_migration_count, 22);
             assert_eq!(legacy_metadata_count, 2);
             assert_eq!(
                 migrated_metadata.0,
@@ -546,7 +546,7 @@ async fn migrates_node_0030_history_and_policies_idempotently() {
                 |row| row.get(0),
             )?;
             assert_eq!(turns, 3);
-            assert_eq!(migrations, 21);
+            assert_eq!(migrations, 22);
             Ok(())
         })
         .unwrap();
@@ -1115,7 +1115,7 @@ fn accounting_migration_preserves_old_unknown_provenance_and_reapplies_safely() 
     let path = dir.path().join("accounting.sqlite");
     drop(Database::open(&path).unwrap());
     let conn = Connection::open(&path).unwrap();
-    conn.execute_batch("DELETE FROM __remote_codex_runtime_migrations WHERE version=21;
+    conn.execute_batch("DELETE FROM __remote_codex_runtime_migrations WHERE version>=21;
         ALTER TABLE thread_turns DROP COLUMN origin;
         ALTER TABLE thread_turns DROP COLUMN history_copy_of;
         INSERT INTO thread_turns(id,thread_id,status,ordinal,model) VALUES ('old-turn','old-thread','completed',1,'legacy-model');").unwrap();
@@ -1141,7 +1141,7 @@ fn accounting_migration_preserves_old_unknown_provenance_and_reapplies_safely() 
             .execute("UPDATE thread_turns SET origin='guessed'", [])
             .is_err());
         c.execute(
-            "DELETE FROM __remote_codex_runtime_migrations WHERE version=21",
+            "DELETE FROM __remote_codex_runtime_migrations WHERE version>=21",
             [],
         )?;
         Ok(())

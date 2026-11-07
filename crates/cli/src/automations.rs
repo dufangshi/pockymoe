@@ -75,8 +75,11 @@ pub enum CommandCommand {
         command_key: Option<String>,
         #[arg(long)]
         request_id: Option<String>,
-        #[arg(long, default_value = ".")]
-        cwd: String,
+        #[arg(long, conflicts_with = "worktree")]
+        cwd: Option<String>,
+        /// Associated working-copy ID; the Supervisor resolves its execution cwd.
+        #[arg(long, conflicts_with = "cwd")]
+        worktree: Option<String>,
         #[arg(long, default_value_t = 60)]
         timeout_seconds: u64,
         /// Explicit shell program text, mutually exclusive with trailing argv.
@@ -124,11 +127,21 @@ impl crate::threads::Client {
                 command_key,
                 request_id,
                 cwd,
+                worktree,
                 timeout_seconds,
                 shell,
                 argv,
             } => {
-                json!({"operation":"commandRun","threadId":self.id(&thread).await?,"input":{"commandKey":command_key,"clientRequestId":request_id,"cwd":cwd,"timeoutSeconds":timeout_seconds,"shell":shell,"argv":argv}})
+                let input = command_input(
+                    command_key,
+                    request_id,
+                    cwd,
+                    worktree,
+                    timeout_seconds,
+                    shell,
+                    argv,
+                );
+                json!({"operation":"commandRun","threadId":self.id(&thread).await?,"input":input})
             }
             CommandCommand::Show { thread, id } => {
                 json!({"operation":"commandShow","threadId":self.id(&thread).await?,"commandId":id})
@@ -136,5 +149,94 @@ impl crate::threads::Client {
         };
         v["fromThreadId"] = json!(self.from);
         self.request_for(v, 300).await
+    }
+}
+
+fn command_input(
+    command_key: Option<String>,
+    request_id: Option<String>,
+    cwd: Option<String>,
+    worktree: Option<String>,
+    timeout_seconds: u64,
+    shell: Option<String>,
+    argv: Vec<String>,
+) -> Value {
+    let mut input = json!({"commandKey":command_key,"clientRequestId":request_id,"timeoutSeconds":timeout_seconds,"shell":shell,"argv":argv});
+    if let Some(id) = worktree {
+        input["workingCopyId"] = json!(id);
+    } else {
+        input["cwd"] = json!(cwd.unwrap_or_else(|| ".".into()));
+    }
+    input
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn worktree_command_execution_preserves_argv_and_rejects_conflicting_cwd() {
+        let cli = Cli::try_parse_from([
+            "pockymoe",
+            "command",
+            "run",
+            "--worktree",
+            "copy-123",
+            "--",
+            "git",
+            "diff",
+            "--",
+            "a file.txt",
+        ])
+        .unwrap();
+        let Commands::Command {
+            command:
+                CommandCommand::Run {
+                    command_key,
+                    request_id,
+                    cwd,
+                    worktree,
+                    timeout_seconds,
+                    shell,
+                    argv,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("Expected command run")
+        };
+        let input = command_input(
+            command_key,
+            request_id,
+            cwd,
+            worktree,
+            timeout_seconds,
+            shell,
+            argv,
+        );
+        assert_eq!(input["workingCopyId"], "copy-123");
+        assert_eq!(input["argv"], json!(["git", "diff", "--", "a file.txt"]));
+        assert!(input.get("cwd").is_none());
+        assert!(Cli::try_parse_from([
+            "pockymoe",
+            "command",
+            "run",
+            "--worktree",
+            "copy-123",
+            "--cwd",
+            ".",
+            "--",
+            "pwd",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn command_execution_keeps_the_existing_default_cwd() {
+        let input = command_input(None, None, None, None, 60, None, vec!["pwd".into()]);
+        assert_eq!(input["cwd"], ".");
+        assert!(input.get("workingCopyId").is_none());
     }
 }

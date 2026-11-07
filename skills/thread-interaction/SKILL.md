@@ -21,6 +21,7 @@ delivery state.
 | Send a peer a result, question, task or correction | `thread send ID --kind K --subject S` | `guide messaging` |
 | Read or wait for your mail | `inbox`, `inbox wait --kind result --kind question`, `inbox ack` | `guide inbox` |
 | Split ordered work across delegates | `task add`, `task claim --wait`, `task done` | `guide tasks` |
+| Create or inspect a thread's Git worktrees | `worktree create --name N`, `worktree current`, `worktree list` | `guide worktrees` |
 | Use another device's threads or files | `device list`, `thread ... --device`, `fs` | `guide devices` |
 | Read a peer's history, or retry a send safely | `transcript ID`, `--request-id` | `guide transcript` |
 | Consult a thread the prompt names (`pockymoe_session_id: ID` or `DEVICE/ID`) | `transcript ID --view summary`, then `transcript ID --turn TURN_ID --view overview` | `guide transcript` |
@@ -58,6 +59,10 @@ Collaborating:
   collected; on a refusal, do not repeat the same call. Prefer 3-5 concurrent delegates.
   Give delegates editing the same files their own `--worktree` (it starts from
   **committed** HEAD).
+- Create, register and remove worktrees through `pockymoe worktree`; use `adopt`
+  for existing checkouts. Use the returned absolute path for subsequent tools:
+  creating or registering a worktree does not change their default cwd. See
+  `guide worktrees` for execution and idle-thread switching.
 - Read mail at natural checkpoints (when the notice names something, before dependent
   work, after a build or batch), not after every tool call. Ack only what you handled; do
   not reply "received"; never ack an unanswered question to hide it.
