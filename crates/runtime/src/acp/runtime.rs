@@ -721,14 +721,16 @@ impl AcpRuntime {
                         "session/load",
                         json!({ "sessionId": existing, "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": load_meta }),
                     )
-                    .await?
+                    .await
+                    .map_err(|error| isolated_claude::startup_error(error, isolated_claude.is_some()))?
             } else if negotiated.resume {
                 process
                     .request(
                         "session/resume",
                         json!({ "sessionId": existing, "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": load_meta }),
                     )
-                    .await?
+                    .await
+                    .map_err(|error| isolated_claude::startup_error(error, isolated_claude.is_some()))?
             } else {
                 bail!("ACP agent does not support session/load or session/resume");
             }
@@ -748,7 +750,8 @@ impl AcpRuntime {
                     "session/new",
                     json!({ "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": meta }),
                 )
-                .await?
+                .await
+                .map_err(|error| isolated_claude::startup_error(error, isolated_claude.is_some()))?
         };
         let session_id = raw_session
             .get("sessionId")

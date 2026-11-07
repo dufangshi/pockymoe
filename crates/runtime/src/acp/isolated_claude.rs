@@ -135,6 +135,22 @@ pub(super) fn require_model(options: &Value, requested: &str) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn startup_error(error: anyhow::Error, isolated: bool) -> anyhow::Error {
+    // The native adapter may reassert a project/resumed model before returning
+    // its picker. The broker still enforces the exact admitted thread model.
+    if isolated
+        && error.chain().any(|cause| {
+            cause
+                .to_string()
+                .contains("environment_model_not_authorized")
+        })
+    {
+        anyhow::anyhow!("unsupported_environment_claude_model: native initialization selected a model outside the admitted thread model")
+    } else {
+        error
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,5 +303,23 @@ mod tests {
             assert!(!error.contains(invalid));
         }
         assert!(require_model(&json!([]), "exact-model").is_err());
+    }
+
+    #[test]
+    fn reports_model_reassertion_failure_before_the_picker_without_changing_host_errors() {
+        let model_error =
+            || anyhow::anyhow!("API error: 400 environment_model_not_authorized private-value");
+        let isolated = startup_error(model_error(), true).to_string();
+        assert!(isolated.starts_with("unsupported_environment_claude_model:"));
+        assert!(!isolated.contains("private-value"));
+        assert_eq!(
+            startup_error(model_error(), false).to_string(),
+            model_error().to_string()
+        );
+        let unrelated = "unrelated initialization failure";
+        assert_eq!(
+            startup_error(anyhow::anyhow!(unrelated), true).to_string(),
+            unrelated
+        );
     }
 }
