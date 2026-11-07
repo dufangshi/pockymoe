@@ -92,4 +92,33 @@ describe('thread Git inspection', () => {
     expect(screen.getByText('主工作副本')).toBeVisible();
     expect(screen.getByRole('button', { name: '下一页' })).toBeVisible();
   });
+
+  it('lists files per scope with counts and colors the selected file diff', async () => {
+    vi.mocked(git.fetchThreadGitStatus).mockResolvedValue({ workingCopyId: 'a', branch: 'feature/a', head: 'abc', truncated: false, files: [
+      { path: 'src/app.rs', indexStatus: 'M', worktreeStatus: ' ' }, { path: 'docs/new.md', indexStatus: '?', worktreeStatus: '?' },
+    ] });
+    vi.mocked(git.fetchThreadGitDiff).mockImplementation(async (_id, copy, input) => ({ workingCopyId: copy, area: input.area, truncated: false,
+      patch: 'diff --git a/src/app.rs b/src/app.rs\n--- a/src/app.rs\n+++ b/src/app.rs\n@@ -1 +1 @@\n-old line\n+new line\n' }));
+    render(<ThreadGitControl threadId="thread" />); open();
+    const scope = within(await screen.findByRole('group', { name: 'Diff scope' }));
+    await waitFor(() => expect(scope.getByRole('button', { name: 'Unstaged 1' })).toHaveAttribute('aria-pressed', 'true'));
+    const files = within(screen.getByRole('complementary', { name: 'Changed files' }));
+    expect(files.getByRole('button', { name: 'View diff for docs/new.md' })).toBeVisible();
+    expect(files.queryByRole('button', { name: 'View diff for src/app.rs' })).toBeNull();
+    fireEvent.click(scope.getByRole('button', { name: 'Staged 1' }));
+    fireEvent.click(await files.findByRole('button', { name: 'View diff for src/app.rs' }));
+    await waitFor(() => expect(git.fetchThreadGitDiff).toHaveBeenLastCalledWith('thread', 'a', { area: 'index', path: 'src/app.rs' }, undefined, expect.any(AbortSignal)));
+    expect((await screen.findByText('+new line')).closest('[data-kind]')).toHaveAttribute('data-kind', 'add');
+    expect(screen.getByText('-old line').closest('[data-kind]')).toHaveAttribute('data-kind', 'del');
+  });
+
+  it('jumps to the working copy of a recent operation without changing the thread', async () => {
+    render(<ThreadGitControl threadId="thread" />); open();
+    await screen.findByText('diff a');
+    fireEvent.click(screen.getByRole('button', { name: 'View that copy' }));
+    await screen.findByText('diff b');
+    expect(screen.getByRole('combobox', { name: 'Working copy' })).toHaveTextContent('feature/b · /repo.worktrees/b');
+    expect(screen.queryByRole('button', { name: 'View that copy' })).toBeNull();
+    expect(git.fetchThreadGitStatus).toHaveBeenLastCalledWith('thread', 'b', undefined, expect.any(AbortSignal));
+  });
 });

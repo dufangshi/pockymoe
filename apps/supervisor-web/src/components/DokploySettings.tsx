@@ -1,63 +1,87 @@
 import { useState } from 'react';
-import { EnvironmentRequests } from './environments/EnvironmentRequests';
+import { Plus, RefreshCw } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { formatNumber, useI18n } from '@pockymoe/thread-ui/i18n';
 import { relayModeActive } from '../lib/api';
 import { relayDeviceIdFromPath } from '../lib/relayRoutes';
-import { testEnvironmentConnection, type EnvironmentConnectionDto } from '../lib/environmentApi';
+import { testEnvironmentConnection, type EnvironmentConnectionDto, type EnvironmentDto } from '../lib/environmentApi';
 import { environmentText as t } from '../lib/environmentI18n';
+import { EnvironmentRequests } from './environments/EnvironmentRequests';
 import { ConnectionEditor } from './environments/ConnectionEditor';
 import { BudgetEditor } from './environments/BudgetEditor';
 import { EnvironmentCard } from './environments/EnvironmentCard';
-import { GIB, environmentError, useEnvironmentSnapshot } from './environments/model';
+import { environmentError, gibValue, useEnvironmentSnapshot } from './environments/model';
+import { SectionHeading, Tag } from './environments/ui';
 import './environments/environments.css';
 
 export function DokploySettings() {
   useI18n();
   const { pathname } = useLocation();
   const deviceId = relayDeviceIdFromPath(pathname);
-  if (relayModeActive() && !deviceId) return <p className="environment-hint">{t('chooseDevice')}</p>;
+  if (relayModeActive() && !deviceId) return <p className="env-empty">{t('chooseDevice')}</p>;
   return <DeviceEnvironmentSettings key={deviceId ?? 'local'} deviceId={deviceId} />;
 }
+
+/** Destroyed environments stay listed (their records are retained) after the live ones. */
+const byLiveness = (a: EnvironmentDto, b: EnvironmentDto) => Number(a.state === 'destroyed') - Number(b.state === 'destroyed') || b.updatedAt.localeCompare(a.updatedAt);
+
 function DeviceEnvironmentSettings({ deviceId }: { deviceId: string | null }) {
   useI18n();
   const { snapshot, setSnapshot, loading, error, refresh } = useEnvironmentSnapshot(deviceId);
   const [editing, setEditing] = useState<EnvironmentConnectionDto | 'new' | null>(null);
   const [editBudget, setEditBudget] = useState(false);
   const [saved, setSaved] = useState(false);
-  return <div className="environment-settings" data-testid="dokploy-settings">
-    <EnvironmentRequests deviceId={deviceId} onChanged={() => void refresh()} />
-    <div className="environment-toolbar"><span role="status" className="environment-hint">{loading ? t('loading') : saved ? t('saved') : ''}</span>
-      <div className="environment-actions"><button type="button" className="host-secondary-button" disabled={loading} onClick={() => void refresh()}>{t('refresh')}</button>
-        {error && <ErrorMark message={error} onRetry={() => void refresh()} kind={error === t('unsupported') || error === t('forbidden') ? 'unavailable' : 'error'} />}</div>
-    </div>
-    {snapshot && <>
-      <section className="environment-section" aria-label={t('connections')}><header><h4>{t('connections')}</h4><button type="button" className="host-secondary-button" onClick={() => setEditing('new')}>{t('addConnection')}</button></header>
-        {!snapshot.connections.length && <p className="environment-hint">{t('noConnections')}</p>}
-        {snapshot.connections.map(connection => <ConnectionRow key={connection.id} connection={connection} deviceId={deviceId} onEdit={() => setEditing(connection)} />)}
+  const environments = snapshot?.environments.slice().sort(byLiveness) ?? [];
+  const running = environments.filter(env => env.state === 'running' || env.state === 'starting').length;
+  const budget = snapshot?.budget;
+  return <div className="env-settings" data-testid="dokploy-settings">
+    {!snapshot && <div className="env-toolbar">
+      {loading && <span role="status" className="env-dim">{t('loading')}</span>}
+      {error && <ErrorMark message={error} onRetry={() => void refresh()} kind={error === t('unsupported') || error === t('forbidden') ? 'unavailable' : 'error'} />}
+    </div>}
+    <EnvironmentRequests deviceId={deviceId} hideWhenEmpty onChanged={() => void refresh()} />
+    {snapshot && budget && <>
+      <section className="env-section" aria-label={t('connections')}>
+        <SectionHeading title={t('connections')} count={snapshot.connections.length}>
+          {saved && <span role="status" className="env-ok">{t('saved')}</span>}
+          {error && <ErrorMark message={error} onRetry={() => void refresh()} kind={error === t('unsupported') || error === t('forbidden') ? 'unavailable' : 'error'} />}
+          <button type="button" className="env-icon-button" aria-label={t('refresh')} title={t('refresh')} disabled={loading} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className={loading ? 'animate-spin' : undefined} /></button>
+          <button type="button" className="env-button" onClick={() => setEditing('new')}><Plus aria-hidden="true" />{t('addConnection')}</button>
+        </SectionHeading>
+        {!snapshot.connections.length ? <p className="env-empty">{t('noConnections')}</p>
+          : <div className="env-group env-list">{snapshot.connections.map(connection => <ConnectionRow key={connection.id} connection={connection} deviceId={deviceId} onEdit={() => setEditing(connection)} />)}</div>}
       </section>
-      <section className="environment-section" aria-label={t('budget')}><header><h4>{t('budget')}</h4><button type="button" className="host-secondary-button" onClick={() => setEditBudget(true)}>{t('editBudget')}</button></header>
-        <p className="environment-hint">{t('budgetHint')}</p>
-        <dl className="environment-stats environment-card">
-          {([['maxRunning', snapshot.budget.maxRunning], ['maxCpu', snapshot.budget.maxCpu], ['maxMemory', snapshot.budget.maxMemoryBytes / GIB],
-            ['reservedCpu', snapshot.budget.reservedCpu], ['reservedMemory', snapshot.budget.reservedMemoryBytes / GIB]] as const).map(([key, value]) => <div key={key}><dt>{t(key)}</dt><dd>{formatNumber(value)}</dd></div>)}
-        </dl>
+      <section className="env-section" aria-label={t('budget')}>
+        <SectionHeading title={t('budget')}>
+          <button type="button" className="env-button" onClick={() => setEditBudget(true)}>{t('editBudget')}</button>
+        </SectionHeading>
+        <div className="env-group">
+          <dl className="env-stats">
+            <div><dt>{t('concurrent')}</dt><dd><b>{formatNumber(running)}</b><span> / {formatNumber(budget.maxRunning)}</span><small>{t('runningNow')}</small></dd></div>
+            <div><dt>{t('cpuShort')}</dt><dd><b>{t('coresUnit', { n: formatNumber(budget.maxCpu) })}</b><small>{t('reserved')} {t('coresUnit', { n: formatNumber(budget.reservedCpu) })}</small></dd></div>
+            <div><dt>{t('memoryShort')}</dt><dd><b>{t('gibUnit', { n: formatNumber(gibValue(budget.maxMemoryBytes)) })}</b><small>{t('reserved')} {t('gibUnit', { n: formatNumber(gibValue(budget.reservedMemoryBytes)) })}</small></dd></div>
+          </dl>
+          <p className="env-group-note">{t('budgetHint')}</p>
+        </div>
       </section>
-      <section className="environment-section" aria-label={t('environments')}><header><h4>{t('environments')}</h4></header>
-        {!snapshot.environments.length && <p className="environment-hint">{t('noEnvironments')}</p>}
-        {snapshot.environments.map(env => <EnvironmentCard key={env.id} environment={env} deviceId={deviceId}
-          onUpdate={next => setSnapshot(current => current && { ...current, environments: current.environments.map(value => value.id === next.id ? next : value) })} />)}
+      <section className="env-section" aria-label={t('environments')}>
+        <SectionHeading title={t('environments')} count={environments.filter(env => env.state !== 'destroyed').length} />
+        {!environments.length ? <p className="env-empty">{t('noEnvironments')}</p>
+          : <div className="env-group env-list">{environments.map(env => <EnvironmentCard key={env.id} environment={env} deviceId={deviceId}
+            connection={snapshot.connections.find(connection => connection.id === env.connectionId)}
+            onUpdate={next => setSnapshot(current => current && { ...current, environments: current.environments.map(value => value.id === next.id ? next : value) })} />)}</div>}
       </section>
     </>}
     {editing && <ConnectionEditor connection={editing === 'new' ? null : editing} deviceId={deviceId} onClose={() => setEditing(null)} onSaved={next => {
       setSnapshot(current => current && { ...current, connections: [...current.connections.filter(value => value.id !== next.id), next] }); setEditing(null); setSaved(true);
     }} />}
-    {editBudget && snapshot && <BudgetEditor budget={snapshot.budget} deviceId={deviceId} onClose={() => setEditBudget(false)} onSaved={budget => {
-      setSnapshot(current => current && { ...current, budget }); setEditBudget(false); setSaved(true);
+    {editBudget && budget && <BudgetEditor budget={budget} deviceId={deviceId} onClose={() => setEditBudget(false)} onSaved={next => {
+      setSnapshot(current => current && { ...current, budget: next }); setEditBudget(false); setSaved(true);
     }} />}
   </div>;
 }
+
 function ConnectionRow({ connection, deviceId, onEdit }: { connection: EnvironmentConnectionDto; deviceId: string | null; onEdit(): void }) {
   const [busy, setBusy] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -69,13 +93,23 @@ function ConnectionRow({ connection, deviceId, onEdit }: { connection: Environme
     catch (cause) { setError(environmentError(cause, 'testFailed')); }
     finally { setBusy(false); }
   };
-  return <article className="environment-card" aria-label={connection.name}>
-    <div className="environment-card-heading"><div><strong>{connection.name}</strong><p className="environment-hint">{connection.baseUrl}</p></div><span className="environment-hint">{t(connection.configured ? 'configured' : 'unconfigured')}</span></div>
-    <div className="environment-actions"><button type="button" className="host-secondary-button" onClick={onEdit} disabled={busy}>{t('edit')}</button>
-      <button type="button" className="host-secondary-button" onClick={() => void test()} disabled={busy || !connection.configured}>{t(busy ? 'testing' : 'test')}</button>
-      {!connection.configured && <ErrorMark kind="unavailable" message={t('unconfigured')} />}
-      {success && <span role="status" className="environment-success">{t('tested')}</span>}
-      {error && <ErrorMark message={error} onRetry={() => void test()} />}
+  const egress = connection.allowedEgressHosts?.length ?? 0;
+  return <article className="env-item" aria-label={connection.name}>
+    <div className="env-item-head">
+      <span className="env-row-main">
+        <span className="env-row-title">{connection.name}</span>
+        <span className="env-row-meta"><span>{connection.baseUrl}</span><code>{connection.image}</code>
+          <span>{t('rootsCount', { n: formatNumber(connection.allowedRoots.length) })}</span>
+          <span>{egress ? t('egressCount', { n: formatNumber(egress) }) : t('noEgress')}</span></span>
+      </span>
+      <Tag tone={connection.configured ? 'success' : 'warning'}>{t(connection.configured ? 'configured' : 'unconfigured')}</Tag>
+      <div className="env-lifecycle">
+        {success && <span role="status" className="env-ok">{t('tested')}</span>}
+        {error && <ErrorMark message={error} onRetry={() => void test()} />}
+        <button type="button" className="env-button" onClick={() => void test()} disabled={busy || !connection.configured}>{t(busy ? 'testing' : 'test')}</button>
+        {!connection.configured && <ErrorMark kind="unavailable" message={t('unconfigured')} />}
+        <button type="button" className="env-button" onClick={onEdit} disabled={busy}>{t('edit')}</button>
+      </div>
     </div>
   </article>;
 }

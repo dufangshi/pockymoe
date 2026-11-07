@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
 import { saveEnvironmentBudget, type EnvironmentBudgetDto } from '../../lib/environmentApi';
@@ -15,6 +15,7 @@ export function BudgetEditor({ budget, deviceId, onClose, onSaved }: {
   const [draft, setDraft] = useState(initial);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const formId = useId();
   const fields = ['maxRunning', 'maxCpu', 'maxMemory', 'reservedCpu', 'reservedMemory'] as const;
   const valid = fields.every(field => positive(draft[field], field === 'maxRunning', field.startsWith('reserved')))
     && Number(draft.reservedCpu) <= Number(draft.maxCpu) && Number(draft.reservedMemory) <= Number(draft.maxMemory)
@@ -28,16 +29,19 @@ export function BudgetEditor({ budget, deviceId, onClose, onSaved }: {
     catch (cause) { setError(environmentError(cause)); }
     finally { setBusy(false); }
   };
-  return <EnvironmentWindow title={t('editBudget')} dirty={dirty} busy={busy} onClose={onClose}>
-    <form className="environment-form" onSubmit={event => { event.preventDefault(); void save(); }}>
-      <p className="environment-hint">{t('budgetHint')}</p>
-      <fieldset disabled={busy} className="environment-form-grid">{fields.map(field => <label key={field}><span>{t(field as EnvironmentMessage)}</span>
+  return <EnvironmentWindow title={t('editBudget')} dirty={dirty} busy={busy} onClose={onClose}
+    footer={close => <div className="env-form-actions">
+      {!valid && <p className="env-validation">{t('numericInvalid')}</p>}
+      {error && <ErrorMark message={error} onRetry={() => void save()} />}
+      <button type="button" className="relay-button-secondary" onClick={close} disabled={busy}>{t('cancel')}</button>
+      <button type="submit" form={formId} className="relay-button-primary" disabled={!valid || busy}>{t(busy ? 'saving' : 'save')}</button>
+    </div>}>
+    <form id={formId} className="env-form" onSubmit={event => { event.preventDefault(); void save(); }}>
+      <p className="env-note">{t('budgetHint')}</p>
+      <fieldset disabled={busy} className="env-fieldset is-budget">{fields.map(field => <label key={field} className={field === 'maxRunning' ? 'is-wide' : undefined}><span>{t(field as EnvironmentMessage)}</span>
         <input className="relay-input" type="number" min={field.startsWith('reserved') ? 0 : field === 'maxRunning' ? 1 : 0.01} step={field === 'maxRunning' ? 1 : 'any'}
           value={draft[field]} onChange={event => { setDraft(current => ({ ...current, [field]: event.target.value })); setError(null); }} />
       </label>)}</fieldset>
-      {!valid && <p className="environment-validation">{t('numericInvalid')}</p>}
-      <footer className="environment-actions"><button type="submit" className="relay-button-primary" disabled={!valid || busy}>{t(busy ? 'saving' : 'save')}</button>
-        {error && <ErrorMark message={error} onRetry={() => void save()} />}</footer>
     </form>
   </EnvironmentWindow>;
 }

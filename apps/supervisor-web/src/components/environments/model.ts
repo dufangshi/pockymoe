@@ -48,3 +48,13 @@ export function useEnvironmentSnapshot(deviceId?: string | null) {
   }, [active, refresh]);
   return { snapshot, setSnapshot, loading, error, refresh };
 }
+
+export const ENVIRONMENT_STATES = ['creating', 'stopped', 'starting', 'running', 'stopping', 'error', 'destroyed', 'interrupted'] as const;
+export const environmentStateKey = (state: string): EnvironmentMessage =>
+  (ENVIRONMENT_STATES as readonly string[]).includes(state) ? state as EnvironmentMessage : 'unknown';
+/** Lifecycle actions offered for a state; the server still decides. */
+export function environmentActions(state: EnvironmentState): ('start' | 'stop' | 'rebuild' | 'destroy')[] {
+  if (state === 'destroyed' || environmentTransitioning(state)) return [];
+  return state === 'running' ? ['stop', 'rebuild', 'destroy'] : ['start', 'rebuild', 'destroy'];
+}
+export const gibValue = (bytes: number) => Math.round((bytes / GIB) * 100) / 100;
