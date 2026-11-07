@@ -196,3 +196,5 @@
 .pd-page > .devices-page-tabs button { min-height: 40px; display: flex; align-items: center; gap: 8px; }
 .pd-page > .devices-page-tabs button[aria-selected="true"] { background: var(--theme-hover); color: var(--theme-fg); }
 .pd-page-header { min-height: 44px; height: auto; flex-wrap: wrap; padding-bottom: 10px; }
+/* An isolated device: a small lock after its name, as on the phone's device rows. */
+.pd-page .pd-isolated { display: inline-flex; flex: none; align-items: center; color: var(--theme-fg-muted); }
