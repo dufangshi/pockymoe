@@ -94,8 +94,14 @@ Supervisor recovery. Public
 errors omit raw Dokploy response bodies and redact the configured key.
 
 Creating an environment produces a stopped resource record. Start verifies
-storage and budgets, creates or recovers the deterministic Dokploy Compose
-identity, deploys it, and verifies the actual container. Stop fences the old
+storage and budgets, creates or recovers the Dokploy Compose resource by its
+exact deterministic name, deploys it, and verifies the actual container. Dokploy
+appends a suffix to `appName`; its returned value is pinned in the private record
+and used unchanged for lifecycle commands. Recovery queries `environment.one`
+for the exact name, rejects ambiguous/incomplete listings, and verifies the
+resource's full name, environment, source type and server using `compose.one`.
+An uncertain create without a visible matching resource blocks another create.
+Stop fences the old
 generation, clears queued deployments and waits for active deployments before
 running a fixed `compose -p <owned-app> -f docker-compose.yml stop` command
 through the Dokploy deployment runner. It checks that no owned container is

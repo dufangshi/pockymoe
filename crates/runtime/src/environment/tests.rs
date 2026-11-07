@@ -8,6 +8,8 @@ struct FixtureState {
     container: Option<Value>,
     calls: Vec<(String, Value)>,
     ignore_lifecycle: bool,
+    lose_create_response: bool,
+    hide_compose: bool,
 }
 
 struct FixtureDocker(Arc<Mutex<FixtureState>>);
@@ -154,12 +156,24 @@ async fn api_fixture() -> (
                     state.calls.push((route.into(), payload.clone()));
                     match route {
                         "/api/project.all" => {
-                            json!([{"environments":[{"environmentId":"fixture-env","compose":state.compose.iter().cloned().collect::<Vec<_>>()}]}])
+                            json!([{"environments":[{"environmentId":"fixture-env"}]}])
+                        }
+                        "/api/environment.one" => {
+                            let entries = state.compose.iter().filter(|_| !state.hide_compose)
+                                .map(|compose| json!({"name":compose["name"],"composeId":compose["composeId"]}))
+                                .collect::<Vec<_>>();
+                            json!({"environmentId":"fixture-env","compose":entries})
                         }
                         "/api/compose.create" => {
                             let mut compose = payload.clone();
                             compose["composeId"] = json!("fixture-compose");
+                            compose["appName"] =
+                                json!(format!("{}-rg1o4a", payload["appName"].as_str().unwrap()));
                             state.compose = Some(compose.clone());
+                            if std::mem::take(&mut state.lose_create_response) {
+                                // The server committed; the client never receives its identity.
+                                return;
+                            }
                             compose
                         }
                         "/api/compose.one" => state.compose.clone().unwrap_or(Value::Null),
@@ -301,6 +315,11 @@ async fn lifecycle_is_persistent_generation_fenced_and_retains_data() {
     assert_eq!(running.state, "running");
     assert!(running.observed_limits.is_some());
     let record = manager.record(&running.id).unwrap();
+    let actual_app_name = format!("{}-rg1o4a", record.app_name);
+    assert_eq!(
+        record.dokploy_app_name.as_deref(),
+        Some(actual_app_name.as_str())
+    );
     let original = fixture.lock().unwrap().container.as_ref().unwrap().clone();
     let bridge = running
         .mounts
@@ -396,6 +415,15 @@ async fn lifecycle_is_persistent_generation_fenced_and_retains_data() {
         .await
         .unwrap();
     assert_eq!(destroyed.state, "destroyed");
+    {
+        let state = fixture.lock().unwrap();
+        assert!(state.calls.iter().any(|(_, body)| body["command"]
+            == format!("compose -p {actual_app_name} -f docker-compose.yml stop")));
+        assert!(state.calls.iter().any(|(_, body)| body["command"]
+            == format!(
+                "compose -p {actual_app_name} -f docker-compose.yml down --remove-orphans"
+            )));
+    }
     assert_eq!(
         std::fs::read_to_string(project.join("sentinel")).unwrap(),
         "keep-project"
@@ -419,6 +447,117 @@ async fn lifecycle_is_persistent_generation_fenced_and_retains_data() {
         .iter()
         .any(|(path, body)| path == "/api/compose.delete" && body["deleteVolumes"] == false));
     task.abort();
+}
+
+#[tokio::test]
+async fn lost_create_response_recovers_exact_suffixed_identity_without_recreating() {
+    let root = tempfile::tempdir().unwrap();
+    let project = fixture_project(root.path(), "project");
+    let (url, fixture, task) = api_fixture().await;
+    let manager = EnvironmentManager::new(&root.path().join("db"));
+    manager
+        .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
+        .unwrap();
+    let conn = manager
+        .save_connection("new", &connection(&url, &project))
+        .await
+        .unwrap();
+    let created = manager
+        .create(
+            &CreateEnvironmentRequest {
+                connection_id: conn.id,
+                thread_id: "thread".into(),
+                name: None,
+            },
+            &project,
+            &project,
+        )
+        .await
+        .unwrap();
+    fixture.lock().unwrap().lose_create_response = true;
+    assert!(manager
+        .action(&created.id, EnvironmentAction::Start)
+        .await
+        .is_err());
+    assert!(manager.record(&created.id).unwrap().create_pending);
+    drop(manager);
+    let manager = EnvironmentManager::new(&root.path().join("db"));
+    manager
+        .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
+        .unwrap();
+    assert!(manager.record(&created.id).unwrap().create_pending);
+    fixture.lock().unwrap().hide_compose = true;
+    assert!(manager
+        .action(&created.id, EnvironmentAction::Start)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("uncertain"));
+    assert!(manager.record(&created.id).unwrap().resource_active);
+    fixture.lock().unwrap().hide_compose = false;
+    let running = manager
+        .action(&created.id, EnvironmentAction::Start)
+        .await
+        .unwrap();
+    assert_eq!(running.state, "running");
+    let record = manager.record(&created.id).unwrap();
+    assert_eq!(
+        record.dokploy_app_name,
+        fixture.lock().unwrap().compose.as_ref().unwrap()["appName"]
+            .as_str()
+            .map(str::to_owned)
+    );
+    assert!(!record.create_pending);
+    let mutations = fixture
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .filter(|(route, _)| route == "/api/compose.create")
+        .count();
+    assert_eq!(mutations, 1);
+    fixture.lock().unwrap().compose.as_mut().unwrap()["appName"] =
+        json!(format!("{}-another", record.app_name));
+    assert!(manager
+        .action(&created.id, EnvironmentAction::Stop)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("identity changed"));
+    task.abort();
+}
+
+#[test]
+fn compose_recovery_requires_exact_names_complete_listing_and_unchanged_ownership() {
+    let name = "pockymoe-owned";
+    let listing = json!({"environmentId":"env","compose":[{"name":name,"composeId":"owned"},{"name":"pockymoe-owned-other","composeId":"other"}]});
+    assert_eq!(
+        find_owned_compose(&listing, name, "env")
+            .unwrap()
+            .as_deref(),
+        Some("owned")
+    );
+    assert!(find_owned_compose(&listing, name, "other-env").is_err());
+    assert!(find_owned_compose(&json!({"environmentId":"env"}), name, "env").is_err());
+    assert!(find_owned_compose(&json!({"environmentId":"env","compose":[{"name":name,"composeId":"a"},{"name":name,"composeId":"b"}]}), name, "env").is_err());
+    let owned = json!({"name":name,"appName":"pockymoe-owned-rg1o4a","environmentId":"env","serverId":null,"sourceType":"raw","composeType":"docker-compose"});
+    let actual = verify_owned_compose(&owned, name, "env", None).unwrap();
+    assert!(verify_owned_compose(&owned, name, "env", Some(&actual)).is_ok());
+    for (field, value) in [
+        ("name", json!("another")),
+        ("environmentId", json!("another")),
+        ("serverId", json!("remote")),
+        ("sourceType", json!("git")),
+        ("composeType", json!("stack")),
+        ("appName", json!("pockymoe-owned-renamed")),
+    ] {
+        let mut changed = owned.clone();
+        changed[field] = value;
+        assert!(
+            verify_owned_compose(&changed, name, "env", Some(&actual)).is_err(),
+            "accepted changed {field}"
+        );
+    }
 }
 
 #[tokio::test]

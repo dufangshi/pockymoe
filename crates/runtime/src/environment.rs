@@ -31,7 +31,13 @@ struct ConnectionRecord {
 #[derive(Clone, Serialize, Deserialize)]
 struct EnvironmentRecord {
     dto: EnvironmentDto,
+    /// Exact deterministic resource name; Dokploy appends a suffix to appName.
     app_name: String,
+    #[serde(default)]
+    dokploy_app_name: Option<String>,
+    /// Persist before create so an unavailable response cannot cause duplicates.
+    #[serde(default)]
+    create_pending: bool,
     uid_gid: String,
     image: String,
     worker_binary: String,
@@ -581,6 +587,8 @@ impl EnvironmentManager {
                 EnvironmentRecord {
                     dto: dto.clone(),
                     app_name: format!("pockymoe-{id}"),
+                    dokploy_app_name: None,
+                    create_pending: false,
                     uid_gid,
                     image: connection.public.image.clone(),
                     worker_binary: binary.to_string_lossy().into_owned(),
@@ -707,20 +715,25 @@ impl EnvironmentManager {
         let record = self.record(id)?;
         let yaml = compose::render(&record.dto, &record.image, &record.uid_gid)?;
         let api = DokployClient::new(&connection)?;
-        let projects = api.projects().await?;
-        ensure!(
-            has_environment(&projects, &connection.public.dokploy_environment_id),
-            "configured Dokploy environment is unavailable"
-        );
         let compose_id = match &record.dto.compose_id {
             Some(id) => id.clone(),
             None => match find_owned_compose(
-                &projects,
+                &api.environment(&connection.public.dokploy_environment_id)
+                    .await?,
                 &record.app_name,
                 &connection.public.dokploy_environment_id,
             )? {
                 Some(id) => id,
                 None => {
+                    ensure!(!record.create_pending,"Dokploy creation outcome is uncertain and no owned resource is visible; refusing to create a duplicate");
+                    self.write(|store| {
+                        store
+                            .environments
+                            .get_mut(id)
+                            .context("environment not found")?
+                            .create_pending = true;
+                        Ok(())
+                    })?;
                     api.create(
                         &connection.public.dokploy_environment_id,
                         &record.app_name,
@@ -730,22 +743,31 @@ impl EnvironmentManager {
                 }
             },
         };
-        // Persist the remote identity before update/deploy. A failed create can
-        // be recovered by deterministic appName on the next explicit action.
+        // Persist before querying detail or mutating the created resource. A
+        // lost create response is recovered by exact name through environment.one.
+        self.write(|store| {
+            let record = store
+                .environments
+                .get_mut(id)
+                .context("environment not found")?;
+            record.dto.compose_id = Some(compose_id.clone());
+            record.create_pending = false;
+            Ok(())
+        })?;
+        let app_name = verify_owned_compose(
+            &api.compose(&compose_id).await?,
+            &record.app_name,
+            &connection.public.dokploy_environment_id,
+            record.dokploy_app_name.as_deref(),
+        )?;
         self.write(|store| {
             store
                 .environments
                 .get_mut(id)
                 .context("environment not found")?
-                .dto
-                .compose_id = Some(compose_id.clone());
+                .dokploy_app_name = Some(app_name);
             Ok(())
         })?;
-        verify_owned_compose(
-            &api.compose(&compose_id).await?,
-            &record.app_name,
-            &connection.public.dokploy_environment_id,
-        )?;
         api.update(&compose_id, &yaml).await?;
         api.deploy(&compose_id).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
@@ -924,18 +946,31 @@ impl EnvironmentManager {
         let mut compose_id = match record.dto.compose_id.clone() {
             Some(id) => Some(id),
             None => find_owned_compose(
-                &api.projects().await?,
+                &api.environment(&connection.public.dokploy_environment_id)
+                    .await?,
                 &record.app_name,
                 &connection.public.dokploy_environment_id,
             )?,
         };
+        ensure!(compose_id.is_some() || !record.create_pending,"Dokploy creation outcome is uncertain and no owned resource is visible; resources are retained for recovery");
         if let Some(id) = &compose_id {
             if let Some(value) = api.optional_compose(id).await? {
-                verify_owned_compose(
+                let app_name = verify_owned_compose(
                     &value,
                     &record.app_name,
                     &connection.public.dokploy_environment_id,
+                    record.dokploy_app_name.as_deref(),
                 )?;
+                self.write(|store| {
+                    let record = store
+                        .environments
+                        .get_mut(&record.dto.id)
+                        .context("environment not found")?;
+                    record.dto.compose_id = Some(id.clone());
+                    record.dokploy_app_name = Some(app_name.clone());
+                    record.create_pending = false;
+                    Ok(())
+                })?;
                 // Delete also clears queued jobs in Dokploy. Stop retains the record,
                 // and explicitly clears queued deploys before attempting to stop.
                 api.clean_queues(id).await?;
@@ -951,7 +986,7 @@ impl EnvironmentManager {
                     &compose::render(&record.dto, &record.image, &record.uid_gid)?,
                 )
                 .await?;
-                api.stop_or_down(id, &record.app_name, destroy).await?;
+                api.stop_or_down(id, &app_name, destroy).await?;
                 let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
                 while !api.jobs_idle(id).await? {
                     ensure!(
@@ -990,6 +1025,10 @@ impl EnvironmentManager {
                 .context("environment not found")?;
             record.dto.state = if destroy { "destroyed" } else { "stopped" }.into();
             record.dto.compose_id = if destroy { None } else { compose_id };
+            if record.dto.compose_id.is_none() {
+                record.dokploy_app_name = None;
+            }
+            record.create_pending = false;
             record.dto.last_error = None;
             record.dto.updated_at = now_rfc3339();
             record.resource_active = false;

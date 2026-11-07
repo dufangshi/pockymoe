@@ -87,7 +87,18 @@ impl DokployClient {
     }
 
     pub async fn compose(&self, id: &str) -> Result<Value> {
-        self.request(Method::GET, "compose.one", json!({"composeId":id}))
+        let value = self
+            .request(Method::GET, "compose.one", json!({"composeId":id}))
+            .await?;
+        ensure!(
+            value["composeId"] == id,
+            "Dokploy Compose detail identity differs"
+        );
+        Ok(value)
+    }
+
+    pub async fn environment(&self, id: &str) -> Result<Value> {
+        self.request(Method::GET, "environment.one", json!({"environmentId":id}))
             .await
     }
 
@@ -198,34 +209,30 @@ impl DokployClient {
 }
 
 pub(super) fn find_owned_compose(
-    projects: &Value,
-    app_name: &str,
+    value: &Value,
+    name: &str,
     environment: &str,
 ) -> Result<Option<String>> {
-    fn visit(value: &Value, app_name: &str, environment: &str, result: &mut Vec<String>) {
-        match value {
-            Value::Object(map) => {
-                if value["appName"] == app_name && value["environmentId"] == environment {
-                    if let Some(id) = value["composeId"].as_str() {
-                        result.push(id.to_owned());
-                    }
-                }
-                for value in map.values() {
-                    visit(value, app_name, environment, result);
-                }
-            }
-            Value::Array(values) => {
-                for value in values {
-                    visit(value, app_name, environment, result);
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut matches = Vec::new();
-    visit(projects, app_name, environment, &mut matches);
-    matches.sort();
-    matches.dedup();
+    // v0.30.6 environment.one returns name/id summaries, without appName or
+    // environmentId on each Compose. Fetch compose.one before trusting a match.
+    ensure!(
+        value["environmentId"] == environment,
+        "Dokploy environment identity differs"
+    );
+    let entries = value["compose"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Dokploy environment Compose listing is unavailable"))?;
+    let mut matches = entries
+        .iter()
+        .filter(|entry| entry["name"] == name)
+        .map(|entry| {
+            entry["composeId"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow::anyhow!("Dokploy Compose listing has no identity"))
+        })
+        .collect::<Result<Vec<_>>>()?;
     ensure!(
         matches.len() <= 1,
         "multiple Dokploy resources claim the environment identity"
@@ -233,18 +240,42 @@ pub(super) fn find_owned_compose(
     Ok(matches.pop())
 }
 
-pub(super) fn verify_owned_compose(value: &Value, app_name: &str, environment: &str) -> Result<()> {
+pub(super) fn verify_owned_compose(
+    value: &Value,
+    name: &str,
+    environment: &str,
+    expected_app_name: Option<&str>,
+) -> Result<String> {
     ensure!(
-        value["appName"] == app_name && value["environmentId"] == environment,
+        value["name"] == name && value["environmentId"] == environment,
         "Dokploy resource ownership differs"
     );
     ensure!(
-        value["serverId"].is_null(),
+        value.get("serverId") == Some(&Value::Null),
         "remote Dokploy execution has no same-storage adapter"
     );
     ensure!(
         value["sourceType"] == "raw" && value["composeType"] == "docker-compose",
         "Dokploy resource is not the managed raw Compose application"
     );
-    Ok(())
+    let app_name = value["appName"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Dokploy Compose project identity is unavailable"))?;
+    ensure!(
+        !app_name.is_empty()
+            && app_name.len() <= 63
+            && app_name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && (app_name == name
+                || app_name
+                    .strip_prefix(name)
+                    .is_some_and(|suffix| suffix.starts_with('-') && suffix.len() > 1)),
+        "Dokploy Compose project identity differs"
+    );
+    ensure!(
+        expected_app_name.is_none_or(|expected| expected == app_name),
+        "Dokploy Compose project identity changed"
+    );
+    Ok(app_name.to_owned())
 }
