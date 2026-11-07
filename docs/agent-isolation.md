@@ -16,7 +16,9 @@ in the Web UI, or what people you share threads and devices with can do.
 
 Isolation is inbound only: threads of an isolated device or workspace can still
 reach unisolated ones. An isolated workspace shows an **Isolated** badge; a
-device row shows one once the Devices page has talked to the device.
+device row shows one once the Devices page has talked to the device. On a
+computer's Devices page a card shows a small lock after the device's name, read
+from the device while it is online and again after its settings close.
 
 Isolation is stored on the device (KV key `agent:isolation`) and enforced there;
 the relay can neither see nor change it. Only the owner can change it:
