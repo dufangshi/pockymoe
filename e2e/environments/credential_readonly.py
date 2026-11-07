@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Real native single-file RO bind, inode replacement and no parent widening."""
-import argparse, json, shutil, os
+import argparse, json, shutil, os, secrets
 from pathlib import Path
 from native_credentials import attach, jwt
 from reincarnation import HERE, run, wait
@@ -14,6 +14,8 @@ def main():
     meta = json.loads((x.root / "native-auth/manifest.json").read_text())
     x.api("/api/environments/" + meta["environmentId"] + "/destroy", {})
     area = x.root / "credential-readonly"
+    if area.exists():
+        area = area.with_name(area.name + "-" + secrets.token_hex(3))
     area.mkdir()
     e = []
 
@@ -33,12 +35,16 @@ def main():
     original = source.read_bytes()
     parent_canary = source.parent / "unauthorized-parent-canary"
     parent_canary.write_text("public metadata canary; parent is not granted\n")
-    project = x.root / "workspaces/credential-readonly"
+    project = x.root / "workspaces" / area.name
     project.mkdir()
     (project / ".fixture").mkdir()
     (project / "preserved.txt").write_text("keep this owner file untouched\n")
     shutil.copy2(HERE / "reincarnation_agent.py", project / ".fixture/handoff.py")
-    probe = """import json,os,subprocess,uuid
+    prior_events = json.loads((x.root / "native-auth/private/events.json").read_text())
+    prior_refreshes = sum(
+        e.get("tool") == "codex" and e.get("refresh", False) for e in prior_events
+    )
+    probe = """import json,os,subprocess,uuid,threading
 from pathlib import Path
 p=Path('/pockymoe/state/codex/auth.json');v={}
 try:
@@ -48,15 +54,19 @@ except OSError:v['readOnlyNativeAuthEnforced']=True
 v['sourceParentNotGranted']=not Path('/pockymoe/state/codex/unauthorized-parent-canary').exists()
 # Keep stdin open through the actual child, as ACP does. The real CLI attempts
 # its own refresh; no OAuth token is put into an API profile or exported env.
-env={k:v for k,v in os.environ.items() if k in ['PATH','HOME','CODEX_HOME','HTTPS_PROXY','NO_PROXY','SSL_CERT_FILE']};env['POCKYMOE_ENV_CODEX_NATIVE']='1';ident=str(uuid.uuid4());req={'id':ident,'argv':['/opt/pockymoe/bin/codex-subscription','app-server'],'cwd':os.getcwd(),'env':list(env.items())};c=subprocess.Popen(['/opt/pockymoe/bin/pockymoe','environment-worker','run',ident],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+env={k:v for k,v in os.environ.items() if k in ['PATH','HOME','CODEX_HOME','HTTPS_PROXY','NO_PROXY','SSL_CERT_FILE']};env['POCKYMOE_ENV_CODEX_NATIVE']='1';ident=str(uuid.uuid4());req={'id':ident,'argv':['/opt/pockymoe/bin/codex-subscription','app-server'],'cwd':os.getcwd(),'env':list(env.items())};c=subprocess.Popen(['/opt/pockymoe/bin/pockymoe','environment-worker','run',ident],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+diagnostic=[];reader=threading.Thread(target=lambda:diagnostic.append(c.stderr.read()));reader.start()
 c.stdin.write((json.dumps(req)+'\\n'+json.dumps({'id':1,'method':'initialize','params':{'clientInfo':{'name':'synthetic_ro','version':'1'}}})+'\\n').encode());c.stdin.flush()
 while json.loads(c.stdout.readline()).get('id')!=1:pass
 c.stdin.write((json.dumps({'method':'initialized'})+'\\n'+json.dumps({'id':2,'method':'account/read','params':{'refreshToken':True}})+'\\n').encode());c.stdin.flush()
 while True:
  r=json.loads(c.stdout.readline())
  if r.get('id')==2:break
-v['nativeRefreshReadOnlyExplicitFailure']='error' in r
-c.stdin.close();c.wait(timeout=8);Path('readonly-credential-evidence.json').write_text(json.dumps(v)+'\\n')
+c.stdin.close();c.wait(timeout=8);reader.join(timeout=8)
+# AuthManager::auth logs proactive refresh errors and returns cached auth. A
+# successful account/read is not proof that read-only storage refreshed.
+v['nativeRefreshReadOnlyFailureReported']='error' in r or b'Failed to refresh token' in b''.join(diagnostic)
+Path('readonly-credential-evidence.json').write_text(json.dumps(v)+'\\n')
 """
     (project / ".fixture/native_validation.py").write_text(probe)
     run(["git", "init", project])
@@ -152,6 +162,12 @@ c.stdin.close();c.wait(timeout=8);Path('readonly-credential-evidence.json').writ
     check(
         "read-only-refresh-never-modifies-original-auth",
         source.read_bytes() == original,
+    )
+    events = json.loads((x.root / "native-auth/private/events.json").read_text())
+    check(
+        "read-only-native-refresh-attempt-reached-synthetic-origin",
+        sum(e.get("tool") == "codex" and e.get("refresh", False) for e in events)
+        > prior_refreshes,
     )
     environment = next(
         e

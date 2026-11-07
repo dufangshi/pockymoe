@@ -211,6 +211,7 @@ python3 e2e/environments/host_guardian.py --binary target/debug/pockymoe \
 python3 e2e/environments/reincarnation.py --lab-manifest /private/lab/manifest.json \
   --binary target/debug/pockymoe --ready-commit READY_COMMIT --retain
 python3 e2e/environments/native_credentials.py --run-manifest /path/to/run/manifest.json
+python3 e2e/environments/credential_readonly.py --run-manifest /path/to/run/manifest.json
 python3 e2e/environments/reincarnation_failures.py --run-manifest /path/to/run/manifest.json
 ```
 
@@ -238,6 +239,13 @@ The daemon, private CA, fake upstream and synthetic credentials are task-only.
 The suite also checks no auth file is opened before approval, real RO failures,
 source bind metadata and exclusive RW ownership.
 
+`credential_readonly.py` then approves only the original synthetic Codex auth
+file as RO, without its parent. It makes that synthetic login stale before
+approval to exercise refresh, checks the native failure diagnostic and unchanged
+original bytes, and fences a subsequent Host atomic source replacement. Codex
+can still return a cached account when refresh fails; account/read success alone
+does not pass this test. Failed attempts keep their separate project/evidence.
+
 `reincarnation_failures.py` verifies real Supervisor SIGKILL/restart, durable
 pending/ready states, no replay, rejection, CLI cancellation, changed connection
 failure, owner retry and explicit Host recovery. Run it after the native suite;
@@ -255,7 +263,9 @@ POCKY_ENV_RUN_MANIFEST=/path/to/run/manifest.json corepack pnpm exec playwright 
 
 It logs in with the generated private test owner, reviews/approves the actual CLI
 proposal and checks Host PTY resize, old-domain cleanup and rejection of stale
-input. It disables traces/video to avoid persisting the login. Separate
+input. It also explicitly confirms owner recovery from a completed migration,
+checks the old selector cannot clear the fence, and retains original files after
+computation destruction. It disables traces/video to avoid persisting the login. Separate
 `dokploy.spec.ts --grep 'agent proposal review'` tests all three themes in both
 color modes, once per explicit desktop/mobile Chromium project. Those visual
 fixtures do not substitute for the real owner path above.

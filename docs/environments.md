@@ -375,6 +375,8 @@ its config/history are explicitly included. Alternatively a single RO auth file 
 bind to `/pockymoe/state/codex/auth.json` or
 `/pockymoe/state/claude/.credentials.json` with its tool home pointing to that state
 parent. This does not authorize the source parent and cannot persist OAuth refresh.
+A cached Codex account response does not prove refresh succeeded: the pinned native
+CLI can log a proactive refresh error and still return the cached account.
 A Host atomic replacement of a single file changes its inode and invalidates the
 grant; a direct directory bind sees native atomic replacements inside it.
 
