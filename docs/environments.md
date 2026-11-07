@@ -4,10 +4,10 @@ An execution environment runs the Pockymoe worker in a Linux Docker container
 managed by Dokploy. The host Supervisor keeps thread identity, approvals,
 database, credentials and the execution gateway. The environment is not a
 registered device. Lifecycle operations use the Dokploy REST API, validated
-against Dokploy v0.30.6; Docker CLI access is limited to trusted control-plane
-storage proofs, container inspection and verified stopping of fenced writers.
-Agent work uses the Supervisor worker
-transport. An unavailable environment never requests host execution.
+against Dokploy v0.30.6. The trusted control plane uses Docker CLI for storage
+proofs, inspection, verified stopping of fenced writers and worker exec stdio.
+Agent work uses the Supervisor worker transport; the worker has no Docker access.
+An unavailable environment never requests host execution.
 
 ## Connections and storage
 
