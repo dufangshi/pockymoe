@@ -996,6 +996,42 @@ impl crate::Supervisor {
         } else {
             vec![]
         };
+        if self.environments.for_thread(thread_id)?.is_some() {
+            // Live ACP metadata belongs to this environment. Host transcript
+            // homes cannot be used to fill gaps in its native session state.
+            let agents = fallback
+                .into_iter()
+                .map(|agent| NativeSubagentDto {
+                    agent,
+                    provider: provider.clone(),
+                    native_session_id: None,
+                    model: None,
+                    prompt: None,
+                    updated_at: None,
+                    latest_activity: None,
+                    token_usage: None,
+                    price_estimate: None,
+                    activity_count: 0,
+                    details_available: false,
+                })
+                .collect::<Vec<_>>();
+            if let Some(target) = target {
+                let agent = agents
+                    .into_iter()
+                    .find(|value| value.agent.id == target)
+                    .ok_or_else(|| anyhow!("unsupported_environment_native_history"))?;
+                let mut value = json!(NativeSubagentDetailDto {
+                    agent,
+                    items: vec![],
+                    has_earlier_items: false
+                });
+                value["reason"] = json!("unsupportedEnvironmentNativeHistory");
+                return Ok(value);
+            }
+            return Ok(
+                json!({"agents": agents, "refreshing": false, "historyAvailable": false, "reason": "unsupportedEnvironmentNativeHistory"}),
+            );
+        }
         tokio::task::spawn_blocking(move || {
             let mut cache = cache
                 .lock()

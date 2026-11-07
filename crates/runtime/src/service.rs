@@ -2530,6 +2530,9 @@ impl Supervisor {
         thread: &ThreadDto,
         turns: &mut [ThreadTurnDto],
     ) -> Result<()> {
+        if self.environments.for_thread(&thread.id)?.is_some() {
+            return Ok(());
+        }
         let grok = thread.agent_id.as_deref() == Some("grok");
         if (!grok
             && thread.provider != Provider::Codex

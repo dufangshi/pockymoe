@@ -172,6 +172,12 @@ have explicit unsupported errors. A child can use the managed-worktree CLI
 within the environment's dedicated root instead. Unrecognized environment CLI
 operations are refused by an allowlist.
 
+Native subagents may execute in the container and report live ACP metadata.
+Native transcript inspection, scheduled-history recovery, host usage hydration
+and full context inspection are unavailable for isolated threads until they
+have an environment state adapter. They never scan host harness homes to fill
+missing environment history. Supervisor conversation history remains available.
+
 A private worker loopback gateway implements thread self, messages, child
 creation and managed-worktree access without a device registration, machine
 CLI config, database or Docker socket. Workspace file HTTP requests include

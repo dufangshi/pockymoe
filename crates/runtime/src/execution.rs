@@ -70,6 +70,11 @@ impl ExecutionContext {
     pub fn checked(&self) -> Result<pockymoe_protocol::EnvironmentDto> {
         let env = self.manager.get(&self.environment_id)?;
         ensure!(
+            env.provider == "dokploy",
+            "unsupported_environment_provider: {}",
+            env.provider
+        );
+        ensure!(
             env.generation == self.generation,
             "stale_environment_generation"
         );
