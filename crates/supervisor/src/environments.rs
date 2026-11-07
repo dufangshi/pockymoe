@@ -696,7 +696,10 @@ pub(crate) async fn execution_scope(
     let binding_route =
         segments.get(2) == Some(&"threads") && segments.get(4) == Some(&"environment");
     let selected_thread = if !binding_route && segments.get(2) == Some(&"threads") {
-        segments.get(3).map(|id| (*id).to_string())
+        match segments.get(3).map(|id| decode_route_id(id)).transpose() {
+            Ok(id) => id,
+            Err(error) => return map_err(error).into_response(),
+        }
     } else if segments.get(2) == Some(&"workspaces") {
         url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
             .find(|(key, _)| key == "threadId")
@@ -718,7 +721,7 @@ pub(crate) async fn execution_scope(
             return Ok(None);
         }
         if segments.get(2) == Some(&"threads") {
-            if let Some(id) = segments.get(3) {
+            if let Some(id) = selected_thread.as_deref() {
                 return state.execution_context(id);
             }
         }
@@ -730,7 +733,7 @@ pub(crate) async fn execution_scope(
                 )
             })
         {
-            let workspace = segments[3];
+            let workspace = decode_route_id(segments[3])?;
             let supplied =
                 url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
                     .find(|(k, _)| k == "threadId")
@@ -742,10 +745,10 @@ pub(crate) async fn execution_scope(
                 );
                 return state.execution_context(&id);
             }
-            let ws = state.get_workspace(workspace)?;
+            let ws = state.get_workspace(&workspace)?;
             // An unqualified workspace request cannot silently inspect the host
             // when this working storage has any isolated binding.
-            let threads = state.list_threads(Some(workspace), true)?;
+            let threads = state.list_threads(Some(&workspace), true)?;
             for thread in threads {
                 if state.environments.for_thread(&thread.id)?.is_some() {
                     anyhow::bail!(
@@ -769,6 +772,13 @@ pub(crate) async fn execution_scope(
         Some(admission) => hold_response(response, admission),
         None => response,
     }
+}
+
+fn decode_route_id(raw: &str) -> Result<String> {
+    percent_encoding::percent_decode_str(raw)
+        .decode_utf8()
+        .map(|id| id.into_owned())
+        .map_err(|_| anyhow::anyhow!("invalid thread or workspace path identity"))
 }
 
 fn hold_response(response: Response, admission: tokio::sync::OwnedRwLockReadGuard<()>) -> Response {
@@ -825,5 +835,47 @@ mod tests {
         assert!(gate.clone().try_write_owned().is_err());
         drop(response);
         assert!(gate.try_write_owned().is_ok());
+    }
+
+    #[tokio::test]
+    async fn encoded_thread_paths_cannot_skip_execution_admission() {
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let fixture = crate::isolation_tests::setup().await;
+        let id = crate::isolation_tests::thread(&fixture.state, &fixture.open).await;
+        let encoded = format!("%{:02X}{}", id.as_bytes()[0], &id[1..]);
+        let transition = fixture.state.try_change_execution(&id).unwrap();
+        let response = crate::http::router(fixture.state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/threads/{encoded}/shell"))
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        drop(response);
+        // Also cleans up the idle shell if the regression starts one on Host.
+        crate::shells::hub().terminate_thread(&id);
+        assert_eq!(status, StatusCode::CONFLICT);
+        drop(transition);
+
+        let workspace = &fixture.open;
+        let encoded_workspace = format!("%{:02X}{}", workspace.as_bytes()[0], &workspace[1..]);
+        let response = crate::http::router(fixture.state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/workspaces/{encoded_workspace}/files/tree?threadId={id}&path=."
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
