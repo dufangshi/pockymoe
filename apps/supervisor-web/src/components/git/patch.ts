@@ -5,13 +5,27 @@ export interface PatchLine { kind: PatchLineKind; text: string }
 export interface PatchFile { path: string; oldPath?: string | undefined; additions: number; deletions: number; binary: boolean; created: boolean; removed: boolean; lines: PatchLine[] }
 export interface ParsedPatch { preamble: PatchLine[]; files: PatchFile[] }
 
-const unquote = (value: string) => value.startsWith('"') && value.endsWith('"') ? value.slice(1, -1) : value;
+/** Git's quoted paths contain C escapes, including octal UTF-8 bytes. Decode
+    only path metadata; the patch itself must remain exactly as received. */
+function unquote(value: string) {
+  if (!value.startsWith('"') || !value.endsWith('"')) return value;
+  const escapes: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '"': 34, '\\': 92 };
+  const encoder = new TextEncoder();
+  const bytes: number[] = [];
+  for (const token of value.slice(1, -1).matchAll(/\\([0-7]{1,3}|[abfnrtv"\\])|[^\\]+|\\/gu)) {
+    const escaped = token[1];
+    if (escaped) bytes.push(/^[0-7]/.test(escaped) ? parseInt(escaped, 8) : escapes[escaped]!);
+    else bytes.push(...encoder.encode(token[0]));
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
+}
 const strip = (value: string) => unquote(value.trim()).replace(/^[ab]\//, '');
 
 function headerPath(line: string) {
-  // `diff --git a/x b/x`: take the b side; quoted or spaced names fall back to +++.
-  const match = /^diff --git (?:"?a\/(.+?)"?) (?:"?b\/(.+?)"?)$/.exec(line);
-  return match ? { oldPath: match[1]!, path: match[2]! } : null;
+  // Retain the quotes until decoding, including for binary/rename-only patches
+  // without +++ headers. Text patches can refine the destination from +++.
+  const match = /^diff --git ("(?:\\.|[^"\\])*"|a\/.+?) ("(?:\\.|[^"\\])*"|b\/.+)$/.exec(line);
+  return match ? { oldPath: strip(match[1]!), path: strip(match[2]!) } : null;
 }
 
 export function parsePatch(patch: string): ParsedPatch {

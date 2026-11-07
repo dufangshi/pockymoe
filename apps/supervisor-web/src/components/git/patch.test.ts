@@ -24,3 +24,20 @@ it('shows text without a git header as-is and maps porcelain codes', () => {
   expect(fileChange('U', 'U')).toBe('conflicted');
   expect(fileChange('A', 'A')).toBe('conflicted');
 });
+
+it('decodes Git C-quoted UTF-8 paths without changing patch text', () => {
+  const name = String.raw`\344\270\255\346\226\207.txt`;
+  const patch = [
+    `diff --git "a/${name}" "b/${name}"`, `--- "a/${name}"`, `+++ "b/${name}"`,
+    '@@ -1 +1 @@', '-old', '+new',
+    String.raw`diff --git "a/old\t\"\\name.png" "b/new\t\"\\name.png"`,
+    'similarity index 100%', String.raw`rename from "old\t\"\\name.png"`, String.raw`rename to "new\t\"\\name.png"`,
+  ].join('\n');
+  const files = parsePatch(patch).files;
+  expect(files[0]!.path).toBe('中文.txt');
+  expect(files[0]!.oldPath).toBeUndefined();
+  expect(files[0]!.lines.map(line => line.text)).toEqual(['@@ -1 +1 @@', '-old', '+new']);
+  expect(files[1]!.oldPath).toBe('old\t"\\name.png');
+  expect(files[1]!.path).toBe('new\t"\\name.png');
+  expect(files[1]!.lines.at(-1)!.text).toBe(String.raw`rename to "new\t\"\\name.png"`);
+});
