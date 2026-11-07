@@ -29,7 +29,11 @@ Multiple authorized child threads can inherit the same environment through
 Only the selected checkout is mounted. A linked worktree additionally mounts
 the necessary private gitdir, common gitdir and recursive local object
 alternates. Each path is canonicalized and must be under an allowed root;
-symlink and metadata pointers cannot extend that grant. Mounting a common
+symlink and metadata pointers cannot extend that grant. Sources are revalidated
+at every start: a changed canonical checkout path requires recreating the
+environment. Project/Git grants cannot include the private control-plane
+sidecar, the Supervisor home itself or its authentication/configuration roots.
+Mounting a common
 gitdir grants its shared Git metadata, including shared references, but does
 not mount sibling checkouts. Submodule working copies and HTTP alternates
 require an additional storage adapter and are rejected.

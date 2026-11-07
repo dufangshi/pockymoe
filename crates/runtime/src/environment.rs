@@ -83,6 +83,7 @@ impl EnvironmentManager {
             Ok((store, lock)) => (Ok(store),Some(lock)),
             Err(_) => (Err("environment private sidecar could not be opened or is already owned by another Supervisor".into()),None),
         };
+        let directory = directory.canonicalize().unwrap_or(directory);
         Self {
             directory,
             store: Mutex::new(store),
@@ -331,6 +332,27 @@ impl EnvironmentManager {
         })
     }
 
+    fn validate_project_source(&self, path: &Path) -> Result<()> {
+        ensure!(
+            !path.starts_with(&self.directory) && !self.directory.starts_with(path),
+            "project/Git storage must not expose the Supervisor private sidecar"
+        );
+        if let Some(home) =
+            std::env::var_os("HOME").and_then(|home| PathBuf::from(home).canonicalize().ok())
+        {
+            ensure!(
+                path != home,
+                "the Supervisor home directory cannot be mounted as project storage"
+            );
+            for name in [
+                ".config", ".ssh", ".gnupg", ".aws", ".docker", ".kube", ".codex", ".claude",
+            ] {
+                ensure!(!path.starts_with(home.join(name)),"host authentication/configuration storage cannot be mounted as project storage");
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate_generation(&self, id: &str, generation: u64) -> Result<EnvironmentDto> {
         let dto = self.get(id)?;
         ensure!(
@@ -484,11 +506,9 @@ impl EnvironmentManager {
         let workspace = storage::canonical_directory(trusted_workspace)?;
         let working = storage::canonical_directory(trusted_working)?;
         let roots = storage::allowed_roots(&connection.public.allowed_roots)?;
-        storage::git_closure(&workspace, &working, &roots)?;
-        ensure!(
-            !working.starts_with(&self.directory) && !self.directory.starts_with(&working),
-            "project storage must not expose the Supervisor private sidecar"
-        );
+        for path in storage::git_closure(&workspace, &working, &roots)? {
+            self.validate_project_source(&path)?;
+        }
         let uid_gid = owner(&working)?;
         let managed_parent = workspace
             .parent()
@@ -504,6 +524,7 @@ impl EnvironmentManager {
         private_dir(&managed_parent)?;
         let managed_root = managed_parent.join(&input.thread_id);
         private_dir(&managed_root)?;
+        self.validate_project_source(&managed_root)?;
         set_owner(&managed_root, &uid_gid)?;
         ensure!(
             managed_root.canonicalize()? == managed_root,
@@ -787,6 +808,18 @@ impl EnvironmentManager {
                 .as_ref()
                 .unwrap_or(&record.dto.workspace_path),
         ))?;
+        ensure!(
+            workspace == Path::new(&record.dto.workspace_path)
+                && working
+                    == Path::new(
+                        record
+                            .dto
+                            .worktree_path
+                            .as_ref()
+                            .unwrap_or(&record.dto.workspace_path)
+                    ),
+            "stored workspace/working-copy path changed; recreate the environment explicitly"
+        );
         let roots = storage::allowed_roots(&connection.public.allowed_roots)?;
         let paths = storage::git_closure(&workspace, &working, &roots)?;
         ensure!(
@@ -801,6 +834,7 @@ impl EnvironmentManager {
         set_owner(&bridge, &record.uid_gid)?;
         let mut mounts = Vec::new();
         for path in paths {
+            self.validate_project_source(&path)?;
             ensure!(
                 ![Path::new("/pockymoe"), Path::new("/opt/pockymoe")]
                     .iter()
@@ -822,6 +856,7 @@ impl EnvironmentManager {
             );
         }
         let managed = Path::new(&record.managed_worktree_root);
+        self.validate_project_source(managed)?;
         ensure!(
             managed.canonicalize()? == managed,
             "managed worktree storage source changed"

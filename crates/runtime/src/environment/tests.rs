@@ -733,3 +733,85 @@ async fn persistence_failure_disables_all_execution_authority() {
     assert!(manager.snapshot().await.is_err());
     assert!(manager.for_thread("anything").is_err());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn changed_git_closure_cannot_mount_private_control_plane_storage() {
+    let root = tempfile::tempdir().unwrap();
+    let project = fixture_project(root.path(), "project");
+    let (url, fixture, task) = api_fixture().await;
+    let manager = EnvironmentManager::new(&root.path().join("db"));
+    manager
+        .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
+        .unwrap();
+    // Even a broad explicit storage grant must not override the private DB/key
+    // boundary when a checkout's .git pointer changes after creation.
+    let conn = manager
+        .save_connection("new", &connection(&url, root.path()))
+        .await
+        .unwrap();
+    let environment = manager
+        .create(
+            &CreateEnvironmentRequest {
+                connection_id: conn.id,
+                thread_id: "thread".into(),
+                name: None,
+            },
+            &project,
+            &project,
+        )
+        .await
+        .unwrap();
+    std::fs::write(
+        project.join(".git"),
+        format!("gitdir: {}", manager.directory.display()),
+    )
+    .unwrap();
+    assert!(manager
+        .action(&environment.id, EnvironmentAction::Start)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("private sidecar"));
+    assert!(fixture.lock().unwrap().calls.is_empty());
+    task.abort();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn replacing_the_canonical_checkout_path_is_not_silently_adopted() {
+    let root = tempfile::tempdir().unwrap();
+    let project = fixture_project(root.path(), "project");
+    let replacement = fixture_project(root.path(), "replacement");
+    let (url, fixture, task) = api_fixture().await;
+    let manager = EnvironmentManager::new(&root.path().join("db"));
+    manager
+        .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
+        .unwrap();
+    let conn = manager
+        .save_connection("new", &connection(&url, root.path()))
+        .await
+        .unwrap();
+    let environment = manager
+        .create(
+            &CreateEnvironmentRequest {
+                connection_id: conn.id,
+                thread_id: "thread".into(),
+                name: None,
+            },
+            &project,
+            &project,
+        )
+        .await
+        .unwrap();
+    std::fs::rename(&project, root.path().join("original")).unwrap();
+    std::os::unix::fs::symlink(&replacement, &project).unwrap();
+    assert!(manager
+        .action(&environment.id, EnvironmentAction::Start)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("path changed"));
+    assert!(fixture.lock().unwrap().calls.is_empty());
+    task.abort();
+}
