@@ -96,18 +96,26 @@ impl ExecutionContext {
     pub fn docker(&self) -> Result<Command> {
         let environment = self.checked()?;
         let mut cmd = Command::new("docker");
-        if let Some(host) = self.manager.docker_host(&environment.connection_id)? {
-            cmd.args(["--host", &host]);
-        }
+        cmd.arg("--config")
+            .arg(empty_docker_config(&self.manager, &environment)?);
+        let host = self
+            .manager
+            .docker_host(&environment.connection_id)?
+            .unwrap_or_else(|| "unix:///var/run/docker.sock".into());
+        cmd.args(["--host", &host]);
         cmd.env_clear().env("PATH", "/usr/local/bin:/usr/bin:/bin");
         Ok(cmd)
     }
     pub fn std_docker(&self) -> Result<std::process::Command> {
         let environment = self.checked()?;
         let mut cmd = std::process::Command::new("docker");
-        if let Some(host) = self.manager.docker_host(&environment.connection_id)? {
-            cmd.args(["--host", &host]);
-        }
+        cmd.arg("--config")
+            .arg(empty_docker_config(&self.manager, &environment)?);
+        let host = self
+            .manager
+            .docker_host(&environment.connection_id)?
+            .unwrap_or_else(|| "unix:///var/run/docker.sock".into());
+        cmd.args(["--host", &host]);
         cmd.env_clear().env("PATH", "/usr/local/bin:/usr/bin:/bin");
         Ok(cmd)
     }
@@ -124,6 +132,7 @@ impl ExecutionContext {
             "/opt/pockymoe/bin/pockymoe",
             "environment-worker",
             "run",
+            &request.id,
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -202,9 +211,14 @@ impl ExecutionContext {
     fn cleanup_docker(&self) -> Result<std::process::Command> {
         let env = self.manager.get(&self.environment_id)?;
         let mut command = std::process::Command::new("docker");
-        if let Some(host) = self.manager.docker_host(&env.connection_id)? {
-            command.args(["--host", &host]);
-        }
+        command
+            .arg("--config")
+            .arg(empty_docker_config(&self.manager, &env)?);
+        let host = self
+            .manager
+            .docker_host(&env.connection_id)?
+            .unwrap_or_else(|| "unix:///var/run/docker.sock".into());
+        command.args(["--host", &host]);
         command
             .env_clear()
             .env("PATH", "/usr/local/bin:/usr/bin:/bin");
@@ -230,7 +244,19 @@ impl ExecutionContext {
     pub async fn kill(&self, id: &str) -> Result<()> {
         let context = self.clone();
         let id = id.to_owned();
-        tokio::task::spawn_blocking(move || context.kill_sync(&id)).await?
+        let result = tokio::task::spawn_blocking(move || context.kill_sync(&id)).await?;
+        if result.is_err() {
+            // A lost worker cannot prove that its adopted descendants exited.
+            // Fence and stop its entire retained container before admitting work.
+            let _ = self
+                .manager
+                .action(
+                    &self.environment_id,
+                    pockymoe_protocol::EnvironmentAction::Stop,
+                )
+                .await;
+        }
+        result
     }
     /// Cleanup retains only authority to stop a captured process domain in its
     /// original, label-checked container. It cannot execute work in a new generation.
@@ -301,6 +327,21 @@ impl ExecutionContext {
             ("NO_PROXY".into(), "127.0.0.1,localhost".into()),
         ]
     }
+}
+
+fn empty_docker_config(
+    manager: &crate::environment::EnvironmentManager,
+    env: &pockymoe_protocol::EnvironmentDto,
+) -> Result<PathBuf> {
+    let path = manager
+        .bridge_directory(&env.id, env.generation)?
+        .join("engine-client");
+    std::fs::create_dir_all(&path)?;
+    ensure!(
+        std::fs::symlink_metadata(&path)?.is_dir() && std::fs::read_dir(&path)?.next().is_none(),
+        "environment Docker client configuration is not empty"
+    );
+    Ok(path)
 }
 
 fn bounded_cleanup(command: &mut std::process::Command) -> Result<Vec<u8>> {

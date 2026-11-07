@@ -14,7 +14,7 @@ pub async fn run(mode: &str, args: &[String]) -> Result<()> {
     );
     match mode {
         "serve" => serve().await,
-        "run" => process().await,
+        "run" => process(args.first().context("process identity required")?).await,
         "request" => {
             let mut input = Vec::new();
             tokio::io::stdin()
@@ -100,12 +100,13 @@ async fn serve() -> Result<()> {
         });
     }
 }
-async fn process() -> Result<()> {
+async fn process(expected: &str) -> Result<()> {
     let mut input = BufReader::new(tokio::io::stdin());
     let mut line = String::new();
     input.read_line(&mut line).await?;
     ensure!(line.len() < 1024 * 1024, "worker launch too large");
     let request: RunRequest = serde_json::from_str(&line)?;
+    ensure!(request.id == expected, "worker process identity differs");
     ensure!(
         uuid::Uuid::parse_str(&request.id).is_ok(),
         "invalid process identity"
@@ -123,6 +124,10 @@ async fn execute(request: RunRequest, input: Option<BufReader<tokio::io::Stdin>>
         ensure!(
             libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == 0,
             "subreaper unavailable"
+        );
+        ensure!(
+            libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) == 0,
+            "worker trace protection unavailable"
         );
     }
     if request
@@ -268,34 +273,75 @@ fn terminate_descendants(parent: u32, group: u32) {
     }
 }
 fn kill(id: &str) -> Result<()> {
+    use std::io::Read;
     ensure!(
         uuid::Uuid::parse_str(id).is_ok(),
         "invalid process identity"
     );
     let file = Path::new("/tmp/pockymoe-processes").join(id);
-    if !file.exists() {
+    // Match the immutable launch identity in procfs too: project code shares
+    // this container UID and may remove or replace a writable tmp record.
+    let mut targets = Vec::new();
+    for entry in std::fs::read_dir("/proc")?.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|v| v.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid <= 1 || pid == std::process::id() {
+            continue;
+        }
+        let Ok(mut command_line) = std::fs::File::open(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let mut bytes = Vec::new();
+        if command_line
+            .by_ref()
+            .take(16384)
+            .read_to_end(&mut bytes)
+            .is_err()
+        {
+            continue;
+        }
+        let fields = bytes.split(|b| *b == 0).collect::<Vec<_>>();
+        if fields.len() >= 4
+            && fields[0] == b"/opt/pockymoe/bin/pockymoe"
+            && fields[1] == b"environment-worker"
+            && matches!(fields[2], b"run" | b"shell")
+            && fields[3] == id.as_bytes()
+        {
+            if let Ok(start) = process_start(pid) {
+                targets.push((pid, start));
+            }
+        }
+    }
+    if targets.is_empty() {
+        ensure!(
+            !file.exists(),
+            "sandbox worker disappeared; process domain outcome is uncertain"
+        );
         return Ok(());
     }
-    let value = std::fs::read_to_string(&file)?;
-    let mut fields = value.split_whitespace();
-    let pid: u32 = fields.next().context("missing worker pid")?.parse()?;
-    ensure!(pid > 1, "invalid worker pid");
-    let expected = fields.next().context("missing process lifetime")?;
-    if process_start(pid).ok().as_deref() != Some(expected) {
-        let _ = std::fs::remove_file(file);
-        return Ok(());
-    }
-    #[cfg(unix)]
-    unsafe {
-        libc::kill(pid as i32, libc::SIGTERM);
+    for (pid, _) in &targets {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(*pid as i32, libc::SIGTERM);
+        }
     }
     // The worker removes its record only after reaping the command domain.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while file.exists() && std::time::Instant::now() < deadline {
+    let alive = || {
+        targets
+            .iter()
+            .any(|(pid, start)| process_start(*pid).ok().as_ref() == Some(start))
+    };
+    while alive() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     ensure!(
-        !file.exists(),
+        !alive() && !file.exists(),
         "sandbox process domain cancellation timed out"
     );
     Ok(())
