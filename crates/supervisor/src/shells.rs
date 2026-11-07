@@ -121,12 +121,11 @@ impl ShellHub {
         let execution = pockymoe_runtime::execution::current();
         let mut cmd = if let Some(context) = &execution {
             let env = context.checked()?;
-            let mut cmd = CommandBuilder::new("docker");
+            let docker = context.std_docker()?;
+            let mut cmd = CommandBuilder::new(docker.get_program());
+            cmd.args(docker.get_args());
             cmd.env_clear();
             cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
-            if let Some(host) = context.manager.docker_host(&env.connection_id)? {
-                cmd.args(["--host", &host]);
-            }
             cmd.args(["exec", "-it", "-w", cwd]);
             for (key, value) in context.launch_env() {
                 cmd.args(["-e", &format!("{key}={value}")]);
