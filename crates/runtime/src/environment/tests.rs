@@ -13,6 +13,7 @@ struct FixtureState {
     ignore_quiesce: bool,
     daemon_id: Option<String>,
     quiesce_calls: Vec<QuiesceTarget>,
+    hold_next_deploy_response: bool,
 }
 
 struct FixtureDocker(Arc<Mutex<FixtureState>>);
@@ -183,6 +184,7 @@ async fn api_fixture() -> (
                 } else {
                     serde_json::from_slice(&data[header_len..header_len + body_len]).unwrap()
                 };
+                let mut hold_response = false;
                 let response = {
                     let mut state = state.lock().unwrap();
                     state.calls.push((route.into(), payload.clone()));
@@ -217,6 +219,7 @@ async fn api_fixture() -> (
                             compose.clone()
                         }
                         "/api/compose.deploy" => {
+                            hold_response = std::mem::take(&mut state.hold_next_deploy_response);
                             let command = state.compose.as_ref().unwrap()["command"]
                                 .as_str()
                                 .unwrap_or("")
@@ -253,10 +256,15 @@ async fn api_fixture() -> (
                         _ => json!({"message":"fixture-secret-should-not-escape"}),
                     }
                 };
+                if hold_response {
+                    std::future::pending::<()>().await;
+                }
                 let body = serde_json::to_vec(&response).unwrap();
                 let head=format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len());
-                socket.write_all(head.as_bytes()).await.unwrap();
-                socket.write_all(&body).await.unwrap();
+                if socket.write_all(head.as_bytes()).await.is_err() {
+                    return;
+                }
+                let _ = socket.write_all(&body).await;
             });
         }
     });
@@ -981,6 +989,97 @@ async fn restart_quiescence_is_durable_blocks_new_writers_and_preserves_the_orig
     assert_eq!(
         std::fs::read_to_string(project.join("sentinel")).unwrap(),
         "keep-project"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn crash_after_deploy_before_container_id_requires_verified_owned_cleanup() {
+    let root = tempfile::tempdir().unwrap();
+    let project = fixture_project(root.path(), "project");
+    let database = root.path().join("db");
+    let (url, fixture, task) = api_fixture().await;
+    let manager = Arc::new(EnvironmentManager::new(&database));
+    manager
+        .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
+        .unwrap();
+    let conn = manager
+        .save_connection("new", &connection(&url, &project))
+        .await
+        .unwrap();
+    let environment = manager
+        .create(
+            &CreateEnvironmentRequest {
+                connection_id: conn.id,
+                thread_id: "thread".into(),
+                name: None,
+            },
+            &project,
+            &project,
+        )
+        .await
+        .unwrap();
+    fixture.lock().unwrap().hold_next_deploy_response = true;
+    let starting_manager = manager.clone();
+    let id = environment.id.clone();
+    let start =
+        tokio::spawn(async move { starting_manager.action(&id, EnvironmentAction::Start).await });
+    // Mount proofs hash the test executable; allow the other fixture proofs
+    // sharing this test process to finish before simulating the crash.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while fixture.lock().unwrap().container.is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let deploying = manager.record(&environment.id).unwrap();
+    assert_eq!(deploying.dto.state, "starting");
+    assert!(deploying.dto.container_id.is_none());
+    assert!(deploying.deploy_pending && !deploying.quiesce_confirmed);
+    start.abort();
+    assert!(start.await.unwrap_err().is_cancelled());
+    drop(manager);
+
+    let manager = EnvironmentManager::new(&database);
+    manager
+        .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
+        .unwrap();
+    let interrupted = manager.get(&environment.id).unwrap();
+    assert_eq!(interrupted.state, "interrupted");
+    assert!(interrupted.generation > deploying.dto.generation);
+    let calls = fixture.lock().unwrap().calls.len();
+    assert!(manager
+        .action(&environment.id, EnvironmentAction::Start)
+        .await
+        .is_err());
+    assert_eq!(fixture.lock().unwrap().calls.len(), calls);
+    let pinned_name = fixture.lock().unwrap().compose.as_ref().unwrap()["appName"].clone();
+    fixture.lock().unwrap().compose.as_mut().unwrap()["appName"] = json!("wrong-project");
+    manager.reconcile_all().await.unwrap();
+    let pending = manager.record(&environment.id).unwrap();
+    assert!(pending.deploy_pending && !pending.quiesce_confirmed && pending.resource_active);
+    assert_eq!(pending.dto.last_error, interrupted.last_error);
+    assert!(fixture.lock().unwrap().container.as_ref().unwrap()["State"]["Running"] == true);
+    fixture.lock().unwrap().compose.as_mut().unwrap()["appName"] = pinned_name;
+    manager.reconcile_all().await.unwrap();
+    let quiesced = manager.record(&environment.id).unwrap();
+    assert!(!quiesced.deploy_pending && quiesced.quiesce_confirmed && quiesced.resource_active);
+    assert_eq!(quiesced.dto.state, "interrupted");
+    assert_eq!(quiesced.dto.last_error, interrupted.last_error);
+    assert_eq!(quiesced.dto.generation, interrupted.generation);
+    assert_eq!(
+        fixture.lock().unwrap().container.as_ref().unwrap()["State"]["Running"],
+        false
+    );
+    assert!(fixture.lock().unwrap().quiesce_calls.is_empty());
+    assert_eq!(
+        manager
+            .action(&environment.id, EnvironmentAction::Start)
+            .await
+            .unwrap()
+            .state,
+        "running"
     );
     task.abort();
 }

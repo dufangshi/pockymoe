@@ -122,6 +122,13 @@ environment/generation labels before stopping, then inspects again to confirm
 the container is stopped or absent. This operation retains the Dokploy record,
 data, capacity reservation and original interrupted reason. Failure leaves the
 target durable for retry and blocks Start/Rebuild until quiescence is confirmed.
+Before requesting deployment, a separate durable marker records that its
+outcome is unconfirmed. If the Supervisor exits before persisting the full
+container ID, reconciliation verifies the pinned Dokploy resource, clears its
+queued jobs and runs the owned Stop path. It confirms actual stopped containers
+and daemon identity before clearing the marker, retaining the interrupted
+reason and budget. An empty Docker listing alone cannot confirm this window:
+a queued deployment may still create a writer later.
 Legacy interrupted records that already lost their full container ID require an
 explicit Dokploy-owned Stop; they cannot infer or adopt a writer by name/label.
 The Supervisor does not resume a harness or replay commands. An explicit start

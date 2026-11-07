@@ -39,6 +39,9 @@ struct EnvironmentRecord {
     /// Persist before create so an unavailable response cannot cause duplicates.
     #[serde(default)]
     create_pending: bool,
+    /// Persist before deploy, including the window before the full ID is known.
+    #[serde(default)]
+    deploy_pending: bool,
     uid_gid: String,
     image: String,
     worker_binary: String,
@@ -170,6 +173,10 @@ impl EnvironmentManager {
     pub async fn reconcile(&self, id: &str) -> Result<EnvironmentDto> {
         let _operation = self.operation.lock().await;
         let record = self.record(id)?;
+        if record.deploy_pending {
+            let _ = self.quiesce_deployment(id).await;
+            return self.get(id);
+        }
         if record.pending_quiesce.is_some() {
             // Preserve the original interrupted reason and capacity if stopping
             // fails. The next background observation retries the same full ID.
@@ -236,7 +243,11 @@ impl EnvironmentManager {
             Ok(store
                 .environments
                 .values()
-                .filter(|record| record.dto.state == "running" || record.pending_quiesce.is_some())
+                .filter(|record| {
+                    record.dto.state == "running"
+                        || record.pending_quiesce.is_some()
+                        || record.deploy_pending
+                })
                 .map(|record| record.dto.id.clone())
                 .collect::<Vec<_>>())
         })?;
@@ -254,8 +265,39 @@ impl EnvironmentManager {
             self.record(id)?.dto.state != "running",
             "running environment must be fenced before quiescence"
         );
-        self.quiesce_inner(id).await?;
+        if self.record(id)?.deploy_pending {
+            self.quiesce_deployment(id).await?;
+        } else {
+            self.quiesce_inner(id).await?;
+        }
         self.get(id)
+    }
+
+    async fn quiesce_deployment(&self, id: &str) -> Result<()> {
+        let record = self.record(id)?;
+        ensure!(
+            record.dto.compose_id.is_some() && record.dokploy_app_name.is_some(),
+            "uncertain deployment has no pinned Dokploy identity; explicit owned Stop is required"
+        );
+        self.write(|store| {
+            let record = store
+                .environments
+                .get_mut(id)
+                .context("environment not found")?;
+            if record.dto.state!="interrupted" {
+                remember_writer(record);
+                record.dto.generation=record.dto.generation.checked_add(1).context("environment generation exhausted")?;
+                record.dto.container_id=None;
+                record.dto.observed_limits=None;
+            }
+            record.dto.state = "interrupted".into();
+            record.dto.last_error.get_or_insert_with(||"Dokploy deployment outcome is uncertain; reconciling the owned resource before new execution".into());
+            record.resource_active = true;
+            Ok(())
+        })?;
+        // A queued deployment can create a container after an empty Docker
+        // inspection. Only the owned Dokploy stop path also clears those jobs.
+        self.stop_inner(id, false, true).await
     }
 
     async fn quiesce_inner(&self, id: &str) -> Result<()> {
@@ -644,6 +686,7 @@ impl EnvironmentManager {
                     app_name: format!("pockymoe-{id}"),
                     dokploy_app_name: None,
                     create_pending: false,
+                    deploy_pending: false,
                     uid_gid,
                     image: connection.public.image.clone(),
                     worker_binary: binary.to_string_lossy().into_owned(),
@@ -711,6 +754,10 @@ impl EnvironmentManager {
     }
 
     async fn start(&self, id: &str, rebuild: bool) -> Result<()> {
+        ensure!(
+            !self.record(id)?.deploy_pending,
+            "Dokploy deployment is unconfirmed; owned Stop must complete before Start"
+        );
         if self.record(id)?.dto.state != "running" {
             self.quiesce_inner(id).await?;
         }
@@ -854,6 +901,15 @@ impl EnvironmentManager {
             Ok(())
         })?;
         api.update(&compose_id, &yaml).await?;
+        self.write(|store| {
+            let record = store
+                .environments
+                .get_mut(id)
+                .context("environment not found")?;
+            record.deploy_pending = true;
+            record.quiesce_confirmed = false;
+            Ok(())
+        })?;
         api.deploy(&compose_id).await?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
         loop {
@@ -884,6 +940,7 @@ impl EnvironmentManager {
                         .context("environment not found")?;
                     record.dto.state = "running".into();
                     record.dto.container_id = Some(container_id);
+                    record.deploy_pending = false;
                     record.quiesce_confirmed = false;
                     record.dto.observed_limits = Some(observed);
                     record.dto.updated_at = now_rfc3339();
@@ -1008,6 +1065,10 @@ impl EnvironmentManager {
     }
 
     async fn stop(&self, id: &str, destroy: bool) -> Result<()> {
+        self.stop_inner(id, destroy, false).await
+    }
+
+    async fn stop_inner(&self, id: &str, destroy: bool, retain_interrupted: bool) -> Result<()> {
         let record = self.record(id)?;
         let connection = self.connection(&record.dto.connection_id)?;
         let context = self.context(&record.dto.connection_id)?;
@@ -1026,12 +1087,14 @@ impl EnvironmentManager {
                 .get_mut(id)
                 .context("environment not found")?;
             remember_writer(record);
-            record.dto.generation = record
-                .dto
-                .generation
-                .checked_add(1)
-                .context("environment generation exhausted")?;
-            record.dto.state = "stopping".into();
+            if !retain_interrupted {
+                record.dto.generation = record
+                    .dto
+                    .generation
+                    .checked_add(1)
+                    .context("environment generation exhausted")?;
+                record.dto.state = "stopping".into();
+            }
             record.dto.container_id = None;
             record.dto.observed_limits = None;
             record.dto.updated_at = now_rfc3339();
@@ -1125,15 +1188,25 @@ impl EnvironmentManager {
                 .environments
                 .get_mut(id)
                 .context("environment not found")?;
-            record.dto.state = if destroy { "destroyed" } else { "stopped" }.into();
+            record.dto.state = if retain_interrupted {
+                "interrupted"
+            } else if destroy {
+                "destroyed"
+            } else {
+                "stopped"
+            }
+            .into();
             record.dto.compose_id = if destroy { None } else { compose_id };
             if record.dto.compose_id.is_none() {
                 record.dokploy_app_name = None;
             }
             record.create_pending = false;
-            record.dto.last_error = None;
+            record.deploy_pending = false;
+            if !retain_interrupted {
+                record.dto.last_error = None;
+            }
             record.dto.updated_at = now_rfc3339();
-            record.resource_active = false;
+            record.resource_active = retain_interrupted;
             record.pending_quiesce = None;
             record.quiesce_confirmed = true;
             Ok(())
