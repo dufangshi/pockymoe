@@ -678,8 +678,8 @@ impl EnvironmentManager {
                 return Ok(r.dto.clone());
             }
             ensure!(
-                r.dto.state == "failed",
-                "only a failed migration can recover to Host"
+                matches!(r.dto.state.as_str(), "failed" | "ready"),
+                "only a failed or completed migration can recover to Host"
             );
             ensure!(
                 r.dto.environment_id.as_ref().is_none_or(|id| s
@@ -710,6 +710,16 @@ impl EnvironmentManager {
 
     pub fn require_fenced_binding(&self, thread: &str) -> Result<()> {
         self.read(|s|{ensure!(!s.requests.values().any(|r|r.dto.thread_id==thread && r.host_fenced && !matches!(r.dto.state.as_str(),"cancelled"|"rejected")) || s.bindings.contains_key(thread),"environment_migration_pending: Host execution is fenced; owner recovery is required");Ok(())})
+    }
+
+    pub fn requires_explicit_host_recovery(&self, thread: &str) -> Result<bool> {
+        self.read(|s| {
+            Ok(s.requests.values().any(|r| {
+                r.dto.thread_id == thread
+                    && r.host_fenced
+                    && !matches!(r.dto.state.as_str(), "cancelled" | "rejected")
+            }))
+        })
     }
 
     pub fn begin_request(&self, id: &str, continuation: &str) -> Result<EnvironmentRequestDto> {

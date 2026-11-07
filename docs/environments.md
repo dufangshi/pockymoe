@@ -208,7 +208,10 @@ the same grant after stopping/rebuilding retained computation, or explicitly
 **Restore Host execution**: end the old process domain, destroy this request's
 computation, retain project/state and clear its binding/fence. It does not replay
 the old command. Connection/source changes can be recovered this way before
-submitting a new proposal. There is no automatic Host fallback. Approved waiting
+submitting a new proposal. Completed migrations offer the same explicit owner
+recovery. The old binding selector cannot remove an approved isolation fence;
+use this action to destroy its retained computation before restoring Host.
+There is no automatic Host fallback. Approved waiting
 requests can be cancelled before the fence. Execution settings, worktree and
 manual binding changes are blocked during approved migration.
 

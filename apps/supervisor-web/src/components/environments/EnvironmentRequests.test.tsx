@@ -32,10 +32,12 @@ it('shows a safe decision failure and keeps the same reviewed proposal', async (
   await waitFor(() => expect(screen.getByRole('button', { name: 'Approve and migrate when idle' })).toBeEnabled());
   expect(screen.queryByText(/private upstream response/)).toBeNull(); expect(await screen.findByRole('button', { name: 'Why it failed' })).toBeVisible();
 });
-it('requires a separate confirmation before destroying failed computation and restoring Host', async () => {
-  const request={...requestFixture(), state: 'failed' as const, approvedAt: '2026-11-07T00:00:01Z'};
+it.each(['failed', 'ready'] as const)('requires a separate confirmation before destroying %s computation and restoring Host', async state => {
+  const request={...requestFixture(), state, approvedAt: '2026-11-07T00:00:01Z'};
   vi.mocked(api.fetchEnvironmentRequests).mockResolvedValue([request]);vi.mocked(api.decideEnvironmentRequest).mockResolvedValue({...request,state:'cancelled'});
-  render(<EnvironmentRequests deviceId="device-a" />);fireEvent.click(await screen.findByRole('button', {name:'Restore Host execution…'}));
+  render(<EnvironmentRequests deviceId="device-a" />);
+  if (state === 'ready') fireEvent.click(await screen.findByRole('button', {name: /Agent proposal/}));
+  fireEvent.click(await screen.findByRole('button', {name:'Restore Host execution…'}));
   const dialog=within(await screen.findByRole('dialog', {name:'Abandon migration and restore Host?'}));
   expect(api.decideEnvironmentRequest).not.toHaveBeenCalled();fireEvent.click(dialog.getByRole('button',{name:'Destroy computation and restore Host'}));
   await screen.findByText('Cancelled');expect(api.decideEnvironmentRequest).toHaveBeenCalledExactlyOnceWith(request,'recoverHost','device-a');

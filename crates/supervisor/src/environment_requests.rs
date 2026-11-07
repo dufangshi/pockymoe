@@ -120,8 +120,8 @@ async fn ensure_recovery(
     ensure!(
         request.digest == digest
             && request.approved_at.is_some()
-            && (request.state == "failed" || request.state == "cancelled"),
-        "failed approved request and exact digest required"
+            && matches!(request.state.as_str(), "failed" | "ready" | "cancelled"),
+        "failed or completed approved request and exact digest required"
     );
     if request.state == "cancelled" {
         return Ok(request.clone());

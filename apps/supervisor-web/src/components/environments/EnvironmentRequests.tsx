@@ -98,7 +98,8 @@ function RequestCard({ request, deviceId, canManage, onUpdate }: { request: Envi
       {request.lastError && <ErrorMark message={t('failed')} detail={request.lastError} announce={false} />}
       <div className="environment-actions">
         {request.state === 'pending' && <><button type="button" className="host-secondary-button" disabled={busy || !canManage} onClick={() => void act('reject')}>{t('reject')}</button><button type="button" className="relay-button-primary" disabled={busy || !canManage} onClick={() => void act('approve')}>{t(busy ? 'working' : 'approve')}</button></>}
-        {request.state === 'failed' && <><button type="button" className="host-secondary-button" disabled={busy || !canManage} onClick={() => void act('retry')}>{t(busy ? 'working' : 'retry')}</button><button type="button" className="environment-danger" disabled={busy || !canManage} onClick={() => setRecover(true)}>{t('recoverHost')}</button></>}
+        {request.state === 'failed' && <button type="button" className="host-secondary-button" disabled={busy || !canManage} onClick={() => void act('retry')}>{t(busy ? 'working' : 'retry')}</button>}
+        {(request.state === 'failed' || request.state === 'ready') && <button type="button" className="environment-danger" disabled={busy || !canManage} onClick={() => setRecover(true)}>{t('recoverHost')}</button>}
         {error && <ErrorMark message={error} detail={t('owner')} />}
       </div>
     </div>}

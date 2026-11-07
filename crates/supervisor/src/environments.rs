@@ -179,6 +179,8 @@ async fn bind(
     .map_err(map_err)?;
     let _transition = state.try_change_execution(&id).map_err(map_err)?;
     require(!state.environments.request_blocks_turn(&id).map_err(map_err)?,"environment_migration_pending: use the request's owner failure recovery before changing its binding").map_err(map_err)?;
+    require(input.environment_id.is_some() || !state.environments.requires_explicit_host_recovery(&id).map_err(map_err)?,
+        "conflict: use the approved request's Restore Host execution action; it destroys retained computation before clearing the persistent isolation fence").map_err(map_err)?;
     let thread = state.get_thread(&id).map_err(map_err)?;
     let threads = state.list_threads(None, true).map_err(map_err)?;
     for descendant in threads

@@ -55,4 +55,19 @@ test('real owner browser approves actual CLI proposal and original thread contin
   expect(readFileSync(path.join(input.project, 'host-pty-progress'), 'utf8')).toBe(progress);
   const { existsSync } = await import('node:fs'); expect(existsSync(path.join(input.project, 'old-pty-must-not-write'))).toBe(false);
   await page.evaluate(() => (window as unknown as { guardianProbe: { ws: WebSocket } }).guardianProbe.ws.close());
+  // Returning to Host is another owner decision. The old selector must not
+  // silently drop a completed request's durable isolation fence.
+  await expect.poll(async () => (await (await page.request.get(`/api/threads/${input.threadId}`)).json()).thread.status).toBe('idle');
+  const oldSelector = await page.request.put(`/api/threads/${input.threadId}/environment`, { data: { environmentId: null } });
+  expect(oldSelector.ok()).toBe(false);
+  await card.getByRole('button', { name: 'Restore Host execution…' }).click();
+  const recovery = page.getByRole('dialog', { name: 'Abandon migration and restore Host?' });
+  const restoreResponse = page.waitForResponse(r => new URL(r.url()).pathname === `/api/environment-requests/${input.requestId}/recoverHost` && r.request().method() === 'POST');
+  await recovery.getByRole('button', { name: 'Destroy computation and restore Host' }).click();
+  expect((await restoreResponse).status()).toBe(200);
+  await expect(card.getByText('Cancelled', { exact: true })).toBeVisible();
+  const recovered = await (await page.request.get(`/api/environment-requests/${input.requestId}`)).json();
+  const environments = await (await page.request.get('/api/environments')).json();
+  expect(environments.environments.find((value: { id: string }) => value.id === recovered.environmentId).state).toBe('destroyed');
+  expect(existsSync(path.join(input.project, 'continuation-evidence.json'))).toBe(true);
 });

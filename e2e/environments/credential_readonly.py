@@ -2,7 +2,7 @@
 """Real native single-file RO bind, inode replacement and no parent widening."""
 import argparse, json, shutil, os
 from pathlib import Path
-from native_credentials import attach
+from native_credentials import attach, jwt
 from reincarnation import HERE, run, wait
 
 
@@ -24,6 +24,12 @@ def main():
         print("PASS", name, flush=True)
 
     source = Path(meta["sources"]) / "codex/auth.json"
+    # The preceding RW test refreshed this file. Force a stale synthetic login
+    # before proposing the new RO grant so account/read actually needs refresh.
+    auth = json.loads(source.read_text())
+    auth["last_refresh"] = "2025-01-01T00:00:00Z"
+    auth["tokens"]["access_token"] = jwt({"exp": 1})
+    source.write_text(json.dumps(auth))
     original = source.read_bytes()
     parent_canary = source.parent / "unauthorized-parent-canary"
     parent_canary.write_text("public metadata canary; parent is not granted\n")
