@@ -206,6 +206,10 @@ sources. An unverified version or incompatible metadata fails with an
 `unsupported_environment_claude_*` error; there is no environment-only fallback.
 The requested model must be accepted by the adapter's advertised model picker;
 a rejected model selection also fails explicitly before a prompt is sent.
+Explicit full access selects Claude's advertised `bypassPermissions` mode. If
+project settings or the adapter disable that mode, the request fails explicitly
+instead of silently entering another permission mode. Guarded policies retain
+their existing permission mapping.
 The image's package/ELF installation checks do not establish native protocol
 compatibility. Validate its actual ACP/native CLI with a dedicated API fixture
 and enforced worker limits before enabling that image.
@@ -230,6 +234,9 @@ Native transcript inspection, scheduled-history recovery, host usage hydration
 and full context inspection are unavailable for isolated threads until they
 have an environment state adapter. They never scan host harness homes to fill
 missing environment history. Supervisor conversation history remains available.
+Environment capability snapshots hide native fork and fork-at actions even if
+the ACP adapter advertises them. This does not change host session capabilities
+or live ACP token and context-window usage reporting.
 
 A private worker loopback gateway implements thread self, messages, child
 creation and managed-worktree access without a device registration, machine

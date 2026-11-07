@@ -68,6 +68,9 @@ mod effort_tests;
 #[path = "isolated_claude.rs"]
 mod isolated_claude;
 
+#[path = "isolated_capabilities.rs"]
+mod isolated_capabilities;
+
 // Startup and cancelled probes must not leave the notification mux holding a child alive.
 struct StartupProcess(Option<Arc<AcpProcess>>);
 impl Drop for StartupProcess {
@@ -684,6 +687,7 @@ impl AcpRuntime {
         if let Some(info) = &harness_info {
             super::deepseek::patch_capabilities(&mut caps, info, &Value::Null);
         }
+        isolated_capabilities::restrict(&mut caps, isolated);
         let toolbox = adapter.toolbox_items(&caps, &negotiated);
         negotiated.compact = caps.turns.compact;
         negotiated.fork = caps.branching.fork;
@@ -1349,7 +1353,13 @@ impl AcpRuntime {
             Self::store_dsh_session(live, &state);
             return Ok(());
         }
-        if let Some(mode_id) = resolve_mode(&live.available_modes, &policy) {
+        let claude_mode = if live.isolated_claude.is_some() {
+            isolated_claude::product_mode(&live.available_modes, &policy)?
+        } else {
+            None
+        };
+        if let Some(mode_id) = claude_mode.or_else(|| resolve_mode(&live.available_modes, &policy))
+        {
             if live.current_mode_id.as_deref() != Some(mode_id.as_str()) {
                 Self::apply_setting_op(process, live, SessionSettingOp::SetMode { mode_id })
                     .await?;
@@ -2190,6 +2200,7 @@ impl AgentRuntime for AcpRuntime {
                 super::deepseek::patch_capabilities(&mut caps, info, &live.dsh_session);
             }
             apply_config_option_caps(&mut caps, &live.config_options);
+            isolated_capabilities::restrict(&mut caps, live.process.execution.is_some());
             snapshot.toolbox_items = adapter.toolbox_items(&caps, &negotiated);
             snapshot.effective_capabilities = Some(caps);
             if let Some(info) = &live.harness_info {

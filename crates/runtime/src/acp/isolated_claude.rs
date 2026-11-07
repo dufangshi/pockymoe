@@ -1,5 +1,6 @@
 //! Claude's native settings env is applied after its launch env. Pin the
 //! environment broker in the programmatic settings tier as well as SDK env.
+use super::super::modes::{ProductSessionPolicy, SessionMode};
 use anyhow::{ensure, Context, Result};
 use serde_json::{json, Map, Value};
 
@@ -108,6 +109,20 @@ fn object(value: &mut Value) -> Result<&mut Map<String, Value>> {
 
 fn child<'a>(parent: &'a mut Map<String, Value>, key: &str) -> Result<&'a mut Map<String, Value>> {
     object(parent.entry(key).or_insert_with(|| json!({})))
+}
+
+pub(super) fn product_mode(
+    modes: &[SessionMode],
+    policy: &ProductSessionPolicy,
+) -> Result<Option<String>> {
+    if !policy.allows_writes_outside_workspace() {
+        return Ok(None);
+    }
+    ensure!(
+        modes.iter().any(|mode| mode.id == "bypassPermissions"),
+        "unsupported_environment_claude_permissions: the adapter or project disables full access"
+    );
+    Ok(Some("bypassPermissions".into()))
 }
 
 #[cfg(test)]
@@ -221,6 +236,31 @@ mod tests {
             let error = route().pin(meta).err().unwrap().to_string();
             assert!(error.starts_with("unsupported_environment_claude_metadata"));
             assert!(!error.contains("private-file"));
+        }
+    }
+
+    #[test]
+    fn maps_only_explicit_full_access_and_respects_disabled_bypass() {
+        let full = ProductSessionPolicy {
+            approval_mode: Some("yolo".into()),
+            sandbox_mode: Some("danger-full-access".into()),
+            collaboration_mode: None,
+        };
+        let modes = [SessionMode {
+            id: "bypassPermissions".into(),
+            name: None,
+        }];
+        assert_eq!(
+            product_mode(&modes, &full).unwrap().as_deref(),
+            Some("bypassPermissions")
+        );
+        assert!(product_mode(&[], &full).is_err());
+        for sandbox in ["workspace-write", "read-only"] {
+            let guarded = ProductSessionPolicy {
+                sandbox_mode: Some(sandbox.into()),
+                ..full.clone()
+            };
+            assert_eq!(product_mode(&modes, &guarded).unwrap(), None);
         }
     }
 }
