@@ -34,7 +34,7 @@ const messages = {
   allowedEgressHosts: ['允许的出站域名（每行一个）', 'Allowed outbound domains (one per line)'],
   egressHint: ['默认不允许外网访问。按需授权包源或 Git 的完整域名，不支持通配符；仅允许 HTTPS。模型连接使用单独配置的上游。', 'External access is blocked by default. Authorize exact package or Git domains as needed, without wildcards; HTTPS only. Model connections use the separately configured upstream.'],
   egressInvalid: ['请输入完整域名，不含协议、端口、路径或通配符。', 'Enter exact domains without a scheme, port, path or wildcard.'],
-  isolationHint: ['项目内的技能随工作副本可用。原生订阅登录、Git SSH 与带凭证的 MCP 暂不受支持；设备的主目录和配置不会整体带入。', 'Project skills remain available with the working copy. Native subscription sign-in, Git SSH and credentialed MCP are unsupported; the device home and configuration are not copied wholesale.'],
+  isolationHint: ['项目内的技能随工作副本可用。原生订阅文件和其他凭证需单独申请并批准；设备的主目录和配置不会整体带入。系统 keychain 与 SSH 转发暂不受支持。', 'Project skills remain available with the working copy. Native subscription files and other credentials require a separate approved request; the device home and configuration are not projected wholesale. OS keychains and SSH forwarding are unsupported.'],
   cpu: ['CPU（核）', 'CPU (cores)'],
   memory: ['内存（GiB）', 'Memory (GiB)'],
   pids: ['进程数上限', 'Process limit'],
