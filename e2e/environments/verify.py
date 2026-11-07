@@ -23,6 +23,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zlib
 from pathlib import Path
 sys.dont_write_bytecode = True
 from wire import WebSocket
@@ -143,7 +144,7 @@ class API:
         self.cli_bearer = None
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def request(self, path, body=None, method=None, allowed=(200,)):
+    def request(self, path, body=None, method=None, allowed=(200,), raw=False):
         headers = {"User-Agent": "pockymoe-environment-e2e/1.0", "Content-Type": "application/json"}
         if self.key:
             headers["x-api-key"] = self.key
@@ -169,6 +170,8 @@ class API:
             except (ValueError, TypeError):
                 pass
         require(status in allowed, f"HTTP {request.get_method()} {path} returned {status}")
+        if raw:
+            return status, data
         try:
             return status, json.loads(data) if data else None
         except ValueError:
@@ -459,15 +462,15 @@ class Supervisor:
         deadline = time.monotonic() + 50
         while time.monotonic() < deadline:
             detail = self.api(f"/api/threads/{thread}")
-            thread_state = detail.get("thread", detail).get("status")
             results = find_results(detail)
             matched = [r for r in results if r.get("case") == case["case"] and r.get("caseId") == case["caseId"]]
-            if matched and thread_state != "running":
+            own_turns = [turn for turn in detail.get("turns", []) if case["caseId"] in json.dumps(turn)]
+            if matched and any(turn.get("status") == "completed" for turn in own_turns):
                 return matched[-1]
             errors = [r for r in results if r.get("case") == "fixture-error" and r.get("caseId") == case["caseId"]]
             if errors:
                 raise Failure("Fixture case error: " + case["case"] + " (" + errors[-1].get("failureType", "unknown") + ")")
-            if thread_state == "failed":
+            if any(turn.get("status") == "failed" for turn in own_turns):
                 raise Failure("Fixture turn failed: " + case["case"])
             time.sleep(0.2)
         raise Failure("Fixture turn result not observed: " + case["case"])
@@ -630,6 +633,45 @@ def check_host_mcp_rejected(supervisor, thread_id, root, evidence):
         supervisor.api("/api/cli", {"operation": "mcpRemove", "name": name})
 
 
+def fixture_png():
+    def chunk(kind, data):
+        return struct.pack("!I", len(data)) + kind + data + struct.pack("!I", zlib.crc32(kind + data))
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!IIBBBBB", 1, 1, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(bytes([0, 64, 128, 192, 255]))) + chunk(b"IEND", b"")
+
+
+def check_web_file_routes(supervisor, thread_id, path, evidence, host_canary_path, prefix, running):
+    thread = supervisor.api(f"/api/threads/{thread_id}")["thread"]
+    workspace_id = thread["workspaceId"]
+    api = supervisor.api
+    allowed = (200, 201, 400, 403, 404, 409, 422, 503)
+    relative_image = f".temp/threads/{thread_id}/fixture-pixel.png"
+    image = Path(path) / relative_image
+    if running:
+        image.parent.mkdir(parents=True, exist_ok=True)
+        image.write_bytes(fixture_png())
+    scoped_files = f"/api/workspaces/{workspace_id}/files?threadId={thread_id}"
+    marker = Path(path) / (("web-created-" if running else "stopped-create-") + uuid.uuid4().hex + ".txt")
+    status, _ = api.request(scoped_files, {"path": marker.name}, allowed=allowed)
+    evidence.check(prefix + "-web-create-" + ("inside-running-worker" if running else "stopped-refused-without-host-write"),
+        status == 201 and marker.is_file() if running else status in {400, 403, 409, 503} and not marker.exists(), {"httpStatus": status})
+    status, payload = api.request(f"/api/threads/{thread_id}/assets/image?" + urllib.parse.urlencode({"path": relative_image}), allowed=allowed, raw=True)
+    evidence.check(prefix + "-thread-image-" + ("read-by-worker" if running else "stopped-refused"),
+        status == 200 and payload == fixture_png() if running else status in {400, 403, 409, 503} and payload != fixture_png(), {"httpStatus": status})
+    status, payload = api.request(f"/api/workspaces/{workspace_id}/files/download?" + urllib.parse.urlencode({"threadId": thread_id, "path": "tracked.txt"}), allowed=allowed, raw=True)
+    evidence.check(prefix + "-workspace-download-explicitly-unsupported", status in {400, 403, 409, 503}
+        and (not running or b"unsupported_environment" in payload and b"download" in payload), {"httpStatus": status})
+    canary = Path(host_canary_path).read_bytes()
+    for action in ["stat", "preview", "raw"]:
+        status, payload = api.request(f"/api/threads/{thread_id}/linked-files/{action}?" + urllib.parse.urlencode({"path": host_canary_path}), allowed=allowed, raw=True)
+        evidence.check(prefix + "-linked-host-file-" + action + "-denied", status in {400, 403, 409, 503} and canary not in payload,
+            {"httpStatus": status, "hostCanaryObserved": canary in payload})
+    status, _ = api.request(f"/api/workspaces/{workspace_id}/files/tree?path=.", allowed=allowed)
+    evidence.check(prefix + "-unqualified-workspace-tree-denied", status in {400, 403, 409}, {"httpStatus": status})
+    unqualified = Path(path) / ("unqualified-create-" + uuid.uuid4().hex + ".txt")
+    status, _ = api.request(f"/api/workspaces/{workspace_id}/files", {"path": unqualified.name}, allowed=allowed)
+    evidence.check(prefix + "-unqualified-workspace-create-denied", status in {400, 403, 409} and not unqualified.exists(), {"httpStatus": status})
+
+
 def blocked_writers(supervisor, thread_id, path):
     supervisor.api(f"/api/threads/{thread_id}/release", {})
     ready_file = Path(path) / "blocked-stdin-ready.json"
@@ -651,7 +693,7 @@ def writer_progress(path, pids):
     return [(Path(path) / ("detached-progress-" + str(pid) + ".txt")).read_text() for pid in pids]
 
 
-def check_uncooperative_lifecycle(supervisor, thread_id, environment, connection, path, evidence, crash=False):
+def check_uncooperative_lifecycle(supervisor, thread_id, environment, connection, path, evidence, crash=False, host_canary_path=None):
     ready = blocked_writers(supervisor, thread_id, path)
     old_container = environment["containerId"]
     old_generation = environment["generation"]
@@ -689,6 +731,8 @@ def check_uncooperative_lifecycle(supervisor, thread_id, environment, connection
             break
         time.sleep(0.1)
     require(thread.get("status") not in {"running", "recovering"}, "Old fixture turn did not settle after explicit interruption")
+    if host_canary_path:
+        check_web_file_routes(supervisor, thread_id, path, evidence, host_canary_path, prefix, running=False)
     replay_marker = (Path(path) / "blocked-stdin-ready.json").read_bytes()
     fresh = supervisor.api(f"/api/environments/{environment['id']}/start", {})
     require(fresh.get("state") == "running", "Environment did not explicitly restart after quiescence")
@@ -700,7 +744,7 @@ def check_uncooperative_lifecycle(supervisor, thread_id, environment, connection
     environment.update(fresh)
 
 
-def runtime_checks(supervisor, state, root, connection, evidence, model_upstream, relay, resume=False):
+def runtime_checks(supervisor, state, root, connection, evidence, model_upstream, relay, resume=False, pressure_gate=None):
     api = supervisor.api
     request = dict(connection, name=state["prefix"], image=state["image"],
         allowedRoots=[state["originalPath"], state["linkedPath"], str(root / "bin")],
@@ -797,11 +841,11 @@ def runtime_checks(supervisor, state, root, connection, evidence, model_upstream
                 child_identity = supervisor.prompt(child_id, {"case": "identity", "databasePath": state["databasePath"], "hostConfigPath": str(root / "home/.codex")})
                 if resume and state.get("childThreadId"):
                     evidence.check("native-child-session-resume-after-supervisor-restart", True)
-            except Failure:
+            except Failure as error:
                 # Keep the resumed-session failure visible while a fresh child
                 # lets independent original/linked checks continue.
                 evidence.check("native-child-session-resume-after-supervisor-restart", False,
-                    {"childThreadId": child_id, "failure": "Fixture identity turn failed"})
+                    {"childThreadId": child_id, "failure": str(error)})
                 child = supervisor.prompt(thread["id"], {"case": "child-create"})
                 require(child.get("created"), "Fresh fixture child creation also failed")
                 child_id = child["childThreadId"]
@@ -820,6 +864,10 @@ def runtime_checks(supervisor, state, root, connection, evidence, model_upstream
         result = supervisor.prompt(thread["id"], {"case": "model"})
         evidence.check(label + "-host-broker-model-sse", all(result.get(field) is True for field in
             ["requestOk", "sse", "deltaReceived", "completed", "incrementalStream"]), result)
+        before_requests = len(model_upstream.requests)
+        result = supervisor.prompt(thread["id"], {"case": "model-deny"})
+        evidence.check(label + "-broker-profile-and-endpoint-denied-before-forwarding",
+            result.get("otherHarnessProfileDenied") and result.get("wrongEndpointDenied") and len(model_upstream.requests) == before_requests, result)
         result = supervisor.prompt(thread["id"], {"case": "deny", "hostPath": state["hostCanaryPath"]})
         evidence.check(label + "-host-path-callbacks-denied", all(result.get(field) is True for field in
             ["readDenied", "writeDenied", "nativeReadDenied", "nativeWriteDenied", "symlinkReadDenied"])
@@ -841,6 +889,7 @@ def runtime_checks(supervisor, state, root, connection, evidence, model_upstream
         evidence.check(label + "-explicit-command-inside", output.get("exitCode") == 0 and command_output.get("workerMarked") is True)
         tree = api(f"/api/workspaces/{workspace['id']}/files/tree?threadId={thread['id']}&path=.")
         evidence.check(label + "-web-file-tree", isinstance(tree, dict) and tree.get("kind") == "directory")
+        check_web_file_routes(supervisor, thread["id"], path, evidence, state["hostCanaryPath"], label, running=True)
         # The true same-port origin probe uses a worker TCP stream; full Relay
         # authorization, sharing and public preview tests remain the primary's job.
         container = environment.get("containerId")
@@ -862,6 +911,8 @@ def runtime_checks(supervisor, state, root, connection, evidence, model_upstream
                     evidence.check(label + "-rust-worker-" + protocol, passed)
                 except (OSError, EOFError, ConnectionError) as error:
                     evidence.check(label + "-rust-worker-" + protocol, False, {"failureType": type(error).__name__})
+        pty_file = Path(path) / "pty.txt"
+        pty_file.unlink(missing_ok=True)
         created_shell = api(f"/api/threads/{thread['id']}/shell", {"cols": 80, "rows": 24, "label": "Environment acceptance"})
         shell_id = created_shell["activeShellId"]
         try:
@@ -877,7 +928,6 @@ def runtime_checks(supervisor, state, root, connection, evidence, model_upstream
                 require(viewer, "PTY viewer did not attach")
                 websocket.send_json({"type": "shell.input", "shellId": shell_id, "viewerId": viewer,
                     "data": "python3 -c \"from pathlib import Path;Path('pty.txt').write_text(Path('/etc/hostname').read_text())\"\n"})
-                pty_file = Path(path) / "pty.txt"
                 deadline = time.monotonic() + 5
                 while not pty_file.exists() and time.monotonic() < deadline:
                     time.sleep(0.1)
@@ -905,6 +955,15 @@ def runtime_checks(supervisor, state, root, connection, evidence, model_upstream
 
     # Real cancellation with a native descendant, then a finite side effect.
     tid, environment = threads[0]["id"], environments[0]
+    if pressure_gate:
+        pressure_gate = pressure_gate.resolve()
+        require(pressure_gate.is_relative_to(root), "Pressure coordination marker must remain inside this run")
+        write_json(root / "pressure-pending.json", {"gateFile": str(pressure_gate), "status": "waiting-for-shared-lab-build-to-finish"})
+        print(json.dumps({"status": "pressure-waiting", "gateFile": str(pressure_gate)}), flush=True)
+        deadline = time.monotonic() + 600
+        while not pressure_gate.exists() and time.monotonic() < deadline:
+            time.sleep(0.5)
+        require(pressure_gate.exists(), "Shared lab image build has not finished; pressure probes remain pending")
     for case, fields in [("cpu-pressure", ["cpuThrottled"]), ("pids-pressure", ["pidsLimited"]),
             ("oom-pressure", ["nativeChildOomKilled", "oomCounterIncreased"])]:
         result = supervisor.prompt(tid, {"case": case})
@@ -923,8 +982,8 @@ def runtime_checks(supervisor, state, root, connection, evidence, model_upstream
     evidence.check("cancel-native-process-domain-cleaned", alive == b"False")
     check_detached_cleanup(supervisor, tid, environment, connection, state["originalPath"], evidence)
     check_detached_cleanup(supervisor, tid, environment, connection, state["originalPath"], evidence, transport=True)
-    check_uncooperative_lifecycle(supervisor, tid, environment, connection, state["originalPath"], evidence)
-    check_uncooperative_lifecycle(supervisor, tid, environment, connection, state["originalPath"], evidence, crash=True)
+    check_uncooperative_lifecycle(supervisor, tid, environment, connection, state["originalPath"], evidence, host_canary_path=state["hostCanaryPath"])
+    check_uncooperative_lifecycle(supervisor, tid, environment, connection, state["originalPath"], evidence, crash=True, host_canary_path=state["hostCanaryPath"])
     supervisor.prompt(tid, {"case": "once"})
     remembered = supervisor.prompt(tid, {"case": "remember-capability"})
     evidence.check("short-lived-capability-retained-privately-for-revocation-test", remembered.get("rememberedPrivately") is True)
@@ -1018,7 +1077,7 @@ def run_acceptance(args):
         supervisor.start()
         relay.connected()
         model_upstream.activate(supervisor.api)
-        runtime_checks(supervisor, state, root, connection, evidence, model_upstream, relay, args.resume)
+        runtime_checks(supervisor, state, root, connection, evidence, model_upstream, relay, args.resume, args.pressure_gate)
         # Restart only our Popen-owned Supervisor and retain its private DB.
         supervisor.stop()
         supervisor.start()
@@ -1189,6 +1248,7 @@ def main():
     run_parser.add_argument("--binary", type=Path, required=True)
     run_parser.add_argument("--ready-commit", required=True)
     run_parser.add_argument("--resume", action="store_true", help="Resume this manifest's retained failed resources after a newly approved build")
+    run_parser.add_argument("--pressure-gate", type=Path, help="Wait for this run-local coordination marker before pressure while another lab image builds")
     stress_parser = subparsers.add_parser("stress", help="Actual bounded CPU/PIDs/OOM probes via the lab's real Dokploy API; no Supervisor")
     stress_parser.add_argument("--manifest", type=Path)
     cleanup_parser = subparsers.add_parser("cleanup-workers", help="Destroy only this run's retained workers, leaving the base lab")

@@ -110,6 +110,7 @@ class Relay:
         self.require(False, "Dedicated test Supervisor did not connect to its isolated Relay")
 
     def preview(self, authority, path="/", cookie=None, hold=False):
+        started, timestamp = time.monotonic(), time.time()
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=20)
         headers = {"Host": authority, "Accept": "application/json"}
         if cookie:
@@ -118,10 +119,74 @@ class Relay:
         response = connection.getresponse()
         if hold:
             return connection, response
-        body = response.read(1048576)
+        try:
+            body = response.read(1048576)
+        except http.client.IncompleteRead as error:
+            # Preserve the real truncation as a failure, while allowing other
+            # protocols to collect evidence from the received public payload.
+            body = error.partial
+            self.evidence.check("relay-preview-http-body-complete", False,
+                {"path": urllib.parse.urlsplit(path).path, "status": response.status,
+                 "timestampUnix": timestamp, "elapsedSeconds": round(time.monotonic() - started, 3),
+                 "headers": {name: response.getheader(name) for name in ["Content-Type", "Transfer-Encoding", "Content-Length", "Connection"]},
+                 "partialBytes": len(body), "fixtureEventCount": body.count(b"event: fixture"),
+                 "lastFramingBytesHex": body[-2:].hex() if body.endswith((b"\n\n", b"\r\n")) else None,
+                 "chunkedTerminatorParsed": False if response.chunked else None})
         result = response.status, {name.lower(): value for name, value in response.getheaders()}, body
         connection.close()
         return result
+
+    def wire_sse(self, authority, cookie, index):
+        """Inspect HTTP framing in memory; never serialize origin data/cookies."""
+        started = time.monotonic()
+        raw = b""
+        eof = timed_out = False
+        with socket.create_connection(("127.0.0.1", self.port), timeout=8) as stream:
+            stream.sendall(("GET /sse HTTP/1.1\r\nHost: " + authority + "\r\nCookie: " + cookie + "\r\nConnection: close\r\n\r\n").encode())
+            try:
+                while len(raw) < 131072:
+                    part = stream.recv(65536)
+                    if not part:
+                        eof = True
+                        break
+                    raw += part
+            except socket.timeout:
+                timed_out = True
+        head, separator, wire_body = raw.partition(b"\r\n\r\n")
+        lines = head.split(b"\r\n")
+        headers = {}
+        for line in lines[1:]:
+            name, colon, value = line.partition(b":")
+            if colon and name.lower() in {b"content-type", b"transfer-encoding", b"content-length", b"connection"}:
+                headers[name.decode().lower()] = value.decode(errors="replace").strip()
+        body, terminal = wire_body, None
+        chunked = "chunked" in headers.get("transfer-encoding", "").lower()
+        if chunked:
+            body, position, terminal = b"", 0, False
+            while position < len(wire_body):
+                line_end = wire_body.find(b"\r\n", position)
+                if line_end < 0:
+                    break
+                try:
+                    count = int(wire_body[position:line_end].split(b";", 1)[0], 16)
+                except ValueError:
+                    break
+                position = line_end + 2
+                if count == 0:
+                    terminal = wire_body[position:position + 2] == b"\r\n"
+                    break
+                if position + count + 2 > len(wire_body):
+                    body += wire_body[position:]
+                    break
+                body += wire_body[position:position + count]
+                position += count + 2
+        status = int(lines[0].split()[1]) if separator and len(lines[0].split()) >= 2 else None
+        complete = terminal if chunked else len(body) == int(headers["content-length"]) if "content-length" in headers else eof
+        self.evidence.check("relay-raw-http-sse-framing-" + str(index), status == 200 and complete and body.count(b"event: fixture") == 3,
+            {"status": status, "headers": headers, "wireBytes": len(raw), "decodedBytes": len(body),
+             "fixtureEventCount": body.count(b"event: fixture"), "terminalChunkReceived": terminal,
+             "wireEndsWithTerminalChunk": wire_body.endswith(b"0\r\n\r\n") if chunked else None,
+             "eof": eof, "timedOut": timed_out, "elapsedSeconds": round(time.monotonic() - started, 3)})
 
     def open_cookie(self, mapping, role):
         path = f"/relay/devices/{self.device_id}/port-mappings/{mapping['id']}/open"
@@ -200,7 +265,8 @@ class Relay:
                 live.close()
                 live_connection.close()
             if mapping and mapping.get("id"):
-                supervisor.api("/api/cli", {"operation": "previewStop", "target": mapping["id"]})
+                # Binding may already have synchronously removed the old lease.
+                supervisor.api.request("/api/cli", {"operation": "previewStop", "target": mapping["id"]}, allowed=(200, 400, 404))
             server.shutdown()
             server.server_close()
             if not bound:
@@ -226,6 +292,7 @@ class Relay:
             self.evidence.check("relay-public-http-environment-" + str(index), status == 200 and json.loads(payload).get("label") == ["original", "linked"][index])
             status, _, payload = self.preview(authority, "/sse", cookie)
             self.evidence.check("relay-public-sse-environment-" + str(index), status == 200 and payload.count(b"event: fixture") == 3)
+            self.wire_sse(authority, cookie, index)
             with WebSocket(f"ws://127.0.0.1:{self.port}/ws", {"Host": authority, "Cookie": cookie}) as websocket:
                 websocket.send("relay-acceptance")
                 self.evidence.check("relay-public-websocket-environment-" + str(index), websocket.receive() == ["original", "linked"][index] + ":relay-acceptance")

@@ -190,6 +190,20 @@ while True:
     elif name == "preview-stop":
         stopped = cli_json(["preview", "stop", case["id"]], cwd)
         result["stopped"] = isinstance(stopped, dict) and stopped.get("stopped") is True
+    elif name == "model-deny":
+        base = os.environ.get("POCKYMOE_URL", "http://127.0.0.1:45680")
+        for field, endpoint in [("otherHarnessProfileDenied", "/model/claude/v1/messages"),
+                ("wrongEndpointDenied", "/model/codex/v1/messages")]:
+            request = urllib.request.Request(base + endpoint, data=json.dumps({"model": "fixture", "messages": [], "stream": True}).encode(),
+                headers={"Authorization": "Bearer " + os.environ.get("POCKYMOE_TOKEN", ""), "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(request, timeout=8) as reply:
+                    reply.read(1048576)
+                    result[field] = False
+            except urllib.error.HTTPError as error:
+                result[field] = error.code >= 400
+            except OSError:
+                result[field] = False
     elif name == "model":
         base = os.environ.get("POCKYMOE_URL", "http://127.0.0.1:45680")
         body = {"model": "fixture", "stream": True, "input": "environment acceptance"}

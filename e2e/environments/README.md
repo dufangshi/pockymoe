@@ -57,6 +57,10 @@ After a failed run retains its resources, pass `--resume` with the next explicit
 approved build to reuse that run's connection, thread and environment IDs. Earlier
 redacted evidence is archived under its `attempts/` directory. A normal new run
 requires a fresh `prepare` when a manifest already contains retained workers.
+If another image is building in the same small lab, `--pressure-gate /path/to/run/ready`
+waits at the pressure phase for that run-local marker. Create the marker after
+the image build finishes and the other computation is held; omit this option
+when the lab is dedicated to this acceptance run.
 
 The driver checks ancestry and loader compatibility, pins each binary at a new
 SHA-derived path without replacing an existing container bind, and
@@ -83,6 +87,12 @@ The original thread creates a child with its actual CLI; the child must inherit
 the environment and pass the same isolation identity probe. A host-only HTTP
 fixture checks authenticated model SSE through the real capability gateway and
 rotates its private long-term canary key without copying it into either worker.
+The custom harness also attempts another harness's model profile and an invalid
+endpoint. Both must be refused before any request reaches the host fixture upstream.
+File routes create a real file while running, reject creation after Stop, reject
+unqualified workspace requests and downloads, and refuse host-canary linked-file
+stat/preview/raw access. A small generated PNG attachment must be read through
+the worker while running and become unavailable after Stop.
 Real Relay tests create previews through each environment's authenticated CLI,
 then exercise separate same-port mappings, owner HTTP/WS/SSE, thread sharing,
 unshared-account refusal, cookie separation, single-use launch tickets and
@@ -101,6 +111,9 @@ Supervisor log. Actual API keys and generated host canaries stay in private
 mode-0600 files. Fixture messages expose only selected fields and booleans; they
 never echo prompts, arbitrary command output, exception text, environment dumps
 or canary values. Preserve the private directory when sharing evidence.
+SSE failures retain only selected framing headers, times, partial byte/event
+counts and separator booleans. A raw HTTP probe records whether the terminating
+chunk and EOF arrived; it never serializes the response payload or cookies.
 
 Relay checks exercise actual HTTP protocol and authorization, with no browser UI
 assertion or public DNS/TLS deployment. A passing origin or worker TCP probe is
