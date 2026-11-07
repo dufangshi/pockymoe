@@ -279,7 +279,9 @@ fn create_mapping(
 ) -> Result<Mapping> {
     pockymoe_runtime::host_mode::require_feature(state.host_capabilities.previews, "previews")?;
     if port == 0 || port == state.config.port || label.len() > 120 {
-        bail!("Choose an HTTP service port from 1–65535, excluding the Supervisor port. Labels may contain up to 120 bytes.");
+        bail!(
+            "Choose an HTTP service port from 1–65535, excluding the Supervisor port. Labels may contain up to 120 bytes."
+        );
     }
     let environment = thread
         .map(|t| state.environments.for_thread(t))
@@ -528,7 +530,7 @@ pub(crate) fn open(state: Arc<Supervisor>, message: &Value) {
             result = connect_mapping(&state, &mapping, &ticket) => {
                 if let Err(error) = result { tracing::debug!(%error, port=mapping.port, "port preview stream ended"); }
             }
-            _ = watch_lease(&state, &mapping.id, lease.as_deref()) => {}
+            _ = watch_mapping(&state, &mapping, lease.as_deref()) => {}
         }
     });
     handles.push(ActiveConnection {
@@ -537,9 +539,11 @@ pub(crate) fn open(state: Arc<Supervisor>, message: &Value) {
     });
 }
 
-async fn watch_lease(state: &Supervisor, mapping: &str, lease: Option<&str>) {
+async fn watch_mapping(state: &Supervisor, mapping: &Mapping, lease: Option<&str>) {
     loop {
-        if !lease_live(state, mapping, lease) {
+        if !lease_live(state, &mapping.id, lease)
+            || mapping_execution_context(state, mapping).is_err()
+        {
             return;
         }
         // Sleep to the exact expiry, while rechecking binding changes and renewed
@@ -603,24 +607,50 @@ async fn connect(state: &Supervisor, port: u16, ticket: &str) -> Result<()> {
     connect_target(state, port, ticket, None).await
 }
 async fn connect_mapping(state: &Supervisor, mapping: &Mapping, ticket: &str) -> Result<()> {
-    let context = if let Some(environment) = &mapping.environment_id {
-        let thread = mapping
-            .thread_id
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("environment mapping has no thread"))?;
-        let context = state
-            .execution_context(thread)?
-            .ok_or_else(|| anyhow::anyhow!("environment mapping is unbound"))?;
-        anyhow::ensure!(
-            &context.environment_id == environment
-                && Some(context.generation) == mapping.environment_generation,
-            "stale preview generation"
-        );
-        Some(context)
-    } else {
-        None
-    };
+    let context = mapping_execution_context(state, mapping)?;
     connect_target(state, mapping.port, ticket, context).await
+}
+
+fn validate_mapping_environment(mapping: &Mapping, bound: Option<(&str, u64)>) -> Result<()> {
+    match (mapping.environment_id.as_deref(), bound) {
+        (None, None) if mapping.environment_generation.is_none() => Ok(()),
+        (Some(expected), Some((actual, generation)))
+            if expected == actual
+                && mapping.environment_generation == Some(generation)
+                && mapping.thread_id.is_some() =>
+        {
+            Ok(())
+        }
+        _ => anyhow::bail!("stale preview execution environment; create a new mapping"),
+    }
+}
+
+pub(crate) fn mapping_execution_context(
+    state: &Supervisor,
+    mapping: &Mapping,
+) -> Result<Option<pockymoe_runtime::execution::ExecutionContext>> {
+    let bound = mapping
+        .thread_id
+        .as_deref()
+        .map(|thread| state.environments.for_thread(thread))
+        .transpose()?
+        .flatten();
+    validate_mapping_environment(
+        mapping,
+        bound
+            .as_ref()
+            .map(|environment| (environment.id.as_str(), environment.generation)),
+    )?;
+    match (&mapping.environment_id, &mapping.thread_id) {
+        (Some(_), Some(thread)) => {
+            let context = state
+                .execution_context(thread)?
+                .ok_or_else(|| anyhow::anyhow!("environment mapping is unbound"))?;
+            context.checked()?;
+            Ok(Some(context))
+        }
+        _ => Ok(None),
+    }
 }
 async fn connect_target(
     state: &Supervisor,
@@ -691,6 +721,55 @@ async fn connect_target(
 #[cfg(test)]
 mod owner_mapping_tests {
     use super::*;
+    #[test]
+    fn preview_provenance_cannot_survive_a_change_of_execution_environment() {
+        let mut mapping = Mapping {
+            id: "preview".into(),
+            port: 18765,
+            label: String::new(),
+            created_at: String::new(),
+            thread_id: Some("thread".into()),
+            environment_id: None,
+            environment_generation: None,
+            preserve_origin: false,
+        };
+        assert!(validate_mapping_environment(&mapping, None).is_ok());
+        assert!(validate_mapping_environment(&mapping, Some(("environment", 1))).is_err());
+        mapping.environment_id = Some("environment".into());
+        mapping.environment_generation = Some(1);
+        assert!(validate_mapping_environment(&mapping, Some(("environment", 1))).is_ok());
+        assert!(validate_mapping_environment(&mapping, None).is_err());
+        assert!(validate_mapping_environment(&mapping, Some(("environment", 2))).is_err());
+        assert!(validate_mapping_environment(&mapping, Some(("other", 1))).is_err());
+        mapping.thread_id = None;
+        assert!(validate_mapping_environment(&mapping, Some(("environment", 1))).is_err());
+    }
+
+    #[tokio::test]
+    async fn unbound_environment_preview_never_opens_host_loopback() {
+        let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mapping = Mapping {
+            id: "preview".into(),
+            port: listener.local_addr().unwrap().port(),
+            label: String::new(),
+            created_at: String::new(),
+            thread_id: Some("thread".into()),
+            environment_id: Some("environment".into()),
+            environment_generation: Some(1),
+            preserve_origin: false,
+        };
+        assert!(
+            connect_mapping(&state, &mapping, &Uuid::new_v4().to_string())
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
+    }
     use crate::owner_trust::tests::{decoded, encrypted, live_owner};
     use axum::{
         body::{to_bytes, Body},

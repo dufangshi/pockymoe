@@ -113,6 +113,9 @@ pub(crate) async fn run(state: &Supervisor, input: &Value, caller: Option<&str>)
         "previewList" => {
             let mappings = crate::ports::snapshot(state)
                 .iter()
+                .filter(|mapping| {
+                    caller.is_none_or(|thread| mapping.thread_id.as_deref() == Some(thread))
+                })
                 .map(|m| describe(state, m, requested_path))
                 .collect::<Result<Vec<_>>>()?;
             Ok(
@@ -170,11 +173,13 @@ pub(crate) async fn run(state: &Supervisor, input: &Value, caller: Option<&str>)
                 return Ok(json!({"id":mapping.id,"port":mapping.port,"stopped":true}));
             }
             let mut result = describe(state, &mapping, requested_path)?;
+            let context = crate::ports::mapping_execution_context(state, &mapping)?;
             let ws_path = input["websocketPath"]
                 .as_str()
                 .map(|p| path(Some(p)))
                 .transpose()?;
             result["check"] = check(
+                context,
                 mapping.port,
                 result["origin"].as_str().unwrap(),
                 requested_path,
@@ -210,12 +215,13 @@ fn classify(status: u16, body: &str) -> &'static str {
 }
 
 async fn check(
+    context: Option<pockymoe_runtime::execution::ExecutionContext>,
     port: u16,
     preview_origin: &str,
     requested_path: &str,
     websocket_path: Option<&str>,
 ) -> Result<Value> {
-    if let Some(context) = pockymoe_runtime::execution::current() {
+    if let Some(context) = context {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let forwarded_port = listener.local_addr()?.port();
         let task = tokio::spawn(async move {
@@ -335,10 +341,18 @@ async fn check_host(
         };
     }
     let advice = match status {
-        "hostRejected" => "Inspect the rejection and framework version. Add only the assigned hostname to Vite server.allowedHosts, webpack devServer.allowedHosts or Django ALLOWED_HOSTS; Next.js origin restrictions use allowedDevOrigins. Preserve existing entries and restart the dev server. Do not disable host checks.",
-        "httpError" => "The service responded with an HTTP error. Inspect its response/logs; an arbitrary 403 is not proof of an allowlist problem.",
-        _ if ws == "handshakeFailed" => "HTTP responds but this WebSocket handshake failed. Check the framework's actual HMR path, token/subprotocol requirements and proxy WebSocket support. For a confirmed Vite public-address problem, use server.ws (older Vite: server.hmr) with the assigned hostname, wss and public clientPort; do not broadly allow origins.",
-        _ => "Local HTTP responds. Verify openUrl in the user's browser for public DNS/TLS/authentication and actual hot reload. A local probe cannot certify the entire Relay/browser path.",
+        "hostRejected" => {
+            "Inspect the rejection and framework version. Add only the assigned hostname to Vite server.allowedHosts, webpack devServer.allowedHosts or Django ALLOWED_HOSTS; Next.js origin restrictions use allowedDevOrigins. Preserve existing entries and restart the dev server. Do not disable host checks."
+        }
+        "httpError" => {
+            "The service responded with an HTTP error. Inspect its response/logs; an arbitrary 403 is not proof of an allowlist problem."
+        }
+        _ if ws == "handshakeFailed" => {
+            "HTTP responds but this WebSocket handshake failed. Check the framework's actual HMR path, token/subprotocol requirements and proxy WebSocket support. For a confirmed Vite public-address problem, use server.ws (older Vite: server.hmr) with the assigned hostname, wss and public clientPort; do not broadly allow origins."
+        }
+        _ => {
+            "Local HTTP responds. Verify openUrl in the user's browser for public DNS/TLS/authentication and actual hot reload. A local probe cannot certify the entire Relay/browser path."
+        }
     };
     Ok(
         json!({"status":status,"httpStatus":code,"scope":"localUpstream","websocket":ws,"advice":advice}),
