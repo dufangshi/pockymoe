@@ -68,7 +68,26 @@ pub async fn run(mode: &str, args: &[String]) -> Result<()> {
             let (mut read, mut write) = socket.into_split();
             let mut stdin = tokio::io::stdin();
             let mut stdout = tokio::io::stdout();
-            tokio::select! {r=tokio::io::copy(&mut stdin,&mut write)=>{r?;},r=tokio::io::copy(&mut read,&mut stdout)=>{r?;}};
+            let upload = async {
+                tokio::io::copy(&mut stdin, &mut write).await?;
+                write.shutdown().await
+            };
+            let download = async {
+                let mut bytes = [0u8; 16384];
+                loop {
+                    let n = read.read(&mut bytes).await?;
+                    if n == 0 {
+                        return Ok::<(), std::io::Error>(());
+                    }
+                    stdout.write_all(&bytes[..n]).await?;
+                    stdout.flush().await?;
+                }
+            };
+            tokio::pin!(upload, download);
+            tokio::select! {
+                result = &mut upload => { result?; download.await?; },
+                result = &mut download => { result?; },
+            }
             Ok(())
         }
         _ => bail!("unsupported worker mode"),

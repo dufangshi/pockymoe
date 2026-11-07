@@ -303,9 +303,27 @@ impl ExecutionContext {
         let (mut read, mut write) = tokio::io::split(io);
         let context = self.clone();
         tokio::spawn(async move {
+            let upload = async move {
+                let result = tokio::io::copy(&mut read, &mut stdin).await;
+                // Closing a request body must send EOF without discarding the
+                // server response that is still arriving in the other pipe.
+                drop(stdin);
+                result
+            };
+            let download = async move {
+                let result = tokio::io::copy(&mut stdout, &mut write).await;
+                let _ = write.shutdown().await;
+                result
+            };
+            tokio::pin!(upload, download);
+            let transfer = async {
+                tokio::select! {
+                    result = &mut upload => { if result.is_ok() { let _ = download.await; } },
+                    _ = &mut download => {},
+                }
+            };
             tokio::select! {
-                _=tokio::io::copy(&mut read,&mut stdin)=>{},
-                _=tokio::io::copy(&mut stdout,&mut write)=>{},
+                _=transfer=>{},
                 _=async { loop {tokio::time::sleep(std::time::Duration::from_millis(250)).await;if context.checked().is_err(){break}} }=>{}
             }
             let _ = child.kill().await;
