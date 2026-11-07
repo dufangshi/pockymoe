@@ -1,13 +1,23 @@
-//! Trusted local Docker reads are supplied by the Supervisor, never the worker.
+//! Trusted local Docker operations are supplied by the Supervisor, never the worker.
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, ensure, Result};
 use async_trait::async_trait;
 use pockymoe_protocol::{EnvironmentLimitsDto, EnvironmentMountDto};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const ENVIRONMENT_LABEL: &str = "ca.pockymoe.environment";
 pub const GENERATION_LABEL: &str = "ca.pockymoe.generation";
+
+/// The complete identity of a writer whose execution authority was revoked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuiesceTarget {
+    pub container_id: String,
+    pub environment_id: String,
+    pub generation: u64,
+    pub daemon_id: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct LocalDockerContext {
@@ -51,6 +61,13 @@ pub trait EnvironmentDocker: Send + Sync {
         context: &LocalDockerContext,
         id: &str,
     ) -> Result<Vec<Value>>;
+
+    /// Stop exactly this old writer, after checking the daemon, full container
+    /// ID and immutable environment/generation labels. Re-inspect to confirm
+    /// it is stopped or absent. Never broaden selection to a name or label.
+    async fn quiesce(&self, _: &LocalDockerContext, _: &QuiesceTarget) -> Result<()> {
+        bail!("trusted Docker writer quiescence is unavailable")
+    }
 }
 
 /// Control-plane helper only. Worker commands never pass through this driver.
@@ -111,6 +128,65 @@ impl CliEnvironmentDocker {
         serde_json::from_slice(&self.output(context, args).await?)
             .map_err(|_| anyhow::anyhow!("Docker inspect returned invalid JSON"))
     }
+
+    async fn exact_container(
+        &self,
+        context: &LocalDockerContext,
+        id: &str,
+    ) -> Result<Option<Value>> {
+        validate_full_container_id(id)?;
+        let output = self
+            .output(
+                context,
+                &[
+                    "container".into(),
+                    "ls".into(),
+                    "--all".into(),
+                    "--quiet".into(),
+                    "--no-trunc".into(),
+                    "--filter".into(),
+                    format!("id={id}"),
+                ],
+            )
+            .await?;
+        let output = std::str::from_utf8(&output)
+            .map_err(|_| anyhow::anyhow!("Docker identity is invalid"))?;
+        let ids = output.split_whitespace().collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Ok(None);
+        }
+        ensure!(ids == [id], "Docker returned a different writer identity");
+        let value = self
+            .json(context, &["container".into(), "inspect".into(), id.into()])
+            .await?;
+        let values = value
+            .as_array()
+            .filter(|values| values.len() == 1)
+            .ok_or_else(|| anyhow::anyhow!("Docker writer inspection is unavailable"))?;
+        ensure!(values[0]["Id"] == id, "Docker writer identity changed");
+        Ok(Some(values[0].clone()))
+    }
+}
+
+fn validate_full_container_id(id: &str) -> Result<()> {
+    ensure!(
+        id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()),
+        "writer quiescence requires a full Docker container ID"
+    );
+    Ok(())
+}
+
+pub(super) fn verify_quiesce_target(value: &Value, target: &QuiesceTarget) -> Result<bool> {
+    validate_full_container_id(&target.container_id)?;
+    ensure!(
+        value["Id"] == target.container_id
+            && value["Config"]["Labels"][ENVIRONMENT_LABEL] == target.environment_id
+            && value["Config"]["Labels"][GENERATION_LABEL] == target.generation.to_string(),
+        "old writer ownership differs; refusing to stop another container"
+    );
+    value["State"]["Running"]
+        .as_bool()
+        .ok_or_else(|| anyhow::anyhow!("old writer running state is unavailable"))
 }
 
 pub(super) fn validate_docker_host(value: Option<&str>) -> Result<()> {
@@ -126,6 +202,40 @@ pub(super) fn validate_docker_host(value: Option<&str>) -> Result<()> {
 
 #[async_trait]
 impl EnvironmentDocker for CliEnvironmentDocker {
+    async fn quiesce(&self, context: &LocalDockerContext, target: &QuiesceTarget) -> Result<()> {
+        validate_full_container_id(&target.container_id)?;
+        ensure!(
+            self.host_info(context).await?.daemon_id == target.daemon_id,
+            "Docker daemon identity changed; old writer quiescence is unconfirmed"
+        );
+        if let Some(value) = self.exact_container(context, &target.container_id).await? {
+            if verify_quiesce_target(&value, target)? {
+                self.output(
+                    context,
+                    &[
+                        "container".into(),
+                        "stop".into(),
+                        "--time".into(),
+                        "10".into(),
+                        target.container_id.clone(),
+                    ],
+                )
+                .await?;
+            }
+        }
+        ensure!(
+            self.host_info(context).await?.daemon_id == target.daemon_id,
+            "Docker daemon identity changed during writer quiescence"
+        );
+        if let Some(value) = self.exact_container(context, &target.container_id).await? {
+            ensure!(
+                !verify_quiesce_target(&value, target)?,
+                "old writer is still running; resources remain reserved"
+            );
+        }
+        Ok(())
+    }
+
     async fn host_info(&self, context: &LocalDockerContext) -> Result<DockerHostInfo> {
         let info = self
             .json(
@@ -568,6 +678,104 @@ pub(super) fn verify_container(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_quiescence_checks_the_exact_identity_and_confirms_the_stop() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("docker-fixture");
+        std::fs::write(&executable,r#"#!/usr/bin/python3
+import json, os, pathlib, sys
+base=pathlib.Path(__file__).parent
+path=base/'fixture.json'
+state=json.loads(path.read_text())
+assert not set(os.environ)-{'PATH','LC_CTYPE'}
+args=sys.argv[1:]
+assert args[0]=='--config' and args[2:4]==['--host','unix:///fixture/docker.sock']
+args=args[4:]
+state['calls'].append(args)
+target='a'*64
+result=None
+if args[0]=='info':
+ state['info_count']=state.get('info_count',0)+1
+ daemon='changed' if state['fault']=='daemon' or state['fault']=='daemon-after-stop' and state['info_count']>1 else 'fixture-daemon'
+ result={'ID':daemon,'NCPU':4,'MemTotal':4294967296,'OSType':'linux','MemoryLimit':True,'SwapLimit':True,'PidsLimit':True,'CpuCfsQuota':True,'CpuCfsPeriod':True,'SecurityOptions':[]}
+elif args[:2]==['container','ls']:
+ assert args[2:]==['--all','--quiet','--no-trunc','--filter','id='+target]
+ result='' if state['fault']=='absent' else target
+elif args[:2]==['container','inspect']:
+ if args[2]!=target:
+  result=[{'Id':args[2].ljust(64,'f'),'Config':{'Hostname':args[2]}}]
+ else:
+  result=[{'Id':'b'*64 if state['fault']=='identity' else target,'Config':{'Labels':{'ca.pockymoe.environment':'another' if state['fault']=='environment' else 'fixture-env','ca.pockymoe.generation':'8' if state['fault']=='generation' else '7'}},'State':{'Running':state['running']}}]
+elif args[:2]==['container','stop']:
+ assert args==['container','stop','--time','10',target]
+ if state['fault']!='ignore-stop': state['running']=False
+ result=target
+else:
+ raise AssertionError(args)
+path.write_text(json.dumps(state))
+print(result if isinstance(result,str) else json.dumps(result))
+"#).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let driver = CliEnvironmentDocker {
+            executable,
+            probe_image: "unused".into(),
+        };
+        let context = LocalDockerContext {
+            docker_host: Some("unix:///fixture/docker.sock".into()),
+            probe_user: None,
+        };
+        let target = QuiesceTarget {
+            container_id: "a".repeat(64),
+            environment_id: "fixture-env".into(),
+            generation: 7,
+            daemon_id: "fixture-daemon".into(),
+        };
+        let path = root.path().join("fixture.json");
+        for (fault, success, stops) in [
+            ("none", true, 1),
+            ("already-stopped", true, 0),
+            ("absent", true, 0),
+            ("identity", false, 0),
+            ("environment", false, 0),
+            ("generation", false, 0),
+            ("daemon", false, 0),
+            ("daemon-after-stop", false, 1),
+            ("ignore-stop", false, 1),
+            ("short-id", false, 0),
+        ] {
+            std::fs::write(
+                &path,
+                serde_json::to_vec(
+                    &json!({"fault":fault,"calls":[],"running":fault!="already-stopped"}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let mut target = target.clone();
+            if fault == "short-id" {
+                target.container_id.truncate(12);
+            }
+            assert_eq!(
+                driver.quiesce(&context, &target).await.is_ok(),
+                success,
+                "{fault}"
+            );
+            let state: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(
+                state["calls"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|args| args[0] == "container" && args[1] == "stop")
+                    .count(),
+                stops,
+                "{fault}"
+            );
+        }
+    }
 
     #[test]
     fn container_namespace_uses_longest_bind_and_volume_prefix() {

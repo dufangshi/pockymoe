@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use docker::{
     CliEnvironmentDocker, DockerHostInfo, EnvironmentDocker, ExpectedContainer, LocalDockerContext,
+    QuiesceTarget,
 };
 use dokploy::{find_owned_compose, verify_owned_compose, DokployClient};
 
@@ -47,6 +48,11 @@ struct EnvironmentRecord {
     /// Conservatively reserve capacity for errors and uncertain remote work.
     #[serde(default)]
     resource_active: bool,
+    #[serde(default)]
+    pending_quiesce: Option<QuiesceTarget>,
+    /// False in legacy records: a lost writer ID requires an owned Dokploy Stop.
+    #[serde(default)]
+    quiesce_confirmed: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -164,6 +170,12 @@ impl EnvironmentManager {
     pub async fn reconcile(&self, id: &str) -> Result<EnvironmentDto> {
         let _operation = self.operation.lock().await;
         let record = self.record(id)?;
+        if record.pending_quiesce.is_some() {
+            // Preserve the original interrupted reason and capacity if stopping
+            // fails. The next background observation retries the same full ID.
+            let _ = self.quiesce_inner(id).await;
+            return self.get(id);
+        }
         if record.dto.state != "running" {
             return Ok(record.dto);
         }
@@ -193,24 +205,29 @@ impl EnvironmentManager {
                 record.dto.observed_limits = Some(observed);
                 Ok(record.dto.clone())
             }),
-            Err(error) => self.write(|store| {
-                let record = store
-                    .environments
-                    .get_mut(id)
-                    .context("environment not found")?;
-                record.dto.generation = record
-                    .dto
-                    .generation
-                    .checked_add(1)
-                    .context("environment generation exhausted")?;
-                record.dto.state = "interrupted".into();
-                record.dto.container_id = None;
-                record.dto.observed_limits = None;
-                record.dto.last_error = Some(error.to_string());
-                record.dto.updated_at = now_rfc3339();
-                record.resource_active = true;
-                Ok(record.dto.clone())
-            }),
+            Err(error) => {
+                self.write(|store| {
+                    let record = store
+                        .environments
+                        .get_mut(id)
+                        .context("environment not found")?;
+                    remember_writer(record);
+                    record.dto.generation = record
+                        .dto
+                        .generation
+                        .checked_add(1)
+                        .context("environment generation exhausted")?;
+                    record.dto.state = "interrupted".into();
+                    record.dto.container_id = None;
+                    record.dto.observed_limits = None;
+                    record.dto.last_error = Some(error.to_string());
+                    record.dto.updated_at = now_rfc3339();
+                    record.resource_active = true;
+                    Ok(())
+                })?;
+                let _ = self.quiesce_inner(id).await;
+                self.get(id)
+            }
         }
     }
 
@@ -219,7 +236,7 @@ impl EnvironmentManager {
             Ok(store
                 .environments
                 .values()
-                .filter(|record| record.dto.state == "running")
+                .filter(|record| record.dto.state == "running" || record.pending_quiesce.is_some())
                 .map(|record| record.dto.id.clone())
                 .collect::<Vec<_>>())
         })?;
@@ -227,6 +244,44 @@ impl EnvironmentManager {
             self.reconcile(&id).await?;
         }
         self.snapshot().await
+    }
+
+    /// Quiesce a fenced writer without releasing capacity, changing its
+    /// interrupted reason, replaying a session, or deleting provider/data state.
+    pub async fn quiesce(&self, id: &str) -> Result<EnvironmentDto> {
+        let _operation = self.operation.lock().await;
+        ensure!(
+            self.record(id)?.dto.state != "running",
+            "running environment must be fenced before quiescence"
+        );
+        self.quiesce_inner(id).await?;
+        self.get(id)
+    }
+
+    async fn quiesce_inner(&self, id: &str) -> Result<()> {
+        let record = self.record(id)?;
+        if let Some(target) = &record.pending_quiesce {
+            self.driver()?
+                .quiesce(&self.context(&record.dto.connection_id)?, target)
+                .await?;
+            self.write(|store| {
+                let current = store
+                    .environments
+                    .get_mut(id)
+                    .context("environment not found")?;
+                ensure!(
+                    current.pending_quiesce.as_ref() == Some(target),
+                    "writer quiescence target changed"
+                );
+                current.pending_quiesce = None;
+                current.quiesce_confirmed = true;
+                Ok(())
+            })?;
+        } else {
+            ensure!(record.quiesce_confirmed || (record.dto.state=="stopped" && !record.resource_active),
+                "old writer identity is unavailable; an explicit Dokploy-owned Stop is required before Start");
+        }
+        Ok(())
     }
 
     pub fn get(&self, id: &str) -> Result<EnvironmentDto> {
@@ -595,6 +650,8 @@ impl EnvironmentManager {
                     managed_worktree_root: managed_root.to_string_lossy().into_owned(),
                     daemon_id: None,
                     resource_active: false,
+                    pending_quiesce: None,
+                    quiesce_confirmed: true,
                 },
             );
             Ok(dto)
@@ -612,6 +669,7 @@ impl EnvironmentManager {
             "environment has been destroyed; its data is retained"
         );
         let connection = self.connection(&record.dto.connection_id)?;
+        let preserve_interrupted = record.dto.state == "interrupted";
         let result = match action {
             EnvironmentAction::Start => self.start(id, false).await,
             EnvironmentAction::Rebuild => self.start(id, true).await,
@@ -625,25 +683,47 @@ impl EnvironmentManager {
                     .environments
                     .get_mut(id)
                     .context("environment not found")?;
-                record.dto.state = "error".into();
+                let interrupted = record.dto.state == "interrupted"
+                    || (preserve_interrupted && !record.quiesce_confirmed);
+                if record.dto.container_id.is_some() || record.dto.state == "running" {
+                    remember_writer(record);
+                    record.dto.generation = record
+                        .dto
+                        .generation
+                        .checked_add(1)
+                        .context("environment generation exhausted")?;
+                }
+                record.dto.state = if interrupted { "interrupted" } else { "error" }.into();
                 record.dto.container_id = None;
                 record.dto.observed_limits = None;
-                record.dto.last_error = Some(message.clone());
+                if !interrupted {
+                    record.dto.last_error = Some(message.clone());
+                }
                 record.dto.updated_at = now_rfc3339();
                 Ok(())
             })?;
+            if self.record(id)?.pending_quiesce.is_some() {
+                let _ = self.quiesce_inner(id).await;
+            }
             bail!("{message}");
         }
         self.get(id)
     }
 
     async fn start(&self, id: &str, rebuild: bool) -> Result<()> {
+        if self.record(id)?.dto.state != "running" {
+            self.quiesce_inner(id).await?;
+        }
         let record = self.record(id)?;
         let connection = self.connection(&record.dto.connection_id)?;
         let context = self.context(&record.dto.connection_id)?;
         let docker = self.driver()?;
         let host = docker.host_info(&context).await?;
         if record.dto.state == "running" && !rebuild {
+            ensure!(
+                record.daemon_id.as_deref() == Some(&host.daemon_id),
+                "Docker daemon identity changed"
+            );
             let values = docker
                 .inspect_environment(&context, id)
                 .await
@@ -651,6 +731,10 @@ impl EnvironmentManager {
             ensure!(
                 values.len() == 1,
                 "environment container identity is ambiguous"
+            );
+            ensure!(
+                record.dto.container_id.as_deref() == values[0]["Id"].as_str(),
+                "environment container was replaced outside its generation"
             );
             docker::verify_container(&values[0], &expected(&record))?;
             return Ok(());
@@ -697,6 +781,7 @@ impl EnvironmentManager {
             record.dto.updated_at = now_rfc3339();
             record.daemon_id = Some(host.daemon_id.clone());
             record.resource_active = true;
+            record.quiesce_confirmed = true;
             Ok(())
         })?;
         let record = self.record(id)?;
@@ -799,6 +884,7 @@ impl EnvironmentManager {
                         .context("environment not found")?;
                     record.dto.state = "running".into();
                     record.dto.container_id = Some(container_id);
+                    record.quiesce_confirmed = false;
                     record.dto.observed_limits = Some(observed);
                     record.dto.updated_at = now_rfc3339();
                     Ok(())
@@ -926,11 +1012,20 @@ impl EnvironmentManager {
         let connection = self.connection(&record.dto.connection_id)?;
         let context = self.context(&record.dto.connection_id)?;
         let docker = self.driver()?;
+        let host = docker.host_info(&context).await?;
+        ensure!(
+            record
+                .daemon_id
+                .as_ref()
+                .is_none_or(|daemon| daemon == &host.daemon_id),
+            "Docker daemon identity changed; retained resources require explicit storage recovery"
+        );
         self.write(|store| {
             let record = store
                 .environments
                 .get_mut(id)
                 .context("environment not found")?;
+            remember_writer(record);
             record.dto.generation = record
                 .dto
                 .generation
@@ -942,6 +1037,9 @@ impl EnvironmentManager {
             record.dto.updated_at = now_rfc3339();
             Ok(())
         })?;
+        if self.record(id)?.pending_quiesce.is_some() {
+            let _ = self.quiesce_inner(id).await;
+        }
         let api = DokployClient::new(&connection)?;
         let mut compose_id = match record.dto.compose_id.clone() {
             Some(id) => Some(id),
@@ -1018,6 +1116,10 @@ impl EnvironmentManager {
         if destroy {
             ensure!(values.is_empty(),"Dokploy deleted its record but left environment containers; data and capacity are retained for recovery");
         }
+        ensure!(
+            docker.host_info(&context).await?.daemon_id == host.daemon_id,
+            "Docker daemon identity changed during lifecycle confirmation; resources are retained"
+        );
         self.write(|store| {
             let record = store
                 .environments
@@ -1032,8 +1134,24 @@ impl EnvironmentManager {
             record.dto.last_error = None;
             record.dto.updated_at = now_rfc3339();
             record.resource_active = false;
+            record.pending_quiesce = None;
+            record.quiesce_confirmed = true;
             Ok(())
         })
+    }
+}
+
+fn remember_writer(record: &mut EnvironmentRecord) {
+    if record.pending_quiesce.is_none() && !record.quiesce_confirmed {
+        if let (Some(container_id), Some(daemon_id)) = (&record.dto.container_id, &record.daemon_id)
+        {
+            record.pending_quiesce = Some(QuiesceTarget {
+                container_id: container_id.clone(),
+                environment_id: record.dto.id.clone(),
+                generation: record.dto.generation,
+                daemon_id: daemon_id.clone(),
+            });
+        }
     }
 }
 
@@ -1295,6 +1413,7 @@ fn open_store(directory: &Path) -> Result<(Store, File)> {
             record.dto.state.as_str(),
             "creating" | "starting" | "running" | "stopping"
         ) {
+            remember_writer(record);
             record.dto.state = "interrupted".into();
             record.dto.container_id = None;
             record.dto.observed_limits = None;
@@ -1305,6 +1424,13 @@ fn open_store(directory: &Path) -> Result<(Store, File)> {
                 .context("environment generation exhausted")?;
             record.dto.last_error=Some("Supervisor restarted; explicitly stop or rebuild to reconcile retained provider resources".into());
             record.dto.updated_at = now_rfc3339();
+            record.resource_active = true;
+        }
+        if matches!(record.dto.state.as_str(), "interrupted" | "error") && !record.quiesce_confirmed
+        {
+            remember_writer(record);
+            record.dto.container_id = None;
+            record.dto.observed_limits = None;
             record.resource_active = true;
         }
     }

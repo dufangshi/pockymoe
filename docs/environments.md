@@ -101,8 +101,7 @@ and used unchanged for lifecycle commands. Recovery queries `environment.one`
 for the exact name, rejects ambiguous/incomplete listings, and verifies the
 resource's full name, environment, source type and server using `compose.one`.
 An uncertain create without a visible matching resource blocks another create.
-Stop fences the old
-generation, clears queued deployments and waits for active deployments before
+Stop fences the old generation, clears queued deployments and waits for active deployments before
 running a fixed `compose -p <owned-app> -f docker-compose.yml stop` command
 through the Dokploy deployment runner. It checks that no owned container is
 running. Rebuild stops the old generation and deploys a new worker using the
@@ -113,9 +112,20 @@ directories and the destroyed resource record. Destroying a resource does not
 implicitly remove thread bindings; a bound destroyed resource remains
 unavailable until the owner explicitly changes the binding.
 
-A Supervisor restart changes previously active states to `interrupted`, clears
-execution targets and advances generation. It does not resume a harness or
-replay commands. An explicit stop or rebuild reconciles retained resources.
+A Supervisor restart changes previously active states to `interrupted` and
+advances generation. Before clearing the public execution target, the same
+atomic write retains the old full container ID, generation and daemon identity
+in a private pending-quiescence record. Startup/background reconciliation and
+unsafe running-container observations stop this exact old writer through the
+trusted local Docker driver. The driver checks the daemon, full ID and immutable
+environment/generation labels before stopping, then inspects again to confirm
+the container is stopped or absent. This operation retains the Dokploy record,
+data, capacity reservation and original interrupted reason. Failure leaves the
+target durable for retry and blocks Start/Rebuild until quiescence is confirmed.
+Legacy interrupted records that already lost their full container ID require an
+explicit Dokploy-owned Stop; they cannot infer or adopt a writer by name/label.
+The Supervisor does not resume a harness or replay commands. An explicit start
+or rebuild can deploy a new generation after confirmed quiescence and cleanup.
 Errors retain uncertain resource reservations until stop/destroy confirms the
 actual outcome. Dokploy deletion can succeed before its asynchronous cleanup;
 remaining containers are reported as a failure rather than a successful

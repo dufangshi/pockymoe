@@ -10,6 +10,9 @@ struct FixtureState {
     ignore_lifecycle: bool,
     lose_create_response: bool,
     hide_compose: bool,
+    ignore_quiesce: bool,
+    daemon_id: Option<String>,
+    quiesce_calls: Vec<QuiesceTarget>,
 }
 
 struct FixtureDocker(Arc<Mutex<FixtureState>>);
@@ -62,7 +65,13 @@ impl EnvironmentDocker for WrongProofDocker {
 impl EnvironmentDocker for FixtureDocker {
     async fn host_info(&self, _: &LocalDockerContext) -> Result<DockerHostInfo> {
         Ok(DockerHostInfo {
-            daemon_id: "fixture-daemon".into(),
+            daemon_id: self
+                .0
+                .lock()
+                .unwrap()
+                .daemon_id
+                .clone()
+                .unwrap_or_else(|| "fixture-daemon".into()),
             cpus: 8.0,
             memory_bytes: 16 * 1024 * 1024 * 1024,
             supervisor_container: None,
@@ -91,6 +100,29 @@ impl EnvironmentDocker for FixtureDocker {
             .filter(|v| v["Config"]["Labels"][docker::ENVIRONMENT_LABEL] == id)
             .cloned()
             .collect())
+    }
+    async fn quiesce(&self, context: &LocalDockerContext, target: &QuiesceTarget) -> Result<()> {
+        ensure!(
+            self.host_info(context).await?.daemon_id == target.daemon_id,
+            "fixture daemon identity differs"
+        );
+        let mut state = self.0.lock().unwrap();
+        state.quiesce_calls.push(target.clone());
+        let ignore = state.ignore_lifecycle || state.ignore_quiesce;
+        if let Some(value) = state
+            .container
+            .as_mut()
+            .filter(|value| value["Id"] == target.container_id)
+        {
+            if docker::verify_quiesce_target(value, target)? && !ignore {
+                value["State"]["Running"] = json!(false);
+            }
+            ensure!(
+                !docker::verify_quiesce_target(value, target)?,
+                "fixture old writer is still running"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -766,7 +798,7 @@ async fn reconcile_fences_oom_exit_replacement_and_unreachable_daemon() {
         )
         .await
         .unwrap();
-    for fault in ["oom", "exit", "replacement", "unreachable"] {
+    for fault in ["oom", "exit", "replacement", "unreachable", "weakened"] {
         let running = manager
             .action(&environment.id, EnvironmentAction::Start)
             .await
@@ -790,6 +822,10 @@ async fn reconcile_fences_oom_exit_replacement_and_unreachable_daemon() {
             "unreachable" => manager
                 .set_docker_driver(Arc::new(UnavailableDocker))
                 .unwrap(),
+            "weakened" => {
+                fixture.lock().unwrap().container.as_mut().unwrap()["HostConfig"]["Privileged"] =
+                    json!(true)
+            }
             _ => unreachable!(),
         }
         let snapshot = manager.reconcile_all().await.unwrap();
@@ -810,10 +846,228 @@ async fn reconcile_fences_oom_exit_replacement_and_unreachable_daemon() {
             interrupted.generation
         );
         assert!(manager.record(&environment.id).unwrap().resource_active);
+        if fault == "weakened" {
+            let state = fixture.lock().unwrap();
+            assert_eq!(state.container.as_ref().unwrap()["State"]["Running"], false);
+            assert_eq!(
+                state.quiesce_calls.last().unwrap().generation,
+                running.generation
+            );
+            assert!(manager.record(&environment.id).unwrap().quiesce_confirmed);
+        }
         manager
             .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
             .unwrap();
     }
+    task.abort();
+}
+
+#[tokio::test]
+async fn restart_quiescence_is_durable_blocks_new_writers_and_preserves_the_original_cause() {
+    let root = tempfile::tempdir().unwrap();
+    let project = fixture_project(root.path(), "project");
+    std::fs::write(project.join("sentinel"), "keep-project").unwrap();
+    let database = root.path().join("db");
+    let (url, fixture, task) = api_fixture().await;
+    let manager = EnvironmentManager::new(&database);
+    manager
+        .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
+        .unwrap();
+    let conn = manager
+        .save_connection("new", &connection(&url, &project))
+        .await
+        .unwrap();
+    let environment = manager
+        .create(
+            &CreateEnvironmentRequest {
+                connection_id: conn.id,
+                thread_id: "thread".into(),
+                name: None,
+            },
+            &project,
+            &project,
+        )
+        .await
+        .unwrap();
+    let running = manager
+        .action(&environment.id, EnvironmentAction::Start)
+        .await
+        .unwrap();
+    drop(manager);
+
+    let manager = EnvironmentManager::new(&database);
+    manager
+        .set_docker_driver(Arc::new(UnavailableDocker))
+        .unwrap();
+    let interrupted = manager.get(&environment.id).unwrap();
+    let target = manager
+        .record(&environment.id)
+        .unwrap()
+        .pending_quiesce
+        .unwrap();
+    assert_eq!(target.container_id, running.container_id.unwrap());
+    assert_eq!(target.generation, running.generation);
+    assert_eq!(target.environment_id, environment.id);
+    assert_eq!(target.daemon_id, "fixture-daemon");
+    let call_count = fixture.lock().unwrap().calls.len();
+    manager.reconcile_all().await.unwrap();
+    assert!(manager
+        .action(&environment.id, EnvironmentAction::Start)
+        .await
+        .is_err());
+    assert_eq!(fixture.lock().unwrap().calls.len(), call_count);
+    assert_eq!(
+        manager.get(&environment.id).unwrap().last_error,
+        interrupted.last_error
+    );
+    assert!(manager.record(&environment.id).unwrap().resource_active);
+    assert!(fixture.lock().unwrap().container.as_ref().unwrap()["State"]["Running"] == true);
+    drop(manager);
+
+    let manager = EnvironmentManager::new(&database);
+    manager
+        .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
+        .unwrap();
+    assert_eq!(
+        manager.record(&environment.id).unwrap().pending_quiesce,
+        Some(target.clone())
+    );
+    fixture.lock().unwrap().ignore_quiesce = true;
+    manager.reconcile_all().await.unwrap();
+    assert!(manager.quiesce(&environment.id).await.is_err());
+    assert!(manager
+        .action(&environment.id, EnvironmentAction::Start)
+        .await
+        .is_err());
+    assert_eq!(fixture.lock().unwrap().calls.len(), call_count);
+    fixture.lock().unwrap().ignore_quiesce = false;
+    fixture.lock().unwrap().daemon_id = Some("another-daemon".into());
+    manager.reconcile_all().await.unwrap();
+    assert!(manager
+        .action(&environment.id, EnvironmentAction::Start)
+        .await
+        .is_err());
+    assert!(manager
+        .record(&environment.id)
+        .unwrap()
+        .pending_quiesce
+        .is_some());
+    fixture.lock().unwrap().daemon_id = None;
+    manager.reconcile_all().await.unwrap();
+    let quiesced = manager.record(&environment.id).unwrap();
+    assert!(quiesced.pending_quiesce.is_none() && quiesced.quiesce_confirmed);
+    assert!(quiesced.resource_active);
+    assert_eq!(quiesced.dto.state, "interrupted");
+    assert_eq!(quiesced.dto.generation, interrupted.generation);
+    assert_eq!(quiesced.dto.last_error, interrupted.last_error);
+    assert_eq!(
+        fixture.lock().unwrap().container.as_ref().unwrap()["State"]["Running"],
+        false
+    );
+    drop(manager);
+
+    let manager = EnvironmentManager::new(&database);
+    manager
+        .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
+        .unwrap();
+    manager.reconcile_all().await.unwrap();
+    assert_eq!(manager.get(&environment.id).unwrap().state, "interrupted");
+    let restarted = manager
+        .action(&environment.id, EnvironmentAction::Start)
+        .await
+        .unwrap();
+    assert_eq!(restarted.state, "running");
+    assert!(restarted.generation > interrupted.generation);
+    assert_eq!(
+        std::fs::read_to_string(project.join("sentinel")).unwrap(),
+        "keep-project"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn legacy_lost_writer_identity_requires_an_explicit_owned_stop() {
+    let root = tempfile::tempdir().unwrap();
+    let project = fixture_project(root.path(), "project");
+    std::fs::write(project.join("sentinel"), "keep-project").unwrap();
+    let database = root.path().join("db");
+    let (url, fixture, task) = api_fixture().await;
+    let manager = EnvironmentManager::new(&database);
+    manager
+        .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
+        .unwrap();
+    let conn = manager
+        .save_connection("new", &connection(&url, &project))
+        .await
+        .unwrap();
+    let environment = manager
+        .create(
+            &CreateEnvironmentRequest {
+                connection_id: conn.id,
+                thread_id: "thread".into(),
+                name: None,
+            },
+            &project,
+            &project,
+        )
+        .await
+        .unwrap();
+    let running = manager
+        .action(&environment.id, EnvironmentAction::Start)
+        .await
+        .unwrap();
+    let path = manager.directory.join("resources.json");
+    drop(manager);
+    let mut store: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let record = &mut store["environments"][&environment.id];
+    record.as_object_mut().unwrap().remove("pending_quiesce");
+    record.as_object_mut().unwrap().remove("quiesce_confirmed");
+    record.as_object_mut().unwrap().remove("resource_active");
+    record["dto"]["containerId"] = Value::Null;
+    record["dto"]["state"] = json!("interrupted");
+    record["dto"]["generation"] = json!(running.generation + 1);
+    record["dto"]["lastError"] = json!("legacy restart lost the writer ID");
+    std::fs::write(&path, serde_json::to_vec(&store).unwrap()).unwrap();
+    let manager = EnvironmentManager::new(&database);
+    manager
+        .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
+        .unwrap();
+    let call_count = fixture.lock().unwrap().calls.len();
+    manager.reconcile_all().await.unwrap();
+    assert!(manager
+        .quiesce(&environment.id)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("explicit Dokploy-owned Stop"));
+    assert!(manager
+        .action(&environment.id, EnvironmentAction::Start)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("explicit Dokploy-owned Stop"));
+    assert_eq!(fixture.lock().unwrap().calls.len(), call_count);
+    let record = manager.record(&environment.id).unwrap();
+    assert_eq!(record.dto.state, "interrupted");
+    assert_eq!(
+        record.dto.last_error.as_deref(),
+        Some("legacy restart lost the writer ID")
+    );
+    assert!(record.resource_active && !record.quiesce_confirmed);
+    let stopped = manager
+        .action(&environment.id, EnvironmentAction::Stop)
+        .await
+        .unwrap();
+    assert_eq!(stopped.state, "stopped");
+    assert!(manager.record(&environment.id).unwrap().quiesce_confirmed);
+    assert_eq!(
+        fixture.lock().unwrap().container.as_ref().unwrap()["State"]["Running"],
+        false
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("sentinel")).unwrap(),
+        "keep-project"
+    );
     task.abort();
 }
 
