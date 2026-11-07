@@ -539,16 +539,17 @@ export function ThreadCreateForm({
   return (
     <form
       onSubmit={handleSubmit}
-      className={compact ? 'thread-create-form min-h-0 space-y-3 overflow-y-auto overscroll-contain pr-1 text-sm' : 'space-y-5'}
+      className={compact ? 'thread-create-form flex min-h-0 flex-col gap-3 text-sm' : 'space-y-5'}
     >
       {compact ? (
-        <div className="pr-8">
+        <div className="shrink-0 pr-8">
           <h2 className="text-base font-semibold text-[var(--theme-fg)]">{translate("workbench.createNewChat")}</h2>
           <p className="mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
             {translate("workbench.chooseTheWorkspaceAndAgentForThis")}</p>
         </div>
       ) : null}
 
+      <div className={compact ? 'min-h-0 space-y-3 overflow-y-auto overscroll-contain pr-1' : 'space-y-5'}>
       <fieldset>
         <legend className="host-form-label text-xs font-medium">{translate("workbench.backend")}</legend>
         {compact ? (
@@ -622,7 +623,7 @@ export function ThreadCreateForm({
             ) : null}
           </div>
         ) : null}
-        {!acpAdvertised ? (
+        {!acpAdvertised && !isolatedCreation ? (
           <p className="mt-2 text-xs leading-5 text-[var(--theme-fg-muted)]">
             {translate("workbench.aCPIsNotEnabledOnThisSupervisor")}<code className="mx-1 font-mono">acp</code>
             {translate("workbench.to")} <code className="font-mono">POCKYMOE_ENABLED_AGENT_PROVIDERS</code>.
@@ -836,7 +837,9 @@ export function ThreadCreateForm({
         </FormDialog>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-2 pt-1">
+      </div>
+
+      <div className="flex shrink-0 flex-wrap items-center gap-2 pt-1">
         <button
           type="submit"
           disabled={
