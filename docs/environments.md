@@ -189,6 +189,17 @@ OAuth/auth refresh and model-provider WebSocket protocols are not supported;
 selecting an API profile is an explicit user configuration, never an automatic
 login or billing conversion.
 
+Isolated Claude requires `claude-agent-acp` 0.101.0. Before creating or restoring
+a session, the thin ACP adapter verifies its reported identity/version and pins
+the loopback broker and short-lived capability in both SDK environment options
+and programmatic settings. It clears API helpers, subscription OAuth and
+alternate provider routing without disabling project rules, tools or settings
+sources. An unverified version or incompatible metadata fails with an
+`unsupported_environment_claude_*` error; there is no environment-only fallback.
+The image's package/ELF installation checks do not establish native protocol
+compatibility. Validate its actual ACP/native CLI with a dedicated API fixture
+and enforced worker limits before enabling that image.
+
 Capabilities use only the selected harness's API profile and protocol: Codex
 Responses or Claude Messages. Custom ACP commands use the explicitly configured
 Codex Responses profile and cannot select a Claude credential.

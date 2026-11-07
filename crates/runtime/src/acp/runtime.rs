@@ -65,6 +65,9 @@ mod compact_tests;
 #[path = "effort_tests.rs"]
 mod effort_tests;
 
+#[path = "isolated_claude.rs"]
+mod isolated_claude;
+
 // Startup and cancelled probes must not leave the notification mux holding a child alive.
 struct StartupProcess(Option<Arc<AcpProcess>>);
 impl Drop for StartupProcess {
@@ -95,6 +98,7 @@ enum TurnOutcome {
 
 struct LiveSession {
     process: Arc<AcpProcess>,
+    isolated_claude: Option<isolated_claude::Route>,
     codex_bridge: Option<Arc<super::codex_bridge::CodexBridge>>,
     dsh: Option<Arc<super::deepseek::Bridge>>,
     harness_info: Option<Value>,
@@ -655,6 +659,11 @@ impl AcpRuntime {
                 }),
             )
             .await?;
+        let isolated_claude = if isolated && def.id == "claude" {
+            Some(isolated_claude::Route::verified(&init, &extra_env)?)
+        } else {
+            None
+        };
         let mut negotiated = negotiate(&init);
         if codex_bridge.is_some() {
             negotiated.fork = true;
@@ -697,19 +706,23 @@ impl AcpRuntime {
             updates_rx,
             requests_rx,
         );
+        let load_meta = match &isolated_claude {
+            Some(route) => route.pin(adapter.session_load_meta())?,
+            None => adapter.session_load_meta(),
+        };
         let raw_session = if let Some(existing) = load_id {
             if negotiated.load_session {
                 process
                     .request(
                         "session/load",
-                        json!({ "sessionId": existing, "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": adapter.session_load_meta() }),
+                        json!({ "sessionId": existing, "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": load_meta }),
                     )
                     .await?
             } else if negotiated.resume {
                 process
                     .request(
                         "session/resume",
-                        json!({ "sessionId": existing, "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": adapter.session_load_meta() }),
+                        json!({ "sessionId": existing, "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": load_meta }),
                     )
                     .await?
             } else {
@@ -722,6 +735,9 @@ impl AcpRuntime {
                 for (key, value) in map {
                     meta[key] = value.clone();
                 }
+            }
+            if let Some(route) = &isolated_claude {
+                meta = route.pin(meta)?;
             }
             process
                 .request(
@@ -817,6 +833,7 @@ impl AcpRuntime {
         };
         let mut live = LiveSession {
             process,
+            isolated_claude,
             codex_bridge,
             dsh,
             harness_info,
@@ -1278,6 +1295,10 @@ impl AcpRuntime {
                 }
             }
             SessionSettingOp::LoadWithMeta { meta } => {
+                let meta = match &live.isolated_claude {
+                    Some(route) => route.pin(meta)?,
+                    None => meta,
+                };
                 let response = process
                     .request(
                         "session/load",
@@ -3427,6 +3448,10 @@ impl AgentRuntime for AcpRuntime {
             if live.active.is_some() {
                 bail!("conflict: Cannot fork an active turn.");
             }
+            ensure!(
+                live.isolated_claude.is_none(),
+                "unsupported_environment_fork: create a child thread to retain isolation"
+            );
             if !live.negotiated.fork {
                 bail!("this harness does not support session/fork");
             }
@@ -3542,6 +3567,7 @@ impl AgentRuntime for AcpRuntime {
             scoped.clone(),
             LiveSession {
                 process,
+                isolated_claude: None,
                 codex_bridge,
                 dsh: None,
                 harness_info: None,

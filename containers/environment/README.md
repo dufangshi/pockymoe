@@ -95,16 +95,19 @@ appends `/v1/messages`; do not append `/v1` to that base. The ACP adapter spread
 No subscription login, `ANTHROPIC_API_KEY` duplicate or executable override is
 required for this API route.
 
-Claude ACP also loads user/project/local settings. Its source explicitly puts
-an ACP provider route in the programmatic settings tier to prevent settings
-from overriding it. Ambient environment variables alone do not enforce that
-precedence; the Supervisor must account for project `settings.env` overrides
-when enforcing a fixed gateway route.
+Claude ACP also loads user/project/local settings. The Supervisor's thin ACP
+adapter verifies `@agentclientprotocol/claude-agent-acp` 0.101.0 and supplies the
+fixed broker/capability in both SDK `options.env` and programmatic
+`options.settings.env` on new, load and resume. It clears `apiKeyHelper`, OAuth
+and alternate provider routing while retaining project settings sources,
+permissions and tools. This matches the adapter's own programmatic route
+precedence; ambient environment variables alone are insufficient. An unverified
+adapter version is explicitly unsupported and never falls back to ambient env.
 
-The image sets `DISABLE_AUTOUPDATER=1` and
+The image and worker set `DISABLE_AUTOUPDATER=1` and
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. The worker clears the inherited
-environment before spawning a harness, so its request must explicitly include
-these values to disable update checks and other ancillary Claude traffic. They
+environment before spawning a harness, and the isolated Claude metadata pins
+these values again above project settings. They
 are runtime settings, not credentials or a substitute for `network_mode: none`.
 The actual image binaries must still be tested against the real protocol gateway.
 
