@@ -25,6 +25,11 @@ Root Node manifests/lockfiles and TypeScript configuration select their affected
 package checks. Web changes do not compile Rust. npm-only changes need neither
 pnpm installation nor Web compilation.
 
+Web Vitest keeps its default exclusions and excludes `apps/supervisor-web/e2e/`.
+That directory contains Playwright suites; run them with an explicit config,
+spec and browser project following the focused E2E skill. Unit files outside
+`src/`, such as static-hosting regressions, remain part of Vitest discovery.
+
 `PR checks complete` aggregates selected job results, including failures and
 cancellations, and is the only main-repository check intended to be required.
 Version-only diffs parse the allowed root package/workspace/owned lockfile
