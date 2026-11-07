@@ -3,6 +3,7 @@ mod automations;
 mod legacy_env;
 mod plugins;
 mod threads;
+mod worktrees;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::io::Read;
@@ -400,6 +401,8 @@ enum Commands {
         #[command(subcommand)]
         command: automations::CommandCommand,
     },
+    /// Manage a thread's Git worktrees and inspect its actual working directory.
+    Worktree(worktrees::WorktreeArgs),
     /// Create, contact, and inspect local threads or same-owner device peers.
     #[command(
         after_long_help = r#"Rules for delivery and collaboration: pockymoe skill
@@ -737,6 +740,10 @@ async fn run() -> Result<()> {
                 Err(_) => pockymoe_protocol::THREAD_INTERACTION_SKILL.to_owned(),
             };
             println!("{text}");
+        }
+        Commands::Worktree(args) => {
+            let value = threads::Client::new(cli.connection)?.worktree(args).await?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
         }
         Commands::Thread { command } => {
             let value = threads::Client::new(cli.connection)?

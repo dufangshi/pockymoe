@@ -268,6 +268,11 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    Migration {
+        version: 22,
+        name: "working_copies",
+        apply: crate::worktrees::migrate,
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them

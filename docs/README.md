@@ -39,6 +39,7 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 **Features and interfaces**
 
 - [Thread interaction CLI](thread-interaction.md) and [cross-device peers](cross-device-peer.zh.md)
+- [Worktree management](worktrees.md): thread working copies, actual cwd and controlled execution
 - [Agent isolation](agent-isolation.md): keep agents outside a device or workspace out of it
 - [Thread event and item schema](thread-event-schema.md)
 - [Thread text summary API](thread-summary.md): compact chronological public prose and context filters

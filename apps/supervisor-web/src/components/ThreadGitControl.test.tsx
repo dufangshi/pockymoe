@@ -1,0 +1,95 @@
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { setLocale } from '@pockymoe/thread-ui/i18n';
+import { ApiError } from '../lib/api';
+import { ThreadGitControl } from './ThreadGitControl';
+import * as git from '../lib/gitApi';
+
+vi.mock('../lib/gitApi', () => ({ fetchThreadWorkingContext: vi.fn(), fetchThreadGitStatus: vi.fn(), fetchThreadGitDiff: vi.fn(), fetchThreadGitCommits: vi.fn() }));
+const context: git.ThreadWorkingContext = {
+  configuredCwd: '/repo', primaryWorkingCopyId: 'a',
+  workingCopies: [
+    { id: 'a', repositoryId: 'repo', path: '/repo.worktrees/a', branch: 'feature/a', head: 'aaaaaaaa', managed: true, source: 'created', lastObservedAt: null },
+    { id: 'b', repositoryId: 'repo', path: '/repo.worktrees/b', branch: 'feature/b', head: 'bbbbbbbb', managed: false, source: 'observed', lastObservedAt: null },
+  ], observations: [{ workingCopyId: 'b', cwd: '/repo.worktrees/b/src', source: 'commandCwd', toolCallId: 'tool', agentId: null, observedAt: '2026-11-01T12:00:00Z' }],
+};
+const pending = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; };
+const open = () => fireEvent.click(screen.getByRole('button', { name: 'View Git changes' }));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  setLocale('en');
+  Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+  vi.mocked(git.fetchThreadWorkingContext).mockResolvedValue(context);
+  vi.mocked(git.fetchThreadGitStatus).mockImplementation(async (_id, copy) => ({ workingCopyId: copy, branch: `feature/${copy}`, head: 'abc', files: [{ path: 'src/app.rs', indexStatus: ' ', worktreeStatus: 'M' }], truncated: false }));
+  vi.mocked(git.fetchThreadGitDiff).mockImplementation(async (_id, copy, input) => ({ workingCopyId: copy, area: input.area, patch: `diff ${copy}`, truncated: false }));
+  vi.mocked(git.fetchThreadGitCommits).mockResolvedValue({ commits: [{ oid: 'abc123', subject: 'Fix worktree paths', author: 'Dev', authoredAt: '2026-11-01T12:00:00Z' }], hasMore: true });
+});
+
+describe('thread Git inspection', () => {
+  it('loads only when opened and separates the primary checkout from observed operations', async () => {
+    render(<ThreadGitControl threadId="thread" deviceId="device" />);
+    expect(git.fetchThreadWorkingContext).not.toHaveBeenCalled();
+    open();
+    await screen.findByText('diff a');
+    expect(screen.getByText('Primary working copy')).toBeVisible();
+    expect(screen.getByText('Recent operation outside the primary working copy')).toBeVisible();
+    expect(screen.getByText('Selecting a working copy here only changes this view.')).toBeVisible();
+    expect(git.fetchThreadGitStatus).toHaveBeenCalledWith('thread', 'a', 'device', expect.any(AbortSignal));
+    fireEvent.click(screen.getByRole('button', { name: 'View diff for src/app.rs' }));
+    await waitFor(() => expect(git.fetchThreadGitDiff).toHaveBeenLastCalledWith('thread', 'a', { area: 'worktree', path: 'src/app.rs' }, 'device', expect.any(AbortSignal)));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close dialog' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('discards a late diff response after selecting another worktree', async () => {
+    const first = pending<git.GitDiff>();
+    vi.mocked(git.fetchThreadGitDiff).mockImplementationOnce(() => first.promise);
+    render(<ThreadGitControl threadId="thread" />); open();
+    await screen.findByText('Primary working copy');
+    await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Close dialog' })).toHaveFocus());
+    const selector = screen.getByRole('combobox', { name: 'Working copy' });
+    fireEvent.click(selector);
+    fireEvent.click(await screen.findByRole('option', { name: 'feature/b · /repo.worktrees/b' }));
+    await screen.findByText('diff b');
+    await act(async () => first.resolve({ workingCopyId: 'a', area: 'worktree', patch: 'stale patch from a', truncated: false }));
+    expect(screen.queryByText('stale patch from a')).not.toBeInTheDocument();
+    expect(screen.getByText('Viewing this working copy')).toBeVisible();
+  });
+
+  it.each([403, 404])('shows an unavailable explanation when the device returns %s', async code => {
+    vi.mocked(git.fetchThreadWorkingContext).mockRejectedValue(new ApiError(code, { code: 'service_unavailable', message: 'Device refused' }));
+    render(<ThreadGitControl threadId="thread" />); open();
+    await screen.findByRole('button', { name: 'Why it is unavailable' });
+    expect(git.fetchThreadGitDiff).not.toHaveBeenCalled();
+    expect(screen.queryByText('Loading Git data…')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Why it is unavailable' }));
+    expect(await screen.findByText(code === 403 ? 'Git inspection needs owner access or write access to the whole device.' : 'Git inspection is unavailable on this Supervisor.')).toBeVisible();
+  });
+
+  it('defers hidden-tab invalidations, then refreshes once visible', async () => {
+    const view = render(<ThreadGitControl threadId="thread" refreshKey="one" />); open();
+    await screen.findByText('diff a');
+    const count = vi.mocked(git.fetchThreadWorkingContext).mock.calls.length;
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    fireEvent(document, new Event('visibilitychange'));
+    view.rerender(<ThreadGitControl threadId="thread" refreshKey="two" />);
+    await act(async () => {});
+    expect(git.fetchThreadWorkingContext).toHaveBeenCalledTimes(count);
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    fireEvent(document, new Event('visibilitychange'));
+    await waitFor(() => expect(git.fetchThreadWorkingContext).toHaveBeenCalledTimes(count + 1));
+  });
+
+  it('pages commits on demand and translates the view without changing selection', async () => {
+    render(<ThreadGitControl threadId="thread" />); open(); await screen.findByText('diff a');
+    expect(git.fetchThreadGitCommits).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Commits' }));
+    await screen.findByText('Fix worktree paths');
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
+    await waitFor(() => expect(git.fetchThreadGitCommits).toHaveBeenLastCalledWith('thread', 'a', 30, undefined, expect.any(AbortSignal)));
+    act(() => setLocale('zh-CN'));
+    expect(screen.getByText('主工作副本')).toBeVisible();
+    expect(screen.getByRole('button', { name: '下一页' })).toBeVisible();
+  });
+});

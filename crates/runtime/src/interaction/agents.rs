@@ -652,8 +652,7 @@ impl Supervisor {
         let mut removed = false;
         if drop_worktree {
             if let Some(path) = &thread.worktree_path {
-                let workspace = self.get_workspace(&thread.workspace_id)?;
-                remove_worktree(Path::new(&workspace.abs_path), Path::new(path)).map_err(|e| {
+                self.remove_configured_worktree(id, Path::new(path)).map_err(|e| {
                     anyhow!("{e}. Commit or discard the worktree's changes first; the thread was not closed")
                 })?;
                 removed = true;

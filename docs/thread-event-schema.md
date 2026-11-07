@@ -59,6 +59,13 @@ or a diff removed) and `textPruned` (`truncated` or `removed` command text); see
 [storage](storage.md#cleanup). A command's `text` is its only copy: its
 `detailText` input leaves the command out.
 
+ACP tool items can include `workingLocations`, an array of structured location
+evidence: `{path, source, agentId}`. `agentId` may be null. Sources currently
+include `terminal`, `command`, `cwdChanged` and `file`. The runtime resolves
+absolute paths to working copies; it does not infer shell directory changes
+from command text or treat a child agent's location as the thread's configured
+checkout. See [worktrees](worktrees.md).
+
 The optional Content Quality plugin attaches `polishedReply` to a completed
 `agentMessage`: `{text, preset, language, model, sourceHash, createdAt,
 requestHash}`. The original `text` remains authoritative. `sourceHash` is the

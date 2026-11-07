@@ -26,6 +26,7 @@ pub mod restart;
 pub mod service;
 pub mod thread_images;
 pub mod upstreams;
+pub mod worktrees;
 
 pub use actor::{EventBus, SharedRuntime};
 pub use config::RuntimeConfig;
