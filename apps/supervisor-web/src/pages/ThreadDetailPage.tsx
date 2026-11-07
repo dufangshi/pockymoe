@@ -38,6 +38,7 @@ import { useThreadShares, type ThreadShareTarget } from '../components/ThreadSha
 import { ThreadWatchesControl } from '../components/ThreadWatchesControl';
 import { ThreadGitControl } from '../components/ThreadGitControl';
 import { ThreadEnvironmentControl } from '../components/ThreadEnvironmentControl';
+import { requestThreadPageCatalog } from './threadPageCatalog';
 import { ThreadSubagentsControl } from '../components/ThreadSubagentsControl';
 import { PortMappingsControl } from '../components/PortMappingsControl';
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
@@ -98,14 +99,11 @@ import {
   disconnectThread,
   deleteThread,
   fetchAgentBackendModels,
-  fetchAgentBackendAgents,
-  fetchAgentBackendModelsFor,
   fetchThreadCapabilitySnapshot,
   postThreadHarnessAction,
   dshConsoleUrl,
   fetchThreadModels,
   fetchThreadGroup,
-  fetchAgentBackendStatus,
   fetchProviderHostFile,
   fetchRelayAccess,
   fetchRelayPortal,
@@ -1460,17 +1458,17 @@ export function ThreadDetailPage() {
       const cwd = detailRef.current?.workspace.absPath ?? null;
       const threadId = seedThread?.id ?? detailRef.current?.thread.id;
       setModelOptions([]);
-      const fallbackModels = () => !routeActiveRef.current ? Promise.resolve([] as ModelOptionDto[]) : fetchAgentBackendModelsFor(provider, {
-        ...(provider === 'acp' && agentId ? { agentId } : {}),
-        cwd,
+      // Context is unknown until the binding resolves; never carry Host readiness
+      // or management paths from the previous thread into an isolated thread.
+      setAgentOptions([]);
+      setStatus(null);
+      setBackendCapabilities(null);
+      setBackendManagementSchema(null);
+      const { modelRequest, agentRequest, statusRequest } = requestThreadPageCatalog({
+        provider, agentId, cwd, threadId, deviceId: relayRouteDeviceId,
+        isCurrent: () => routeActiveRef.current && caches.isCurrent()
+          && pageContextRequestIdRef.current === requestId,
       });
-      const modelRequest = threadId ? fetchThreadModels(threadId).catch(error => {
-        if (error instanceof ApiError && error.statusCode === 404) return fallbackModels();
-        throw error;
-      }) : fallbackModels();
-      const agentRequest = provider === 'acp'
-        ? fetchAgentBackendAgents(provider)
-        : Promise.resolve([] as ModelOptionDto[]);
       const capabilityRequest = threadId
         ? fetchThreadCapabilitySnapshot(threadId, relayRouteDeviceId)
         : Promise.resolve(null);
@@ -1480,7 +1478,7 @@ export function ThreadDetailPage() {
 
       const [threadResult, statusResult, modelResult, agentResult, capabilityResult] = await Promise.allSettled([
         fetchThreads(true).catch(() => threadId ? fetchThreadGroup(seedThread?.rootThreadId ?? threadId).catch(() => fetchThreadGroup(threadId)) : []),
-        fetchAgentBackendStatus(provider),
+        statusRequest,
         modelRequest,
         agentRequest,
         capabilityRequest,
@@ -1506,7 +1504,7 @@ export function ThreadDetailPage() {
       }
       setThreadListSettled(true);
 
-      if (statusResult.status === 'fulfilled') {
+      if (statusResult.status === 'fulfilled' && statusResult.value) {
         setStatus(statusResult.value.status);
         setBackendCapabilities(statusResult.value.capabilities);
         setBackendManagementSchema(statusResult.value.managementSchema);

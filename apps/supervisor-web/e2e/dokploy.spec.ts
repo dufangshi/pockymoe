@@ -10,7 +10,7 @@ const screenshots = fileURLToPath(new URL('../../../.scratch/dokploy-ui/screensh
 const workspace = { id: 'workspace-one', hostId: 'test-device', label: 'Environment UI', absPath: '/projects/pockymoe', isFavorite: false, createdAt: '2026-11-07', lastOpenedAt: null };
 const makeThread = () => ({ id: 'thread-one', workspaceId: workspace.id, provider: 'codex', agentId: 'codex', providerSessionId: 'existing-native-session', parentThreadId: null as string | null, source: 'created', title: 'Dokploy environment flow', model: 'gpt-6.1-sol', reasoningEffort: 'max', collaborationMode: 'default', approvalMode: 'yolo', status: 'idle', summaryText: null, lastError: null, activeTurnId: null, isLoaded: true, isPinned: false, createdAt: '2026-11-07', updatedAt: '2026-11-07', lastTurnStartedAt: null, lastTurnCompletedAt: null });
 
-async function mockApi(page: Page) {
+async function mockApi(page: Page, { acp = false, missingCreatedModels = false } = {}) {
   const snapshot = environmentsFixture();
   let binding: EnvironmentDto | null = null;
   const writes: { path: string; body: Record<string, unknown> | null }[] = [];
@@ -28,7 +28,9 @@ async function mockApi(page: Page) {
     if (request.method() !== 'GET') writes.push({ path: p, body });
     let result: unknown = {};
     if (p === '/api/threads/start') {
-      createdThread = { ...thread, id: 'created-thread', title: String(body?.title || 'New isolated thread'), providerSessionId: '' };
+      createdThread = { ...thread, id: 'created-thread', title: String(body?.title || 'New isolated thread'),
+        provider: String(body?.provider ?? thread.provider), agentId: String(body?.agentId ?? thread.agentId),
+        model: String(body?.model ?? thread.model), providerSessionId: '', isLoaded: false };
       if (body?.environmentConnectionId) {
         binding = { ...isolatedEnvironment, id: 'new-thread-env', threadId: createdThread.id, connectionId: String(body.environmentConnectionId), state: 'stopped' };
         snapshot.environments.push(binding);
@@ -68,8 +70,12 @@ async function mockApi(page: Page) {
     else if (p === '/api/threads/thread-one') result = { thread, workspace, workspacePathStatus: 'present', turns: [], pendingRequests: [], pendingSteers: [], totalTurnCount: 0 };
     else if (p === '/api/threads/created-thread') result = { thread: createdThread, workspace, workspacePathStatus: 'present', turns: [], pendingRequests: [], pendingSteers: [], totalTurnCount: 0 };
     else if (p.endsWith('/capabilities')) result = { availability: 'available', effectiveCapabilities: null, toolboxItems: [] };
-    else if (p === '/api/agent-runtimes') result = ['codex', 'opencode'].map(provider => ({ provider, displayName: provider === 'codex' ? 'Codex' : 'OpenCode', enabled: true, capabilities: { sessions: { resume: true }, turns: { start: true } }, installation: { installed: true }, status: {} }));
+    else if (p === '/api/agent-runtimes') result = ['codex', 'opencode', ...(acp ? ['acp'] : [])].map(provider => ({ provider, displayName: provider === 'codex' ? 'Codex' : provider === 'acp' ? 'ACP' : 'OpenCode', enabled: true, capabilities: { sessions: { resume: true }, turns: { start: true } }, installation: { installed: true }, status: {} }));
+    else if (p === '/api/threads/created-thread/models' && missingCreatedModels) {
+      await route.fulfill({ status: 404, json: { code: 'fixture_models_unavailable', message: 'Mock thread models unavailable' } }); return;
+    }
     else if (p.endsWith('/models')) result = [{ id: 'model-a', model: 'model-a', displayName: 'Model A', isDefault: true, supportedReasoningEfforts: [], defaultReasoningEffort: null }];
+    else if (p === '/api/agent-runtimes/acp/agents' && acp) result = [{ id: 'codex', model: 'codex', displayName: 'OpenAI Codex', isDefault: true, selectionKind: 'agent', acpAgent: { availability: 'ready', statusMessage: 'Ready', transport: 'stdio' } }];
     else if (p.endsWith('/agents') || p.endsWith('/plugins') || p.endsWith('/favorites')) result = [];
     else if (p.endsWith('/status')) result = { id: 'codex', name: 'Codex', status: { available: true, connected: true, installed: true, authenticated: true }, capabilities: { controls: {} } };
     else if (p.endsWith('/subscription-usage')) result = { usage: null };
@@ -222,9 +228,9 @@ test('new thread isolation is submitted before startup and a failed startup neve
   const mock = await mockApi(page); mock.failNextStart();
   const dialog = await openNewThread(page);
   await dialog.getByRole('combobox', { name: 'Execution environment' }).click();
+  const probesBefore = mock.requests.filter(request => /\/agent-runtimes\/.+\/(models|agents|harness|status|install|restart)$/.test(request.path)).length;
   await page.getByRole('option', { name: 'Local Dokploy', exact: true }).click();
   await dialog.getByRole('textbox', { name: 'Model', exact: true }).fill('environment-model');
-  const probesBefore = mock.requests.filter(request => /\/agent-runtimes\/.+\/(models|agents|harness|status|install|restart)$/.test(request.path)).length;
   await expect(dialog.getByText('Installed', { exact: true })).toHaveCount(0);
   await expect(dialog.getByText('ACP is not enabled on this supervisor.', { exact: false })).toHaveCount(0);
   await expect(dialog.getByText('Not yet verified in this environment.', { exact: false })).toBeVisible();
@@ -245,7 +251,7 @@ test('new thread isolation is submitted before startup and a failed startup neve
   expect(mock.writes.filter(write => write.path === '/api/threads/start')).toHaveLength(1);
   expect(mock.writes.find(write => write.path === '/api/threads/start')!.body).toMatchObject({ title: 'Created in isolation', model: 'environment-model', environmentConnectionId: 'dokploy-local' });
   expect(mock.requests.filter(request => /\/agent-runtimes\/.+\/(models|agents|harness|status|install|restart)$/.test(request.path))).toHaveLength(probesBefore);
-  const sequence = mock.requests.filter(request => request.path === '/api/threads/start' || request.path.endsWith('/environment') || request.path === '/api/environments/new-thread-env/start');
+  const sequence = mock.requests.filter(request => request.path === '/api/threads/start' || request.path === '/api/threads/created-thread/environment' || request.path === '/api/environments/new-thread-env/start');
   expect(sequence.map(request => `${request.method} ${request.path}`)).toEqual(['POST /api/threads/start', 'GET /api/threads/created-thread/environment', 'POST /api/environments/new-thread-env/start']);
   await page.keyboard.press('Escape');
   await dialog.getByRole('button', { name: 'Retry environment startup' }).click();
@@ -254,6 +260,36 @@ test('new thread isolation is submitted before startup and a failed startup neve
   await expect(page.getByTestId('primary-pane')).toBeVisible();
   expect(mock.writes.filter(write => write.path === '/api/threads/start')).toHaveLength(1);
   expect(mock.writes.filter(write => write.path === '/api/environments/new-thread-env/start')).toHaveLength(2);
+});
+
+test('isolated ACP navigation from New Chat does not probe Host agents or models', async ({ page }) => {
+  const mock = await mockApi(page, { acp: true, missingCreatedModels: true });
+  const dialog = await openNewThread(page);
+  await dialog.locator('[id$="-thread-backend"]').click();
+  await page.getByRole('option', { name: 'ACP', exact: true }).click();
+  await expect(dialog.getByRole('radio', { name: /OpenAI Codex/ })).toBeChecked();
+  await expect(dialog.getByRole('combobox', { name: 'Model', exact: true })).toContainText('Model A');
+  await dialog.getByRole('combobox', { name: 'Execution environment' }).click();
+  const hostProbes = () => mock.requests.filter(request => /\/agent-runtimes\/.+\/(agents|models|harness|status|install|restart)$/.test(request.path));
+  const probesBeforeSelection = hostProbes().length;
+  await page.getByRole('option', { name: 'Local Dokploy', exact: true }).click();
+  await dialog.getByRole('textbox', { name: 'Model', exact: true }).fill('isolated-acp-model');
+  const threadModelResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/threads/created-thread/models' && response.status() === 404);
+  await dialog.getByRole('button', { name: 'Create Thread', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL(/\/threads\/created-thread$/);
+  await threadModelResponse;
+  await expect(page.getByTestId('primary-pane')).toBeVisible();
+  // Read the live binding in the navigated thread, after its context requests.
+  await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
+  await page.getByRole('button', { name: 'Isolated environments', exact: true }).click();
+  const environment = page.getByRole('dialog', { name: 'Isolated environments', exact: true });
+  await expect(environment.locator('[data-state="running"]')).toBeVisible();
+  await expect(environment.getByRole('combobox', { name: 'Select environment' })).toContainText('Feature worktree');
+  expect(mock.writes.filter(write => write.path === '/api/threads/start')).toHaveLength(1);
+  expect(mock.writes.find(write => write.path === '/api/threads/start')!.body).toMatchObject({ provider: 'acp', agentId: 'codex', model: 'isolated-acp-model', environmentConnectionId: 'dokploy-local' });
+  expect(mock.requests.filter(request => request.path === '/api/threads/created-thread/environment').length).toBeGreaterThanOrEqual(3);
+  expect(hostProbes()).toHaveLength(probesBeforeSelection);
 });
 
 test('unsupported environment download surfaces the server reason in the actual thread UI', async ({ page }) => {
