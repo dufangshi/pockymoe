@@ -84,11 +84,21 @@ pub async fn run(mode: &str, args: &[String]) -> Result<()> {
                 }
             };
             tokio::pin!(upload, download);
-            tokio::select! {
-                result = &mut upload => { result?; download.await?; },
-                result = &mut download => { result?; },
+            let result = tokio::select! {
+                result = &mut upload => match result {
+                    Ok(()) => download.await,
+                    Err(error) => Err(error),
+                },
+                result = &mut download => result,
+            };
+            // Tokio's stdin uses an uncancellable blocking read. This internal
+            // one-shot worker must exit when the upstream closes, even if the
+            // client keeps stdin open. Every response chunk is already flushed.
+            // Returning would make runtime shutdown wait indefinitely for stdin.
+            if result.is_err() {
+                eprintln!("environment TCP transport interrupted");
             }
-            Ok(())
+            std::process::exit(if result.is_ok() { 0 } else { 1 })
         }
         _ => bail!("unsupported worker mode"),
     }
