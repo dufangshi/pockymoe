@@ -1178,6 +1178,10 @@ impl AcpRuntime {
     ) -> Result<()> {
         match op {
             SessionSettingOp::SetConfig { config_id, value } => {
+                let isolated_claude_model = live.isolated_claude.is_some() && config_id == "model";
+                if isolated_claude_model {
+                    isolated_claude::require_model(&live.config_options, &value)?;
+                }
                 let response = process
                     .request(
                         "session/set_config_option",
@@ -1187,7 +1191,12 @@ impl AcpRuntime {
                             "value": value
                         }),
                     )
-                    .await?;
+                    .await;
+                let response = if isolated_claude_model {
+                    response.map_err(|_| anyhow!("unsupported_environment_claude_model: the adapter did not accept the requested model; select an advertised model"))?
+                } else {
+                    response?
+                };
                 if live.adapter_id == "grok" && config_id == "reasoning_effort" {
                     let actual = response["configOptions"]
                         .as_array()

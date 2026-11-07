@@ -125,6 +125,16 @@ pub(super) fn product_mode(
     Ok(Some("bypassPermissions".into()))
 }
 
+pub(super) fn require_model(options: &Value, requested: &str) -> Result<()> {
+    ensure!(
+        super::models_from_config_options(options)
+            .iter()
+            .any(|model| model.id == requested),
+        "unsupported_environment_claude_model: select an advertised model"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,5 +272,20 @@ mod tests {
             };
             assert_eq!(product_mode(&modes, &guarded).unwrap(), None);
         }
+    }
+
+    #[test]
+    fn rejects_unadvertised_models_before_native_validation_or_upstream_access() {
+        let options = json!([{"id":"model","category":"model","type":"select",
+        "currentValue":"unlisted-current-value","options":[
+            {"group":"Models","options":[{"value":"exact-model","name":"Exact model"}]}
+        ]}]);
+        assert!(require_model(&options, "exact-model").is_ok());
+        for invalid in ["private-model-value", "unlisted-current-value"] {
+            let error = require_model(&options, invalid).unwrap_err().to_string();
+            assert!(error.starts_with("unsupported_environment_claude_model:"));
+            assert!(!error.contains(invalid));
+        }
+        assert!(require_model(&json!([]), "exact-model").is_err());
     }
 }
