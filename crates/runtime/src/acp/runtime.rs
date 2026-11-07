@@ -2239,7 +2239,7 @@ impl AgentRuntime for AcpRuntime {
                     return Err(error);
                 }
             } else {
-                let _ = Self::apply_setting_op(
+                let result = Self::apply_setting_op(
                     &live.process.clone(),
                     &mut live,
                     SessionSettingOp::SetConfig {
@@ -2248,6 +2248,10 @@ impl AgentRuntime for AcpRuntime {
                     },
                 )
                 .await;
+                if live.isolated_claude.is_some() && result.is_err() {
+                    let _ = live.process.shutdown().await;
+                    bail!("unsupported_environment_claude_model: the adapter did not accept the requested model; select an advertised model");
+                }
                 live.model = Some(input.model.clone());
             }
         }
