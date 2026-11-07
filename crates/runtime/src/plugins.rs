@@ -415,6 +415,7 @@ impl Supervisor {
         let (thread, raw, event, receipt): (String, String, String, String) = self.db.with(|c| {
             Ok(c.query_row("SELECT a.thread_id,r.definition_json,r.event_json,r.receipt_json FROM automation_runs r JOIN automations a ON a.id=r.automation_id WHERE r.id=?1 AND r.state='running'", [run_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?)
         })?;
+        let _execution = self.hold_execution(&thread).await;
         let definition: pockymoe_protocol::AutomationDefinition = serde_json::from_str(&raw)?;
         let pockymoe_protocol::AutomationAction::PluginAction {
             plugin_id,

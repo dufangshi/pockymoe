@@ -101,6 +101,11 @@ pub(crate) async fn run(
     input: Value,
     caller: Option<String>,
 ) -> anyhow::Result<Value> {
+    let selected = caller.as_deref().or_else(|| input["threadId"].as_str());
+    let _execution = match selected {
+        Some(id) => Some(state.try_hold_execution(id)?),
+        None => None,
+    };
     let context = match caller.as_deref() {
         Some(id) => state.execution_context(id)?,
         None => input["threadId"]

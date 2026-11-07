@@ -13,6 +13,7 @@ use tokio::{
     process::{Child, Command},
 };
 
+pub mod admission;
 pub mod worker;
 
 #[derive(Clone)]
@@ -424,12 +425,29 @@ pub fn file_request(op: &str, root: &Path, path: &str, extra: Value) -> Result<O
 impl crate::Supervisor {
     pub fn execution_context(&self, thread: &str) -> Result<Option<ExecutionContext>> {
         let bound = self.environments.for_thread(thread)?;
+        let saved = self.get_thread(thread).ok();
+        if let Some(saved) = &saved {
+            let mut parent = saved.parent_thread_id.clone();
+            let mut visited = std::collections::HashSet::new();
+            while let Some(id) = parent {
+                ensure!(
+                    visited.len() < 16 && visited.insert(id.clone()),
+                    "invalid_environment_lineage"
+                );
+                if let Some(ancestor) = self.environments.for_thread(&id)? {
+                    ensure!(
+                        bound.as_ref().is_some_and(|own| own.id == ancestor.id),
+                        "inherited_environment_required: this historical child has no matching environment; create a new child from its isolated parent"
+                    );
+                }
+                parent = self.get_thread(&id)?.parent_thread_id;
+            }
+        }
         ensure!(
             bound.is_none() || (!self.config.treer_enabled && self.thread_host.get().is_none()),
             "unsupported_host_environment: the host integration has no isolated execution adapter"
         );
         Ok(bound.map(|env| {
-            let saved = self.get_thread(thread).ok();
             let working_directory = saved
                 .as_ref()
                 .and_then(|t| self.session_cwd(t))

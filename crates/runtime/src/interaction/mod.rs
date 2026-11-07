@@ -82,6 +82,7 @@ pub fn launch_env() -> Vec<(String, String)> {
 
 #[derive(Default)]
 pub struct InteractionState {
+    pub(crate) admission: crate::execution::admission::Admissions,
     pub(crate) host_messaging:
         std::sync::RwLock<Option<Arc<dyn crate::host_messaging::HostMessaging>>>,
     pub context: std::sync::RwLock<Option<CliContext>>,
@@ -115,7 +116,7 @@ impl Supervisor {
             .map(|(id, _)| id.clone())
     }
 
-    pub(crate) fn revoke_cli_thread_token(&self, id: &str) {
+    pub fn revoke_cli_thread_token(&self, id: &str) {
         self.interaction.thread_tokens.write().unwrap().remove(id);
     }
 
@@ -131,6 +132,7 @@ impl Supervisor {
     }
 
     pub async fn with_cli_context<T>(&self, thread_id: &str, future: impl Future<Output = T>) -> T {
+        let _execution = self.hold_execution(thread_id).await;
         let context = self.interaction.context.read().unwrap().clone();
         let mut env = context
             .map(|c| {

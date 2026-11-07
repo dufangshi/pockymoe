@@ -10,6 +10,7 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use http_body_util::BodyExt;
 use pockymoe_protocol::*;
 use pockymoe_runtime::{
     execution::{self, ExecutionContext},
@@ -153,6 +154,7 @@ async fn thread(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiErr> {
     state.get_thread(&id).map_err(map_err)?;
+    state.execution_context(&id).map_err(map_err)?;
     Ok(Json(
         json!({"environment":state.environments.for_thread(&id).map_err(map_err)?,"supportedHarnesses":["codex","claude","custom"],"limitations":["API gateway authentication only; native subscription credentials, SSH and credentialed MCP are not projected","Disk quota for original bind storage is unavailable","Environment capability expires after one hour; reconnect the harness to renew"]}),
     ))
@@ -174,7 +176,27 @@ async fn bind(
         "unsupported_host_environment: Treer requires an isolated execution adapter",
     )
     .map_err(map_err)?;
+    let _transition = state.try_change_execution(&id).map_err(map_err)?;
     let thread = state.get_thread(&id).map_err(map_err)?;
+    let threads = state.list_threads(None, true).map_err(map_err)?;
+    for descendant in threads
+        .iter()
+        .filter(|t| t.id != id && t.closed_at.is_none())
+    {
+        let mut parent = descendant.parent_thread_id.as_deref();
+        for _ in 0..16 {
+            let Some(parent_id) = parent else { break };
+            require(
+                parent_id != id,
+                "conflict: close existing child threads before changing execution environment",
+            )
+            .map_err(map_err)?;
+            parent = threads
+                .iter()
+                .find(|t| t.id == parent_id)
+                .and_then(|t| t.parent_thread_id.as_deref());
+        }
+    }
     require(
         thread.status == "idle" || thread.status == "failed" || thread.status == "interrupted",
         "conflict: stop the active turn before changing environment",
@@ -224,6 +246,12 @@ async fn bind(
     if let Some(old) = state.environments.for_thread(&id).map_err(map_err)? {
         execution::revoke_capabilities(&old.id);
     }
+    // Host terminals have no environment generation to invalidate. End their
+    // process and revoke their old CLI identity before acknowledging a switch.
+    crate::shells::hub()
+        .terminate_thread_checked(&id)
+        .map_err(map_err)?;
+    state.revoke_cli_thread_token(&id);
     state
         .environments
         .bind_thread(&id, input.environment_id.as_deref())
@@ -665,7 +693,30 @@ pub(crate) async fn execution_scope(
 ) -> Response {
     let path = request.uri().path();
     let segments = path.split('/').collect::<Vec<_>>();
+    let binding_route =
+        segments.get(2) == Some(&"threads") && segments.get(4) == Some(&"environment");
+    let selected_thread = if !binding_route && segments.get(2) == Some(&"threads") {
+        segments.get(3).map(|id| (*id).to_string())
+    } else if segments.get(2) == Some(&"workspaces") {
+        url::form_urlencoded::parse(request.uri().query().unwrap_or("").as_bytes())
+            .find(|(key, _)| key == "threadId")
+            .map(|(_, value)| value.into_owned())
+    } else {
+        None
+    };
+    // Choose the context only after admission. A request that waited for a
+    // binding change must see the new backend, including when it was Host.
+    let admission = match selected_thread.as_deref() {
+        Some(id) => match state.try_hold_execution(id) {
+            Ok(admission) => Some(admission),
+            Err(error) => return map_err(error).into_response(),
+        },
+        None => None,
+    };
     let selected = (|| -> Result<Option<ExecutionContext>> {
+        if binding_route {
+            return Ok(None);
+        }
         if segments.get(2) == Some(&"threads") {
             if let Some(id) = segments.get(3) {
                 return state.execution_context(id);
@@ -706,14 +757,28 @@ pub(crate) async fn execution_scope(
         }
         Ok(None)
     })();
-    match selected {
+    let response = match selected {
         Ok(context) => execution::scope(context, next.run(request)).await,
         Err(error) => (
             StatusCode::CONFLICT,
             Json(json!({"code":"environment_context_required","message":error.to_string()})),
         )
             .into_response(),
+    };
+    match admission {
+        Some(admission) => hold_response(response, admission),
+        None => response,
     }
+}
+
+fn hold_response(response: Response, admission: tokio::sync::OwnedRwLockReadGuard<()>) -> Response {
+    response.map(|body| {
+        Body::new(body.map_frame(move |frame| {
+            // Retain the admission while a file body is still being consumed.
+            let _admission = &admission;
+            frame
+        }))
+    })
 }
 
 fn redact_secret(bytes: &mut Vec<u8>, secret: &[u8]) {
@@ -748,5 +813,17 @@ mod tests {
         let mut marker = b"[redacted][redacted]".to_vec();
         redact_secret(&mut marker, b"[redacted]");
         assert_eq!(marker, b"[redacted][redacted]");
+    }
+
+    #[tokio::test]
+    async fn a_streaming_host_response_blocks_binding_until_it_is_dropped() {
+        let gate = Arc::new(tokio::sync::RwLock::new(()));
+        let response = hold_response(
+            Response::new(Body::from("an already authorized file")),
+            gate.clone().read_owned().await,
+        );
+        assert!(gate.clone().try_write_owned().is_err());
+        drop(response);
+        assert!(gate.try_write_owned().is_ok());
     }
 }

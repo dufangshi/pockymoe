@@ -230,3 +230,17 @@ explicit recovery. The owner starts/rebuilds the environment before resuming a
 thread. A new isolated thread has no native session at creation, so neither
 initialization nor a missing environment can fall back to the host. See
 [environment configuration and compatibility](environments.md).
+
+Changing a thread's execution binding takes an exclusive admission guard.
+Harness loads, hooks, commands, child creation and scoped file/CLI requests take
+read guards before choosing a backend; streaming file responses retain theirs
+until consumption or disconnect. A busy transition returns a conflict and does
+not switch a running command. Before acknowledging a successful switch, the
+Supervisor releases the old native session, terminates the old PTYs, revokes the
+old Host CLI identity and closes the old preview streams. New requests waiting
+for that switch choose the current backend after admission.
+
+Existing open child threads must be closed before changing the parent's binding.
+A historical child without its ancestor's environment cannot resume on Host;
+create a new child from the isolated parent. New children inherit before any
+initialization, and their creation holds the parent's admission guard.

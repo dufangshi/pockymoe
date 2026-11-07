@@ -519,10 +519,12 @@ impl Supervisor {
                 let Some(supervisor) = observer.upgrade() else {
                     break;
                 };
+                let admission = supervisor.hold_execution(&thread).await;
                 let Ok(context) = supervisor.execution_context(&thread) else {
                     continue;
                 };
                 let _ = tokio::task::spawn_blocking(move || {
+                    let _admission = admission;
                     crate::execution::blocking_scope(context, || {
                         supervisor.observe_worktree_locations(&thread, &tool, &locations);
                     })
@@ -1714,6 +1716,10 @@ impl Supervisor {
         origin: crate::host_hooks::ThreadOrigin,
         environment_connection: Option<String>,
     ) -> Result<ThreadDto> {
+        let _parent_execution = match input.parent_thread_id.as_deref() {
+            Some(parent) => Some(self.hold_execution(parent).await),
+            None => None,
+        };
         let (approval_mode, sandbox_mode) = match input.approval_mode.as_str() {
             "yolo" => ("yolo", "danger-full-access"),
             "guarded" => ("guarded", "workspace-write"),

@@ -1136,6 +1136,14 @@ impl Supervisor {
         })
     }
     async fn execute_command(&self, id: &str) -> Result<()> {
+        let thread_id: String = self.db.with(|c| {
+            Ok(c.query_row(
+                "SELECT thread_id FROM command_executions WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )?)
+        })?;
+        let _execution = self.hold_execution(&thread_id).await;
         let prepared = self.db.with(|c| {
             let (raw, path): (String, String) = c.query_row(
                 "SELECT x.input_json,COALESCE(t.worktree_path,w.abs_path) FROM command_executions x
@@ -1205,13 +1213,6 @@ impl Supervisor {
             cmd.as_std_mut().process_group(0);
         }
         crate::child_process::hide_tokio(&mut cmd);
-        let thread_id: String = self.db.with(|c| {
-            Ok(c.query_row(
-                "SELECT thread_id FROM command_executions WHERE id=?1",
-                [id],
-                |r| r.get(0),
-            )?)
-        })?;
         let execution = self.execution_context(&thread_id)?;
         let process_id = Uuid::new_v4().to_string();
         let spawned = if let Some(context) = &execution {

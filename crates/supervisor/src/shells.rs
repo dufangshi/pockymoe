@@ -355,6 +355,10 @@ impl ShellHub {
     }
 
     pub fn terminate_thread(&self, thread: &str) {
+        let _ = self.terminate_thread_checked(thread);
+    }
+
+    pub fn terminate_thread_checked(&self, thread: &str) -> Result<()> {
         let ids = self
             .inner
             .lock()
@@ -364,9 +368,12 @@ impl ShellHub {
             .filter(|(_, s)| s.thread_id == thread)
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
+        let mut failed = false;
         for id in ids {
-            let _ = self.terminate(&id);
+            failed |= self.terminate(&id).is_err();
         }
+        anyhow::ensure!(!failed, "thread terminal cleanup could not be confirmed");
+        Ok(())
     }
     pub fn subscribe_all(&self) -> broadcast::Receiver<ShellOutput> {
         self.inner.lock().unwrap().all.subscribe()
