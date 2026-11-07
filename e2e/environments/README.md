@@ -62,6 +62,32 @@ waits at the pressure phase for that run-local marker. Create the marker after
 the image build finishes and the other computation is held; omit this option
 when the lab is dedicated to this acceptance run.
 
+To verify a Supervisor running in a different mount namespace, use the same
+manifest after the main run completes:
+
+```sh
+python3 e2e/environments/containerized.py \
+  --manifest /path/to/acceptance/manifest.json --ready-commit READY_COMMIT
+```
+
+For a newly approved build after the main run, also supply `--binary` explicitly.
+The namespace driver pins it at a fresh SHA-derived path and runs actual `ldd`
+without changing the main run's binary or evidence.
+
+This starts a separate Supervisor container with a fresh private DB/HOME and no
+published port. It mounts only the test daemon's socket into that control plane,
+uses the lab's private backend network for real Dokploy API calls, and gives its
+worker no control socket. The host project is mounted at a different path inside
+the Supervisor. Docker inspect, inode comparison and a real command write must
+prove that the provider translates this path back to the actual daemon source.
+A derived test image also contains a Git project at the exact same absolute path
+as a different host project; its unshared image layer must be rejected before a
+Compose resource is created. A TCP Docker endpoint must be rejected explicitly
+at configuration time. This last case tests real validation, without claiming a
+remote daemon deployment. Only this script's worker resources and Supervisor are
+cleaned after success; a failed Supervisor container is retained stopped for
+diagnosis. Source files, evidence, test images and the base lab remain.
+
 The driver checks ancestry and loader compatibility, pins each binary at a new
 SHA-derived path without replacing an existing container bind, and
 starts only its own `Popen` child. It constructs a new environment mapping from
@@ -102,6 +128,20 @@ An additional host-origin fixture creates a thread preview before environment
 binding. After binding, its old cookie must stop reaching the host canary and
 its established WebSocket/SSE streams must close. Only the canary match boolean
 and HTTP status enter evidence.
+At this same binding boundary a real Host command blocks on a fixture release
+file; binding must return 409 until that command finishes once. An existing Host
+PTY continuously writes a progress file. The binding acknowledgement must leave
+its writer stopped, reject further input through its original attachment and
+preserve the host canary. A later new PTY must execute inside the worker.
+An existing Host child first performs a real fixture side effect, then prevents
+its parent from binding until explicitly closed. Once the parent binds, the old
+child's environment lookup, reopening prompt and command must refuse execution
+and leave host side effects unchanged. A new child created after binding must
+inherit the environment and pass the regular isolation probe.
+Both ordinary and percent-encoded dynamic thread IDs create real PTYs. Each
+must report the worker's hostname and marker and refuse to read the host canary;
+encoded PTY creation must fail after Stop. Percent-encoded workspace IDs also
+exercise scoped file creation while running and refusal after Stop.
 
 ## Evidence, scope and cleanup
 
@@ -120,6 +160,10 @@ assertion or public DNS/TLS deployment. A passing origin or worker TCP probe is
 recorded separately from that full Relay path and from real model results. CPU/PIDs/OOM
 probes validate real Dokploy/Docker limits separately from worker recovery;
 integration also exercises these limits inside the product-created worker.
+Stopped-command checks accept a client error or an HTTP-200 command record with
+`state=failed`, no exit/output and an explicit `environment_not_running` error.
+A fresh marker visible to the Supervisor must remain absent, proving that the
+failed command did not fall back to a host process. HTTP 200 alone never passes.
 Separate hard-release and Docker exec transport-disconnect checks use detached,
 double-forked writers that ignore TERM and are deliberately excluded from all
 fixture cleanup. The Rust worker must kill and reap both processes, and their

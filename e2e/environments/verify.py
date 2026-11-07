@@ -118,7 +118,8 @@ class Evidence:
         for base in [self.root, HERE]:
             for path in base.rglob("*"):
                 relative = path.relative_to(base)
-                if relative.parts[0] in {"private", "state", "home", "bin", "unauthorized", "__pycache__"}:
+                if any(part in {"private", "state", "home", "bin", "unauthorized", "__pycache__"}
+                       for part in relative.parts[:-1]):
                     continue
                 if not path.is_file() or path.is_symlink() or path.stat().st_size > 4 * 1024 * 1024:
                     continue
@@ -639,6 +640,46 @@ def fixture_png():
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!IIBBBBB", 1, 1, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(bytes([0, 64, 128, 192, 255]))) + chunk(b"IEND", b"")
 
 
+def encoded_id(value):
+    return "%" + format(ord(value[0]), "02X") + value[1:]
+
+
+def check_worker_pty(supervisor, thread_id, path, container, connection, evidence, host_canary_path, label, encoded=False):
+    route_id = encoded_id(thread_id) if encoded else thread_id
+    prefix = label + ("-encoded-thread-id" if encoded else "")
+    marker = Path(path) / ("pty-identity-" + uuid.uuid4().hex + ".json")
+    created = supervisor.api(f"/api/threads/{route_id}/shell", {"cols": 80, "rows": 24, "label": "Environment acceptance"})
+    shell_id = created["activeShellId"]
+    try:
+        with WebSocket(supervisor.base.replace("http://", "ws://") + "/ws",
+                {"Authorization": "Bearer " + supervisor.api.bearer}) as websocket:
+            websocket.send_json({"type": "shell.attach", "shellId": shell_id, "cols": 80, "rows": 24})
+            viewer = None
+            for _ in range(30):
+                message = json.loads(websocket.receive())
+                if message.get("type") == "shell.connected":
+                    viewer = message["payload"]["viewerId"]
+                    break
+            require(viewer, "PTY viewer did not attach")
+            code = ("import json,os\nfrom pathlib import Path\nreadable=False\ntry:\n Path(" + repr(str(host_canary_path))
+                + ").read_bytes();readable=True\nexcept OSError:pass\nPath(" + repr(marker.name)
+                + ").write_text(json.dumps({'hostname':Path('/etc/hostname').read_text().strip(),"
+                "'workerMarked':os.environ.get('POCKYMOE_ENVIRONMENT_WORKER')=='1','hostCanaryReadable':readable}))\n")
+            websocket.send_json({"type": "shell.input", "shellId": shell_id, "viewerId": viewer,
+                "data": "python3 -c " + shlex.quote(code) + "\n"})
+            deadline = time.monotonic() + 6
+            while (not marker.exists() or not marker.stat().st_size) and time.monotonic() < deadline:
+                time.sleep(.1)
+            expected_hostname = json.loads(docker_command(connection, "inspect", container).stdout)[0]["Config"]["Hostname"]
+            observed = json.loads(marker.read_text()) if marker.exists() and marker.stat().st_size else {}
+            evidence.check(prefix + "-web-pty-inside-environment", observed.get("hostname") == expected_hostname
+                and observed.get("workerMarked") is True and observed.get("hostCanaryReadable") is False,
+                {"hostnameMatchesWorker": observed.get("hostname") == expected_hostname, "workerMarked": observed.get("workerMarked"),
+                 "hostCanaryReadable": observed.get("hostCanaryReadable"), "encodedDynamicPath": encoded})
+    finally:
+        supervisor.api(f"/api/shells/{shell_id}/terminate", {})
+
+
 def check_web_file_routes(supervisor, thread_id, path, evidence, host_canary_path, prefix, running):
     thread = supervisor.api(f"/api/threads/{thread_id}")["thread"]
     workspace_id = thread["workspaceId"]
@@ -654,6 +695,15 @@ def check_web_file_routes(supervisor, thread_id, path, evidence, host_canary_pat
     status, _ = api.request(scoped_files, {"path": marker.name}, allowed=allowed)
     evidence.check(prefix + "-web-create-" + ("inside-running-worker" if running else "stopped-refused-without-host-write"),
         status == 201 and marker.is_file() if running else status in {400, 403, 409, 503} and not marker.exists(), {"httpStatus": status})
+    encoded_marker = Path(path) / ("encoded-workspace-create-" + uuid.uuid4().hex + ".txt")
+    status, _ = api.request(f"/api/workspaces/{encoded_id(workspace_id)}/files?threadId={thread_id}", {"path": encoded_marker.name}, allowed=allowed)
+    evidence.check(prefix + "-encoded-workspace-create-" + ("inside-running-worker" if running else "stopped-refused-without-host-write"),
+        status == 201 and encoded_marker.is_file() if running else status in {400, 403, 409, 503} and not encoded_marker.exists(), {"httpStatus": status})
+    if not running:
+        status, created = api.request(f"/api/threads/{encoded_id(thread_id)}/shell", {"cols": 80, "rows": 24}, allowed=allowed)
+        evidence.check(prefix + "-encoded-thread-id-pty-stopped-refused", status in {400, 403, 409, 503}, {"httpStatus": status})
+        if status == 200 and isinstance(created, dict) and created.get("activeShellId"):
+            api(f"/api/shells/{created['activeShellId']}/terminate", {})
     status, payload = api.request(f"/api/threads/{thread_id}/assets/image?" + urllib.parse.urlencode({"path": relative_image}), allowed=allowed, raw=True)
     evidence.check(prefix + "-thread-image-" + ("read-by-worker" if running else "stopped-refused"),
         status == 200 and payload == fixture_png() if running else status in {400, 403, 409, 503} and payload != fixture_png(), {"httpStatus": status})
@@ -744,6 +794,167 @@ def check_uncooperative_lifecycle(supervisor, thread_id, environment, connection
     environment.update(fresh)
 
 
+class LegacyHostExecution:
+    """Real host PTY and blocking command admission at the binding boundary."""
+    def __init__(self, supervisor, thread_id, environment_id, root, host_canary, project_path, evidence):
+        self.supervisor, self.thread_id, self.environment_id = supervisor, thread_id, environment_id
+        self.evidence, self.host_canary = evidence, Path(host_canary)
+        self.project_path, self.old_child = Path(project_path), None
+        self.canary_before = (self.host_canary.read_bytes(), self.host_canary.stat().st_mtime_ns)
+        self.root = root / ("host-binding-fence-" + uuid.uuid4().hex)
+        self.root.mkdir()
+        self.websocket, self.shell_id, self.viewer = None, None, None
+        self.command_thread, self.command_result, self.command_error = None, None, None
+        self.progress_at_ack = None
+
+    def before_bind(self):
+        api = self.supervisor.api
+        shell = api(f"/api/threads/{self.thread_id}/shell", {"cols": 80, "rows": 24, "label": "Legacy host binding fixture"})
+        self.shell_id = shell["activeShellId"]
+        self.websocket = WebSocket(self.supervisor.base.replace("http://", "ws://") + "/ws",
+            {"Authorization": "Bearer " + api.bearer})
+        self.websocket.send_json({"type": "shell.attach", "shellId": self.shell_id, "cols": 80, "rows": 24})
+        for _ in range(40):
+            message = json.loads(self.websocket.receive())
+            if message.get("type") == "shell.connected" and message.get("shellId") == self.shell_id:
+                self.viewer = message["payload"]["viewerId"]
+                break
+        require(self.viewer, "Legacy host PTY did not attach")
+        writer = ("import json,os,time;from pathlib import Path;r=Path(" + repr(str(self.root)) + ");"
+            "r.joinpath('pty-pid.json').write_text(json.dumps({'pid':os.getpid(),'startTicks':Path('/proc/self/stat').read_text().split()[21]}));"
+            "n=0\nwhile True:\n n+=1;r.joinpath('pty-progress.txt').write_text(str(n));time.sleep(.05)\n")
+        self.websocket.send_json({"type": "shell.input", "shellId": self.shell_id, "viewerId": self.viewer,
+            "data": "exec python3 -c " + shlex.quote(writer) + "\n"})
+        progress = self.root / "pty-progress.txt"
+        deadline = time.monotonic() + 6
+        while not progress.exists() and time.monotonic() < deadline:
+            time.sleep(.05)
+        require(progress.exists(), "Legacy host PTY writer did not start")
+        before = progress.read_bytes()
+        time.sleep(.2)
+        self.evidence.check("legacy-host-pty-writes-before-environment-bind", progress.read_bytes() != before)
+
+        child = self.supervisor.prompt(self.thread_id, {"case": "child-create"})
+        require(child.get("created") and child.get("childThreadId"), "Legacy host CLI child was not created")
+        self.old_child = child["childThreadId"]
+        origin = api(f"/api/threads/{self.old_child}/environment")
+        self.evidence.check("legacy-child-starts-with-host-execution", origin.get("environment") is None)
+        self.supervisor.prompt(self.old_child, {"case": "once"})
+        self.child_counter_before = (self.project_path / "side-effect-count.txt").read_bytes()
+        status, _ = api.request(f"/api/threads/{self.thread_id}/environment",
+            {"environmentId": self.environment_id, "resetSession": True}, "PUT", allowed=(200, 400, 409))
+        self.evidence.check("open-legacy-child-prevents-parent-environment-bind", status == 409,
+            {"httpStatus": status, "childThreadId": self.old_child})
+        api("/api/cli", {"operation": "close", "threadId": self.old_child, "fromThreadId": self.thread_id})
+        closed = api(f"/api/threads/{self.old_child}")["thread"]
+        require(self.evidence.check("legacy-child-explicitly-closed-before-parent-bind", bool(closed.get("closedAt"))), "Legacy child did not close")
+
+        command = ("import time;from pathlib import Path;r=Path(" + repr(str(self.root)) + ");"
+            "r.joinpath('command-ready').write_text('ready')\n"
+            "while not r.joinpath('command-release').exists():time.sleep(.05)\n"
+            "p=r/'command-count.txt';p.write_text(str(int(p.read_text())+1) if p.exists() else '1')\n")
+        client = API(self.supervisor.base, self.evidence)
+        client.bearer, client.cli_bearer = api.bearer, api.cli_bearer
+
+        def run_command():
+            try:
+                self.command_result = client("/api/cli", {"operation": "commandRun", "threadId": self.thread_id,
+                    "input": {"argv": ["python3", "-c", command], "cwd": ".", "timeoutSeconds": 25}})
+            except Exception as error:
+                self.command_error = type(error).__name__
+
+        self.command_thread = threading.Thread(target=run_command, daemon=True)
+        self.command_thread.start()
+        try:
+            deadline = time.monotonic() + 6
+            while not (self.root / "command-ready").exists() and time.monotonic() < deadline:
+                time.sleep(.05)
+            require((self.root / "command-ready").exists(), "Real host command did not reach its blocking point")
+            status, _ = api.request(f"/api/threads/{self.thread_id}/environment",
+                {"environmentId": self.environment_id, "resetSession": True}, "PUT", allowed=(200, 400, 409))
+            binding = api(f"/api/threads/{self.thread_id}/environment")
+            self.evidence.check("running-host-command-prevents-environment-bind", status == 409 and binding.get("environment") is None,
+                {"httpStatus": status, "bindingRemainsHost": binding.get("environment") is None})
+        finally:
+            (self.root / "command-release").write_text("release")
+            self.command_thread.join(timeout=8)
+        result = self.command_result or {}
+        self.evidence.check("host-command-completes-once-before-explicit-bind", not self.command_thread.is_alive()
+            and result.get("state") == "completed" and result.get("exitCode") == 0
+            and (self.root / "command-count.txt").read_text() == "1",
+            {"commandState": result.get("state"), "exitCode": result.get("exitCode"), "failureType": self.command_error})
+
+    def capture_bind_ack(self):
+        self.progress_at_ack = (self.root / "pty-progress.txt").read_bytes()
+
+    def after_bind(self):
+        forbidden = self.root / "old-pty-must-not-write"
+        self.websocket.send_json({"type": "shell.input", "shellId": self.shell_id, "viewerId": self.viewer,
+            "data": "python3 -c " + shlex.quote("from pathlib import Path;Path(" + repr(str(forbidden)) + ").write_text('unexpected')") + "\n"})
+        self.websocket.socket.settimeout(.5)
+        denied = False
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                message = json.loads(self.websocket.receive())
+                if message.get("type") == "shell.error" and message.get("shellId") == self.shell_id:
+                    denied = True
+                    break
+            except socket.timeout:
+                continue
+            except (EOFError, ConnectionError):
+                break
+        time.sleep(.5)
+        self.evidence.check("legacy-host-pty-old-input-rejected-after-bind", denied and not forbidden.exists(),
+            {"explicitShellError": denied, "hostWriteAbsent": not forbidden.exists()})
+        pid = json.loads((self.root / "pty-pid.json").read_text())["pid"]
+        self.evidence.check("legacy-host-pty-writer-stopped-at-bind-ack",
+            (self.root / "pty-progress.txt").read_bytes() == self.progress_at_ack and not Path("/proc", str(pid)).exists())
+        self.evidence.check("legacy-host-pty-bind-does-not-write-host-canary",
+            self.canary_before == (self.host_canary.read_bytes(), self.host_canary.stat().st_mtime_ns))
+        self.evidence.check("binding-does-not-replay-completed-host-command", (self.root / "command-count.txt").read_text() == "1")
+        api = self.supervisor.api
+        status, _ = api.request(f"/api/threads/{self.old_child}/environment", allowed=(200, 400, 403, 409))
+        self.evidence.check("legacy-closed-child-environment-refuses-host-fallback", 400 <= status < 500, {"httpStatus": status})
+        status, _ = api.request(f"/api/threads/{self.old_child}/prompt", {"prompt": "POCKY_ENV_CASE "
+            + json.dumps({"case": "once", "caseId": uuid.uuid4().hex}), "clientRequestId": uuid.uuid4().hex}, allowed=(200, 400, 403, 409))
+        time.sleep(.5)
+        self.evidence.check("legacy-closed-child-prompt-cannot-reopen-on-host", 400 <= status < 500
+            and (self.project_path / "side-effect-count.txt").read_bytes() == self.child_counter_before,
+            {"httpStatus": status, "hostSideEffectUnchanged": (self.project_path / "side-effect-count.txt").read_bytes() == self.child_counter_before})
+        forbidden_child = self.root / "old-child-command-must-not-write"
+        status, result = api.request("/api/cli", {"operation": "commandRun", "threadId": self.old_child,
+            "input": {"argv": ["python3", "-c", "from pathlib import Path;Path(" + repr(str(forbidden_child)) + ").write_text('unexpected')"],
+                "cwd": ".", "timeoutSeconds": 5}}, allowed=(200, 400, 403, 409))
+        self.evidence.check("legacy-closed-child-command-refused-without-host-write", 400 <= status < 500 and not forbidden_child.exists(),
+            {"httpStatus": status, "hostWriteAbsent": not forbidden_child.exists()})
+
+    def close(self):
+        (self.root / "command-release").write_text("release")
+        if self.command_thread:
+            self.command_thread.join(timeout=3)
+        if self.websocket:
+            self.websocket.close()
+        if self.shell_id:
+            self.supervisor.api.request(f"/api/shells/{self.shell_id}/terminate", {}, allowed=(200, 400, 404))
+        identity = self.root / "pty-pid.json"
+        if identity.exists():
+            saved = json.loads(identity.read_text())
+            proc = Path("/proc", str(saved["pid"]))
+            try:
+                with os.fdopen(os.open(proc / "cmdline", os.O_RDONLY), "rb") as file:
+                    matches = str(self.root).encode() in file.read()
+                if matches and (proc / "stat").read_text().split()[21] == saved["startTicks"]:
+                    descriptor = os.pidfd_open(saved["pid"])
+                    try:
+                        if (proc / "stat").read_text().split()[21] == saved["startTicks"]:
+                            signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                    finally:
+                        os.close(descriptor)
+            except (FileNotFoundError, ProcessLookupError):
+                pass
+
+
 def runtime_checks(supervisor, state, root, connection, evidence, model_upstream, relay, resume=False, pressure_gate=None):
     api = supervisor.api
     request = dict(connection, name=state["prefix"], image=state["image"],
@@ -792,7 +1003,8 @@ def runtime_checks(supervisor, state, root, connection, evidence, model_upstream
         environment = api(f"/api/environments/{environment['id']}/start", {})
         require(evidence.check(label + "-environment-running", environment.get("state") == "running"), "Environment did not start")
         if label == "original":
-            relay.legacy_host_binding(supervisor, thread["id"], environment["id"])
+            relay.legacy_host_binding(supervisor, thread["id"], environment["id"],
+                LegacyHostExecution(supervisor, thread["id"], environment["id"], root, state["hostCanaryPath"], path, evidence))
         else:
             api(f"/api/threads/{thread['id']}/environment", {"environmentId": environment["id"], "resetSession": True}, "PUT")
         environments[-1] = environment
@@ -911,30 +1123,8 @@ def runtime_checks(supervisor, state, root, connection, evidence, model_upstream
                     evidence.check(label + "-rust-worker-" + protocol, passed)
                 except (OSError, EOFError, ConnectionError) as error:
                     evidence.check(label + "-rust-worker-" + protocol, False, {"failureType": type(error).__name__})
-        pty_file = Path(path) / "pty.txt"
-        pty_file.unlink(missing_ok=True)
-        created_shell = api(f"/api/threads/{thread['id']}/shell", {"cols": 80, "rows": 24, "label": "Environment acceptance"})
-        shell_id = created_shell["activeShellId"]
-        try:
-            with WebSocket(supervisor.base.replace("http://", "ws://") + "/ws",
-                    {"Authorization": "Bearer " + supervisor.api.bearer}) as websocket:
-                websocket.send_json({"type": "shell.attach", "shellId": shell_id, "cols": 80, "rows": 24})
-                viewer = None
-                for _ in range(30):
-                    message = json.loads(websocket.receive())
-                    if message.get("type") == "shell.connected":
-                        viewer = message["payload"]["viewerId"]
-                        break
-                require(viewer, "PTY viewer did not attach")
-                websocket.send_json({"type": "shell.input", "shellId": shell_id, "viewerId": viewer,
-                    "data": "python3 -c \"from pathlib import Path;Path('pty.txt').write_text(Path('/etc/hostname').read_text())\"\n"})
-                deadline = time.monotonic() + 5
-                while not pty_file.exists() and time.monotonic() < deadline:
-                    time.sleep(0.1)
-                expected_hostname = json.loads(docker_command(connection, "inspect", container).stdout)[0]["Config"]["Hostname"]
-                evidence.check(label + "-web-pty-inside-environment", pty_file.exists() and pty_file.read_text().strip() == expected_hostname)
-        finally:
-            api(f"/api/shells/{shell_id}/terminate", {})
+        for encoded in [False, True]:
+            check_worker_pty(supervisor, thread["id"], path, container, connection, evidence, state["hostCanaryPath"], label, encoded)
 
     relay.checks(supervisor, threads)
     check_host_mcp_rejected(supervisor, threads[0]["id"], root, evidence)
@@ -998,10 +1188,23 @@ def runtime_checks(supervisor, state, root, connection, evidence, model_upstream
             break
         time.sleep(0.2)
     evidence.check("actual-worker-crash-has-explicit-state", interrupted["state"] in {"interrupted", "error"}, {"state": interrupted["state"]})
-    forbidden_side_effect = root / "unauthorized/fallback-must-not-execute"
-    status, _ = api.request("/api/cli", {"operation": "commandRun", "threadId": tid, "input": {"argv": ["python3", "-c",
+    forbidden_side_effect = root / ("unauthorized/fallback-must-not-execute-" + uuid.uuid4().hex)
+    require(not forbidden_side_effect.exists(), "Fresh fallback probe marker unexpectedly exists")
+    status, refused = api.request("/api/cli", {"operation": "commandRun", "threadId": tid, "input": {"argv": ["python3", "-c",
         "from pathlib import Path;Path(" + repr(str(forbidden_side_effect)) + ").write_text('unexpected')"], "cwd": ".", "timeoutSeconds": 5}}, allowed=(200, 400, 409, 500, 503))
-    evidence.check("stopped-worker-command-refused-without-host-fallback", status >= 400 and not forbidden_side_effect.exists())
+    # CommandRun persists spawn failures as HTTP-200 command records. Require
+    # the specific fail-closed state, no exit/output, and an absent fresh marker.
+    failed_before_spawn = (isinstance(refused, dict) and refused.get("state") == "failed"
+        and refused.get("exitCode") is None and not refused.get("stdout") and not refused.get("stderr")
+        and "environment_not_running" in str(refused.get("error", "")))
+    evidence.check("stopped-worker-command-refused-without-host-fallback",
+        (400 <= status < 500 or (status == 200 and failed_before_spawn)) and not forbidden_side_effect.exists(),
+        {"httpStatus": status, "commandId": refused.get("id") if isinstance(refused, dict) else None,
+         "commandState": refused.get("state") if isinstance(refused, dict) else None,
+         "environmentNotRunning": failed_before_spawn, "exitCode": refused.get("exitCode") if isinstance(refused, dict) else None,
+         "preexistingBefore": False, "existsAfter": forbidden_side_effect.exists(),
+         "mtimeAfter": forbidden_side_effect.stat().st_mtime_ns if forbidden_side_effect.exists() else None,
+         "freshHostMarkerAbsent": not forbidden_side_effect.exists()})
     api(f"/api/environments/{environment['id']}/stop", {})
     restarted = api(f"/api/environments/{environment['id']}/start", {})
     evidence.check("provider-stop-start", restarted.get("state") == "running")

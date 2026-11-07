@@ -205,7 +205,7 @@ class Relay:
         self.evidence.check("relay-" + role + "-launch-ticket-single-use", status == 401)
         return url.netloc, cookie
 
-    def legacy_host_binding(self, supervisor, thread_id, environment_id):
+    def legacy_host_binding(self, supervisor, thread_id, environment_id, binding_probe=None):
         """A previously valid host preview must lose its host origin on bind."""
         from http.server import ThreadingHTTPServer
         from fixture_service import Handler
@@ -229,11 +229,17 @@ class Relay:
             websocket.socket.settimeout(8)
             websocket.send("before-environment-bind")
             self.require(websocket.receive() == server.label + ":before-environment-bind", "Legacy host WebSocket did not start")
+            if binding_probe:
+                binding_probe.before_bind()
             supervisor.api(f"/api/threads/{thread_id}/environment", {"environmentId": environment_id, "resetSession": True}, "PUT")
             bound = True
+            if binding_probe:
+                binding_probe.capture_bind_ack()
             status, _, payload = self.preview(authority, cookie=cookie)
             self.evidence.check("legacy-host-preview-cookie-denied-after-environment-bind", status >= 400 and server.label.encode() not in payload,
                 {"httpStatus": status, "hostCanaryObserved": server.label.encode() in payload})
+            if binding_probe:
+                binding_probe.after_bind()
             closed = False
             try:
                 websocket.receive()
@@ -259,6 +265,8 @@ class Relay:
             self.evidence.check("legacy-host-preview-remains-denied-after-active-stream-revocation", status >= 400 and server.label.encode() not in payload,
                 {"httpStatus": status, "hostCanaryObserved": server.label.encode() in payload})
         finally:
+            if binding_probe:
+                binding_probe.close()
             if websocket:
                 websocket.close()
             if live:
