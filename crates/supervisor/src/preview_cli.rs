@@ -130,6 +130,8 @@ pub(crate) async fn run(state: &Supervisor, input: &Value, caller: Option<&str>)
             // Validate advertised configuration before persisting a mapping.
             let placeholder = crate::ports::Mapping {
                 id: "0".repeat(32),
+                environment_id: None,
+                environment_generation: None,
                 port,
                 label: String::new(),
                 created_at: String::new(),
@@ -158,7 +160,10 @@ pub(crate) async fn run(state: &Supervisor, input: &Value, caller: Option<&str>)
                 .context("Mapping ID or port required")?;
             let mapping = crate::ports::snapshot(state)
                 .into_iter()
-                .find(|m| m.id == target || target.parse::<u16>().ok() == Some(m.port))
+                .find(|m| {
+                    (m.id == target || target.parse::<u16>().ok() == Some(m.port))
+                        && caller.is_none_or(|thread| m.thread_id.as_deref() == Some(thread))
+                })
                 .context("Port mapping not found; use preview create first")?;
             if operation == "previewStop" {
                 crate::ports::remove_mapping(state, &mapping.id)?;
@@ -205,6 +210,39 @@ fn classify(status: u16, body: &str) -> &'static str {
 }
 
 async fn check(
+    port: u16,
+    preview_origin: &str,
+    requested_path: &str,
+    websocket_path: Option<&str>,
+) -> Result<Value> {
+    if let Some(context) = pockymoe_runtime::execution::current() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let forwarded_port = listener.local_addr()?.port();
+        let task = tokio::spawn(async move {
+            while let Ok((mut client, _)) = listener.accept().await {
+                let context = context.clone();
+                tokio::spawn(async move {
+                    if let Ok(mut upstream) = context.open_tcp(port).await {
+                        let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+                    }
+                });
+            }
+        });
+        let result = check_host(
+            forwarded_port,
+            preview_origin,
+            requested_path,
+            websocket_path,
+        )
+        .await;
+        task.abort();
+        result
+    } else {
+        check_host(port, preview_origin, requested_path, websocket_path).await
+    }
+}
+
+async fn check_host(
     port: u16,
     preview_origin: &str,
     requested_path: &str,

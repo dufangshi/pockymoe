@@ -13,6 +13,8 @@ use uuid::Uuid;
 const DEFAULT_OUTPUT_BYTE_LIMIT: usize = 1024 * 1024;
 
 struct LiveTerminal {
+    execution: Option<crate::execution::ExecutionContext>,
+    process_id: String,
     /// The harness process that created it.
     owner: String,
     output: Arc<Mutex<Vec<u8>>>,
@@ -56,24 +58,54 @@ impl AgentTerminals {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        let mut child = cmd
-            .spawn()
-            .map_err(|err| anyhow!("failed to spawn ACP terminal command `{command}`: {err}"))?;
+        let execution = crate::execution::current();
+        let process_id = Uuid::new_v4().to_string();
+        let mut child = if let Some(context) = &execution {
+            let mut argv = vec![executable];
+            argv.extend(parsed_args);
+            let mut worker_env = context.launch_env();
+            worker_env.extend(env.iter().cloned().filter(|(k, _)| {
+                !matches!(
+                    k.as_str(),
+                    "PATH"
+                        | "POCKYMOE_URL"
+                        | "REMOTE_CODEX_URL"
+                        | "POCKYMOE_TOKEN"
+                        | "REMOTE_CODEX_TOKEN"
+                        | "POCKYMOE_THREAD_ID"
+                        | "REMOTE_CODEX_THREAD_ID"
+                )
+            }));
+            context
+                .spawn(&crate::execution::RunRequest {
+                    id: process_id.clone(),
+                    argv,
+                    cwd: cwd.to_string_lossy().into(),
+                    env: worker_env,
+                })
+                .await?
+        } else {
+            cmd.spawn()
+                .map_err(|err| anyhow!("failed to spawn ACP terminal command `{command}`: {err}"))?
+        };
+        // Keep the worker transport's stdin open until the finite command exits.
+        let transport_stdin = child.stdin.take();
         let child_id = child.id().unwrap_or(0);
         let limit = output_byte_limit
             .unwrap_or(DEFAULT_OUTPUT_BYTE_LIMIT)
-            .max(1);
+            .clamp(1, DEFAULT_OUTPUT_BYTE_LIMIT);
         let output = Arc::new(Mutex::new(Vec::new()));
         if let Some(mut stdout) = child.stdout.take() {
             let output = output.clone();
-            tokio::spawn(async move { collect_output(&mut stdout, &output).await });
+            tokio::spawn(async move { collect_output(&mut stdout, &output, limit).await });
         }
         if let Some(mut stderr) = child.stderr.take() {
             let output = output.clone();
-            tokio::spawn(async move { collect_output(&mut stderr, &output).await });
+            tokio::spawn(async move { collect_output(&mut stderr, &output, limit).await });
         }
         let (exit_tx, exit_rx) = watch::channel(None);
         tokio::spawn(async move {
+            let _keep_transport = transport_stdin;
             let status = match child.wait().await {
                 Ok(status) => exit_status_value(status),
                 Err(err) => json!({ "exitCode": null, "signal": null, "error": err.to_string() }),
@@ -83,6 +115,8 @@ impl AgentTerminals {
         self.inner.lock().unwrap().insert(
             id.clone(),
             LiveTerminal {
+                execution,
+                process_id,
                 owner: owner.into(),
                 output,
                 output_byte_limit: limit,
@@ -93,6 +127,15 @@ impl AgentTerminals {
         Ok(id)
     }
 
+    pub fn ensure_owner(&self, id: &str, owner: &str) -> Result<()> {
+        let hub = self.inner.lock().unwrap();
+        let term = hub.get(id).ok_or_else(|| anyhow!("terminal not found"))?;
+        anyhow::ensure!(term.owner == owner, "foreign ACP terminal");
+        if let Some(context) = &term.execution {
+            context.checked()?;
+        }
+        Ok(())
+    }
     pub fn output(&self, id: &str) -> Result<Value> {
         let hub = self.inner.lock().unwrap();
         let term = hub.get(id).ok_or_else(|| anyhow!("terminal not found"))?;
@@ -130,7 +173,15 @@ impl AgentTerminals {
         let hub = self.inner.lock().unwrap();
         let term = hub.get(id).ok_or_else(|| anyhow!("terminal not found"))?;
         if term.exit_rx.borrow().is_none() && term.child_id > 0 {
-            terminate_process(term.child_id)?;
+            if let Some(context) = &term.execution {
+                let context = context.clone();
+                let id = term.process_id.clone();
+                tokio::spawn(async move {
+                    let _ = context.kill(&id).await;
+                });
+            } else {
+                terminate_process(term.child_id)?;
+            }
         }
         Ok(())
     }
@@ -138,7 +189,14 @@ impl AgentTerminals {
     pub fn release(&self, id: &str) {
         if let Some(term) = self.inner.lock().unwrap().remove(id) {
             if term.exit_rx.borrow().is_none() && term.child_id > 0 {
-                let _ = terminate_process(term.child_id);
+                if let Some(context) = term.execution {
+                    let id = term.process_id;
+                    tokio::spawn(async move {
+                        let _ = context.kill(&id).await;
+                    });
+                } else {
+                    let _ = terminate_process(term.child_id);
+                }
             }
         }
     }
@@ -169,13 +227,25 @@ impl AgentTerminals {
     }
 }
 
-async fn collect_output<R: AsyncRead + Unpin>(reader: &mut R, output: &Arc<Mutex<Vec<u8>>>) {
+async fn collect_output<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    output: &Arc<Mutex<Vec<u8>>>,
+    limit: usize,
+) {
     let mut buf = vec![0u8; 4096];
     while let Ok(n) = reader.read(&mut buf).await {
         if n == 0 {
             break;
         }
-        output.lock().unwrap().extend_from_slice(&buf[..n]);
+        let mut output = output.lock().unwrap();
+        output.extend_from_slice(&buf[..n]);
+        // Keep a sentinel byte above the requested limit to preserve the public
+        // truncated flag, without retaining an unbounded command log on host.
+        let maximum = limit + 1;
+        if output.len() > maximum {
+            let cut = output.len() - maximum;
+            output.drain(..cut);
+        }
     }
 }
 
@@ -279,5 +349,22 @@ fn terminate_process(child_id: u32) -> Result<()> {
         Ok(())
     } else {
         bail!("failed to terminate process {child_id}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn large_terminal_output_is_bounded_on_the_supervisor() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let input = vec![b'x'; 2 * 1024 * 1024];
+        let mut reader = input.as_slice();
+        collect_output(&mut reader, &output, 1024).await;
+        let stored = output.lock().unwrap();
+        assert!(stored.len() <= 1025);
+        let (bytes, truncated) = retained_output(&stored, 1024);
+        assert!(truncated);
+        assert_eq!(bytes.len(), 1024);
     }
 }

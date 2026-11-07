@@ -6,6 +6,8 @@ pub mod config;
 pub mod context_inspection;
 pub mod db;
 pub mod device_metrics;
+pub mod environment;
+pub mod execution;
 pub mod fake;
 pub mod file_documents;
 pub mod files;

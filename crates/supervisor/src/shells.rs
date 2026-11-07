@@ -57,6 +57,7 @@ struct LiveShell {
     #[allow(dead_code)]
     events: broadcast::Sender<String>,
     thread_id: String,
+    execution: Option<pockymoe_runtime::execution::ExecutionContext>,
     workspace_id: String,
     cwd: String,
     tmux_session_name: String,
@@ -116,19 +117,49 @@ impl ShellHub {
             pixel_width: 0,
             pixel_height: 0,
         })?;
-        let mut cmd = CommandBuilder::new(default_shell());
+        let id = Uuid::new_v4().to_string();
+        let execution = pockymoe_runtime::execution::current();
+        let mut cmd = if let Some(context) = &execution {
+            let env = context.checked()?;
+            let mut cmd = CommandBuilder::new("docker");
+            cmd.env_clear();
+            cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            if let Some(host) = context.manager.docker_host(&env.connection_id)? {
+                cmd.args(["--host", &host]);
+            }
+            cmd.args(["exec", "-it", "-w", cwd]);
+            for (key, value) in context.launch_env() {
+                cmd.args(["-e", &format!("{key}={value}")]);
+            }
+            cmd.arg(
+                env.container_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("environment container missing"))?,
+            );
+            cmd.args([
+                "/opt/pockymoe/bin/pockymoe",
+                "environment-worker",
+                "shell",
+                &id,
+            ]);
+            cmd
+        } else {
+            CommandBuilder::new(default_shell())
+        };
         // The owner's shell, but not the Supervisor's own credentials.
         for key in pockymoe_runtime::supervisor_secret_env() {
             cmd.env_remove(key);
         }
-        cmd.cwd(cwd);
-        terminal_env(&mut cmd, |name| std::env::var_os(name));
+        if execution.is_none() {
+            cmd.cwd(cwd);
+            terminal_env(&mut cmd, |name| std::env::var_os(name));
+        }
         let child = pair.slave.spawn_command(cmd)?;
         let mut reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
         let (tx, _) = broadcast::channel(64);
         let events = tx.clone();
-        let id = Uuid::new_v4().to_string();
+
         let all = {
             let hub = self.inner.lock().unwrap();
             hub.all.clone()
@@ -150,6 +181,7 @@ impl ShellHub {
             last_activity_at: None,
         }));
         let output_metadata = metadata.clone();
+        let output_execution = execution.clone();
         let read_output = move || {
             let mut buf = [0u8; 4096];
             let mut pending = Vec::new();
@@ -157,6 +189,12 @@ impl ShellHub {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
+                        if output_execution
+                            .as_ref()
+                            .is_some_and(|context| context.checked().is_err())
+                        {
+                            break;
+                        }
                         // Keep an incomplete UTF-8 sequence for the next read instead
                         // of replacing it, so split CJK/emoji output stays intact.
                         pending.extend_from_slice(&buf[..n]);
@@ -194,7 +232,14 @@ impl ShellHub {
             // no longer lists as running, reap it, and tell attached viewers.
             let removed = hub_state.lock().unwrap().shells.remove(&output_id);
             if let Some(shell) = removed {
-                let _ = shell.child.lock().unwrap().wait();
+                if let Some(context) = &shell.execution {
+                    let _ = context.kill_sync(&output_id);
+                }
+                let mut child = shell.child.lock().unwrap();
+                if child.try_wait().ok().flatten().is_none() {
+                    let _ = child.kill();
+                }
+                let _ = child.wait();
             }
             let seq = output_replay.lock().unwrap().seq + 1;
             let _ = all.send(ShellOutput {
@@ -212,6 +257,7 @@ impl ShellHub {
                 master: Mutex::new(pair.master),
                 child: Mutex::new(child),
                 events: tx,
+                execution,
                 thread_id: thread_id.into(),
                 workspace_id: workspace_id.into(),
                 cwd: cwd.into(),
@@ -232,6 +278,9 @@ impl ShellHub {
             .shells
             .get(id)
             .ok_or_else(|| anyhow!("shell not found"))?;
+        if let Some(context) = &shell.execution {
+            context.checked()?;
+        }
         shell.writer.lock().unwrap().write_all(data.as_bytes())?;
         let now = now_rfc3339();
         let mut metadata = shell.metadata.lock().unwrap();
@@ -246,6 +295,9 @@ impl ShellHub {
             .shells
             .get(id)
             .ok_or_else(|| anyhow!("shell not found"))?;
+        if let Some(context) = &shell.execution {
+            context.checked()?;
+        }
         shell.master.lock().unwrap().resize(PtySize {
             rows,
             cols,
@@ -276,24 +328,47 @@ impl ShellHub {
     }
 
     pub fn terminate(&self, id: &str) -> Result<Value> {
-        let mut hub = self.inner.lock().unwrap();
-        let terminated = {
-            let shell = hub
-                .shells
-                .get(id)
-                .ok_or_else(|| anyhow!("shell not found"))?;
-            let mut child = shell.child.lock().unwrap();
-            child.kill()?;
-            child.wait()?;
-            let mut value = self.shell_json_locked(&hub, id)?;
-            value["status"] = json!("exited");
-            value["updatedAt"] = json!(now_rfc3339());
-            value
-        };
-        hub.shells.remove(id);
+        // Remove the handle even if its generation has already been fenced. Only
+        // cleanup may use the captured old container; no new input is admitted.
+        let shell = self
+            .inner
+            .lock()
+            .unwrap()
+            .shells
+            .remove(id)
+            .ok_or_else(|| anyhow!("shell not found"))?;
+        let cleanup = shell
+            .execution
+            .as_ref()
+            .map(|context| context.kill_sync(id));
+        let mut child = shell.child.lock().unwrap();
+        if child.try_wait()?.is_none() {
+            let _ = child.kill();
+        }
+        let _ = child.wait();
+        let mut terminated = Self::shell_value(&shell, id);
+        terminated["status"] = json!("exited");
+        terminated["updatedAt"] = json!(now_rfc3339());
+        if let Some(result) = cleanup {
+            result?;
+        }
         Ok(terminated)
     }
 
+    pub fn terminate_thread(&self, thread: &str) {
+        let ids = self
+            .inner
+            .lock()
+            .unwrap()
+            .shells
+            .iter()
+            .filter(|(_, s)| s.thread_id == thread)
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in ids {
+            let _ = self.terminate(&id);
+        }
+    }
     pub fn subscribe_all(&self) -> broadcast::Receiver<ShellOutput> {
         self.inner.lock().unwrap().all.subscribe()
     }
@@ -313,15 +388,15 @@ impl ShellHub {
 
     /// Recent output for a new viewer and the last sequence it covers.
     pub(crate) fn replay(&self, id: &str) -> Result<(String, u64)> {
-        let replay = {
-            let hub = self.inner.lock().unwrap();
-            hub.shells
-                .get(id)
-                .ok_or_else(|| anyhow!("shell not found"))?
-                .replay
-                .clone()
-        };
-        let replay = replay.lock().unwrap();
+        let hub = self.inner.lock().unwrap();
+        let shell = hub
+            .shells
+            .get(id)
+            .ok_or_else(|| anyhow!("shell not found"))?;
+        if let Some(context) = &shell.execution {
+            context.checked()?;
+        }
+        let replay = shell.replay.lock().unwrap();
         Ok((replay.data.clone(), replay.seq))
     }
 
@@ -335,8 +410,15 @@ impl ShellHub {
             .shells
             .get(id)
             .ok_or_else(|| anyhow!("shell not found"))?;
+        if let Some(context) = &shell.execution {
+            context.checked()?;
+        }
+        Ok(Self::shell_value(shell, id))
+    }
+
+    fn shell_value(shell: &LiveShell, id: &str) -> Value {
         let metadata = shell.metadata.lock().unwrap();
-        Ok(json!({
+        json!({
             "id": id,
             "threadId": shell.thread_id,
             "workspaceId": shell.workspace_id,
@@ -351,7 +433,7 @@ impl ShellHub {
             "lastActivityAt": metadata.last_activity_at,
             "cols": metadata.cols,
             "rows": metadata.rows
-        }))
+        })
     }
 }
 

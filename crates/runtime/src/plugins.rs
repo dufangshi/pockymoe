@@ -429,6 +429,7 @@ impl Supervisor {
         let result: Result<Value> = async {
             // The running claim is the scope authorization boundary. Disabling a
             // thread cancels due work; already claimed invocations may finish.
+            ensure!(self.execution_context(&thread)?.is_none(),"unsupported_environment_plugin: plugin execution has not declared an isolated backend");
             self.validate_plugin_action_input(&plugin_id, &action, &input, timeout_seconds)?;
             let settings: PluginSettings = serde_json::from_value(receipt["settings"].clone())?;
             let plugin = self.plugins.get(&plugin_id)?;

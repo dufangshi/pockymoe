@@ -66,8 +66,10 @@ pub fn router(state: AppState) -> Router {
 }
 pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::Hub>>) -> Router {
     state.start_interaction_worker();
+    crate::environments::start(state.clone());
     crate::peer_send::start_outbox_worker(&state);
     let router = Router::new()
+        .merge(crate::environments::routes())
         .merge(crate::treer::routes())
         .merge(crate::notifications::routes())
         .route(
@@ -508,6 +510,10 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
     let router = router
         .fallback(spa_fallback)
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::environments::execution_scope,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_auth,
@@ -1614,6 +1620,19 @@ async fn workspace_raw(
         .path
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "bad_request", "path is required"))?;
     let workspace = state.get_workspace(&id).map_err(map_err)?;
+    if pockymoe_runtime::execution::current().is_some() {
+        let (_, bytes) =
+            pockymoe_runtime::files::read_bytes(std::path::Path::new(&workspace.abs_path), &path)
+                .map_err(map_err)?;
+        return Ok((
+            [
+                ("cache-control", "private, no-store"),
+                ("content-type", "application/octet-stream"),
+            ],
+            bytes,
+        )
+            .into_response());
+    }
     let path = pockymoe_runtime::files::assert_within(
         std::path::Path::new(&workspace.abs_path),
         std::path::Path::new(&path),
@@ -1728,6 +1747,17 @@ async fn workspace_delete_file(
         .ok_or_else(|| err(StatusCode::BAD_REQUEST, "bad_request", "path is required"))?;
     let _gate = pockymoe_runtime::file_documents::mutation_guard();
     let ws = state.get_workspace(&id).map_err(map_err)?;
+    if pockymoe_runtime::execution::file_request(
+        "delete",
+        std::path::Path::new(&ws.abs_path),
+        &path,
+        json!({}),
+    )
+    .map_err(map_err)?
+    .is_some()
+    {
+        return Ok(StatusCode::NO_CONTENT);
+    }
     let abs = pockymoe_runtime::files::assert_mutation_within(
         std::path::Path::new(&ws.abs_path),
         std::path::Path::new(&path),
@@ -1836,6 +1866,7 @@ async fn start_workspace_thread(
     Path(id): Path<String>,
     State(state): State<AppState>,
     scope: Option<axum::Extension<crate::treer::Scope>>,
+    principal: Option<axum::Extension<crate::owner_trust::BrowserPrincipal>>,
     Json(mut body): Json<Value>,
 ) -> Result<Json<Value>, ApiErr> {
     match body.get("workspaceId") {
@@ -1849,24 +1880,47 @@ async fn start_workspace_thread(
             ))
         }
     }
-    let body: CreateThreadInput = serde_json::from_value(body)
+    let body: StartThreadRequest = serde_json::from_value(body)
         .map_err(|error| err(StatusCode::BAD_REQUEST, "bad_request", &error.to_string()))?;
-    start_thread(State(state), scope, Json(body)).await
+    start_thread(State(state), scope, principal, Json(body)).await
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartThreadRequest {
+    #[serde(flatten)]
+    thread: CreateThreadInput,
+    environment_connection_id: Option<String>,
+}
 async fn start_thread(
     State(state): State<AppState>,
     scope: Option<axum::Extension<crate::treer::Scope>>,
-    Json(body): Json<CreateThreadInput>,
+    principal: Option<axum::Extension<crate::owner_trust::BrowserPrincipal>>,
+    Json(body): Json<StartThreadRequest>,
 ) -> Result<Json<Value>, ApiErr> {
-    let thread = if let Some(scope) = scope {
+    let thread = if let Some(connection) = body.environment_connection_id {
+        if principal.is_some_and(|p| !p.is_owner()) {
+            return Err(err(
+                StatusCode::FORBIDDEN,
+                "owner_required",
+                "Only the device owner can create an environment.",
+            ));
+        }
+        if scope.is_some() {
+            return Err(map_err(anyhow::anyhow!("unsupported_host_environment: host-integrated browser threads need an environment policy adapter")));
+        }
+        state
+            .create_thread_in_environment(body.thread, &connection)
+            .await
+            .map_err(map_err)?
+    } else if let Some(scope) = scope {
         scope
             .hub
-            .create_browser_thread(&scope, body)
+            .create_browser_thread(&scope, body.thread)
             .await
             .map_err(|e| err(e.status, e.code, e.message))?
     } else {
-        state.create_thread(body).await.map_err(map_err)?
+        state.create_thread(body.thread).await.map_err(map_err)?
     };
     Ok(Json(serde_json::to_value(thread).unwrap()))
 }
@@ -3206,6 +3260,17 @@ async fn workspace_move(
 ) -> Result<Json<Value>, ApiErr> {
     let _gate = pockymoe_runtime::file_documents::mutation_guard();
     let ws = state.get_workspace(&id).map_err(map_err)?;
+    if pockymoe_runtime::execution::file_request(
+        "move",
+        std::path::Path::new(&ws.abs_path),
+        &body.from_path,
+        json!({"to":body.to_path}),
+    )
+    .map_err(map_err)?
+    .is_some()
+    {
+        return Ok(Json(json!({"ok":true})));
+    }
     let from = pockymoe_runtime::files::assert_mutation_within(
         std::path::Path::new(&ws.abs_path),
         std::path::Path::new(&body.from_path),

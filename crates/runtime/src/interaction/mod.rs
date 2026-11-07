@@ -171,7 +171,30 @@ impl Supervisor {
                 .cloned()
                 .unwrap_or_default(),
         );
-        CLI_ENV.scope(env, future).await
+        let execution = self.execution_context(thread_id).unwrap_or_else(|_| {
+            Some(crate::execution::ExecutionContext {
+                manager: self.environments.clone(),
+                environment_id: String::new(),
+                generation: 0,
+                container_id: None,
+                thread_id: thread_id.into(),
+                upstream_directory: crate::upstreams::directory(&self.config.database_url),
+                workspace_path: std::path::PathBuf::new(),
+                working_directory: std::path::PathBuf::new(),
+            })
+        });
+        if let Some(context) = &execution {
+            let token = crate::execution::issue_capability(context);
+            for (key, value) in &mut env {
+                if matches!(key.as_str(), "POCKYMOE_TOKEN" | "REMOTE_CODEX_TOKEN") {
+                    *value = token.clone();
+                }
+                if matches!(key.as_str(), "POCKYMOE_URL" | "REMOTE_CODEX_URL") {
+                    *value = "http://127.0.0.1:45680".into();
+                }
+            }
+        }
+        crate::execution::scope(execution, CLI_ENV.scope(env, future)).await
     }
 
     /// Every live integration binding owns its own external credentials.

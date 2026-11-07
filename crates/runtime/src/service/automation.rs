@@ -1138,7 +1138,7 @@ impl Supervisor {
     async fn execute_command(&self, id: &str) -> Result<()> {
         let prepared = self.db.with(|c| {
             let (raw, path): (String, String) = c.query_row(
-                "SELECT x.input_json,w.abs_path FROM command_executions x
+                "SELECT x.input_json,COALESCE(t.worktree_path,w.abs_path) FROM command_executions x
                  JOIN threads t ON t.id=x.thread_id JOIN workspaces w ON w.id=t.workspace_id
                  WHERE x.id=?1 AND x.state='starting'",
                 [id],
@@ -1186,7 +1186,7 @@ impl Supervisor {
             c.args(&input.command.argv[1..]);
             c
         };
-        cmd.current_dir(cwd)
+        cmd.current_dir(&cwd)
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .envs(inherited_command_env())
@@ -1205,7 +1205,44 @@ impl Supervisor {
             cmd.as_std_mut().process_group(0);
         }
         crate::child_process::hide_tokio(&mut cmd);
-        let mut child = match cmd.spawn() {
+        let thread_id: String = self.db.with(|c| {
+            Ok(c.query_row(
+                "SELECT thread_id FROM command_executions WHERE id=?1",
+                [id],
+                |r| r.get(0),
+            )?)
+        })?;
+        let execution = self.execution_context(&thread_id)?;
+        let process_id = Uuid::new_v4().to_string();
+        let spawned = if let Some(context) = &execution {
+            let argv = if let Some(shell) = &input.command.shell {
+                vec!["/bin/sh".into(), "-c".into(), shell.clone()]
+            } else {
+                input.command.argv.clone()
+            };
+            let cwd = cwd.to_string_lossy().into_owned();
+            context
+                .spawn(&crate::execution::RunRequest {
+                    id: process_id.clone(),
+                    argv,
+                    cwd,
+                    env: input
+                        .command
+                        .env
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .chain(context.launch_env())
+                        .chain([
+                            ("POCKYMOE_COMMAND_ID".into(), id.into()),
+                            ("REMOTE_CODEX_COMMAND_ID".into(), id.into()),
+                        ])
+                        .collect(),
+                })
+                .await
+        } else {
+            cmd.spawn().map_err(Into::into)
+        };
+        let mut child = match spawned {
             Ok(c) => c,
             Err(e) => {
                 return self.complete_command(
@@ -1218,7 +1255,12 @@ impl Supervisor {
                 )
             }
         };
-        let pid = child.id();
+        let pid = if execution.is_none() {
+            child.id()
+        } else {
+            None
+        };
+        let _transport_input = child.stdin.take();
         let out = child.stdout.take().context("stdout unavailable")?;
         let err = child.stderr.take().context("stderr unavailable")?;
         let out = tokio::spawn(read_bounded(out));
@@ -1237,6 +1279,10 @@ impl Supervisor {
             Ok(Err(e)) => ("uncertain", None, Some(format!("wait failed: {e}"))),
             Err(_) => ("timedOut", None, Some("command timeout".into())),
         };
+        // The sandbox process domain belongs to the environment, not the host Docker client.
+        if let Some(context) = &execution {
+            let _ = context.kill(&process_id).await;
+        }
         // Clean up the owned process group, including descendants retaining pipes.
         if let Some(pid) = pid {
             kill_command_tree(pid).await;

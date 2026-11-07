@@ -21,7 +21,7 @@ pub(crate) async fn context(
     State(state): State<Arc<Supervisor>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiErr> {
-    tokio::task::spawn_blocking(move || state.worktree_context(&id))
+    pockymoe_runtime::execution::spawn_blocking(move || state.worktree_context(&id))
         .await
         .map_err(|e| map_err(e.into()))?
         .map(Json)
@@ -32,7 +32,7 @@ pub(crate) async fn read_git(
     Path((id, action)): Path<(String, String)>,
     Query(query): Query<GitQuery>,
 ) -> Result<Json<Value>, ApiErr> {
-    tokio::task::spawn_blocking(move || match action.as_str() {
+    pockymoe_runtime::execution::spawn_blocking(move || match action.as_str() {
         "status" => state.worktree_git_status(&id, query.working_copy_id.as_deref()),
         "diff" => state.worktree_git_diff(
             &id,
@@ -62,7 +62,7 @@ pub(crate) async fn cli(state: &Arc<Supervisor>, input: Value) -> anyhow::Result
             .await;
     }
     let state = state.clone();
-    tokio::task::spawn_blocking(move||{
+    pockymoe_runtime::execution::spawn_blocking(move||{
         let id=input["workingCopyId"].as_str().unwrap_or("");
         let cwd=input["cwd"].as_str().unwrap_or("");
         Ok(match input["operation"].as_str().unwrap_or("") {

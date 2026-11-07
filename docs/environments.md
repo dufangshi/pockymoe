@@ -129,3 +129,63 @@ The integration owns `Arc<EnvironmentManager>` on the Supervisor, registers the
 environment HTTP routes, enforces thread authorization and idle/native-session
 changes, and revokes worker capabilities before lifecycle transitions. The
 provider does not register HTTP routes or start the worker gateway itself.
+
+## Thread entry and execution compatibility
+
+Settings → Environments configures Dokploy connections, exact HTTPS egress
+hosts, per-container limits and a Supervisor budget. Keys are write-only.
+A new thread can select a connection using `environmentConnectionId` on
+`POST /api/threads/start` (also the workspace start route). This creates and binds
+a stopped environment before recording the unloaded thread. Start the
+environment before its first prompt. Existing threads use the thread environment
+control and explicitly confirm `resetSession: true` before switching; conversation
+history is retained. Inherited child bindings cannot switch to host execution.
+
+The first adapter supports Codex and Claude API upstream profiles and custom
+ACP commands present in the configured image. Readiness comes from that
+image's actual ACP transport, rather than host installation. The image must
+contain compatible glibc, the harness/adapter and its tools. Project configuration
+and skills remain in original project storage; global host homes and skills are
+not projected. Project files, including an existing `.env`, are part of the
+explicit storage grant and are readable by the agent. Do not place host-only
+secrets in an approved project and expect a broker to hide those files.
+
+API mode uses the host's selected upstream profile and exact thread model.
+The broker streams HTTP Responses/Messages, keeps long-lived upstream keys on
+the host, and replaces credentials echoed in response chunks. Worker keys are
+opaque one-hour thread/environment/generation capabilities. Reconnecting or a
+new admitted load renews them; stop, rebuild and binding changes revoke them.
+The worker cannot choose another model, redirect an upstream request, forward
+arbitrary host headers or open the general local HTTP service. Subscription
+OAuth/auth refresh and model-provider WebSocket protocols are not supported;
+selecting an API profile is an explicit user configuration, never an automatic
+login or billing conversion.
+
+Git status/diff/stage/commit and managed worktrees execute through worker Git.
+Host SSH agents, `.ssh`, `gh` tokens, Git helpers and credentialed/global MCP are
+not mounted or copied. Local Git operations work; authenticated remote Git and
+HTTP MCP need separate credential adapters and are rejected or fail with the
+network disabled. Networkless project/image stdio MCP naturally executes inside
+the container. Host plugins, native thread forks, host-home role templates,
+legacy delegate `--worktree`, cross-device file transfers and download archives
+have explicit unsupported errors. A child can use the managed-worktree CLI
+within the environment's dedicated root instead. Unrecognized environment CLI
+operations are refused by an allowlist.
+
+A private worker loopback gateway implements thread self, messages, child
+creation and managed-worktree access without a device registration, machine
+CLI config, database or Docker socket. Workspace file HTTP requests include
+`threadId`; an ambiguous isolated workspace request is rejected. Selecting a
+managed worktree updates the file backend and next harness cwd. Preview mappings
+store environment + generation + port and forward through worker TCP, retaining
+existing Relay sharing, leases, revocation and HTTP/WS/SSE transport. Rebuilding
+invalidates an old mapping's execution target; create a current mapping again.
+
+Egress has no container network route. A separate authenticated CONNECT bridge
+allows only configured exact DNS names on port 443, resolves and pins public IPs,
+and rejects private, loopback and metadata addresses. Git and package tools that
+honor `HTTPS_PROXY` can use it; no SSH, UDP, general HTTP proxy or unrestricted
+host network is supplied. The same container remains a shared-kernel Docker
+security boundary, not a VM or an untrusted multi-tenant host boundary. E2B is a
+future remote provider and would require an explicit storage/transport adapter;
+local absolute paths do not become remote mounts.

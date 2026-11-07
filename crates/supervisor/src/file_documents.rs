@@ -75,7 +75,7 @@ pub(crate) async fn save(
     let actor = actor(&state, caller);
     let operation = state.track_file_save(&actor, &id, &input);
     // File I/O and fsync are bounded but blocking; do not stall the socket reactor.
-    let result = tokio::task::spawn_blocking(move || {
+    let result = pockymoe_runtime::execution::spawn_blocking(move || {
         let _operation = operation;
         state.file_save(&actor, &id, input)
     })

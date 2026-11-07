@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, ensure, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use async_trait::async_trait;
 use futures_util::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use pockymoe_protocol::{
@@ -170,6 +170,29 @@ struct Inner {
     effort_probes: std::sync::Mutex<HashMap<String, HashSet<String>>>,
 }
 
+fn agent_cache_key(agent: &str) -> String {
+    match crate::execution::current() {
+        Some(c) => format!("{agent}@{}/{}", c.environment_id, c.generation),
+        None => agent.into(),
+    }
+}
+fn process_context_matches(process: &AcpProcess) -> bool {
+    match (crate::execution::current(), &process.execution) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.environment_id == b.environment_id && a.generation == b.generation,
+        _ => false,
+    }
+}
+fn process_session_id(live: &LiveSession) -> String {
+    match &live.process.execution {
+        Some(c) => format!(
+            "{}::env/{}/{}/{}",
+            live.adapter_id, c.environment_id, c.generation, live.session_id
+        ),
+        None => format!("{}::{}", live.adapter_id, live.session_id),
+    }
+}
+
 pub struct AcpRuntime {
     upstreams: Option<Arc<super::upstream_models::UpstreamModels>>,
     provider: Provider,
@@ -266,7 +289,7 @@ impl AcpRuntime {
                 .model_efforts
                 .lock()
                 .unwrap()
-                .entry(agent_id.to_string())
+                .entry(agent_cache_key(agent_id))
                 .or_default()
                 .insert(model, efforts);
         }
@@ -280,7 +303,7 @@ impl AcpRuntime {
         mut models: Vec<ModelOptionDto>,
     ) -> Vec<ModelOptionDto> {
         let learned = self.inner.model_efforts.lock().unwrap();
-        if let Some(learned) = learned.get(agent_id) {
+        if let Some(learned) = learned.get(&agent_cache_key(agent_id)) {
             for model in &mut models {
                 if let Some(efforts) = learned.get(&model.model) {
                     model.default_reasoning_effort = default_effort(efforts);
@@ -296,12 +319,12 @@ impl AcpRuntime {
     fn claim_unprobed(&self, agent_id: &str, models: &[ModelOptionDto]) -> Vec<String> {
         let learned = self.inner.model_efforts.lock().unwrap();
         let mut probes = self.inner.effort_probes.lock().unwrap();
-        let visited = probes.entry(agent_id.to_string()).or_default();
+        let visited = probes.entry(agent_cache_key(agent_id)).or_default();
         models
             .iter()
             .filter(|model| {
                 learned
-                    .get(agent_id)
+                    .get(&agent_cache_key(agent_id))
                     .is_none_or(|known| !known.contains_key(&model.model))
             })
             .filter(|model| visited.insert(model.model.clone()))
@@ -337,6 +360,9 @@ impl AcpRuntime {
     /// Learns the efforts of models no session has shown yet, in a probe session
     /// of its own; the next model list carries them.
     fn probe_efforts_in_background(&self, def: &AcpAgentDef, cwd: &str, models: &[ModelOptionDto]) {
+        if crate::execution::current().is_some() {
+            return;
+        }
         let unprobed = self.claim_unprobed(&def.id, models);
         if unprobed.is_empty() {
             return;
@@ -383,7 +409,13 @@ impl AcpRuntime {
     }
 
     fn scoped_id(agent_id: &str, session_id: &str) -> String {
-        format!("{agent_id}::{session_id}")
+        match crate::execution::current() {
+            Some(c) => format!(
+                "{agent_id}::env/{}/{}/{session_id}",
+                c.environment_id, c.generation
+            ),
+            None => format!("{agent_id}::{session_id}"),
+        }
     }
 
     async fn spawn_session(
@@ -398,7 +430,7 @@ impl AcpRuntime {
             .spawn_session_inner(def, cwd, policy, load_id, reasoning_effort)
             .await;
         self.inner.health.lock().unwrap().insert(
-            def.id.clone(),
+            agent_cache_key(&def.id),
             result.as_ref().err().map(|error| format!("{error:#}")),
         );
         result
@@ -415,13 +447,32 @@ impl AcpRuntime {
         let cwd = harness_cwd(cwd);
         let cwd = cwd.as_ref();
         let yolo = policy.auto_approve();
-        super::dependencies::ensure(def, false).await?;
-        let availability = classify_availability(def);
+        let isolated = crate::execution::current().is_some();
+        if isolated {
+            anyhow::ensure!(
+                matches!(def.id.as_str(), "codex" | "claude" | "custom")
+                    || def.id.starts_with("env-fixture"),
+                "unsupported_isolated_harness: {}",
+                def.id
+            );
+        }
+        if !isolated {
+            super::dependencies::ensure(def, false).await?;
+        }
+        let availability = if isolated {
+            "ready"
+        } else {
+            classify_availability(def)
+        };
         if availability != "ready" {
             bail!("{} is not available ({availability})", def.display_name);
         }
         let adapter = adapter_for(&def.id);
-        let mut extra_env = self.launch_environment(def);
+        let mut extra_env = if isolated {
+            crate::execution::isolated_harness_environment(&def.id)?
+        } else {
+            self.launch_environment(def)
+        };
         let mut upstream_revision = None;
         if def.id == "grok" {
             if let Some(upstreams) = &self.upstreams {
@@ -433,7 +484,7 @@ impl AcpRuntime {
                 }
             }
         }
-        let codex_bridge = if def.id == "codex" {
+        let codex_bridge = if def.id == "codex" && !isolated {
             Some(Arc::new(
                 super::codex_bridge::CodexBridge::new(&def.base_command, &mut extra_env, &policy)
                     .await?,
@@ -441,14 +492,22 @@ impl AcpRuntime {
         } else {
             None
         };
-        let mut server_command = agent_server_command(def, yolo);
+        let mut server_command = if isolated {
+            match def.id.as_str() {
+                "codex" => "codex-acp".into(),
+                "claude" => "claude-agent-acp".into(),
+                _ => agent_server_command(def, yolo),
+            }
+        } else {
+            agent_server_command(def, yolo)
+        };
         let inspection = self
             .inner
             .inspection
             .read()
             .unwrap()
             .clone()
-            .filter(|s| s.enabled());
+            .filter(|s| s.enabled() && !isolated);
         if let Some(state) = &inspection {
             if matches!(def.id.as_str(), "codex" | "claude" | "deepseek") {
                 extra_env.push(("POCKYMOE_CONTEXT_INSPECTION", "1".into()));
@@ -551,12 +610,12 @@ impl AcpRuntime {
             .caps_by_agent
             .lock()
             .await
-            .insert(def.id.clone(), caps);
+            .insert(agent_cache_key(&def.id), caps);
         self.inner
             .toolbox_by_agent
             .lock()
             .await
-            .insert(def.id.clone(), toolbox);
+            .insert(agent_cache_key(&def.id), toolbox);
         spawn_mux(
             self.inner.clone(),
             process.clone(),
@@ -623,14 +682,26 @@ impl AcpRuntime {
             .get("configOptions")
             .cloned()
             .unwrap_or_else(|| json!([]));
-        if let Some(caps) = self.inner.caps_by_agent.lock().await.get_mut(&def.id) {
+        if let Some(caps) = self
+            .inner
+            .caps_by_agent
+            .lock()
+            .await
+            .get_mut(&agent_cache_key(&def.id))
+        {
             apply_config_option_caps(caps, &config_options);
         }
         self.learn_efforts(&def.id, &config_options);
         let projection = adapter.project_session(&raw_session);
         let (harness_state, harness_models, model, reasoning_effort) =
             if let Some(proj) = projection {
-                if let Some(caps) = self.inner.caps_by_agent.lock().await.get_mut(&def.id) {
+                if let Some(caps) = self
+                    .inner
+                    .caps_by_agent
+                    .lock()
+                    .await
+                    .get_mut(&agent_cache_key(&def.id))
+                {
                     caps.management.models = true;
                 }
                 (proj.state, proj.models, proj.model, proj.reasoning_effort)
@@ -720,8 +791,8 @@ impl AcpRuntime {
         extra_env: &[(&str, String)],
     ) -> Result<(
         Arc<AcpProcess>,
-        mpsc::UnboundedReceiver<Value>,
-        mpsc::UnboundedReceiver<(i64, String, Value)>,
+        mpsc::Receiver<Value>,
+        mpsc::Receiver<(i64, String, Value)>,
         Arc<super::deepseek::Bridge>,
         Value,
     )> {
@@ -893,10 +964,9 @@ impl AcpRuntime {
         let (cached, configured, process, cwd) = {
             let sessions = self.inner.sessions.lock().await;
             let mut first = None;
-            for session in sessions
-                .values()
-                .filter(|session| session.adapter_id == agent_id)
-            {
+            for session in sessions.values().filter(|session| {
+                session.adapter_id == agent_id && process_context_matches(&session.process)
+            }) {
                 // Every session shows the efforts of the model it is on now.
                 self.learn_efforts(agent_id, &session.config_options);
                 first.get_or_insert(session);
@@ -914,7 +984,7 @@ impl AcpRuntime {
             // takes the ones a session on that model reported.
             let learned = self.inner.model_efforts.lock().unwrap();
             let mut cached = cached;
-            if let Some(learned) = learned.get(agent_id) {
+            if let Some(learned) = learned.get(&agent_cache_key(agent_id)) {
                 for model in cached
                     .iter_mut()
                     .filter(|m| m.supported_reasoning_efforts.is_empty())
@@ -937,7 +1007,9 @@ impl AcpRuntime {
             .lock()
             .await
             .values_mut()
-            .find(|session| session.adapter_id == agent_id)
+            .find(|session| {
+                session.adapter_id == agent_id && process_context_matches(&session.process)
+            })
         {
             live.harness_models = models.clone();
         }
@@ -953,7 +1025,13 @@ impl AcpRuntime {
         let method = adapter.model_list_method()?;
         let response = process.request(method, json!({})).await.ok()?;
         let models = adapter.project_model_list(&response)?;
-        if let Some(caps) = self.inner.caps_by_agent.lock().await.get_mut(agent_id) {
+        if let Some(caps) = self
+            .inner
+            .caps_by_agent
+            .lock()
+            .await
+            .get_mut(&agent_cache_key(agent_id))
+        {
             caps.management.models = true;
             if adapter.model_list_supports_performance(&response) {
                 caps.controls.performance_mode = true;
@@ -1536,7 +1614,7 @@ impl AcpRuntime {
             .caps_by_agent
             .lock()
             .await
-            .get(&id)
+            .get(&agent_cache_key(&id))
             .cloned()
             .unwrap_or_else(|| {
                 let mut caps = AgentProviderCapabilitiesDto::conversational();
@@ -1653,7 +1731,10 @@ impl AgentRuntime for AcpRuntime {
         let verified = {
             let health = self.inner.health.lock().unwrap();
             if self.provider == Provider::Acp {
-                health.values().any(Option::is_none)
+                health
+                    .iter()
+                    .filter(|(key, _)| !key.contains('@'))
+                    .any(|(_, value)| value.is_none())
             } else {
                 health.get(&bound) == Some(&None)
             }
@@ -1728,7 +1809,7 @@ impl AgentRuntime for AcpRuntime {
             .caps_by_agent
             .try_lock()
             .ok()
-            .and_then(|g| g.get(&id).cloned())
+            .and_then(|g| g.get(&agent_cache_key(&id)).cloned())
             .unwrap_or_else(|| {
                 let mut caps = AgentProviderCapabilitiesDto::conversational();
                 adapter_for(&id).patch_capabilities(&mut caps, &NegotiatedCaps::default());
@@ -1745,7 +1826,7 @@ impl AgentRuntime for AcpRuntime {
             .toolbox_by_agent
             .try_lock()
             .ok()
-            .and_then(|toolboxes| toolboxes.get(&id).cloned())
+            .and_then(|toolboxes| toolboxes.get(&agent_cache_key(&id)).cloned())
             .unwrap_or_else(|| toolbox_from_capabilities(&self.negotiated_caps(Some(&id))))
     }
 
@@ -1814,6 +1895,27 @@ impl AgentRuntime for AcpRuntime {
             Ok(def) => def,
             Err(_) => return Ok(default_model_stub(agent_id.or(self.bound_agent.as_deref()))),
         };
+        if crate::execution::current().is_some() {
+            crate::execution::current().unwrap().checked()?;
+            anyhow::ensure!(
+                matches!(def.id.as_str(), "codex" | "claude" | "custom")
+                    || def.id.starts_with("env-fixture"),
+                "unsupported_isolated_harness: {}",
+                def.id
+            );
+            if let Some((models, _)) = self.live_models(&def.id).await {
+                if !models.is_empty() {
+                    return Ok(models);
+                }
+            }
+            if let Some(cwd) = cwd {
+                let models = self.probe_models(&def, cwd).await?;
+                if !models.is_empty() {
+                    return Ok(models);
+                }
+            }
+            return Ok(default_model_stub(Some(&def.id)));
+        }
         // DSH's own ACP options name its models (`["provider","model"]`) and
         // already reflect an applied upstream; plain catalog ids are not values.
         let upstreams = self.upstreams.as_ref().filter(|_| def.id != "deepseek");
@@ -1888,7 +1990,7 @@ impl AgentRuntime for AcpRuntime {
                 let (base, server) = tokio::join!(
                     crate::management::inspect(&entry.base_command, &entry.id),
                     crate::management::inspect(&entry.server_command, &entry.id));
-                let health = self.inner.health.lock().unwrap().get(&entry.id).cloned();
+                let health = self.inner.health.lock().unwrap().get(&agent_cache_key(&entry.id)).cloned();
                 let verified = availability == "ready" && matches!(health, Some(None));
                 ModelOptionDto {
                     id: entry.id.clone(),
@@ -1937,11 +2039,18 @@ impl AgentRuntime for AcpRuntime {
             .map(str::to_string)
             .or_else(|| self.bound_agent.clone())
             .unwrap_or_else(|| "acp".into());
-        let availability = self
-            .agent_def(Some(&id))
-            .ok()
-            .map(|def| classify_availability(&def))
-            .unwrap_or("base_missing");
+        let availability = if crate::execution::current().is_some() {
+            if self.inner.health.lock().unwrap().get(&agent_cache_key(&id)) == Some(&None) {
+                "ready"
+            } else {
+                "environment_unverified"
+            }
+        } else {
+            self.agent_def(Some(&id))
+                .ok()
+                .map(|def| classify_availability(&def))
+                .unwrap_or("base_missing")
+        };
         let effective = if availability == "ready" {
             Some(self.caps_for(Some(&id)).await)
         } else {
@@ -1965,12 +2074,10 @@ impl AgentRuntime for AcpRuntime {
     ) -> Result<AgentCapabilitySnapshotDto> {
         let mut snapshot = self.capabilities(agent_id).await?;
         let sessions = self.inner.sessions.lock().await;
-        if let Some(live) = sessions.values().find(|live| {
-            session_ids_match(
-                &Self::scoped_id(&live.adapter_id, &live.session_id),
-                session_id,
-            )
-        }) {
+        if let Some(live) = sessions
+            .values()
+            .find(|live| session_ids_match(&process_session_id(live), session_id))
+        {
             let mut negotiated = live.negotiated.clone();
             if let Some(commands) = self
                 .inner
@@ -2165,6 +2272,21 @@ impl AgentRuntime for AcpRuntime {
                 self.bound_agent.clone().unwrap_or_else(|| "codex".into()),
                 session_id.to_string(),
             ),
+        };
+        let raw = if let Some(rest) = raw.strip_prefix("env/") {
+            let mut parts = rest.splitn(3, '/');
+            let environment = parts.next().unwrap_or("");
+            let _generation = parts.next();
+            let native = parts
+                .next()
+                .context("invalid environment session identity")?;
+            anyhow::ensure!(
+                crate::execution::current().is_some_and(|c| c.environment_id == environment),
+                "environment_session_context_mismatch"
+            );
+            native.to_string()
+        } else {
+            raw
         };
         let def = self.agent_def(Some(&agent_id))?;
         let cwd = cwd
@@ -4000,10 +4122,11 @@ fn spawn_mux(
     inner: Arc<Inner>,
     process: Arc<AcpProcess>,
     agent_id: &str,
-    mut updates: mpsc::UnboundedReceiver<Value>,
-    mut requests: mpsc::UnboundedReceiver<(i64, String, Value)>,
+    mut updates: mpsc::Receiver<Value>,
+    mut requests: mpsc::Receiver<(i64, String, Value)>,
 ) {
     let adapter = adapter_for(agent_id);
+    let requests_limit = Arc::new(tokio::sync::Semaphore::new(16));
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -4028,9 +4151,13 @@ fn spawn_mux(
                     let _ = inner.updates.send(update);
                 }
                 Some((req_id, method, params)) = requests.recv() => {
+                    let Ok(permit)=requests_limit.clone().try_acquire_owned()else{
+                        let _=process.respond_error(req_id,"ACP callback concurrency limit").await;let _=process.terminate(Duration::from_millis(250)).await;break;
+                    };
                     let inner = inner.clone();
                     let process = process.clone();
                     tokio::spawn(async move {
+                        let _permit=permit;
                         if let Err(err) = handle_agent_request(&inner, &process, req_id, &method, params).await {
                             tracing::warn!(error = %err, method, req_id, "ACP client request failed");
                             let _ = process.respond_error(req_id, &err.to_string()).await;
@@ -4369,6 +4496,20 @@ async fn handle_agent_request(
     method: &str,
     params: Value,
 ) -> Result<()> {
+    crate::execution::scope(
+        process.execution.clone(),
+        handle_agent_request_unscoped(inner, process, req_id, method, params),
+    )
+    .await
+}
+
+async fn handle_agent_request_unscoped(
+    inner: &Inner,
+    process: &AcpProcess,
+    req_id: i64,
+    method: &str,
+    params: Value,
+) -> Result<()> {
     let raw_session = params
         .get("sessionId")
         .or_else(|| params.get("threadId"))
@@ -4377,7 +4518,9 @@ async fn handle_agent_request(
         .to_string();
     let (cwd, policy, active) = {
         let sessions = inner.sessions.lock().await;
-        let live = sessions.values().find(|s| s.session_id == raw_session);
+        let live = sessions
+            .values()
+            .find(|s| s.session_id == raw_session && s.process.id == process.id);
         match live {
             Some(live) => (
                 live.cwd.clone(),
@@ -4386,7 +4529,12 @@ async fn handle_agent_request(
                     .as_ref()
                     .map(|a| (a.thread_id.clone(), a.turn_id.clone(), a.bus.clone())),
             ),
-            None => (PathBuf::from("."), ProductSessionPolicy::default(), None),
+            None => {
+                process
+                    .respond_error(req_id, "unknown or foreign ACP session")
+                    .await?;
+                return Ok(());
+            }
         }
     };
     match method {
@@ -4454,14 +4602,18 @@ async fn handle_agent_request(
         }
         "fs/read_text_file" => {
             let path = params.get("path").and_then(Value::as_str).unwrap_or("");
-            let content = tokio::fs::read_to_string(
-                PathBuf::from(path)
-                    .is_absolute()
-                    .then(|| PathBuf::from(path))
-                    .unwrap_or_else(|| cwd.join(path)),
-            )
-            .await
-            .unwrap_or_default();
+            let content = if let Some(value) =
+                crate::execution::file_request("readText", &cwd, path, json!({}))?
+            {
+                value["content"].as_str().unwrap_or("").to_string()
+            } else {
+                tokio::fs::read_to_string(if PathBuf::from(path).is_absolute() {
+                    PathBuf::from(path)
+                } else {
+                    cwd.join(path)
+                })
+                .await?
+            };
             process
                 .respond(req_id, json!({ "content": content }))
                 .await?;
@@ -4543,6 +4695,7 @@ async fn handle_agent_request(
                 .get("terminalId")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            inner.terminals.ensure_owner(id, &process.id)?;
             let output = inner
                 .terminals
                 .output(id)
@@ -4554,6 +4707,7 @@ async fn handle_agent_request(
                 .get("terminalId")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            inner.terminals.ensure_owner(id, &process.id)?;
             let status = inner.terminals.wait_for_exit(id).await?;
             process.respond(req_id, status).await?;
         }
@@ -4562,6 +4716,7 @@ async fn handle_agent_request(
                 .get("terminalId")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            inner.terminals.ensure_owner(id, &process.id)?;
             let _ = inner.terminals.kill(id);
             process.respond(req_id, json!({})).await?;
         }
@@ -4570,6 +4725,7 @@ async fn handle_agent_request(
                 .get("terminalId")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            inner.terminals.ensure_owner(id, &process.id)?;
             inner.terminals.release(id);
             process.respond(req_id, json!({})).await?;
         }

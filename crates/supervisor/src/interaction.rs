@@ -101,7 +101,15 @@ pub(crate) async fn run(
     input: Value,
     caller: Option<String>,
 ) -> anyhow::Result<Value> {
-    run_as(state, input, caller, false).await
+    let context = match caller.as_deref() {
+        Some(id) => state.execution_context(id)?,
+        None => input["threadId"]
+            .as_str()
+            .map(|id| state.execution_context(id))
+            .transpose()?
+            .flatten(),
+    };
+    pockymoe_runtime::execution::scope(context, run_as(state, input, caller, false)).await
 }
 
 /// The read/create subset for requests from other devices, after `peer_api`

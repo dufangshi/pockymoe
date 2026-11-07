@@ -220,6 +220,12 @@ impl McpServer {
 /// The servers for one session of `agent_id`. A registry that cannot be read
 /// yields none, so a broken file never blocks starting a thread.
 pub(crate) fn for_session(agent_id: &str, caps: &NegotiatedCaps) -> Value {
+    // The host registry can contain arbitrary commands and long-lived secrets.
+    // Isolated profiles must never serialize it, including custom adapters or a
+    // registry changed concurrently after session admission.
+    if crate::execution::current().is_some() {
+        return json!([]);
+    }
     match read() {
         Ok(registry) => Value::Array(
             registry

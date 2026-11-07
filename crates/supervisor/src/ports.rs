@@ -23,6 +23,10 @@ use uuid::Uuid;
 pub(crate) struct Mapping {
     pub id: String,
     pub port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_generation: Option<u64>,
     pub label: String,
     pub created_at: String,
     /// The last conversation whose own CLI credential approved the port. The
@@ -277,6 +281,12 @@ fn create_mapping(
     if port == 0 || port == state.config.port || label.len() > 120 {
         bail!("Choose an HTTP service port from 1–65535, excluding the Supervisor port. Labels may contain up to 120 bytes.");
     }
+    let environment = thread
+        .map(|t| state.environments.for_thread(t))
+        .transpose()?
+        .flatten();
+    let environment_id = environment.as_ref().map(|e| e.id.clone());
+    let environment_generation = environment.as_ref().map(|e| e.generation);
     let mapping = state.db.with(|conn| {
         // Serialize provenance and mapping creation with local binding/reset writes.
         let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
@@ -301,7 +311,7 @@ fn create_mapping(
         )?;
         let mut mappings: Vec<Mapping> = serde_json::from_str(&saved)?;
         let mut local = local_mappings(&tx)?;
-        let mapping = if let Some(existing) = mappings.iter_mut().find(|m| m.port == port) {
+        let mapping = if let Some(existing) = mappings.iter_mut().find(|m| m.port == port && m.environment_id==environment_id && m.environment_generation==environment_generation) {
             // The latest thread to approve the port decides who else opens it;
             // owner approvals never take it away from that thread's recipients.
             if let Some(thread) = thread {
@@ -314,7 +324,7 @@ fn create_mapping(
         } else {
             if mappings.len() >= 32 { bail!("At most 32 port mappings can be enabled on a device"); }
             let mapping = Mapping {
-                id: Uuid::new_v4().simple().to_string(), port,
+                id: Uuid::new_v4().simple().to_string(), port,environment_id:environment_id.clone(),environment_generation,
                 label: label.trim().to_string(), created_at: pockymoe_protocol::now_rfc3339(),
                 thread_id: thread.map(str::to_owned),
                 preserve_origin: preserve_origin.unwrap_or(false),
@@ -515,7 +525,7 @@ pub(crate) fn open(state: Arc<Supervisor>, message: &Value) {
             return;
         }
         tokio::select! {
-            result = connect(&state, mapping.port, &ticket) => {
+            result = connect_mapping(&state, &mapping, &ticket) => {
                 if let Err(error) = result { tracing::debug!(%error, port=mapping.port, "port preview stream ended"); }
             }
             _ = watch_lease(&state, &mapping.id, lease.as_deref()) => {}
@@ -587,19 +597,55 @@ async fn connect_preview_socket(
     Ok(socket)
 }
 
+trait PreviewIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> PreviewIo for T {}
 async fn connect(state: &Supervisor, port: u16, ticket: &str) -> Result<()> {
-    let upstream = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        match tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await {
-            Ok(socket) => Ok(socket),
-            Err(_) => tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, port)).await,
-        }
-    })
-    .await??;
-    // Small request/SSE/WS writes must not wait for TCP delayed ACKs.
-    upstream.set_nodelay(true)?;
+    connect_target(state, port, ticket, None).await
+}
+async fn connect_mapping(state: &Supervisor, mapping: &Mapping, ticket: &str) -> Result<()> {
+    let context = if let Some(environment) = &mapping.environment_id {
+        let thread = mapping
+            .thread_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("environment mapping has no thread"))?;
+        let context = state
+            .execution_context(thread)?
+            .ok_or_else(|| anyhow::anyhow!("environment mapping is unbound"))?;
+        anyhow::ensure!(
+            &context.environment_id == environment
+                && Some(context.generation) == mapping.environment_generation,
+            "stale preview generation"
+        );
+        Some(context)
+    } else {
+        None
+    };
+    connect_target(state, mapping.port, ticket, context).await
+}
+async fn connect_target(
+    state: &Supervisor,
+    port: u16,
+    ticket: &str,
+    context: Option<pockymoe_runtime::execution::ExecutionContext>,
+) -> Result<()> {
+    let upstream: Box<dyn PreviewIo> = if let Some(context) = context {
+        Box::new(context.open_tcp(port).await?)
+    } else {
+        let socket = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            match tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await {
+                Ok(s) => Ok(s),
+                Err(_) => {
+                    tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, port)).await
+                }
+            }
+        })
+        .await??;
+        socket.set_nodelay(true)?;
+        Box::new(socket)
+    };
     let socket = connect_preview_socket(state, ticket).await?;
     let (mut sink, mut source) = socket.split();
-    let (mut read, mut write) = upstream.into_split();
+    let (mut read, mut write) = tokio::io::split(upstream);
     {
         let send = async {
             let mut buffer = vec![0; 64 * 1024];
