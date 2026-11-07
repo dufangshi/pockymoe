@@ -169,6 +169,14 @@ environment before its first prompt. Existing threads use the thread environment
 control and explicitly confirm `resetSession: true` before switching; conversation
 history is retained. Inherited child bindings cannot switch to host execution.
 
+Binding changes are mutually exclusive with admitted commands, hooks and HTTP
+file request bodies. A busy request returns HTTP 409; retry after the operation
+finishes. Before acknowledging a successful switch, the Supervisor ends old
+PTYs and revokes the old host CLI identity. Close every open descendant before
+switching a parent. Historical children without the same environment as their
+ancestor cannot resume or probe the host; create a new child from the isolated
+parent instead.
+
 The first adapter supports Codex and Claude API upstream profiles and custom
 ACP commands present in the configured image. Readiness comes from that
 image's actual ACP transport, rather than host installation. The image must
@@ -196,6 +204,8 @@ and programmatic settings. It clears API helpers, subscription OAuth and
 alternate provider routing without disabling project rules, tools or settings
 sources. An unverified version or incompatible metadata fails with an
 `unsupported_environment_claude_*` error; there is no environment-only fallback.
+The requested model must be accepted by the adapter's advertised model picker;
+a rejected model selection also fails explicitly before a prompt is sent.
 The image's package/ELF installation checks do not establish native protocol
 compatibility. Validate its actual ACP/native CLI with a dedicated API fixture
 and enforced worker limits before enabling that image.
