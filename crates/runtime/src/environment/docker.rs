@@ -494,7 +494,11 @@ pub fn resolve_daemon_source(path: &Path, host: &DockerHostInfo) -> Result<PathB
             .as_str()
             .filter(|source| Path::new(source).is_absolute())
             .ok_or_else(|| anyhow::anyhow!("Supervisor daemon source is unavailable"))?;
-        Ok(Path::new(source).join(suffix))
+        Ok(if suffix.as_os_str().is_empty() {
+            PathBuf::from(source)
+        } else {
+            Path::new(source).join(suffix)
+        })
     } else {
         ensure!(
             host.host_namespace_verified,
@@ -816,6 +820,25 @@ print(result if isinstance(result,str) else json.dumps(result))
             host_namespace_verified: false,
         };
         assert!(resolve_daemon_source(Path::new("/work"), &host).is_err());
+    }
+
+    #[test]
+    fn exact_file_mount_remains_a_readable_file_without_a_trailing_separator() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("worker");
+        std::fs::write(&binary, b"worker fixture").unwrap();
+        let host = DockerHostInfo {
+            daemon_id: "fixture".into(),
+            cpus: 1.0,
+            memory_bytes: 1,
+            supervisor_container: Some(json!({"Mounts":[{
+                "Type":"bind", "Source":binary, "Destination":"/opt/worker", "RW":false
+            }]})),
+            host_namespace_verified: false,
+        };
+        let resolved = resolve_daemon_source(Path::new("/opt/worker"), &host).unwrap();
+        // Path equality normalizes a trailing separator and missed this bug.
+        assert_eq!(std::fs::read(resolved).unwrap(), b"worker fixture");
     }
 
     #[test]
