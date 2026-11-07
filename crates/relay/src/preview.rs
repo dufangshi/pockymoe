@@ -1303,6 +1303,7 @@ struct StreamGuard {
     state: Arc<AppState>,
     ticket: String,
     closed: CancellationToken,
+    drained: bool,
 }
 impl Drop for StreamGuard {
     fn drop(&mut self) {
@@ -1314,7 +1315,13 @@ impl Drop for StreamGuard {
             .unwrap()
             .remove(&self.ticket)
         {
-            stream.cancel.cancel();
+            // A device's natural EOF can arrive before Hyper consumes its
+            // buffered response body. Let EOF finish that HTTP connection;
+            // cancelling its driver here truncates close-delimited SSE.
+            // Explicit revocation still cancels the stream at its source.
+            if !self.drained {
+                stream.cancel.cancel();
+            }
             self.state.preview.released.notify_waiters();
         }
         self.closed.cancel();
@@ -1472,17 +1479,18 @@ async fn device_stream(
     let Some((tx, cancel, closed, grant)) = pairing else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let guard = StreamGuard {
+    let mut guard = StreamGuard {
         state,
         ticket,
         closed,
+        drained: false,
     };
     ws.max_message_size(128 * 1024)
         .max_frame_size(128 * 1024)
         .on_upgrade(move |socket| async move {
             let (stream, bridge) = tokio::io::duplex(128 * 1024);
             if tx.send(stream).is_ok() {
-                bridge_socket(socket, bridge, cancel, &guard.state, grant).await;
+                guard.drained = bridge_socket(socket, bridge, cancel, &guard.state, grant).await;
             }
             drop(guard);
         })
@@ -1495,10 +1503,10 @@ async fn bridge_socket(
     cancel: CancellationToken,
     state: &AppState,
     grant: Grant,
-) {
+) -> bool {
     let (mut sink, mut source) = socket.split();
     let (mut read, mut write) = tokio::io::split(bridge);
-    {
+    let drained = {
         let send = async {
             let mut buffer = vec![0; 64 * 1024];
             let mut ping = tokio::time::interval(Duration::from_secs(20));
@@ -1534,11 +1542,13 @@ async fn bridge_socket(
         tokio::select! {
             result=&mut send=>{
                 if result.is_ok() { let _=tokio::time::timeout(Duration::from_secs(2),&mut receive).await; }
+                result.is_ok()
             },
-            _=&mut receive=>{}, _=cancel.cancelled()=>{}, _=authorization=>{}
+            result=&mut receive=>result.is_ok(), _=cancel.cancelled()=>false, _=authorization=>false
         }
-    }
+    };
     let _ = tokio::time::timeout(Duration::from_secs(2), sink.close()).await;
+    drained
 }
 
 #[cfg(test)]
@@ -1740,6 +1750,7 @@ mod tests {
             state: state.clone(),
             ticket: "failed-upgrade".into(),
             closed: CancellationToken::new(),
+            drained: false,
         });
         assert!(token.is_cancelled());
         assert!(state.preview.streams.lock().unwrap().is_empty());
@@ -3421,6 +3432,102 @@ mod tests {
             "preview idle reaper: evicted=8 elapsed_ms={}",
             start.elapsed().as_millis()
         );
+    }
+
+    #[tokio::test]
+    async fn device_eof_preserves_an_unconsumed_close_delimited_response() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let (state, dir, headers, mut rx, mapping_id) =
+            lease_fixture("preview-response-drain").await;
+        let device_token = Uuid::new_v4().to_string();
+        state
+            .store
+            .conn
+            .lock()
+            .await
+            .execute(
+                "UPDATE relay_devices SET token_hash=?1 WHERE id='device'",
+                [hash_device_token(&device_token)],
+            )
+            .unwrap();
+        let mapping = state.preview.mappings.lock().unwrap()[&mapping_id].clone();
+        let grant = Grant {
+            mapping: mapping_id,
+            device: "device".into(),
+            session: extract_session_token(&headers, &TokenQuery::default()).unwrap(),
+            lease: None,
+            expires: std::time::Instant::now() + Duration::from_secs(60),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("ws://{}", listener.local_addr().unwrap());
+        let app = routes().with_state(state.clone());
+        let relay = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let caller = state.clone();
+        let opened = tokio::spawn(async move {
+            new_http_client(&caller, &mapping, &grant, false)
+                .await
+                .unwrap()
+        });
+        let frame: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
+        let mut request = format!(
+            "{base}/supervisor/port-stream/{}",
+            frame["ticket"].as_str().unwrap()
+        )
+        .into_client_request()
+        .unwrap();
+        request.headers_mut().insert(
+            header::AUTHORIZATION,
+            format!("Bearer {device_token}").parse().unwrap(),
+        );
+        let (mut device, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        let mut client = opened.await.unwrap();
+        let response = tokio::spawn(async move {
+            client
+                .sender
+                .send_request(Request::builder().uri("/").body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+        });
+        assert!(device.next().await.unwrap().unwrap().is_binary());
+        device
+            .send(tokio_tungstenite::tungstenite::Message::Binary(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+                    .to_vec()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let response = response.await.unwrap();
+        // Wait to consume the body until the device has closed. Transport EOF
+        // must drain buffered HTTP bytes rather than cancel the HTTP driver.
+        let payload = b"event: fixture\ndata: response-after-device-eof\n\n".repeat(1400);
+        for chunk in payload.chunks(16 * 1024) {
+            device
+                .send(tokio_tungstenite::tungstenite::Message::Binary(
+                    chunk.to_vec().into(),
+                ))
+                .await
+                .unwrap();
+        }
+        device.close(None).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !state.preview.streams.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let body = tokio::time::timeout(
+            Duration::from_secs(2),
+            to_bytes(Body::new(response.into_body()), 128 * 1024),
+        )
+        .await
+        .unwrap()
+        .expect("natural device EOF must not truncate an HTTP response");
+        assert_eq!(body.as_ref(), payload);
+        relay.abort();
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

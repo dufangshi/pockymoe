@@ -79,6 +79,16 @@ fn require_peer(
         )
     })?;
     crate::peer_api::ensure_peer_access(state, &caller.0.device_id, reply_to)?;
+    if let Some(thread) = reply_to {
+        if state
+            .environments
+            .for_thread(thread)
+            .map_err(map_err)?
+            .is_some()
+        {
+            return Err(map_err(anyhow!("unsupported_environment_peer_files")));
+        }
+    }
     state.ensure_peer_reaches_device().map_err(map_err)?;
     caller.0.ensure_source_private()?;
     Ok(caller.0)
@@ -147,6 +157,10 @@ fn upload_id(value: &str) -> Result<String, ApiErr> {
 }
 
 fn thread_cwd(state: &Supervisor, id: &str) -> Result<PathBuf> {
+    ensure!(
+        state.environments.for_thread(id)?.is_none(),
+        "unsupported_environment_peer_files"
+    );
     let thread = state.get_thread(id)?;
     Ok(match thread.worktree_path {
         Some(path) => PathBuf::from(path),
@@ -447,6 +461,12 @@ pub(crate) async fn upload_commit(
 /// A path in a workspace that another device asked for.
 fn workspace_path(state: &Supervisor, id: &str, path: &str) -> Result<(PathBuf, PathBuf)> {
     state.ensure_agent_reaches_workspace(AgentRequester::Peer, id)?;
+    for thread in state.list_threads(Some(id), true)? {
+        ensure!(
+            state.environments.for_thread(&thread.id)?.is_none(),
+            "unsupported_environment_peer_files"
+        );
+    }
     let root = PathBuf::from(state.get_workspace(id)?.abs_path).canonicalize()?;
     let path = files::assert_within(&root, Path::new(path))?;
     Ok((root, path))

@@ -369,6 +369,10 @@ enum PasscodeAction {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Internal I/O worker. Never starts or registers a Supervisor.
+    #[command(hide = true)]
+    EnvironmentWorker { mode: String, args: Vec<String> },
+
     /// Bind one Treer Agent to a hub thread and keep its interface registered.
     Attach(attach::Options),
     /// Reserve, inspect and diagnose private device web previews.
@@ -653,6 +657,10 @@ async fn run() -> Result<()> {
         pockymoe_runtime::host_mode::require_feature(caps.account_binding, "accountBinding")?;
     }
     match cli.command {
+        Commands::EnvironmentWorker { mode, args } => {
+            pockymoe_runtime::execution::worker::run(&mode, &args).await?
+        }
+
         Commands::Attach(options) => attach::run(options, cli.connection).await?,
         Commands::Preview { command } => {
             let value = threads::Client::new(cli.connection)?

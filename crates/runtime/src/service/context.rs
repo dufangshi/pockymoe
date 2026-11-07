@@ -16,6 +16,12 @@ impl Supervisor {
         refresh: bool,
     ) -> Result<Value> {
         let thread = self.get_thread(id)?;
+        if self.environments.for_thread(id)?.is_some() {
+            return Ok(
+                json!({"enabled": self.context_inspection.enabled(), "supported": false,
+                "availability": "unavailable", "snapshot": null, "reason": "unsupportedEnvironmentContextInspection"}),
+            );
+        }
         let provider = thread
             .agent_id
             .as_deref()

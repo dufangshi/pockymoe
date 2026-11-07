@@ -10,6 +10,7 @@ mod inbox_reminder;
 pub(crate) mod peer_work;
 mod reliability;
 mod search;
+mod session_resume;
 mod storage;
 pub(crate) mod thread_summary;
 mod update;
@@ -302,6 +303,7 @@ pub struct UploadedPromptAttachment {
 }
 
 pub struct Supervisor {
+    pub environments: Arc<crate::environment::EnvironmentManager>,
     pub context_inspection: Arc<crate::context_inspection::InspectionState>,
     pub(crate) thread_host: std::sync::OnceLock<Arc<dyn crate::host_hooks::ThreadHost>>,
     automation_gate: tokio::sync::Mutex<()>,
@@ -423,6 +425,9 @@ impl Supervisor {
             None
         });
         let supervisor = Self {
+            environments: Arc::new(crate::environment::EnvironmentManager::new(
+                &config.database_url,
+            )),
             context_inspection: Arc::new(crate::context_inspection::InspectionState::new(
                 &db,
                 &config.database_url,
@@ -514,8 +519,15 @@ impl Supervisor {
                 let Some(supervisor) = observer.upgrade() else {
                     break;
                 };
+                let admission = supervisor.hold_execution(&thread).await;
+                let Ok(context) = supervisor.execution_context(&thread) else {
+                    continue;
+                };
                 let _ = tokio::task::spawn_blocking(move || {
-                    supervisor.observe_worktree_locations(&thread, &tool, &locations);
+                    let _admission = admission;
+                    crate::execution::blocking_scope(context, || {
+                        supervisor.observe_worktree_locations(&thread, &tool, &locations);
+                    })
                 })
                 .await;
             }
@@ -1257,7 +1269,7 @@ impl Supervisor {
     pub fn workspace_read_bytes(&self, id: &str, rel: &str) -> Result<(PathBuf, Vec<u8>)> {
         let workspace = self.get_workspace(id)?;
         let (path, bytes) = files::read_bytes(Path::new(&workspace.abs_path), rel)?;
-        if !path.is_file() {
+        if crate::execution::current().is_none() && !path.is_file() {
             bail!("Workspace download path must point to a file.");
         }
         Ok((path, bytes))
@@ -1287,6 +1299,16 @@ impl Supervisor {
     ) -> Result<(String, u64)> {
         let _gate = crate::file_documents::mutation_guard();
         let workspace = self.get_workspace(id)?;
+        if crate::execution::current().is_some() {
+            use base64::Engine;
+            crate::execution::file_request(
+                "writeBytes",
+                Path::new(&workspace.abs_path),
+                rel,
+                json!({"bytes":base64::engine::general_purpose::STANDARD.encode(content)}),
+            )?;
+            return Ok((rel.into(), content.len() as u64));
+        }
         let root = PathBuf::from(&workspace.abs_path).canonicalize()?;
         let path = files::assert_within(&root, Path::new(rel))?;
         if let Some(parent) = path.parent() {
@@ -1622,7 +1644,8 @@ impl Supervisor {
         options: crate::interaction::AgentOptions,
         origin: crate::host_hooks::ThreadOrigin,
     ) -> Result<ThreadDto> {
-        self.create_thread_inner(input, options, None, origin).await
+        self.create_thread_inner(input, options, None, origin, None)
+            .await
     }
 
     pub async fn create_thread_with_cli_identity(
@@ -1639,6 +1662,7 @@ impl Supervisor {
             crate::interaction::AgentOptions::default(),
             Some(env),
             crate::host_hooks::ThreadOrigin::Local,
+            None,
         )
         .await
     }
@@ -1654,6 +1678,32 @@ impl Supervisor {
             crate::interaction::AgentOptions::default(),
             Some(env),
             crate::host_hooks::ThreadOrigin::Attached { external_id },
+            None,
+        )
+        .await
+    }
+
+    /// Record a thread already bound to stopped isolated storage. No native
+    /// initialization runs on the host while its environment is being prepared.
+    pub async fn create_thread_in_environment(
+        &self,
+        input: CreateThreadInput,
+        connection: &str,
+    ) -> Result<ThreadDto> {
+        ensure!(
+            input.parent_thread_id.is_none(),
+            "child threads inherit their parent's environment"
+        );
+        ensure!(
+            !self.config.treer_enabled && self.thread_host.get().is_none(),
+            "unsupported_host_environment: the host integration has no isolated execution adapter"
+        );
+        self.create_thread_inner(
+            input,
+            crate::interaction::AgentOptions::default(),
+            None,
+            crate::host_hooks::ThreadOrigin::Local,
+            Some(connection.to_owned()),
         )
         .await
     }
@@ -1664,7 +1714,12 @@ impl Supervisor {
         options: crate::interaction::AgentOptions,
         identity: Option<Vec<(String, String)>>,
         origin: crate::host_hooks::ThreadOrigin,
+        environment_connection: Option<String>,
     ) -> Result<ThreadDto> {
+        let _parent_execution = match input.parent_thread_id.as_deref() {
+            Some(parent) => Some(self.hold_execution(parent).await),
+            None => None,
+        };
         let (approval_mode, sandbox_mode) = match input.approval_mode.as_str() {
             "yolo" => ("yolo", "danger-full-access"),
             "guarded" => ("guarded", "workspace-write"),
@@ -1694,6 +1749,12 @@ impl Supervisor {
             .map_err(|_| anyhow!("conflict: Harness maintenance in progress"))?;
         let runtime = self.runtime(provider)?;
         let id = Uuid::new_v4().to_string();
+        if let Some(parent) = input.parent_thread_id.as_deref() {
+            if self.execution_context(parent)?.is_some() {
+                ensure!(options.worktree.is_none(),"unsupported_environment_delegate_worktree: create a managed worktree before creating the child");
+                self.environments.inherit_thread(parent, &id)?;
+            }
+        }
         let worktree = match &options.worktree {
             Some(branch) => {
                 let slug = options.name.clone().unwrap_or_else(|| id[..8].to_string());
@@ -1705,38 +1766,86 @@ impl Supervisor {
             }
             None => None,
         };
+        let inherited_cwd = if self.environments.for_thread(&id)?.is_some() {
+            input
+                .parent_thread_id
+                .as_deref()
+                .and_then(|p| self.get_thread(p).ok())
+                .and_then(|t| self.session_cwd(&t))
+        } else {
+            None
+        };
         let cwd = worktree
             .as_ref()
             .map(|w| w.path.to_string_lossy().into_owned())
+            .or(inherited_cwd.clone())
             .unwrap_or_else(|| workspace.abs_path.clone());
         if let Some(env) = identity {
             self.stage_thread_cli_identity(&id, env);
         }
-        let started = match self
-            .with_load(
-                &id,
-                HarnessLoadReason::Create,
-                runtime.start_session(StartSessionInput {
-                    cwd,
-                    agent_id: input.agent_id.clone(),
-                    model: input.model.clone(),
-                    reasoning_effort: input.reasoning_effort.clone(),
-                    approval_mode: approval_mode.into(),
-                    sandbox_mode: Some(sandbox_mode.into()),
-                }),
-            )
-            .await
-        {
-            Ok(started) => started,
-            Err(error) => {
-                self.clear_thread_cli_identity(&id);
-                if let Some(w) = &worktree {
-                    let _ = crate::interaction::remove_worktree(
-                        Path::new(&workspace.abs_path),
-                        &w.path,
-                    );
+        if let Some(connection) = &environment_connection {
+            let agent = input
+                .agent_id
+                .as_deref()
+                .unwrap_or(if provider == Provider::Claude {
+                    "claude"
+                } else if provider == Provider::Codex {
+                    "codex"
+                } else {
+                    "custom"
+                });
+            ensure!(
+                matches!(agent, "codex" | "claude" | "custom") || agent.starts_with("env-fixture"),
+                "unsupported_isolated_harness: {agent}"
+            );
+            let env = self
+                .environments
+                .create(
+                    &pockymoe_protocol::CreateEnvironmentRequest {
+                        connection_id: connection.clone(),
+                        thread_id: id.clone(),
+                        name: None,
+                    },
+                    Path::new(&workspace.abs_path),
+                    Path::new(&cwd),
+                )
+                .await?;
+            self.environments.bind_thread(&id, Some(&env.id))?;
+        }
+        let started = if environment_connection.is_some() {
+            crate::actor::StartSessionResult {
+                provider_session_id: String::new(),
+                model: Some(input.model.clone()),
+                reasoning_effort: input.reasoning_effort.clone(),
+            }
+        } else {
+            match self
+                .with_load(
+                    &id,
+                    HarnessLoadReason::Create,
+                    runtime.start_session(StartSessionInput {
+                        cwd,
+                        agent_id: input.agent_id.clone(),
+                        model: input.model.clone(),
+                        reasoning_effort: input.reasoning_effort.clone(),
+                        approval_mode: approval_mode.into(),
+                        sandbox_mode: Some(sandbox_mode.into()),
+                    }),
+                )
+                .await
+            {
+                Ok(started) => started,
+                Err(error) => {
+                    self.clear_thread_cli_identity(&id);
+                    let _ = self.environments.bind_thread(&id, None);
+                    if let Some(w) = &worktree {
+                        let _ = crate::interaction::remove_worktree(
+                            Path::new(&workspace.abs_path),
+                            &w.path,
+                        );
+                    }
+                    return Err(error);
                 }
-                return Err(error);
             }
         };
         let now = now_rfc3339();
@@ -1756,7 +1865,7 @@ impl Supervisor {
                     input.workspace_id,
                     provider.as_str(),
                     input.agent_id,
-                    started.provider_session_id,
+                    (!started.provider_session_id.is_empty()).then_some(started.provider_session_id.clone()),
                     title,
                     started.model.clone().unwrap_or(input.model.clone()),
                     started.reasoning_effort.clone(),
@@ -1768,7 +1877,7 @@ impl Supervisor {
                     lineage.depth,
                     options.name,
                     options.role.as_ref().map(|r| &r.name),
-                    worktree.as_ref().map(|w| w.path.to_string_lossy().into_owned()),
+                    worktree.as_ref().map(|w| w.path.to_string_lossy().into_owned()).or(inherited_cwd),
                 ],
             )?;
             if let Some(role) = &options.role {
@@ -2432,6 +2541,9 @@ impl Supervisor {
         thread: &ThreadDto,
         turns: &mut [ThreadTurnDto],
     ) -> Result<()> {
+        if self.environments.for_thread(&thread.id)?.is_some() {
+            return Ok(());
+        }
         let grok = thread.agent_id.as_deref() == Some("grok");
         if (!grok
             && thread.provider != Provider::Codex
@@ -2898,23 +3010,16 @@ impl Supervisor {
             .try_read()
             .map_err(|_| anyhow!("conflict: Harness maintenance in progress"))?;
         let runtime = self.runtime(provider)?.clone();
-        let session_id = self.ensure_thread_session(&thread).await?;
+        let mut session_id = self.ensure_thread_session(&thread).await?;
         if !runtime.session_loaded(&session_id) {
             let cwd = self.session_cwd(&thread);
             // Callers that queue or automate the turn say so with their own intent.
             let reason = crate::actor::load_intent()
                 .filter(|intent| intent.thread_id == thread.id)
                 .map_or(HarnessLoadReason::Turn, |intent| intent.reason);
-            self.with_load(
-                &thread.id,
-                reason,
-                runtime.resume_session(
-                    &session_id,
-                    cwd.as_deref(),
-                    thread_session_settings(&thread),
-                ),
-            )
-            .await?;
+            session_id = self
+                .resume_thread_session(&thread, &session_id, cwd.as_deref(), reason)
+                .await?;
             runtime
                 .apply_session_settings(
                     session_id.as_str(),
@@ -3797,6 +3902,10 @@ impl Supervisor {
         mode: &str,
         requested_turn_id: Option<&str>,
     ) -> Result<(ThreadDto, Option<String>, Option<u32>)> {
+        ensure!(
+            self.execution_context(id)?.is_none(),
+            "unsupported_environment_fork: create a child thread to retain isolation"
+        );
         if !matches!(mode, "latest" | "turn") {
             bail!("mode must be latest or turn");
         }
@@ -3826,25 +3935,18 @@ impl Supervisor {
             .ok_or_else(|| anyhow!("thread has no provider session"))?;
         // Until the fork is saved, its session shares the source's process.
         let _harness = self.hold_harness(&detail.thread.id).await;
-        self.with_load(
-            &detail.thread.id,
-            HarnessLoadReason::Fork,
-            runtime.resume_session(
+        let session = self
+            .resume_thread_session(
+                &detail.thread,
                 session,
                 Some(&detail.workspace.abs_path),
-                thread_session_settings(&detail.thread),
-            ),
-        )
-        .await?;
+                HarnessLoadReason::Fork,
+            )
+            .await?;
         let caps = runtime.negotiated_caps(detail.thread.agent_id.as_deref());
         if !caps.branching.fork {
             bail!("this harness does not support session/fork");
         }
-        let session = detail
-            .thread
-            .provider_session_id
-            .clone()
-            .ok_or_else(|| anyhow!("thread has no provider session"))?;
         let rollback_count = u32::try_from(turn_options.len())
             .unwrap_or(u32::MAX)
             .saturating_sub(selected.turn_index);
@@ -3885,16 +3987,14 @@ impl Supervisor {
         let session = self
             .ensure_thread_session(&self.get_thread(&detail.thread.id)?)
             .await?;
-        self.with_load(
-            &detail.thread.id,
-            HarnessLoadReason::Fork,
-            runtime.resume_session(
+        let session = self
+            .resume_thread_session(
+                &detail.thread,
                 &session,
                 Some(&detail.workspace.abs_path),
-                thread_session_settings(&detail.thread),
-            ),
-        )
-        .await?;
+                HarnessLoadReason::Fork,
+            )
+            .await?;
         let caps = runtime.negotiated_caps(detail.thread.agent_id.as_deref());
         if !caps.branching.fork {
             bail!("this harness does not support session/fork");
@@ -4097,15 +4197,12 @@ impl Supervisor {
         let cwd = self.session_cwd(&thread);
         if let Some(session) = &thread.provider_session_id {
             let runtime = self.runtime(thread.provider)?;
-            self.with_load(
-                &thread.id,
-                HarnessLoadReason::Resume,
-                runtime.resume_session(session, cwd.as_deref(), thread_session_settings(&thread)),
-            )
-            .await?;
+            let session = self
+                .resume_thread_session(&thread, session, cwd.as_deref(), HarnessLoadReason::Resume)
+                .await?;
             runtime
                 .apply_session_settings(
-                    session,
+                    &session,
                     SessionSettings {
                         model: thread.model.clone(),
                         effort: thread.reasoning_effort.clone(),
@@ -4132,15 +4229,21 @@ impl Supervisor {
         }
         let thread = self.get_thread(thread_id)?;
         let workspace = self.get_workspace(&thread.workspace_id)?;
-        let root = PathBuf::from(&workspace.abs_path);
+        let context = self.execution_context(thread_id)?;
+        let root = context
+            .as_ref()
+            .map(|c| c.working_directory.clone())
+            .unwrap_or_else(|| PathBuf::from(&workspace.abs_path));
         let dir = root.join(".temp").join("threads").join(thread_id);
         // Uploads land inside the workspace even when a link inside it points out.
         let inside = |path: &std::path::Path| {
             crate::files::assert_within(&root, path)
                 .map_err(|_| anyhow!("Attachments must stay inside the workspace."))
         };
-        inside(&dir)?;
-        std::fs::create_dir_all(&dir)?;
+        if context.is_none() {
+            inside(&dir)?;
+            std::fs::create_dir_all(&dir)?;
+        }
         let mut rewritten = prompt.to_string();
         for attachment in attachments {
             if !rewritten.contains(&attachment.placeholder) {
@@ -4150,7 +4253,12 @@ impl Supervisor {
                 );
             }
             let safe = sanitize_file_name(&attachment.original_name);
-            std::fs::write(inside(&dir.join(&safe))?, &attachment.bytes)?;
+            if let Some(context) = &context {
+                use base64::Engine;
+                context.request(&json!({"op":"writeBytes","root":root,"path":dir.join(&safe),"bytes":base64::engine::general_purpose::STANDARD.encode(&attachment.bytes)}))?;
+            } else {
+                std::fs::write(inside(&dir.join(&safe))?, &attachment.bytes)?;
+            }
             let rel = format!("./.temp/threads/{thread_id}/{safe}");
             let token = if attachment.kind == "photo" {
                 format!("[PHOTO {rel}]")
@@ -4195,16 +4303,14 @@ impl Supervisor {
         let thread = self.get_thread(id)?;
         let runtime = self.runtime(thread.provider)?;
         let session = self.ensure_thread_session(&thread).await?;
-        let session = session.as_str();
-        if !runtime.session_loaded(session) {
+        let session = if !runtime.session_loaded(&session) {
             let cwd = self.session_cwd(&thread);
-            self.with_load(
-                &thread.id,
-                HarnessLoadReason::Turn,
-                runtime.resume_session(session, cwd.as_deref(), thread_session_settings(&thread)),
-            )
-            .await?;
-        }
+            self.resume_thread_session(&thread, &session, cwd.as_deref(), HarnessLoadReason::Turn)
+                .await?
+        } else {
+            session
+        };
+        let session = session.as_str();
         let argument = objective.as_deref().unwrap_or("resume").trim();
         // A recipient's new objective carries the guardrail inside the command,
         // which must stay first; stored and shown goals drop it again.
@@ -4450,14 +4556,11 @@ impl Supervisor {
                 .await;
         }
         let cwd = self.session_cwd(&thread);
-        self.with_load(
-            &thread.id,
-            HarnessLoadReason::View,
-            runtime.resume_session(session, cwd.as_deref(), thread_session_settings(&thread)),
-        )
-        .await?;
+        let session = self
+            .resume_thread_session(&thread, session, cwd.as_deref(), HarnessLoadReason::View)
+            .await?;
         runtime
-            .session_capabilities(thread.agent_id.as_deref(), session)
+            .session_capabilities(thread.agent_id.as_deref(), &session)
             .await
     }
 
@@ -4482,13 +4585,10 @@ impl Supervisor {
         let session = self.ensure_thread_session(&thread).await?;
         let session = session.as_str();
         let cwd = self.session_cwd(&thread);
-        self.with_load(
-            &thread.id,
-            HarnessLoadReason::View,
-            runtime.resume_session(session, cwd.as_deref(), thread_session_settings(&thread)),
-        )
-        .await?;
-        runtime.harness_action(session, action).await
+        let session = self
+            .resume_thread_session(&thread, session, cwd.as_deref(), HarnessLoadReason::View)
+            .await?;
+        runtime.harness_action(&session, action).await
     }
 
     pub async fn install(

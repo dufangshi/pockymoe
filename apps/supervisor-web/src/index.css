@@ -2761,8 +2761,8 @@ main:has(.product-navigation) { padding-top: 0 !important; }
 
 
 
-/* The host form is the single outer scroll owner. A grid auto min-size must
-   not push the dialog beyond its viewport cap as asynchronous agents load. */
+/* Let the host form shrink so its body scrolls between its header and actions.
+   A grid auto min-size must not push the dialog beyond its viewport cap. */
 .thread-graph-create-thread-dialog:has(.thread-create-form) {
   display: flex;
   flex-direction: column;

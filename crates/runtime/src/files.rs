@@ -18,6 +18,9 @@ pub const DIRECTORY_DOWNLOAD_MAX_BYTES_EXCLUSIVE: u64 = 1_000_000_000;
 /// missing directories. Unix parents are opened relative to directory handles,
 /// without following symlinks, just like the conditional document API.
 pub fn create_empty_file(root: &Path, rel: &str) -> Result<()> {
+    if crate::execution::file_request("createFile", root, rel, serde_json::json!({}))?.is_some() {
+        return Ok(());
+    }
     anyhow::ensure!(
         !rel.is_empty()
             && rel.len() <= 4096
@@ -201,6 +204,9 @@ fn permission_bits(_meta: &std::fs::Metadata) -> Option<String> {
 }
 
 pub fn list_tree(root: &Path, rel: &str) -> Result<Vec<ThreadWorkspaceTreeNodeDto>> {
+    if let Some(value) = crate::execution::file_request("tree", root, rel, serde_json::json!({}))? {
+        return Ok(serde_json::from_value(value)?);
+    }
     let dir = assert_within(root, &PathBuf::from(rel))?;
     if !dir.is_dir() {
         bail!("not a directory");
@@ -251,6 +257,11 @@ pub fn list_tree(root: &Path, rel: &str) -> Result<Vec<ThreadWorkspaceTreeNodeDt
 }
 
 pub fn preview_file(root: &Path, rel: &str, limit: usize) -> Result<ThreadWorkspaceFilePreviewDto> {
+    if let Some(value) =
+        crate::execution::file_request("preview", root, rel, serde_json::json!({"limit":limit}))?
+    {
+        return Ok(serde_json::from_value(value)?);
+    }
     let path = assert_within(root, &PathBuf::from(rel))?;
     anyhow::ensure!(std::fs::metadata(&path)?.is_file(), "not a regular file");
     let mut options = std::fs::OpenOptions::new();
@@ -295,12 +306,26 @@ pub fn preview_file(root: &Path, rel: &str, limit: usize) -> Result<ThreadWorksp
 }
 
 pub fn read_bytes(root: &Path, rel: &str) -> Result<(PathBuf, Vec<u8>)> {
+    if let Some(value) =
+        crate::execution::file_request("readBytes", root, rel, serde_json::json!({}))?
+    {
+        use base64::Engine;
+        return Ok((
+            PathBuf::from(value["path"].as_str().unwrap_or("")),
+            base64::engine::general_purpose::STANDARD
+                .decode(value["bytes"].as_str().unwrap_or(""))?,
+        ));
+    }
     let path = assert_within(root, Path::new(rel))?;
     let bytes = std::fs::read(&path)?;
     Ok((path, bytes))
 }
 
 pub fn prepare_download(root: &Path, rel: &str) -> Result<WorkspaceDownload> {
+    anyhow::ensure!(
+        crate::execution::current().is_none(),
+        "unsupported_environment_directory_download: use file read"
+    );
     let path = assert_within(root, Path::new(rel))?;
     if path.is_file() {
         let file = File::open(&path)?;
@@ -414,6 +439,22 @@ pub fn read_thread_image(
     thread_id: &str,
     rel: &str,
 ) -> Result<(Vec<u8>, &'static str)> {
+    if let Some(value) = crate::execution::file_request(
+        "readThreadImage",
+        root,
+        rel,
+        serde_json::json!({"threadId":thread_id}),
+    )? {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(
+            value["bytes"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("invalid image response"))?,
+        )?;
+        let mime = raster_image_mime(&bytes)
+            .ok_or_else(|| anyhow::anyhow!("attachment is not a supported raster image"))?;
+        return Ok((bytes, mime));
+    }
     let mut image = open_thread_image(root, thread_id, rel)?;
     Ok((image.read_all()?, image.mime))
 }
@@ -454,6 +495,10 @@ impl ThreadImageFile {
 }
 
 pub fn open_thread_image(root: &Path, thread_id: &str, rel: &str) -> Result<ThreadImageFile> {
+    anyhow::ensure!(
+        crate::execution::current().is_none(),
+        "unsupported_environment_image_handle: use worker image read"
+    );
     let path = assert_within(root, Path::new(rel))?;
     // Historical uploads already use this per-thread namespace. Resolve symlinks
     // before checking ownership, so a link to another thread/private file fails.
@@ -525,6 +570,16 @@ pub fn write_file_with_scope(
     content: &str,
     scope: WriteScope,
 ) -> Result<()> {
+    if crate::execution::file_request(
+        "writeText",
+        root,
+        rel,
+        serde_json::json!({"content":content}),
+    )?
+    .is_some()
+    {
+        return Ok(());
+    }
     let _gate = crate::file_documents::mutation_guard();
     let path = if scope == WriteScope::Unrestricted {
         if Path::new(rel).is_absolute() {

@@ -128,6 +128,9 @@ impl Supervisor {
         thread: &ThreadDto,
         turns: &mut [ThreadTurnDto],
     ) {
+        if !matches!(self.environments.for_thread(&thread.id), Ok(None)) {
+            return;
+        }
         if !(thread.provider == Provider::Claude || thread.agent_id.as_deref() == Some("claude"))
             || !turns.iter().any(needs_phases)
         {

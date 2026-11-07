@@ -2,7 +2,7 @@
 //! The process gate covers managed writers. Native shell/IDE writers do not
 //! cooperate: the last version check + rename is deliberately NOT an OS CAS.
 use crate::Supervisor;
-use anyhow::{bail, ensure, Result};
+use anyhow::{bail, ensure, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -94,7 +94,7 @@ fn identity(meta: &Metadata) -> String {
         hash(format!("{:?}:{:?}", meta.created(), meta.modified()).as_bytes())
     }
 }
-fn root_revision(root: &Path) -> Result<String> {
+pub(crate) fn root_revision(root: &Path) -> Result<String> {
     let root = root.canonicalize()?;
     let meta = root.metadata()?;
     #[cfg(unix)]
@@ -198,7 +198,7 @@ fn open_document(root: &Path, rel: &str) -> Result<(File, File, std::ffi::CStrin
         std::ffi::CString::new(path.file_name().unwrap().to_string_lossy().as_bytes())?,
     ))
 }
-fn read_document(root: &Path, rel: &str) -> Result<(Document, Vec<u8>, File)> {
+pub(crate) fn read_document(root: &Path, rel: &str) -> Result<(Document, Vec<u8>, File)> {
     let (mut file, _, _) = open_document(root, rel)?;
     let meta = file.metadata()?;
     let mut bytes = Vec::new();
@@ -346,6 +346,14 @@ impl Supervisor {
     }
     pub fn file_capabilities(&self, workspace: &str) -> Result<Value> {
         let ws = self.get_workspace(workspace)?;
+        if let Some(value) = crate::execution::file_request(
+            "fileCapabilities",
+            Path::new(&ws.abs_path),
+            "",
+            json!({}),
+        )? {
+            return Ok(value);
+        }
         Ok(
             json!({"workspaceRevision":root_revision(Path::new(&ws.abs_path))?,"conditionalSave":cfg!(target_os="linux"),"documentRead":cfg!(unix),"textRangeRead":false,"maxEditableBytes":MAX_BYTES,"maxEditableLines":MAX_LINES}),
         )
@@ -353,11 +361,16 @@ impl Supervisor {
     pub fn file_document(&self, workspace: &str, path: &str) -> Result<Document> {
         ensure!(cfg!(unix), "unsupportedPlatform");
         let ws = self.get_workspace(workspace)?;
+        if let Some(value) =
+            crate::execution::file_request("document", Path::new(&ws.abs_path), path, json!({}))?
+        {
+            return Ok(serde_json::from_value(value)?);
+        }
         Ok(read_document(Path::new(&ws.abs_path), path)?.0)
     }
     pub fn file_operation(&self, actor: &str, workspace: &str, operation: &str) -> Result<Value> {
         let ws = self.get_workspace(workspace)?;
-        let revision = root_revision(Path::new(&ws.abs_path))?;
+        let revision = execution_revision(Path::new(&ws.abs_path))?;
         if let Some((_, pending)) = ACTIVE_OPERATIONS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -394,7 +407,7 @@ impl Supervisor {
         );
         relative_path(&input.path)?;
         let digest = hash(&serde_json::to_vec(&input)?);
-        let revision = root_revision(root)?;
+        let revision = execution_revision(root)?;
         ensure!(revision == input.workspace_revision, "workspaceChanged");
         if let Some((old_digest,result)) = self.db.with(|conn| {
             Ok(conn.query_row("SELECT input_digest,result FROM file_save_operations WHERE actor=?1 AND workspace_id=?2 AND operation_id=?3", params![actor,workspace,input.operation_id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?)
@@ -408,11 +421,22 @@ impl Supervisor {
             ensure!(count < 256 && bytes + ((MAX_BYTES * 10) as i64) < 32*1024*1024, "saveJournalFull");
             conn.execute("INSERT INTO file_save_operations(actor,workspace_id,workspace_revision,operation_id,input_digest,result,created_at) VALUES(?1,?2,?3,?4,?5,?6,unixepoch())",params![actor,workspace,revision,input.operation_id,digest,uncertain.to_string()])?; Ok(())
         })?;
-        let attempt = self.commit_document(root, &input, actor, workspace);
+        let attempt = if let Some(context) = crate::execution::current() {
+            let _ = context;
+            crate::execution::file_request(
+                "saveDocument",
+                root,
+                &input.path,
+                json!({"input":input}),
+            )
+            .and_then(|v| v.context("environment missing"))
+        } else {
+            self.commit_document(root, &input, actor, workspace)
+        };
         let result = match attempt {
             Ok(v) => v,
             Err(e) => {
-                json!({"status":"failedBeforeWrite","code":"documentRejected","message":e.to_string(),"operationId":input.operation_id,"draftRevision":input.draft_revision,"path":input.path})
+                json!({"status":if crate::execution::current().is_some(){"uncertain"}else{"failedBeforeWrite"},"code":"documentRejected","message":e.to_string(),"operationId":input.operation_id,"draftRevision":input.draft_revision,"path":input.path})
             }
         };
         // If receipt persistence fails after replacement, leave durable uncertain intent.
@@ -426,107 +450,126 @@ impl Supervisor {
         actor: &str,
         workspace: &str,
     ) -> Result<Value> {
-        let (doc, before, _) = match read_document(root, &input.path) {
-            Ok(v) => v,
-            Err(e) => {
-                return Ok(
-                    json!({"status":"conflict","code":"fileMissingOrUnavailable","message":e.to_string(),"operationId":input.operation_id,"draftRevision":input.draft_revision,"path":input.path}),
-                )
-            }
-        };
-        let conflict = |doc: &Document| json!({"status":"conflict","code":"fileConflict","operationId":input.operation_id,"draftRevision":input.draft_revision,"path":input.path,"snapshot":doc});
-        if doc.content_hash.as_deref() != Some(&input.expected_hash)
-            || doc.file_identity != input.file_identity
-        {
-            return Ok(conflict(&doc));
-        }
-        ensure!(
-            doc.read_only_reason.is_none(),
-            "{}",
-            doc.read_only_reason.as_deref().unwrap_or("readOnly")
-        );
-        let text = if doc.eol == "crlf" {
-            input.content.replace('\n', "\r\n")
-        } else {
-            input.content.clone()
-        };
-        let mut bytes = if doc.bom {
-            vec![0xef, 0xbb, 0xbf]
-        } else {
-            vec![]
-        };
-        bytes.extend(text.as_bytes());
-        ensure!(bytes.len() <= MAX_BYTES, "fileTooLarge");
-        self.db.with(|conn| {conn.execute("UPDATE file_save_operations SET before_bytes=?1,intended_hash=?2 WHERE actor=?3 AND workspace_id=?4 AND operation_id=?5",params![before,hash(&bytes),actor,workspace,input.operation_id])?; Ok(())})?;
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::{fd::AsRawFd, unix::fs::MetadataExt};
-            let (file, parent, name) = open_document(root, &input.path)?;
-            let mut temp =
-                tempfile::NamedTempFile::new_in(format!("/proc/self/fd/{}", parent.as_raw_fd()))?;
-            let meta = file.metadata()?;
-            ensure!(
-                unsafe { libc::fchown(temp.as_raw_fd(), meta.uid(), meta.gid()) } == 0,
-                "cannotPreserveOwner"
-            );
-            temp.as_file().set_permissions(meta.permissions())?;
-            ensure!(
-                unsafe { libc::flistxattr(temp.as_raw_fd(), std::ptr::null_mut(), 0) } == 0,
-                "cannotPreserveMetadata"
-            );
-            temp.write_all(&bytes)?;
-            temp.as_file().sync_all()?;
-            let (latest, _, _) = read_document(root, &input.path)?;
-            if latest.content_hash != doc.content_hash
-                || latest.file_identity != doc.file_identity
-                || latest.workspace_revision != doc.workspace_revision
-            {
-                return Ok(conflict(&latest));
-            }
-            let (_, fresh_parent, _) = open_document(root, &input.path)?;
-            let pm = parent.metadata()?;
-            let fm = fresh_parent.metadata()?;
-            ensure!(
-                pm.dev() == fm.dev() && pm.ino() == fm.ino(),
-                "parentChanged"
-            );
-            let tmp_name = std::ffi::CString::new(
-                temp.path()
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .as_bytes(),
-            )?;
-            if unsafe {
-                libc::renameat(
-                    parent.as_raw_fd(),
-                    tmp_name.as_ptr(),
-                    parent.as_raw_fd(),
-                    name.as_ptr(),
-                )
-            } != 0
-            {
-                return Err(std::io::Error::last_os_error().into());
-            }
-            // Everything after this point is uncertain on failure, never failed-before-write.
-            let saved = (|| -> Result<Value> {
-                parent.sync_all()?;
-                temp.as_file_mut().seek(SeekFrom::Start(0))?;
-                let mut verified = Vec::new();
-                Read::by_ref(temp.as_file_mut())
-                    .take((MAX_BYTES + 1) as u64)
-                    .read_to_end(&mut verified)?;
-                ensure!(verified == bytes, "postCommitFileChanged");
-                let receipt_meta = temp.as_file().metadata()?;
-                Ok(
-                    json!({"status":"saved","operationId":input.operation_id,"draftRevision":input.draft_revision,"path":input.path,"workspaceRevision":doc.workspace_revision,"contentHash":hash(&bytes),"fileIdentity":identity(&receipt_meta),"size":bytes.len(),"bom":doc.bom,"eol":doc.eol,"encoding":"utf-8"}),
-                )
-            })();
-            return Ok(saved.unwrap_or_else(|e| json!({"status":"uncertain","operationId":input.operation_id,"draftRevision":input.draft_revision,"path":input.path,"message":e.to_string()})));
-        }
-        #[cfg(not(target_os = "linux"))]
-        bail!("unsupportedPlatform")
+        commit_document_io(root, input, |before, bytes| {
+            self.db.with(|conn| {conn.execute("UPDATE file_save_operations SET before_bytes=?1,intended_hash=?2 WHERE actor=?3 AND workspace_id=?4 AND operation_id=?5",params![before,hash(bytes),actor,workspace,input.operation_id])?; Ok(())})
+        })
     }
+}
+
+fn execution_revision(root: &Path) -> Result<String> {
+    if let Some(value) = crate::execution::file_request("fileCapabilities", root, "", json!({}))? {
+        return Ok(value["workspaceRevision"]
+            .as_str()
+            .context("invalid workspace revision")?
+            .into());
+    }
+    root_revision(root)
+}
+pub(crate) fn commit_document_io(
+    root: &Path,
+    input: &SaveDocument,
+    before_write: impl FnOnce(&[u8], &[u8]) -> Result<()>,
+) -> Result<Value> {
+    let (doc, before, _) = match read_document(root, &input.path) {
+        Ok(v) => v,
+        Err(e) => {
+            return Ok(
+                json!({"status":"conflict","code":"fileMissingOrUnavailable","message":e.to_string(),"operationId":input.operation_id,"draftRevision":input.draft_revision,"path":input.path}),
+            )
+        }
+    };
+    let conflict = |doc: &Document| json!({"status":"conflict","code":"fileConflict","operationId":input.operation_id,"draftRevision":input.draft_revision,"path":input.path,"snapshot":doc});
+    if doc.content_hash.as_deref() != Some(&input.expected_hash)
+        || doc.file_identity != input.file_identity
+    {
+        return Ok(conflict(&doc));
+    }
+    ensure!(
+        doc.read_only_reason.is_none(),
+        "{}",
+        doc.read_only_reason.as_deref().unwrap_or("readOnly")
+    );
+    let text = if doc.eol == "crlf" {
+        input.content.replace('\n', "\r\n")
+    } else {
+        input.content.clone()
+    };
+    let mut bytes = if doc.bom {
+        vec![0xef, 0xbb, 0xbf]
+    } else {
+        vec![]
+    };
+    bytes.extend(text.as_bytes());
+    ensure!(bytes.len() <= MAX_BYTES, "fileTooLarge");
+    before_write(&before, &bytes)?;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::{fd::AsRawFd, unix::fs::MetadataExt};
+        let (file, parent, name) = open_document(root, &input.path)?;
+        let mut temp =
+            tempfile::NamedTempFile::new_in(format!("/proc/self/fd/{}", parent.as_raw_fd()))?;
+        let meta = file.metadata()?;
+        ensure!(
+            unsafe { libc::fchown(temp.as_raw_fd(), meta.uid(), meta.gid()) } == 0,
+            "cannotPreserveOwner"
+        );
+        temp.as_file().set_permissions(meta.permissions())?;
+        ensure!(
+            unsafe { libc::flistxattr(temp.as_raw_fd(), std::ptr::null_mut(), 0) } == 0,
+            "cannotPreserveMetadata"
+        );
+        temp.write_all(&bytes)?;
+        temp.as_file().sync_all()?;
+        let (latest, _, _) = read_document(root, &input.path)?;
+        if latest.content_hash != doc.content_hash
+            || latest.file_identity != doc.file_identity
+            || latest.workspace_revision != doc.workspace_revision
+        {
+            return Ok(conflict(&latest));
+        }
+        let (_, fresh_parent, _) = open_document(root, &input.path)?;
+        let pm = parent.metadata()?;
+        let fm = fresh_parent.metadata()?;
+        ensure!(
+            pm.dev() == fm.dev() && pm.ino() == fm.ino(),
+            "parentChanged"
+        );
+        let tmp_name = std::ffi::CString::new(
+            temp.path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .as_bytes(),
+        )?;
+        if unsafe {
+            libc::renameat(
+                parent.as_raw_fd(),
+                tmp_name.as_ptr(),
+                parent.as_raw_fd(),
+                name.as_ptr(),
+            )
+        } != 0
+        {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        // Everything after this point is uncertain on failure, never failed-before-write.
+        let saved = (|| -> Result<Value> {
+            parent.sync_all()?;
+            temp.as_file_mut().seek(SeekFrom::Start(0))?;
+            let mut verified = Vec::new();
+            Read::by_ref(temp.as_file_mut())
+                .take((MAX_BYTES + 1) as u64)
+                .read_to_end(&mut verified)?;
+            ensure!(verified == bytes, "postCommitFileChanged");
+            let receipt_meta = temp.as_file().metadata()?;
+            Ok(
+                json!({"status":"saved","operationId":input.operation_id,"draftRevision":input.draft_revision,"path":input.path,"workspaceRevision":doc.workspace_revision,"contentHash":hash(&bytes),"fileIdentity":identity(&receipt_meta),"size":bytes.len(),"bom":doc.bom,"eol":doc.eol,"encoding":"utf-8"}),
+            )
+        })();
+        return Ok(saved.unwrap_or_else(|e| json!({"status":"uncertain","operationId":input.operation_id,"draftRevision":input.draft_revision,"path":input.path,"message":e.to_string()})));
+    }
+    #[cfg(not(target_os = "linux"))]
+    bail!("unsupportedPlatform")
 }
 
 #[cfg(all(test, unix))]

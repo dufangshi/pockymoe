@@ -3,6 +3,8 @@ mod automations;
 mod bounded_channel;
 mod connections;
 pub mod distribution;
+mod environments;
+mod environments_egress;
 mod export;
 mod file_documents;
 mod grants;

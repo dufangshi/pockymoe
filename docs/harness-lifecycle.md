@@ -204,3 +204,43 @@ Supervisor descendants outside loaded threads (probes, shells, ACP terminals).
 settings, the scripted ACP release (`tests/fixtures/release_agent.py`) and
 process classification. `cargo test -p pockymoe-supervisor processes` and
 `thread_view` cover grants, the WebSocket message and the HTTP endpoints.
+
+## Isolated execution
+
+An environment-bound load uses the worker process domain instead of a host
+harness PID. Its session id, model/effort/health and capability caches include
+environment identity and generation. ACP subprocesses run without a PTY; native
+tools and image/project stdio MCP processes inherit the same namespaces. Host
+MCP registries are never serialized into an isolated ACP session.
+
+The worker is a Linux child subreaper. Cancellation/release signals that worker,
+which kills its process group and descendants, including reparented setsid and
+double-fork children, before removing its lifetime-checked cancellation record.
+ACP terminal commands and Web PTYs have their own worker domains. Terminal
+output retained on the Supervisor is bounded. Environment stop/rebuild/destroy
+releases every bound child harness and PTY, revokes its gateway capabilities,
+fences generation and waits for actual container cleanup. A transport timeout
+is an uncertain outcome; command and file-save journals do not automatically
+replay it.
+
+Environment limits are separate hard cgroup limits shared by its bound threads;
+the host load policy must not use a Docker client PID as harness memory. The
+Supervisor restart and observed container/daemon failure fence execution until
+explicit recovery. The owner starts/rebuilds the environment before resuming a
+thread. A new isolated thread has no native session at creation, so neither
+initialization nor a missing environment can fall back to the host. See
+[environment configuration and compatibility](environments.md).
+
+Changing a thread's execution binding takes an exclusive admission guard.
+Harness loads, hooks, commands, child creation and scoped file/CLI requests take
+read guards before choosing a backend; streaming file responses retain theirs
+until consumption or disconnect. A busy transition returns a conflict and does
+not switch a running command. Before acknowledging a successful switch, the
+Supervisor releases the old native session, terminates the old PTYs, revokes the
+old Host CLI identity and closes the old preview streams. New requests waiting
+for that switch choose the current backend after admission.
+
+Existing open child threads must be closed before changing the parent's binding.
+A historical child without its ancestor's environment cannot resume on Host;
+create a new child from the isolated parent. New children inherit before any
+initialization, and their creation holds the parent's admission guard.

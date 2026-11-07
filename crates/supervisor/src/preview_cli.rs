@@ -113,6 +113,9 @@ pub(crate) async fn run(state: &Supervisor, input: &Value, caller: Option<&str>)
         "previewList" => {
             let mappings = crate::ports::snapshot(state)
                 .iter()
+                .filter(|mapping| {
+                    caller.is_none_or(|thread| mapping.thread_id.as_deref() == Some(thread))
+                })
                 .map(|m| describe(state, m, requested_path))
                 .collect::<Result<Vec<_>>>()?;
             Ok(
@@ -130,6 +133,8 @@ pub(crate) async fn run(state: &Supervisor, input: &Value, caller: Option<&str>)
             // Validate advertised configuration before persisting a mapping.
             let placeholder = crate::ports::Mapping {
                 id: "0".repeat(32),
+                environment_id: None,
+                environment_generation: None,
                 port,
                 label: String::new(),
                 created_at: String::new(),
@@ -158,18 +163,23 @@ pub(crate) async fn run(state: &Supervisor, input: &Value, caller: Option<&str>)
                 .context("Mapping ID or port required")?;
             let mapping = crate::ports::snapshot(state)
                 .into_iter()
-                .find(|m| m.id == target || target.parse::<u16>().ok() == Some(m.port))
+                .find(|m| {
+                    (m.id == target || target.parse::<u16>().ok() == Some(m.port))
+                        && caller.is_none_or(|thread| m.thread_id.as_deref() == Some(thread))
+                })
                 .context("Port mapping not found; use preview create first")?;
             if operation == "previewStop" {
                 crate::ports::remove_mapping(state, &mapping.id)?;
                 return Ok(json!({"id":mapping.id,"port":mapping.port,"stopped":true}));
             }
             let mut result = describe(state, &mapping, requested_path)?;
+            let context = crate::ports::mapping_execution_context(state, &mapping)?;
             let ws_path = input["websocketPath"]
                 .as_str()
                 .map(|p| path(Some(p)))
                 .transpose()?;
             result["check"] = check(
+                context,
                 mapping.port,
                 result["origin"].as_str().unwrap(),
                 requested_path,
@@ -205,6 +215,40 @@ fn classify(status: u16, body: &str) -> &'static str {
 }
 
 async fn check(
+    context: Option<pockymoe_runtime::execution::ExecutionContext>,
+    port: u16,
+    preview_origin: &str,
+    requested_path: &str,
+    websocket_path: Option<&str>,
+) -> Result<Value> {
+    if let Some(context) = context {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let forwarded_port = listener.local_addr()?.port();
+        let task = tokio::spawn(async move {
+            while let Ok((mut client, _)) = listener.accept().await {
+                let context = context.clone();
+                tokio::spawn(async move {
+                    if let Ok(mut upstream) = context.open_tcp(port).await {
+                        let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+                    }
+                });
+            }
+        });
+        let result = check_host(
+            forwarded_port,
+            preview_origin,
+            requested_path,
+            websocket_path,
+        )
+        .await;
+        task.abort();
+        result
+    } else {
+        check_host(port, preview_origin, requested_path, websocket_path).await
+    }
+}
+
+async fn check_host(
     port: u16,
     preview_origin: &str,
     requested_path: &str,
@@ -297,10 +341,18 @@ async fn check(
         };
     }
     let advice = match status {
-        "hostRejected" => "Inspect the rejection and framework version. Add only the assigned hostname to Vite server.allowedHosts, webpack devServer.allowedHosts or Django ALLOWED_HOSTS; Next.js origin restrictions use allowedDevOrigins. Preserve existing entries and restart the dev server. Do not disable host checks.",
-        "httpError" => "The service responded with an HTTP error. Inspect its response/logs; an arbitrary 403 is not proof of an allowlist problem.",
-        _ if ws == "handshakeFailed" => "HTTP responds but this WebSocket handshake failed. Check the framework's actual HMR path, token/subprotocol requirements and proxy WebSocket support. For a confirmed Vite public-address problem, use server.ws (older Vite: server.hmr) with the assigned hostname, wss and public clientPort; do not broadly allow origins.",
-        _ => "Local HTTP responds. Verify openUrl in the user's browser for public DNS/TLS/authentication and actual hot reload. A local probe cannot certify the entire Relay/browser path.",
+        "hostRejected" => {
+            "Inspect the rejection and framework version. Add only the assigned hostname to Vite server.allowedHosts, webpack devServer.allowedHosts or Django ALLOWED_HOSTS; Next.js origin restrictions use allowedDevOrigins. Preserve existing entries and restart the dev server. Do not disable host checks."
+        }
+        "httpError" => {
+            "The service responded with an HTTP error. Inspect its response/logs; an arbitrary 403 is not proof of an allowlist problem."
+        }
+        _ if ws == "handshakeFailed" => {
+            "HTTP responds but this WebSocket handshake failed. Check the framework's actual HMR path, token/subprotocol requirements and proxy WebSocket support. For a confirmed Vite public-address problem, use server.ws (older Vite: server.hmr) with the assigned hostname, wss and public clientPort; do not broadly allow origins."
+        }
+        _ => {
+            "Local HTTP responds. Verify openUrl in the user's browser for public DNS/TLS/authentication and actual hot reload. A local probe cannot certify the entire Relay/browser path."
+        }
     };
     Ok(
         json!({"status":status,"httpStatus":code,"scope":"localUpstream","websocket":ws,"advice":advice}),
