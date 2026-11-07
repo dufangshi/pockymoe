@@ -1,4 +1,6 @@
 pub mod access;
+pub mod environments;
+pub use environments::*;
 mod notifications;
 pub mod pricing;
 pub use notifications::*;
