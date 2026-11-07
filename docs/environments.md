@@ -197,6 +197,16 @@ OAuth/auth refresh and model-provider WebSocket protocols are not supported;
 selecting an API profile is an explicit user configuration, never an automatic
 login or billing conversion.
 
+For Claude Messages, the broker preserves the SDK's date-shaped
+`anthropic-version` and bounded `anthropic-beta` feature selectors. Missing
+version uses `2023-06-01`. It rejects duplicate versions, malformed beta names,
+more than 32 beta names or more than 2048 input beta-header bytes. Authentication
+still comes only from the selected host profile. These headers follow the
+[Claude version](https://platform.claude.com/docs/en/api/versioning) and
+[beta header](https://platform.claude.com/docs/en/api/beta-headers) protocols
+(checked 2026-11-07); they do not enable additional endpoints or imply every
+beta feature is supported by the installed native harness.
+
 Isolated Claude requires `claude-agent-acp` 0.101.0. Before creating or restoring
 a session, the thin ACP adapter verifies its reported identity/version and pins
 the loopback broker and short-lived capability in both SDK environment options

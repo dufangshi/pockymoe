@@ -540,6 +540,11 @@ async fn model(
         "unsupported_environment_model_endpoint",
     )
     .map_err(map_err)?;
+    let protocol_headers = if harness == "claude" {
+        claude_protocol_headers(request.headers()).map_err(map_err)?
+    } else {
+        HeaderMap::new()
+    };
     let profile =
         pockymoe_runtime::upstreams::active_profile(&context.upstream_directory, &harness)
             .map_err(map_err)?
@@ -574,10 +579,8 @@ async fn model(
     let mut outbound = client
         .post(url)
         .header("content-type", "application/json")
+        .headers(protocol_headers)
         .body(body);
-    if harness == "claude" {
-        outbound = outbound.header("anthropic-version", "2023-06-01");
-    }
     outbound = if profile.auth_type == "bearer" || harness == "codex" {
         outbound.bearer_auth(&profile.api_key)
     } else {
@@ -640,6 +643,62 @@ async fn model(
         .header("cache-control", "no-store")
         .body(Body::from_stream(stream))
         .unwrap())
+}
+
+fn claude_protocol_headers(incoming: &HeaderMap) -> Result<HeaderMap> {
+    let invalid = "unsupported_environment_claude_protocol_headers";
+    let mut headers = HeaderMap::new();
+    let mut versions = incoming.get_all("anthropic-version").iter();
+    if let Some(version) = versions.next() {
+        let value = version.to_str().map_err(|_| anyhow::anyhow!(invalid))?;
+        require(
+            versions.next().is_none()
+                && value.len() == 10
+                && value.bytes().enumerate().all(|(index, byte)| {
+                    if matches!(index, 4 | 7) {
+                        byte == b'-'
+                    } else {
+                        byte.is_ascii_digit()
+                    }
+                }),
+            invalid,
+        )?;
+        headers.insert("anthropic-version", version.clone());
+    } else {
+        headers.insert("anthropic-version", "2023-06-01".parse().unwrap());
+    }
+    // These are protocol selectors, never authentication or arbitrary SDK headers.
+    // The upstream validates feature availability; the broker bounds their syntax
+    // and retains its own URL, model, authorization and streaming restrictions.
+    let mut betas = Vec::new();
+    let mut total = 0usize;
+    for header in incoming.get_all("anthropic-beta") {
+        total = total.saturating_add(header.as_bytes().len());
+        require(total <= 2048, invalid)?;
+        let value = header.to_str().map_err(|_| anyhow::anyhow!(invalid))?;
+        for beta in value.split(',').map(str::trim) {
+            require(
+                !beta.is_empty()
+                    && beta.len() <= 128
+                    && beta
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
+                invalid,
+            )?;
+            betas.push(beta);
+            require(betas.len() <= 32, invalid)?;
+        }
+    }
+    if !betas.is_empty() {
+        headers.insert(
+            "anthropic-beta",
+            betas
+                .join(",")
+                .parse()
+                .map_err(|_| anyhow::anyhow!(invalid))?,
+        );
+    }
+    Ok(headers)
 }
 
 pub(crate) fn start(state: Arc<Supervisor>) {
@@ -814,6 +873,56 @@ fn redact_secret(bytes: &mut Vec<u8>, secret: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_preserves_only_bounded_protocol_selectors() {
+        let mut incoming = HeaderMap::new();
+        incoming.insert("anthropic-version", "2026-10-21".parse().unwrap());
+        incoming.append(
+            "anthropic-beta",
+            "context-management-2025-06-27, feature-two"
+                .parse()
+                .unwrap(),
+        );
+        incoming.append("anthropic-beta", "feature-three".parse().unwrap());
+        incoming.insert("authorization", "Bearer ignored".parse().unwrap());
+        incoming.insert("x-api-key", "ignored".parse().unwrap());
+        incoming.insert("x-target-url", "https://invalid.example".parse().unwrap());
+        let headers = claude_protocol_headers(&incoming).unwrap();
+        assert_eq!(headers.len(), 2);
+        assert_eq!(headers["anthropic-version"], "2026-10-21");
+        assert_eq!(
+            headers["anthropic-beta"],
+            "context-management-2025-06-27,feature-two,feature-three"
+        );
+        let defaults = claude_protocol_headers(&HeaderMap::new()).unwrap();
+        assert_eq!(defaults.len(), 1);
+        assert_eq!(defaults["anthropic-version"], "2023-06-01");
+    }
+
+    #[test]
+    fn claude_rejects_ambiguous_or_unbounded_protocol_headers_without_echoing_them() {
+        let mut repeated = HeaderMap::new();
+        repeated.append("anthropic-version", "2023-06-01".parse().unwrap());
+        repeated.append("anthropic-version", "2026-10-21".parse().unwrap());
+        assert!(claude_protocol_headers(&repeated).is_err());
+        for (name, value) in [
+            ("anthropic-version", "not-a-date".to_owned()),
+            ("anthropic-beta", "feature-one,,feature-two".to_owned()),
+            ("anthropic-beta", "feature;invalid".to_owned()),
+            ("anthropic-beta", "a".repeat(129)),
+            ("anthropic-beta", vec!["feature"; 33].join(",")),
+            ("anthropic-beta", vec!["a".repeat(128); 17].join(",")),
+        ] {
+            let mut incoming = HeaderMap::new();
+            incoming.insert(name, value.parse().unwrap());
+            assert_eq!(
+                claude_protocol_headers(&incoming).unwrap_err().to_string(),
+                "unsupported_environment_claude_protocol_headers"
+            );
+        }
+    }
+
     #[test]
     fn redaction_handles_repeats_and_a_key_equal_to_the_marker() {
         let secret = uuid::Uuid::new_v4().to_string().into_bytes();
