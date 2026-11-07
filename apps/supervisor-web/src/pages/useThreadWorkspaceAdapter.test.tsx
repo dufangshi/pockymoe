@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 const source = vi.hoisted(() => ({ key: 'owner:device-a' }));
 vi.mock('../lib/api', () => ({
   ApiError: class extends Error {
-    statusCode = 404;
+    constructor(readonly statusCode: number, readonly payload: { code: string; message: string }) { super(payload.message); }
   },
   workspaceResourceScope: () => source.key,
   fetchWorkspaceDocument: vi.fn(),
@@ -25,6 +25,14 @@ vi.mock('../lib/api', () => ({
 import { useThreadWorkspaceAdapter } from './useThreadWorkspaceAdapter';
 import * as api from '../lib/api';
 import { notifyEnvironmentChanged } from '../lib/environmentApi';
+it('reports an unsupported download from the server through the workbench error channel', async () => {
+  const setError = vi.fn();
+  vi.mocked(api.downloadWorkspaceFile).mockRejectedValueOnce(new api.ApiError(501, { code: 'internal_error', message: 'Archive downloads are unsupported in this isolated environment.' }));
+  const { result } = renderHook(() => useThreadWorkspaceAdapter({ setError, workspaceId: 'w', deviceId: 'device', threadId: 'isolated-thread' }));
+  await result.current!.downloadNode!({ threadId: 'other-thread', workspaceId: 'w', path: 'docs', kind: 'directory' });
+  expect(setError).toHaveBeenLastCalledWith('Archive downloads are unsupported in this isolated environment.');
+  expect(api.downloadWorkspaceFile).toHaveBeenCalledWith('w', { path: 'docs' }, 'device', undefined, 'isolated-thread');
+});
 describe('workspace adapter source identity', () => {
   it('creates only in the workspace bound to the writable adapter', async () => {
     vi.mocked(api.createWorkspaceFile).mockResolvedValue({ path: 'docs/new.md' });

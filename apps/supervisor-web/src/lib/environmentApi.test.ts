@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { setLocale } from '@pockymoe/thread-ui/i18n';
 import { saveEnvironmentConnection, bindThreadEnvironment, fetchThreadEnvironment, createEnvironment } from './environmentApi';
 import { environmentConnection } from '../test/environmentFixtures';
-import { fetchWorkspaceDocument, saveWorkspaceDocument, fetchWorkspaceSaveOperation, createWorkspaceFile, fetchWorkspaceFileTree, fetchWorkspaceFilePreview, uploadWorkspaceFile, renameWorkspaceNode, deleteWorkspaceNode, downloadWorkspaceFile, buildWorkspaceRawFileUrl } from './api';
+import { createThread, fetchWorkspaceDocument, saveWorkspaceDocument, fetchWorkspaceSaveOperation, createWorkspaceFile, fetchWorkspaceFileTree, fetchWorkspaceFilePreview, uploadWorkspaceFile, renameWorkspaceNode, deleteWorkspaceNode, downloadWorkspaceFile, buildWorkspaceRawFileUrl } from './api';
 
 const calls: { url: string; init?: RequestInit }[] = [];
 beforeEach(() => {
@@ -31,6 +31,14 @@ it('scopes create/read/bind to the device and makes session reset explicit', asy
   expect(JSON.parse(String(calls[1]!.init!.body))).toEqual({ threadId: 'thread one', connectionId: 'c' });
   expect(JSON.parse(String(calls[2]!.init!.body))).toEqual({ environmentId: 'env' });
   expect(JSON.parse(String(calls[3]!.init!.body))).toEqual({ environmentId: 'env', resetSession: true });
+});
+it('carries an optional isolation connection in the initial thread creation request', async () => {
+  const input = { workspaceId: 'workspace', model: 'model', approvalMode: 'yolo' as const };
+  await createThread({ ...input, environmentConnectionId: 'dokploy-local' });
+  expect(calls[0]!.url).toContain('/api/threads/start');
+  expect(JSON.parse(String(calls[0]!.init!.body))).toEqual({ ...input, environmentConnectionId: 'dokploy-local' });
+  await createThread(input);
+  expect(JSON.parse(String(calls[1]!.init!.body))).not.toHaveProperty('environmentConnectionId');
 });
 it('preserves thread context on every workspace file endpoint without changing the submitted save', async () => {
   const save = { path: 'a.md', operationId: 'op', draftRevision: 1, content: 'hello' } as Parameters<typeof saveWorkspaceDocument>[1];

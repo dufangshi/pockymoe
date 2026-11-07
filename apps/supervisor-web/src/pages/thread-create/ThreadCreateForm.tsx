@@ -35,6 +35,9 @@ import {
 } from '../../lib/api';
 import { workspaceShare } from '../../lib/shareRules';
 import { currentRelayDeviceIdFromPath, currentRelayScopedPath } from '../../lib/relayRoutes';
+import { actOnEnvironment, fetchEnvironments, fetchThreadEnvironment, notifyEnvironmentChanged, type EnvironmentConnectionDto } from '../../lib/environmentApi';
+import { environmentText as environmentLabel } from '../../lib/environmentI18n';
+import { environmentError } from '../../components/environments/model';
 
 function canStart(backend: AgentBackendDto) {
   return backend.enabled && backend.capabilities.sessions.resume && backend.capabilities.turns.start;
@@ -75,6 +78,16 @@ class RunModeNotApplied extends Error {
     super(errorText(cause, ''));
   }
 }
+
+/** Creation succeeded. Retain that thread and retry only its environment startup. */
+class EnvironmentNotStarted extends Error {}
+
+// The isolation contract supports these ACP agents without probing the Host.
+const isolatedAcpDefaults: ModelOptionDto[] = ['codex', 'claude'].map(id => ({
+  id, model: id, displayName: id === 'codex' ? 'OpenAI Codex' : 'Claude Code',
+  description: '', isDefault: id === 'codex', hidden: false,
+  supportedReasoningEfforts: [], defaultReasoningEffort: null, selectionKind: 'agent',
+}));
 
 function Field({
   id,
@@ -133,9 +146,14 @@ export function ThreadCreateForm({
   // DSH run modes (agent presets); applied to the new thread before its first turn.
   const [runModes, setRunModes] = useState<DshRunMode[]>([]);
   const [runMode, setRunMode] = useState('');
-  // Created, but its run mode still has to be applied: retry instead of creating again.
+  // Created, but startup or run mode still has to be applied: never create twice.
   const [created, setCreated] = useState<ThreadDto | null>(null);
-  useEffect(() => setCreated(null), [provider, agentId, workspaceId]);
+  const [environmentDeviceId] = useState(currentRelayDeviceIdFromPath);
+  const [environmentConnectionId, setEnvironmentConnectionId] = useState('');
+  const [environmentConnections, setEnvironmentConnections] = useState<EnvironmentConnectionDto[]>([]);
+  const [environmentLoading, setEnvironmentLoading] = useState(true);
+  const [environmentLoadError, setEnvironmentLoadError] = useState<string | null>(null);
+  const [environmentLoadAttempt, setEnvironmentLoadAttempt] = useState(0);
   const [title, setTitle] = useState(() => initialTitle ?? '');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -143,7 +161,7 @@ export function ThreadCreateForm({
   const [installingAgentId, setInstallingAgentId] = useState<string | null>(null);
   // Why loading or an action failed, as a mark after its control: the runtime
   // button for 'runtime', Create for the rest ('load' and 'models' can retry).
-  const [error, setError] = useState<{ at: 'load' | 'models' | 'runtime' | 'create'; message: string } | null>(null);
+  const [error, setError] = useState<{ at: 'load' | 'models' | 'runtime' | 'create'; message: string; detail?: string } | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [modelsAttempt, setModelsAttempt] = useState(0);
   const [adapterPrompt, setAdapterPrompt] = useState<{ entry: ModelOptionDto; createAfter: boolean } | null>(null);
@@ -155,9 +173,31 @@ export function ThreadCreateForm({
   const acpAdvertised = backends.some((backend) => backend.provider === 'acp');
   const selectedWorkspace = workspaces.find((workspace) => workspace.id === workspaceId) ?? null;
   const selectedModel = models.find((entry) => entry.model === model) ?? null;
+  const isolatedCreation = Boolean(environmentConnectionId);
+  const visibleAgentOptions = isolatedCreation
+    ? [...agentOptions, ...isolatedAcpDefaults.filter(entry => !agentOptions.some(agent => agent.model === entry.model))]
+    : agentOptions;
   const isAcpAgentSelection =
-    provider === 'acp' && agentOptions.some((entry) => entry.selectionKind === 'agent');
-  const selectedAgent = agentOptions.find((entry) => entry.model === agentId) ?? null;
+    provider === 'acp' && visibleAgentOptions.some((entry) => entry.selectionKind === 'agent');
+  const selectedAgent = visibleAgentOptions.find((entry) => entry.model === agentId) ?? null;
+  const backendCanStart = (backend: AgentBackendDto) => isolatedCreation ? backend.enabled : canStart(backend);
+  const fieldsLocked = busy || Boolean(created);
+  const environmentSupported = provider === 'codex' || provider === 'claude'
+    || (provider === 'acp' && (!agentId || ['codex', 'claude'].includes(agentId) || selectedAgent?.acpAgent?.transport === 'custom'));
+  const environmentUnavailable = sharedWorkspaceId ? environmentLabel('readOnly')
+    : !environmentSupported ? environmentLabel('unsupportedHarness')
+    : environmentConnectionId && !environmentConnections.some(connection => connection.id === environmentConnectionId && connection.configured) ? environmentLabel('setupHint') : null;
+
+  useEffect(() => {
+    if (hostScope || sharedWorkspaceId) { setEnvironmentConnections([]); setEnvironmentLoading(false); return; }
+    const controller = new AbortController();
+    setEnvironmentLoading(true); setEnvironmentLoadError(null);
+    void fetchEnvironments(environmentDeviceId, controller.signal).then(snapshot => {
+      if (!controller.signal.aborted) setEnvironmentConnections(snapshot.connections.filter(connection => connection.configured));
+    }).catch(cause => { if (!controller.signal.aborted) setEnvironmentLoadError(environmentError(cause, 'loadFailed')); })
+      .finally(() => { if (!controller.signal.aborted) setEnvironmentLoading(false); });
+    return () => controller.abort();
+  }, [environmentDeviceId, environmentLoadAttempt, Boolean(hostScope), sharedWorkspaceId]);
 
   function applyModels(records: ModelOptionDto[]) {
     const next = pickModel(records);
@@ -218,16 +258,23 @@ export function ThreadCreateForm({
   }, [defaultBackend, initialWorkspaceId, hostScope, loadAttempt]);
 
   useEffect(() => {
+    if (isolatedCreation) {
+      // Keep known IDs; Host model/agent endpoints execute local probes.
+      if (provider === 'acp') setAgentId(current => current || isolatedAcpDefaults[0]!.model);
+      setRunModes([]); setRunMode('');
+      return;
+    }
     if (!provider || !workspaceId) {
       return;
     }
     let cancelled = false;
+    const controller = new AbortController();
     setModels([]);
     setModel('');
     setReasoningEffort(null);
     setError(null);
     if (provider === 'acp') {
-      fetchAgentBackendAgents(provider)
+      fetchAgentBackendAgents(provider, controller.signal)
         .then((agents) => {
           if (cancelled) {
             return;
@@ -244,13 +291,14 @@ export function ThreadCreateForm({
         });
       return () => {
         cancelled = true;
+        controller.abort();
       };
     }
     setAgentOptions([]);
     setAgentId('');
     fetchAgentBackendModelsFor(
       provider,
-      selectedWorkspace ? { cwd: selectedWorkspace.absPath } : {},
+      { ...(selectedWorkspace ? { cwd: selectedWorkspace.absPath } : {}), signal: controller.signal },
     )
       .then((records) => {
         if (!cancelled) {
@@ -265,14 +313,16 @@ export function ThreadCreateForm({
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [provider, workspaceId, selectedWorkspace?.absPath, modelsAttempt]);
+  }, [provider, workspaceId, selectedWorkspace?.absPath, modelsAttempt, isolatedCreation]);
 
   useEffect(() => {
-    if (provider !== 'acp' || !agentId || !selectedWorkspace) {
+    if (isolatedCreation || provider !== 'acp' || !agentId || !selectedWorkspace) {
       return;
     }
     let cancelled = false;
+    const controller = new AbortController();
     setModels([]);
     setModel('');
     setReasoningEffort(null);
@@ -280,7 +330,7 @@ export function ThreadCreateForm({
     setRunMode('');
     setError(null);
     if (selectedAgent?.acpAgent?.availability === 'adapter_missing') return;
-    fetchAgentBackendModelsFor('acp', { agentId, cwd: selectedWorkspace.absPath })
+    fetchAgentBackendModelsFor('acp', { agentId, cwd: selectedWorkspace.absPath, signal: controller.signal })
       .then((records) => {
         if (cancelled) return;
         applyModels(records);
@@ -295,6 +345,7 @@ export function ThreadCreateForm({
         return Promise.all([owner, fetchAgentHarnessCatalog<{ runModes?: DshRunMode[] }>('acp', {
           agentId,
           cwd: selectedWorkspace.absPath,
+          signal: controller.signal,
         })]).then(([isOwner, catalog]) => {
           if (cancelled || !isOwner) return;
           const modes = catalog?.runModes ?? [];
@@ -309,8 +360,9 @@ export function ThreadCreateForm({
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [agentId, provider, selectedWorkspace, selectedAgent?.acpAgent?.availability, modelsAttempt]);
+  }, [agentId, provider, selectedWorkspace, selectedAgent?.acpAgent?.availability, modelsAttempt, isolatedCreation]);
 
   async function reloadBackends(nextProvider: AgentBackendIdDto = provider) {
     const records = await fetchAgentBackends();
@@ -331,6 +383,7 @@ export function ThreadCreateForm({
   }
 
   async function handleRuntimeAction(backend: AgentBackendDto) {
+    if (isolatedCreation) return;
     const action = backend.installation.installed ? 'update' : 'install';
     setRuntimeBusyProvider(backend.provider);
     setError(null);
@@ -351,15 +404,38 @@ export function ThreadCreateForm({
 
   async function createSelectedThread(nextModel = model, nextEffort = reasoningEffort) {
     const trimmed = title.trim();
-    // A retry after a failed run-mode selection reuses the thread already created.
+    // The backend binds isolation before it initializes any native session.
     const input = {
       workspaceId, provider, ...(provider === 'acp' ? { agentId } : {}), model: nextModel,
       ...(nextEffort ? { reasoningEffort: nextEffort } : {}), approvalMode: 'yolo',
       ...(trimmed ? { title: trimmed } : {}),
+      ...(environmentConnectionId ? { environmentConnectionId } : {}),
     } as const;
     const thread = created ?? await (sharedWorkspaceId && sharedWorkspaceId === workspaceId
       ? createWorkspaceThread(sharedWorkspaceId, input)
       : createThread(input));
+    if (!alive.current) return;
+    if (environmentConnectionId) {
+      // Preserve the thread before any GET/start failure; all retries reuse it.
+      setCreated(thread);
+      try {
+        const binding = await fetchThreadEnvironment(thread.id, environmentDeviceId);
+        if (!alive.current) return;
+        const environment = binding.environment;
+        if (!environment || environment.connectionId !== environmentConnectionId || environment.threadId !== thread.id) {
+          throw new EnvironmentNotStarted(environmentLabel('createdEnvironmentMissing'));
+        }
+        if (environment.state !== 'running' && environment.state !== 'starting') {
+          if (!['stopped', 'error', 'interrupted'].includes(environment.state)) throw new EnvironmentNotStarted(environmentLabel('createdEnvironmentNotReady'));
+          const started = await actOnEnvironment(environment.id, 'start', environmentDeviceId);
+          if (!['running', 'starting'].includes(started.state)) throw new EnvironmentNotStarted(environmentLabel('createdEnvironmentNotReady'));
+        }
+        notifyEnvironmentChanged(thread.id, environmentDeviceId);
+      } catch (caught) {
+        throw caught instanceof EnvironmentNotStarted ? caught : new EnvironmentNotStarted(environmentError(caught));
+      }
+    }
+    if (!alive.current) return;
     const mode = runModes.find((entry) => entry.id === runMode);
     // Always explicit: the cached default can be stale once DSH's own default changes.
     if (provider === 'acp' && agentId === 'deepseek' && mode) {
@@ -379,7 +455,7 @@ export function ThreadCreateForm({
     setAdapterPrompt({ entry, createAfter });
   }
   async function confirmAdapterInstall() {
-    if (!adapterPrompt || busy) return;
+    if (!adapterPrompt || busy || isolatedCreation) return;
     const { entry, createAfter } = adapterPrompt;
     setBusy(true);
     setInstallingAgentId(entry.id);
@@ -409,12 +485,14 @@ export function ThreadCreateForm({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selectedBackend || !canStart(selectedBackend)) {
+    if (busy) return;
+    if (environmentConnectionId && environmentUnavailable) { setError({ at: 'create', message: environmentUnavailable }); return; }
+    if (!selectedBackend || !backendCanStart(selectedBackend)) {
       setError({ at: 'create', message: translate("workbench.chooseAnAvailableBackendBeforeCreatingA") });
       return;
     }
     if (hostScope && selectedAgent?.acpAgent?.availability === 'adapter_missing') return;
-    if (provider === 'acp' && selectedAgent?.acpAgent?.availability === 'adapter_missing') {
+    if (!isolatedCreation && provider === 'acp' && selectedAgent?.acpAgent?.availability === 'adapter_missing') {
       askAdapterInstall(selectedAgent, true);
       return;
     }
@@ -427,7 +505,10 @@ export function ThreadCreateForm({
         at: 'create',
         message: caught instanceof RunModeNotApplied
           ? translate("workbench.dshRunModeNotApplied", { value1: errorText(caught.cause, '') })
+          : caught instanceof EnvironmentNotStarted ? environmentLabel('createdEnvironmentFailed')
+          : isolatedCreation ? environmentError(caught)
           : errorText(caught, translate("workbench.unableToCreateThread")),
+        ...(caught instanceof EnvironmentNotStarted ? { detail: caught.message } : {}),
       });
     } finally {
       setBusy(false);
@@ -441,7 +522,7 @@ export function ThreadCreateForm({
     );
   }
 
-  const backendUnavailable = selectedBackend && !canStart(selectedBackend);
+  const backendUnavailable = selectedBackend && !backendCanStart(selectedBackend);
   const selectedBackendAction = selectedBackend?.installation.installed ? translate("workbench.update") : translate("workbench.install");
   const selectedBackendActionAvailable = !hostScope && selectedBackend
     ? selectedBackend.installation.installed
@@ -473,15 +554,15 @@ export function ThreadCreateForm({
         {compact ? (
           <Select
             id={`${formId}-thread-backend`}
-            disabled={busy || runtimeBusyProvider !== null}
+            disabled={fieldsLocked || runtimeBusyProvider !== null}
             value={provider}
             onValueChange={(selectedValue) => setProvider(selectedValue as AgentBackendIdDto)}
             className={controlClass}
           >
             {backends.map((backend) => (
-              <option key={backend.provider} value={backend.provider} disabled={!canStart(backend)}>
+              <option key={backend.provider} value={backend.provider} disabled={!backendCanStart(backend)}>
                 {backend.displayName}
-                {canStart(backend) ? '' : translate("workbench.notAvailable")}
+                {backendCanStart(backend) ? '' : translate("workbench.notAvailable")}
               </option>
             ))}
             {!acpAdvertised ? (
@@ -501,7 +582,7 @@ export function ThreadCreateForm({
                   <input
                     checked={selected}
                     className="sr-only"
-                    disabled={!canStart(backend) || busy || runtimeBusyProvider !== null}
+                    disabled={!backendCanStart(backend) || fieldsLocked || runtimeBusyProvider !== null}
                     name={`${formId}-backend`}
                     onChange={() => setProvider(backend.provider)}
                     type="radio"
@@ -514,7 +595,7 @@ export function ThreadCreateForm({
           </div>
         )}
 
-        {selectedBackend && provider !== 'acp' ? (
+        {selectedBackend && provider !== 'acp' && !isolatedCreation ? (
           <div className="mt-3 flex flex-col gap-2 border-b border-[var(--theme-border)] pb-4 sm:flex-row sm:items-center sm:justify-between">
             <p className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-[var(--theme-fg-muted)]">
               {selectedBackend.installation.installed
@@ -530,7 +611,7 @@ export function ThreadCreateForm({
                 <button
                   aria-label={`${selectedBackendAction} ${selectedBackend.displayName}`}
                   className="host-secondary-button min-h-10 shrink-0 rounded-md border px-3 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={busy || selectedBackendBusy || runtimeBusyProvider !== null}
+                  disabled={fieldsLocked || selectedBackendBusy || runtimeBusyProvider !== null}
                   onClick={() => void handleRuntimeAction(selectedBackend)}
                   type="button"
                 >
@@ -552,7 +633,7 @@ export function ThreadCreateForm({
       <Field id={`${formId}-thread-workspace`} label={translate("workbench.workspace")}>
         <Select
           id={`${formId}-thread-workspace`}
-          disabled={busy}
+          disabled={fieldsLocked}
           value={workspaceId}
           onValueChange={(selectedValue) => setWorkspaceId(selectedValue)}
           className={controlClass}
@@ -584,14 +665,14 @@ export function ThreadCreateForm({
             role="radiogroup"
             aria-label={translate("workbench.agent")}
           >
-            {agentOptions.map((entry) => {
+            {visibleAgentOptions.map((entry) => {
               const meta = entry.acpAgent;
-              const ready = meta?.availability === 'ready' || meta?.availability === 'adapter_missing';
+              const ready = isolatedCreation || meta?.availability === 'ready' || meta?.availability === 'adapter_missing';
               const adapterMissing = meta?.availability === 'adapter_missing';
               const installing = installingAgentId === entry.id || meta?.busy === true;
               const selected = entry.model === agentId;
               const statusLabel =
-                meta?.availability === 'base_missing'
+                isolatedCreation ? environmentLabel('harnessUnverified') : meta?.availability === 'base_missing'
                   ? translate("workbench.baseAgentMissing")
                   : adapterMissing
                     ? translate("workbench.adapterNeeded")
@@ -601,7 +682,7 @@ export function ThreadCreateForm({
               return (
                 <div key={entry.id} className="flex min-w-0 items-stretch gap-2 px-2 py-2">
                   <label
-                    title={meta?.statusMessage}
+                    title={isolatedCreation ? undefined : meta?.statusMessage}
                     className={`product-radio-option relative min-w-0 flex-1 rounded-md px-2.5 py-2 text-left outline-none transition ${
                       selected
                         ? 'bg-[var(--theme-surface-strong)] text-[var(--theme-fg)]'
@@ -613,7 +694,7 @@ export function ThreadCreateForm({
                     <input
                       checked={selected}
                       className="sr-only"
-                      disabled={!ready || busy || installingAgentId !== null}
+                      disabled={!ready || fieldsLocked || installingAgentId !== null}
                       name={`${formId}-agent`}
                       onChange={() => setAgentId(entry.model)}
                       type="radio"
@@ -623,15 +704,15 @@ export function ThreadCreateForm({
                       <span className="truncate font-medium">{entry.displayName}</span>
                       <span className="host-pill rounded-full px-2 py-0.5 text-[0.68rem]">{statusLabel}</span>
                     </span>
-                    <span className="mt-1 block truncate font-mono text-[0.68rem] text-[var(--theme-fg-muted)]">
+                    {!isolatedCreation && <span className="mt-1 block truncate font-mono text-[0.68rem] text-[var(--theme-fg-muted)]">
                       {meta?.serverCommand ?? translate("workbench.unavailable")}
-                    </span>
+                    </span>}
                   </label>
-                  {!hostScope && adapterMissing && meta?.installCommand ? (
+                  {!hostScope && !isolatedCreation && adapterMissing && meta?.installCommand ? (
                     <button
                       type="button"
                       onClick={() => askAdapterInstall(entry, false)}
-                      disabled={busy || installing || installingAgentId !== null}
+                      disabled={fieldsLocked || installing || installingAgentId !== null}
                       className="host-secondary-button my-auto min-h-11 shrink-0 rounded-md border px-3 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {installing ? translate("workbench.installing") : translate("workbench.installAdapter")}
@@ -644,12 +725,32 @@ export function ThreadCreateForm({
         </fieldset>
       ) : null}
 
+      {!hostScope && <Field id={`${formId}-environment`} label={environmentLabel('executionEnvironment')}>
+        <Select id={`${formId}-environment`} value={environmentConnectionId} disabled={fieldsLocked || environmentLoading || runtimeBusyProvider !== null}
+          onValueChange={value => { setEnvironmentConnectionId(value); setError(null); }} className={controlClass}
+          options={[
+            { value: '', label: environmentLabel('host') },
+            ...environmentConnections.map(connection => ({ value: connection.id, label: connection.name, disabled: !environmentSupported || !!sharedWorkspaceId })),
+          ]} />
+        <div className="mt-1.5 flex items-start gap-1.5 text-xs leading-5 text-[var(--theme-fg-muted)]">
+          <span>{environmentLoading ? environmentLabel('loading') : environmentLabel('newThreadEnvironmentHint')}</span>
+          {environmentUnavailable ? <ErrorMark kind="unavailable" message={environmentUnavailable} />
+            : environmentLoadError ? <ErrorMark kind="unavailable" message={environmentLoadError} onRetry={() => setEnvironmentLoadAttempt(value => value + 1)} />
+              : !environmentLoading && !environmentConnections.length ? <ErrorMark kind="unavailable" message={environmentLabel('setupHint')} /> : null}
+        </div>
+      </Field>}
+
       <div className={selectedModel?.supportedReasoningEfforts.length ? 'grid gap-5 sm:grid-cols-2' : ''}>
         <Field id={`${formId}-thread-model`} label={translate("workbench.model")}>
-          <Select
+          {isolatedCreation ? <>
+            <input id={`${formId}-thread-model`} value={model} disabled={fieldsLocked}
+              onChange={event => { setModel(event.target.value); setReasoningEffort(null); }}
+              className={controlClass} autoComplete="off" spellCheck={false} />
+            <p className="mt-1.5 text-xs leading-5 text-[var(--theme-fg-muted)]">{environmentLabel('isolatedModelHint')}</p>
+          </> : <Select
             id={`${formId}-thread-model`}
             value={model}
-            disabled={busy || models.length === 0}
+            disabled={fieldsLocked || models.length === 0}
             onValueChange={(selectedValue) => {
               const next = models.find((entry) => entry.model === selectedValue) ?? null;
               setModel(selectedValue);
@@ -667,14 +768,14 @@ export function ThreadCreateForm({
                 {entry.displayName}
               </option>
             ))}
-          </Select>
+          </Select>}
         </Field>
 
         {selectedModel && selectedModel.supportedReasoningEfforts.length > 0 ? (
           <Field id={`${formId}-thread-effort`} label={translate("workbench.reasoningEffort")}>
             <Select
               id={`${formId}-thread-effort`}
-              disabled={busy}
+              disabled={fieldsLocked}
               value={reasoningEffort ?? ''}
               onValueChange={(selectedValue) =>
                 setReasoningEffort((selectedValue || null) as ReasoningEffortDto | null)
@@ -713,7 +814,7 @@ export function ThreadCreateForm({
       <Field id={`${formId}-thread-title`} label={translate("workbench.title")}>
         <input
           id={`${formId}-thread-title`}
-          disabled={busy}
+          disabled={fieldsLocked}
           value={title}
           onChange={(event) => setTitle(event.target.value)}
           placeholder={translate("workbench.optionalFallsBackToFirstPrompt")}
@@ -740,12 +841,13 @@ export function ThreadCreateForm({
           type="submit"
           disabled={
             busy ||
+            Boolean(environmentConnectionId && environmentUnavailable) ||
             Boolean(hostScope && selectedAgent?.acpAgent?.availability === 'adapter_missing') ||
             !selectedBackend ||
-            !canStart(selectedBackend) ||
+            !backendCanStart(selectedBackend) ||
             !workspaceId ||
-            (selectedAgent?.acpAgent?.availability !== 'adapter_missing' && (!model || !selectedModel)) ||
-            (provider === 'acp' && !['ready', 'adapter_missing'].includes(selectedAgent?.acpAgent?.availability ?? ''))
+            (isolatedCreation ? !model.trim() : selectedAgent?.acpAgent?.availability !== 'adapter_missing' && (!model || !selectedModel)) ||
+            (!isolatedCreation && provider === 'acp' && !['ready', 'adapter_missing'].includes(selectedAgent?.acpAgent?.availability ?? ''))
           }
           className={
             compact
@@ -753,13 +855,14 @@ export function ThreadCreateForm({
               : 'ui-action-primary min-h-11 rounded-md px-5 font-semibold transition disabled:cursor-not-allowed'
           }
         >
-          {busy ? translate("workbench.creating")
-            : created ? translate("workbench.retryRunMode")
+          {busy ? created && environmentConnectionId ? environmentLabel('startingCreatedEnvironment') : translate("workbench.creating")
+            : created ? environmentConnectionId ? environmentLabel('retryEnvironmentStart') : translate("workbench.retryRunMode")
             : translate("workbench.createThread_ea3fa3")}
         </button>
         {error && error.at !== 'runtime' ? (
           <ErrorMark
             message={error.message}
+            detail={error.detail}
             onRetry={error.at === 'load' ? () => { setError(null); setLoading(true); setLoadAttempt((value) => value + 1); }
               : error.at === 'models' ? () => { setError(null); setModelsAttempt((value) => value + 1); }
               : undefined}

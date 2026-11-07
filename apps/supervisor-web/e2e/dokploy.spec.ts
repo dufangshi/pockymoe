@@ -14,16 +14,27 @@ async function mockApi(page: Page) {
   const snapshot = environmentsFixture();
   let binding: EnvironmentDto | null = null;
   const writes: { path: string; body: Record<string, unknown> | null }[] = [];
+  const requests: { path: string; method: string }[] = [];
   const thread = makeThread();
+  let createdThread: ReturnType<typeof makeThread> | null = null;
   let failTest = false;
+  let failStart = false;
   await page.routeWebSocket('**/ws*', socket => socket.onMessage(() => {}));
   await page.route('**/healthz', route => route.fulfill({ json: { status: 'ok', timestamp: '2026-11-07', activeTurnCount: 0 } }));
   await page.route('**/api/**', async route => {
     const request = route.request(), url = new URL(request.url()), p = url.pathname;
+    requests.push({ path: p, method: request.method() });
     const body = request.postData() ? request.postDataJSON() as Record<string, unknown> : null;
     if (request.method() !== 'GET') writes.push({ path: p, body });
     let result: unknown = {};
-    if (p === '/api/environments' && request.method() === 'GET') result = snapshot;
+    if (p === '/api/threads/start') {
+      createdThread = { ...thread, id: 'created-thread', title: String(body?.title || 'New isolated thread'), providerSessionId: '' };
+      if (body?.environmentConnectionId) {
+        binding = { ...isolatedEnvironment, id: 'new-thread-env', threadId: createdThread.id, connectionId: String(body.environmentConnectionId), state: 'stopped' };
+        snapshot.environments.push(binding);
+      }
+      result = createdThread;
+    } else if (p === '/api/environments' && request.method() === 'GET') result = snapshot;
     else if (p === '/api/environments' && request.method() === 'POST') {
       const env = { ...isolatedEnvironment, id: 'created-env', name: String(body?.name || 'New environment'), state: 'creating' as const };
       snapshot.environments.push(env); result = env;
@@ -41,6 +52,7 @@ async function mockApi(page: Page) {
       snapshot.connections = [next]; result = next;
     } else if (p.startsWith('/api/environments/')) {
       const id = p.split('/')[3], action = p.split('/').at(-1);
+      if (action === 'start' && failStart) { failStart = false; await route.fulfill({ status: 502, json: { code: 'environment_start_failed', message: 'Mock environment startup unavailable' } }); return; }
       const env = snapshot.environments.find(env => env.id === id)!;
       env.state = action === 'destroy' ? 'destroyed' : action === 'stop' ? 'stopped' : 'running';
       if (env.state === 'running') env.observedLimits = env.limits;
@@ -54,8 +66,11 @@ async function mockApi(page: Page) {
     else if (p === '/api/storage') result = { deviceName: 'Mock device', scan: null, threads: [] };
     else if (p === '/api/threads' || p.endsWith('/threads') || p.endsWith('/group')) result = [thread];
     else if (p === '/api/threads/thread-one') result = { thread, workspace, workspacePathStatus: 'present', turns: [], pendingRequests: [], pendingSteers: [], totalTurnCount: 0 };
+    else if (p === '/api/threads/created-thread') result = { thread: createdThread, workspace, workspacePathStatus: 'present', turns: [], pendingRequests: [], pendingSteers: [], totalTurnCount: 0 };
     else if (p.endsWith('/capabilities')) result = { availability: 'available', effectiveCapabilities: null, toolboxItems: [] };
-    else if (p.endsWith('/models') || p.endsWith('/agents') || p.endsWith('/plugins') || p === '/api/agent-runtimes' || p.endsWith('/favorites')) result = [];
+    else if (p === '/api/agent-runtimes') result = ['codex', 'opencode'].map(provider => ({ provider, displayName: provider === 'codex' ? 'Codex' : 'OpenCode', enabled: true, capabilities: { sessions: { resume: true }, turns: { start: true } }, installation: { installed: true }, status: {} }));
+    else if (p.endsWith('/models')) result = [{ id: 'model-a', model: 'model-a', displayName: 'Model A', isDefault: true, supportedReasoningEfforts: [], defaultReasoningEffort: null }];
+    else if (p.endsWith('/agents') || p.endsWith('/plugins') || p.endsWith('/favorites')) result = [];
     else if (p.endsWith('/status')) result = { id: 'codex', name: 'Codex', status: { available: true, connected: true, installed: true, authenticated: true }, capabilities: { controls: {} } };
     else if (p.endsWith('/subscription-usage')) result = { usage: null };
     else if (p === '/api/thread-activity') result = { since: '2026-11-07', hours: 24, threads: [] };
@@ -65,7 +80,7 @@ async function mockApi(page: Page) {
     else { await route.fulfill({ status: 404, json: { code: 'not_found', message: 'Mock endpoint unavailable' } }); return; }
     await route.fulfill({ json: result });
   });
-  return { snapshot, writes, thread, bindEnvironment: (environment: EnvironmentDto) => { binding = environment; }, failConnectionTest: () => { failTest = true; } };
+  return { snapshot, writes, requests, thread, bindEnvironment: (environment: EnvironmentDto) => { binding = environment; }, failConnectionTest: () => { failTest = true; }, failNextStart: () => { failStart = true; } };
 }
 async function openSettings(page: Page) {
   await page.goto('/workspaces');
@@ -81,6 +96,12 @@ async function openThreadEnvironment(page: Page) {
   await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
   await page.getByRole('button', { name: 'Isolated environments', exact: true }).click();
   return page.getByRole('dialog', { name: 'Isolated environments', exact: true });
+}
+async function openNewThread(page: Page) {
+  await page.goto('/threads/new?workspaceId=workspace-one');
+  const form = page.locator('form').filter({ has: page.getByRole('combobox', { name: 'Execution environment' }) });
+  await expect(form.getByRole('combobox', { name: 'Execution environment' })).toBeEnabled();
+  return form;
 }
 test.beforeEach(async ({ page, baseURL }) => {
   await page.addInitScript(() => { localStorage.setItem('remote-codex-locale', 'en'); localStorage.setItem('pockymoe.phoneDock', 'off'); });
@@ -174,6 +195,76 @@ test('child thread keeps inherited isolation and explains the disabled controls'
   await expect(page.locator('.error-mark-bubble')).toContainText('This child thread inherits its parent');
   expect(mock.writes).toHaveLength(0);
 });
+
+test('new thread isolation is submitted before startup and a failed startup never creates twice', async ({ page }) => {
+  const mock = await mockApi(page); mock.failNextStart();
+  const dialog = await openNewThread(page);
+  await dialog.getByRole('combobox', { name: 'Execution environment' }).click();
+  await page.getByRole('option', { name: 'Local Dokploy', exact: true }).click();
+  await dialog.getByRole('textbox', { name: 'Model', exact: true }).fill('environment-model');
+  const probesBefore = mock.requests.filter(request => /\/agent-runtimes\/.+\/(models|agents|harness|status)$/.test(request.path)).length;
+  await dialog.getByLabel('Title', { exact: true }).fill('Created in isolation');
+  await dialog.getByRole('button', { name: 'Create Thread', exact: true }).click();
+  await expect(dialog.getByRole('button', { name: 'Retry environment startup' })).toBeEnabled();
+  await expect(dialog.getByRole('combobox', { name: 'Execution environment' })).toBeDisabled();
+  await expect(dialog.getByLabel('Title', { exact: true })).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Why it failed' }).click();
+  await expect(page.locator('.error-mark-bubble')).toContainText('The thread was created, but its environment did not start');
+  expect(mock.writes.filter(write => write.path === '/api/threads/start')).toHaveLength(1);
+  expect(mock.writes.find(write => write.path === '/api/threads/start')!.body).toMatchObject({ title: 'Created in isolation', model: 'environment-model', environmentConnectionId: 'dokploy-local' });
+  expect(mock.requests.filter(request => /\/agent-runtimes\/.+\/(models|agents|harness|status)$/.test(request.path))).toHaveLength(probesBefore);
+  const sequence = mock.requests.filter(request => request.path === '/api/threads/start' || request.path.endsWith('/environment') || request.path === '/api/environments/new-thread-env/start');
+  expect(sequence.map(request => `${request.method} ${request.path}`)).toEqual(['POST /api/threads/start', 'GET /api/threads/created-thread/environment', 'POST /api/environments/new-thread-env/start']);
+  await page.keyboard.press('Escape');
+  await dialog.getByRole('button', { name: 'Retry environment startup' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL(/\/threads\/created-thread$/);
+  await expect(page.getByTestId('primary-pane')).toBeVisible();
+  expect(mock.writes.filter(write => write.path === '/api/threads/start')).toHaveLength(1);
+  expect(mock.writes.filter(write => write.path === '/api/environments/new-thread-env/start')).toHaveLength(2);
+});
+
+test('unsupported environment download surfaces the server reason in the actual thread UI', async ({ page }) => {
+  const mock = await mockApi(page);
+  mock.bindEnvironment({ ...isolatedEnvironment, threadId: mock.thread.id });
+  await page.route('**/api/workspaces/workspace-one/files/tree*', route => route.fulfill({ json: { path: '', name: 'pockymoe', kind: 'directory', children: [{ path: 'docs', name: 'docs', kind: 'directory', hasChildren: false, children: [] }] } }));
+  await page.route('**/api/workspaces/workspace-one/files/download*', route => route.fulfill({ status: 501, json: { code: 'environment_unsupported', message: 'Archive downloads are unsupported in this isolated environment.' } }));
+  await page.goto('/threads/thread-one');
+  await page.getByRole('navigation', { name: 'Workspace tools', exact: true }).getByRole('button', { name: 'Toggle Explorer', exact: true }).click();
+  const row = page.getByRole('treeitem').filter({ hasText: 'docs' });
+  await row.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: /Download/ }).click();
+  const failure = page.getByRole('button', { name: 'Why it failed' });
+  await expect(failure).toBeVisible(); await failure.click();
+  await expect(page.locator('.error-mark-bubble')).toContainText('Archive downloads are unsupported in this isolated environment.');
+});
+
+for (const theme of ['classic', 'plum-pocket', 'terminal']) for (const mode of ['light', 'dark']) {
+  test(`new thread theme ${theme} ${mode}`, async ({ page }, testInfo) => {
+    await page.addInitScript(({ theme, mode }) => { localStorage.setItem('pockymoe-theme-preset', theme); localStorage.setItem('remote-codex-theme-mode', mode); }, { theme, mode });
+    await mockApi(page);
+    const dialog = await openNewThread(page);
+    await dialog.getByRole('combobox', { name: 'Execution environment' }).click();
+    await page.getByRole('option', { name: 'Local Dokploy', exact: true }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme-preset', theme);
+    await expect(page.locator('html')).toHaveAttribute('data-theme-effective', mode);
+    const directory = path.join(screenshots, 'new-thread', testInfo.project.name);
+    await mkdir(directory, { recursive: true });
+    const environment = dialog.getByRole('combobox', { name: 'Execution environment' });
+    await environment.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(directory, `${theme}-${mode}-selection.png`), animations: 'disabled', fullPage: true });
+    const box = (await environment.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+    await dialog.getByText('OpenCode', { exact: true }).click();
+    await environment.click();
+    await expect(page.getByRole('option', { name: 'Local Dokploy', exact: true })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await dialog.getByRole('button', { name: 'Why it is unavailable' }).click();
+    await expect(page.locator('.error-mark-bubble')).toContainText('This Harness does not support isolated environments.');
+    await expect(page.locator('.error-mark-bubble')).toBeVisible();
+    await page.screenshot({ path: path.join(directory, `${theme}-${mode}-unsupported.png`), animations: 'disabled' });
+  });
+}
 
 for (const theme of ['classic', 'plum-pocket', 'terminal']) for (const mode of ['light', 'dark']) {
   test(`theme inspection ${theme} ${mode}`, async ({ page }, testInfo) => {

@@ -1002,7 +1002,7 @@ export function fetchAgentBackendModels(provider: AgentBackendIdDto) {
 
 export function fetchAgentBackendModelsFor(
   provider: AgentBackendIdDto,
-  options: { agentId?: string | null; cwd?: string | null } = {},
+  options: { agentId?: string | null; cwd?: string | null; signal?: AbortSignal } = {},
 ) {
   const query = new URLSearchParams();
   if (options.agentId) {
@@ -1016,14 +1016,15 @@ export function fetchAgentBackendModelsFor(
     `api/agent-runtimes/${encodeURIComponent(provider)}/models${suffix}`,
     {
       cache: 'no-store',
+      ...(options.signal ? { signal: options.signal } : {}),
     },
   );
 }
 
-export function fetchAgentBackendAgents(provider: AgentBackendIdDto) {
+export function fetchAgentBackendAgents(provider: AgentBackendIdDto, signal?: AbortSignal) {
   return request<ModelOptionDto[]>(
     `api/agent-runtimes/${encodeURIComponent(provider)}/agents`,
-    { cache: 'no-store' },
+    { cache: 'no-store', ...(signal ? { signal } : {}) },
   );
 }
 
@@ -1122,7 +1123,7 @@ export function postThreadHarnessAction<T>(threadId: string,
 /** Harness-specific creation options (DSH run modes); null for other harnesses. */
 export function fetchAgentHarnessCatalog<T>(
   provider: AgentBackendIdDto,
-  options: { agentId?: string | null; cwd?: string | null } = {},
+  options: { agentId?: string | null; cwd?: string | null; signal?: AbortSignal } = {},
 ) {
   const query = new URLSearchParams();
   if (options.agentId) query.set('agentId', options.agentId);
@@ -1130,7 +1131,7 @@ export function fetchAgentHarnessCatalog<T>(
   const suffix = query.size > 0 ? `?${query.toString()}` : '';
   return request<T | null>(
     `api/agent-runtimes/${encodeURIComponent(provider)}/harness${suffix}`,
-    { cache: 'no-store' },
+    { cache: 'no-store', ...(options.signal ? { signal: options.signal } : {}) },
   );
 }
 
@@ -1636,7 +1637,9 @@ export function fetchThreadShellState(id: string,
   return deviceRequest<ThreadShellStateDto>(deviceId, `api/threads/${id}/shell`);
 }
 
-export function createThread(input: CreateThreadInput) {
+// Web-owned until the backend's environment contract is exported by shared types.
+export type CreateThreadWithEnvironmentInput = CreateThreadInput & { environmentConnectionId?: string };
+export function createThread(input: CreateThreadWithEnvironmentInput) {
   return request<ThreadDto>('api/threads/start', {
     method: 'POST',
     body: JSON.stringify(input),
