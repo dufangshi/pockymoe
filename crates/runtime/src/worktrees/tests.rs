@@ -666,6 +666,47 @@ async fn use_rejects_running_and_queued_work_without_waiting_for_its_own_turn() 
 }
 
 #[tokio::test]
+async fn upgrade_retains_legacy_worktree_ownership_after_git_panel_discovery() {
+    let f = Fixture::new().await;
+    let root = f.repo.parent().unwrap().join("legacy-checkout");
+    run_git(
+        &f.repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "legacy",
+            root.to_str().unwrap(),
+            "HEAD",
+        ],
+    );
+    f.state
+        .db
+        .with(|c| {
+            c.execute(
+                "UPDATE threads SET worktree_path=?2 WHERE id=?1",
+                params![f.thread, root.to_str()],
+            )?;
+            migrate(c)?;
+            Ok(())
+        })
+        .unwrap();
+    let context = f.state.worktree_context(&f.thread).unwrap();
+    let copy = context["workingCopies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == context["primaryWorkingCopyId"])
+        .unwrap();
+    assert_eq!(copy["managed"], true);
+    f.state
+        .remove_configured_worktree(&f.thread, &root)
+        .unwrap();
+    assert!(!root.exists());
+    assert!(f.repo.exists());
+}
+
+#[tokio::test]
 async fn parallel_tool_and_subagent_observations_do_not_rebind_the_thread() {
     let f = Fixture::new().await;
     let first = f.create("first");

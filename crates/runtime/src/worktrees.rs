@@ -31,7 +31,11 @@ pub(crate) fn migrate(c: &Connection) -> Result<()> {
         cwd TEXT NOT NULL, source TEXT NOT NULL, tool_id TEXT NOT NULL,
         agent_id TEXT NOT NULL, observed_at TEXT NOT NULL,
         PRIMARY KEY(thread_id,tool_id,agent_id,cwd));
-        CREATE INDEX IF NOT EXISTS working_copy_observations_thread ON working_copy_observations(thread_id,observed_at);")?;
+        CREATE INDEX IF NOT EXISTS working_copy_observations_thread ON working_copy_observations(thread_id,observed_at);
+        INSERT OR IGNORE INTO kv(key,value)
+        SELECT 'legacy-worktree-owner:' || id, worktree_path FROM threads
+        WHERE worktree_path IS NOT NULL AND NOT EXISTS
+          (SELECT 1 FROM thread_working_copies WHERE thread_id=threads.id);")?;
     Ok(())
 }
 
@@ -188,9 +192,8 @@ impl Supervisor {
         let copy = probe(path)?;
         self.db.with(|c| {
             let owner:Option<Option<String>>=c.query_row("SELECT owner_thread_id FROM working_copies WHERE id=?1",[&copy.id],|r|r.get(0)).optional()?;
-            // No index row is a delegate created before this migration. Its
-            // persisted worktree_path is the pre-existing ownership contract.
-            ensure!(owner.is_none()||owner==Some(Some(thread.into())),"forbidden: this thread did not create the worktree");
+            let legacy:Option<String>=c.query_row("SELECT value FROM kv WHERE key=?1",[format!("legacy-worktree-owner:{thread}")],|r|r.get(0)).optional()?;
+            ensure!(owner==Some(Some(thread.into())) || (owner.flatten().is_none() && legacy.as_deref()==Some(copy.path.as_str())),"forbidden: this thread did not create the worktree");
             let users:i64=c.query_row("SELECT COUNT(*) FROM threads t WHERE t.id!=?1 AND (t.worktree_path=?2 OR EXISTS(SELECT 1 FROM thread_working_copies a WHERE a.thread_id=t.id AND a.copy_id=?3))",params![thread,copy.path,copy.id],|r|r.get(0))?;
             ensure!(users==0,"conflict: other threads use this worktree");Ok(())
         })?;
@@ -213,11 +216,15 @@ impl Supervisor {
             Path::new(&copy.common_dir),
             &["worktree", "remove", &copy.path],
         )?;
-        self.forget_worktree(&copy.id)
+        self.forget_worktree(&copy.id, &copy.path)
     }
-    fn forget_worktree(&self, id: &str) -> Result<()> {
+    fn forget_worktree(&self, id: &str, path: &str) -> Result<()> {
         self.db.with(|c| {
             let tx = c.unchecked_transaction()?;
+            tx.execute(
+                "DELETE FROM kv WHERE key LIKE 'legacy-worktree-owner:%' AND value=?1",
+                [path],
+            )?;
             tx.execute(
                 "DELETE FROM working_copy_observations WHERE copy_id=?1",
                 [id],
@@ -251,6 +258,10 @@ impl Supervisor {
     ) -> Result<WorkingCopy> {
         self.get_thread(thread)?;
         self.db.with(|c| {
+            // Only the upgrade snapshot can establish legacy ownership. A
+            // later `use` or ordinary path observation must not grant it.
+            let legacy:Option<String>=c.query_row("SELECT value FROM kv WHERE key=?1",[format!("legacy-worktree-owner:{thread}")],|r|r.get(0)).optional()?;
+            let managed = managed || legacy.as_deref()==Some(copy.path.as_str());
             c.execute("INSERT INTO working_copies(id,root,common_dir,git_dir,owner_thread_id,created_at) VALUES(?1,?2,?3,?4,?5,?6)
                 ON CONFLICT(id) DO UPDATE SET git_dir=excluded.git_dir, owner_thread_id=COALESCE(working_copies.owner_thread_id,excluded.owner_thread_id)",params![copy.id,copy.path,copy.common_dir,copy.git_dir,managed.then_some(thread),now_rfc3339()])?;
             c.execute("INSERT INTO thread_working_copies(thread_id,copy_id,source) VALUES(?1,?2,?3)
@@ -537,7 +548,7 @@ impl Supervisor {
             .context("conflict: harness is busy")?;
         let _mutation = MUTATION.lock().unwrap_or_else(|e| e.into_inner());
         let copy = self.worktree_copy(thread, id)?;
-        self.db.with(|c| { let n=c.execute("UPDATE threads SET worktree_path=?2,updated_at=?3 WHERE id=?1 AND status NOT IN ('running','recovering') AND NOT EXISTS(SELECT 1 FROM thread_turns WHERE thread_id=?1 AND status IN ('inProgress','recovering')) AND NOT EXISTS(SELECT 1 FROM thread_pending_steers WHERE thread_id=?1)",params![thread,copy.path,now_rfc3339()])?;ensure!(n==1,"conflict: thread has active or queued work");Ok(()) })?;
+        self.db.with(|c| { let tx=c.unchecked_transaction()?; let n=tx.execute("UPDATE threads SET worktree_path=?2,updated_at=?3 WHERE id=?1 AND status NOT IN ('running','recovering') AND NOT EXISTS(SELECT 1 FROM thread_turns WHERE thread_id=?1 AND status IN ('inProgress','recovering')) AND NOT EXISTS(SELECT 1 FROM thread_pending_steers WHERE thread_id=?1)",params![thread,copy.path,now_rfc3339()])?;ensure!(n==1,"conflict: thread has active or queued work");tx.execute("DELETE FROM kv WHERE key=?1",[format!("legacy-worktree-owner:{thread}")])?;tx.commit()?;Ok(()) })?;
         self.emit_worktree_changed(thread);
         Ok(json!({"workingCopy":copy,"sessionCwdUpdated":false,"appliesOnNextSession":true}))
     }
@@ -570,7 +581,7 @@ impl Supervisor {
             Path::new(&copy.common_dir),
             &["worktree", "remove", &copy.path],
         )?;
-        self.forget_worktree(id)?;
+        self.forget_worktree(id, &copy.path)?;
         self.emit_worktree_changed(thread);
         Ok(json!({"removed":true,"workingCopyId":id,"branchDeleted":false}))
     }

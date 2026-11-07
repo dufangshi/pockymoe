@@ -47,6 +47,9 @@ can use explicit tool cwd immediately without calling `use`.
 Removal is explicit and limited to managed working copies. It checks current
 users and uncommitted, untracked and ignored files; there is no force/discard flag. Removing a checkout
 and deleting its branch are separate operations.
+The database upgrade preserves the original ownership of delegate worktrees
+created by older Supervisors; selecting or adopting a checkout later does not
+grant that ownership.
 
 ## Git panel
 
