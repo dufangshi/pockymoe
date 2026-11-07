@@ -2530,9 +2530,10 @@ impl AgentRuntime for AcpRuntime {
             live.claude_lifecycle.begin_turn()
         };
         let mut adapter_usage = super::usage::AdapterUsageAccumulator::default();
-        let mut usage_reader =
-            (adapter_id == "codex").then(|| super::usage::CodexUsageReader::new(&session_id));
-        let mut claude_usage_reader = (adapter_id == "claude")
+        let host_state = process.execution.is_none();
+        let mut usage_reader = (adapter_id == "codex" && host_state)
+            .then(|| super::usage::CodexUsageReader::new(&session_id));
+        let mut claude_usage_reader = (adapter_id == "claude" && host_state)
             .then(|| super::claude_usage::ClaudeUsageReader::new(&session_id));
         if let Some(reader) = claude_usage_reader
             .as_mut()
@@ -2547,7 +2548,7 @@ impl AgentRuntime for AcpRuntime {
             .read()
             .unwrap()
             .clone()
-            .filter(|_| !input.hidden);
+            .filter(|_| !input.hidden && host_state);
         let context_reader = self
             .inner
             .context_readers
