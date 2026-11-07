@@ -107,6 +107,7 @@ async fn action(
         .parse()
         .map_err(|_| map_err(anyhow::anyhow!("invalid environment action")))?;
     let env = state.environments.get(&id).map_err(map_err)?;
+    let mut release = Vec::new();
     if action != EnvironmentAction::Start {
         for thread in state.list_threads(None, true).map_err(map_err)? {
             if state
@@ -115,20 +116,28 @@ async fn action(
                 .map_err(map_err)?
                 .is_some_and(|bound| bound.id == env.id)
             {
-                state
-                    .release_thread_harness(&thread.id, true, None)
-                    .await
-                    .map_err(map_err)?;
-                crate::shells::hub().terminate_thread(&thread.id);
+                release.push(thread.id);
             }
         }
         execution::revoke_capabilities(&env.id);
     }
-    let env = state
-        .environments
-        .action(&id, action)
-        .await
-        .map_err(map_err)?;
+    // Lifecycle fencing and container shutdown must not depend on an agent
+    // acknowledging cancellation. Cleanup afterwards also runs on provider error.
+    let result = state.environments.action(&id, action).await;
+    for thread in release {
+        crate::shells::hub().terminate_thread(&thread);
+        if !matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                state.release_thread_harness(&thread, true, None),
+            )
+            .await,
+            Ok(Ok(_))
+        ) {
+            tracing::warn!(thread_id = %thread, "environment harness cleanup remains pending after lifecycle action");
+        }
+    }
+    let env = result.map_err(map_err)?;
     if env.state == "running" {
         ensure_gateway(state.clone(), &env).map_err(map_err)?;
     }
@@ -478,9 +487,13 @@ async fn model(
             .map_err(map_err)?
             .context("API upstream required")
             .map_err(map_err)?;
-    let body = axum::body::to_bytes(request.into_body(), 32 * 1024 * 1024)
-        .await
-        .map_err(|e| map_err(e.into()))?;
+    let body = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        axum::body::to_bytes(request.into_body(), 32 * 1024 * 1024),
+    )
+    .await
+    .map_err(|_| map_err(anyhow::anyhow!("environment_model_request_timeout")))?
+    .map_err(|_| map_err(anyhow::anyhow!("environment_model_request_invalid")))?;
     let payload: Value = serde_json::from_slice(&body).map_err(|e| map_err(e.into()))?;
     let thread = g.state.get_thread(&context.thread_id).map_err(map_err)?;
     let allowed = thread.model.as_deref().unwrap_or(&profile.model);
@@ -513,10 +526,16 @@ async fn model(
     } else {
         outbound.header("x-api-key", &profile.api_key)
     };
-    let upstream = outbound
-        .send()
-        .await
-        .map_err(|_| map_err(anyhow::anyhow!("environment_model_upstream_unavailable")))?;
+    let upstream = tokio::select! {
+        result = tokio::time::timeout(std::time::Duration::from_secs(120), outbound.send()) => {
+            result.map_err(|_| map_err(anyhow::anyhow!("environment_model_upstream_timeout")))?
+                .map_err(|_| map_err(anyhow::anyhow!("environment_model_upstream_unavailable")))?
+        },
+        _ = async { loop {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if context.checked().is_err() { break }
+        }} => return Err(map_err(anyhow::anyhow!("environment_model_revoked"))),
+    };
     let status = upstream.status();
     let content_type = upstream.headers().get("content-type").cloned();
     let secret = profile.api_key.into_bytes();
@@ -575,6 +594,7 @@ pub(crate) fn start(state: Arc<Supervisor>) {
                     .iter()
                     .filter(|e| e.state == "interrupted")
                 {
+                    execution::revoke_capabilities(&env.id);
                     if let Ok(threads) = state.list_threads(None, true) {
                         for thread in threads {
                             if state
@@ -584,12 +604,15 @@ pub(crate) fn start(state: Arc<Supervisor>) {
                                 .flatten()
                                 .is_some_and(|bound| bound.id == env.id)
                             {
-                                let _ = state.release_thread_harness(&thread.id, true, None).await;
                                 crate::shells::hub().terminate_thread(&thread.id);
+                                let _ = tokio::time::timeout(
+                                    std::time::Duration::from_secs(5),
+                                    state.release_thread_harness(&thread.id, true, None),
+                                )
+                                .await;
                             }
                         }
                     }
-                    execution::revoke_capabilities(&env.id);
                 }
                 for env in snapshot
                     .environments
