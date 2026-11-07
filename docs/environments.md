@@ -5,7 +5,8 @@ managed by Dokploy. The host Supervisor keeps thread identity, approvals,
 database, credentials and the execution gateway. The environment is not a
 registered device. Lifecycle operations use the Dokploy REST API, validated
 against Dokploy v0.30.6; Docker CLI access is limited to trusted control-plane
-storage proofs and container inspection. Agent work uses the Supervisor worker
+storage proofs, container inspection and verified stopping of fenced writers.
+Agent work uses the Supervisor worker
 transport. An unavailable environment never requests host execution.
 
 ## Connections and storage
@@ -19,6 +20,10 @@ mounted or passed to the worker. Connection responses expose `configured`, not
 the key. Omitting `apiKey` when updating preserves the saved key. Changing
 storage, image or limits requires destroying the connection's retained
 environments first; the name and key can be updated independently.
+
+The [API harness image recipe](../containers/environment/README.md) supplies a
+pinned Ubuntu 24.04 x86_64 image with Git, Python, Node and native Codex/Claude
+ACP dependencies. Build and validate it on a dedicated test host before use.
 
 The Supervisor derives project paths from the trusted thread record. Creating
 an environment records its owner but does not bind a thread. The HTTP owner
