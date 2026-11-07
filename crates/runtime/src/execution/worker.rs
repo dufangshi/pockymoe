@@ -9,6 +9,10 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 pub async fn run(mode: &str, args: &[String]) -> Result<()> {
     ensure!(
+        cfg!(target_os = "linux"),
+        "unsupported_environment_platform"
+    );
+    ensure!(
         std::env::var_os("POCKYMOE_ENVIRONMENT_WORKER").is_some(),
         "worker_requires_managed_environment"
     );
@@ -148,7 +152,7 @@ async fn execute(request: RunRequest, input: Option<BufReader<tokio::io::Stdin>>
         uuid::Uuid::parse_str(&request.id).is_ok() && !request.argv.is_empty(),
         "invalid process request"
     );
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     unsafe {
         ensure!(
             libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == 0,
@@ -165,7 +169,7 @@ async fn execute(request: RunRequest, input: Option<BufReader<tokio::io::Stdin>>
         .any(|(k, v)| k == "POCKYMOE_ENV_CODEX" && v == "1")
     {
         std::fs::create_dir_all("/pockymoe/state/codex")?;
-        std::fs::write("/pockymoe/state/codex/config.toml", "model_provider = \"pockymoe_environment\"\n[model_providers.pockymoe_environment]\nname = \"Pockymoe Environment\"\nbase_url = \"http://127.0.0.1:45680/model/codex\"\nenv_key = \"OPENAI_API_KEY\"\nwire_api = \"responses\"\n")?;
+        std::fs::write("/pockymoe/state/codex/config.toml", "model_provider = \"pockymoe_environment\"\n[model_providers.pockymoe_environment]\nname = \"Pockymoe Environment\"\nbase_url = \"http://127.0.0.1:45680/model/codex\"\nenv_key = \"OPENAI_API_KEY\"\nwire_api = \"responses\"\nrequires_openai_auth = false\nsupports_websockets = false\n")?;
     }
     #[cfg(unix)]
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -184,6 +188,8 @@ async fn execute(request: RunRequest, input: Option<BufReader<tokio::io::Stdin>>
         .env("TMPDIR", "/tmp")
         .env("LANG", "C.UTF-8")
         .env("TERM", "xterm-256color")
+        .env("DISABLE_AUTOUPDATER", "1")
+        .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
         .env("POCKYMOE_ENVIRONMENT_WORKER", "1")
         .envs(request.env)
         .stdin(if is_terminal {

@@ -193,6 +193,81 @@ fn process_session_id(live: &LiveSession) -> String {
     }
 }
 
+fn resume_session_identity(
+    session: &str,
+    default_agent: &str,
+    environment: Option<(&str, u64)>,
+) -> Result<(String, String, String)> {
+    let (agent, scoped) = session
+        .split_once("::")
+        .filter(|(agent, raw)| !agent.is_empty() && !raw.is_empty())
+        .unwrap_or((default_agent, session));
+    let raw = if let Some(reference) = scoped.strip_prefix("env/") {
+        let mut parts = reference.splitn(3, '/');
+        let original_environment = parts
+            .next()
+            .context("invalid environment session identity")?;
+        let generation: u64 = parts
+            .next()
+            .context("invalid environment session identity")?
+            .parse()?;
+        let raw = parts
+            .next()
+            .filter(|raw| !raw.is_empty())
+            .context("invalid environment session identity")?;
+        ensure!(
+            environment
+                .is_some_and(|(id, current)| id == original_environment && generation <= current),
+            "environment_session_context_mismatch"
+        );
+        raw
+    } else {
+        ensure!(
+            environment.is_none(),
+            "environment_session_context_mismatch"
+        );
+        scoped
+    };
+    let canonical = match environment {
+        Some((id, generation)) => format!("{agent}::env/{id}/{generation}/{raw}"),
+        None => format!("{agent}::{raw}"),
+    };
+    Ok((agent.into(), raw.into(), canonical))
+}
+
+#[cfg(test)]
+mod environment_resume_tests {
+    use super::resume_session_identity;
+    #[test]
+    fn old_native_state_resumes_only_in_the_same_environment_and_current_generation() {
+        let old = "custom::env/owned/3/native-state";
+        let (agent, native, current) =
+            resume_session_identity(old, "codex", Some(("owned", 4))).unwrap();
+        assert_eq!(
+            (agent.as_str(), native.as_str(), current.as_str()),
+            ("custom", "native-state", "custom::env/owned/4/native-state")
+        );
+        assert!(resume_session_identity(old, "codex", None).is_err());
+        assert!(resume_session_identity(old, "codex", Some(("other", 4))).is_err());
+        assert!(resume_session_identity(old, "codex", Some(("owned", 2))).is_err());
+        assert!(
+            resume_session_identity("custom::native-state", "codex", Some(("owned", 4))).is_err()
+        );
+        assert!(resume_session_identity(
+            "custom::env/owned/invalid/native",
+            "codex",
+            Some(("owned", 4))
+        )
+        .is_err());
+        assert_eq!(
+            resume_session_identity("custom::native-state", "codex", None)
+                .unwrap()
+                .2,
+            "custom::native-state"
+        );
+    }
+}
+
 pub struct AcpRuntime {
     upstreams: Option<Arc<super::upstream_models::UpstreamModels>>,
     provider: Provider,
@@ -2215,16 +2290,28 @@ impl AgentRuntime for AcpRuntime {
         cwd: Option<&str>,
         settings: SessionSettings,
     ) -> Result<StartSessionResult> {
+        let context = crate::execution::current();
+        if let Some(context) = &context {
+            context.checked()?;
+        }
+        let (agent_id, raw, canonical) = resume_session_identity(
+            session_id,
+            self.bound_agent.as_deref().unwrap_or("codex"),
+            context
+                .as_ref()
+                .map(|context| (context.environment_id.as_str(), context.generation)),
+        )?;
         let _lifecycle = self.inner.lifecycle.lock().await;
         let old_process = {
             let mut sessions = self.inner.sessions.lock().await;
             let existing = sessions
                 .keys()
-                .find(|key| session_ids_match(key, session_id))
+                .find(|key| session_ids_match(key, &canonical))
                 .cloned();
             if let Some(existing) = existing {
                 let live = &sessions[&existing];
-                if cli_context_matches(&live.process.cli_env)
+                if process_context_matches(&live.process)
+                    && cli_context_matches(&live.process.cli_env)
                     && (live.active.is_some()
                         || !matches!(live.adapter_id.as_str(), "codex" | "claude" | "deepseek")
                         || self
@@ -2264,30 +2351,6 @@ impl AgentRuntime for AcpRuntime {
         if let Some(process) = old_process {
             process.shutdown().await?;
         }
-        let (agent_id, raw) = match session_id.split_once("::") {
-            Some((agent, rest)) if !agent.is_empty() && !rest.is_empty() => {
-                (agent.to_string(), rest.to_string())
-            }
-            _ => (
-                self.bound_agent.clone().unwrap_or_else(|| "codex".into()),
-                session_id.to_string(),
-            ),
-        };
-        let raw = if let Some(rest) = raw.strip_prefix("env/") {
-            let mut parts = rest.splitn(3, '/');
-            let environment = parts.next().unwrap_or("");
-            let _generation = parts.next();
-            let native = parts
-                .next()
-                .context("invalid environment session identity")?;
-            anyhow::ensure!(
-                crate::execution::current().is_some_and(|c| c.environment_id == environment),
-                "environment_session_context_mismatch"
-            );
-            native.to_string()
-        } else {
-            raw
-        };
         let def = self.agent_def(Some(&agent_id))?;
         let cwd = cwd
             .map(str::to_string)
