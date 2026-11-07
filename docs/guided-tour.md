@@ -43,7 +43,10 @@ because the tour runs on a **sample device** answered inside the page.
   their own browser keys (suffix `:pockymoe-tour`), never the relay workbench.
 - On sample pages `relay/portal` is the sample device's, so the account's
   owned-device record is not rewritten.
-- The account's device list (`/relay-devices`) never lists the sample device.
+- The account's device list (`/relay-devices` on a phone, `/desktop/devices` on a
+  computer) never lists the sample device.
+- The sample device's workspace page keeps the plain Web layout, also in a
+  signed-in PC browser: the desktop frame lists the account's own devices.
 
 ## Starting and closing
 
@@ -57,7 +60,9 @@ because the tour runs on a **sample device** answered inside the page.
   remount continues the tour.
 - Closing the tour on a sample page returns to the remembered page.
 - In Relay mode the devices chapter starts on the account's own device list
-  (add a device, the token form, the list). Its list step is optional, so an
+  (add a device, the token form, the list). A computer's device page adds a
+  device in a window, where the tour steps aside, so there one card explains
+  the form. Its list step is optional, so an
   empty list reads as "no devices yet". The chapter then continues on the
   sample device.
 

@@ -56,7 +56,7 @@ import {
   currentThreadsHref,
   relayDeviceIdFromPath,
 } from '../lib/relayRoutes';
-import { onTourRoute } from '../lib/tourSandbox/tourDevice';
+import { isTourDevice, onTourRoute } from '../lib/tourSandbox/tourDevice';
 
 function sortWorkspaces(left: WorkspaceDto, right: WorkspaceDto) {
   if (left.isFavorite !== right.isFavorite) {
@@ -94,7 +94,9 @@ export function WorkspacesPage() {
   const relayDeviceId = relayDeviceIdFromPath(location.pathname);
   const deviceId = relayDeviceId ?? (relayModeActive() ? readSelectedRelayDeviceId() : null);
   const shellNav = useAppShellNav();
-  const desktopLayout = useDesktopWorkspaceLayout();
+  // The desktop frame lists the account's own devices; the tour's sample device
+  // keeps the plain page, which its in-page answers fill (docs/guided-tour.md).
+  const desktopLayout = useDesktopWorkspaceLayout() && !isTourDevice(relayDeviceId);
   const [workspaces, setWorkspaces] = useState<WorkspaceDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadAttempt, setLoadAttempt] = useState(0);

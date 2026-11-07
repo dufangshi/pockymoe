@@ -99,7 +99,18 @@ const workspaceSteps: TourStep[] = [
     body: 'tour.devices.relayAdd.body',
     targets: [{ selector: 'button[aria-controls="add-device-form"]' }],
     advanceOnClick: true,
-    only: { mode: 'relay' },
+    only: { mode: 'relay', layout: 'mobile' },
+  },
+  // A computer's device page adds a device in a window over the page, where the
+  // tour steps aside: one card explains the whole form before it opens.
+  {
+    id: 'relay-add-device',
+    page: 'relayDevices',
+    title: 'tour.devices.relayAdd.title',
+    body: 'tour.devices.relayAddDesktop.body',
+    targets: [{ selector: 'button[aria-controls="add-device-form"]' }],
+    advanceOnClick: true,
+    only: { mode: 'relay', layout: 'desktop' },
   },
   {
     id: 'relay-device-form',
@@ -109,7 +120,7 @@ const workspaceSteps: TourStep[] = [
     targets: [{ selector: '#add-device-form' }],
     prerequisite: 'tour.devices.relayForm.prereq',
     prerequisiteTarget: 'button[aria-controls="add-device-form"]',
-    only: { mode: 'relay' },
+    only: { mode: 'relay', layout: 'mobile' },
   },
   {
     id: 'relay-device-list',

@@ -18,8 +18,11 @@ test('a Relay account with no devices tours the sample device without touching t
       if (request.method() !== 'GET' && url.pathname.startsWith('/relay/')) relayWrites.push(`${request.method()} ${url.pathname}`);
       if (url.pathname.includes('/pockymoe-tour')) relayWrites.push(`${request.method()} ${url.pathname}`);
     });
+    // A computer opens the consolidated device page; the tutorial is in the account menu.
     await page.goto(f.base + '/relay-devices');
-    await page.locator('header.product-topbar').getByRole('button', { name: 'Tutorial', exact: true }).click();
+    await expect(page).toHaveURL(/\/desktop\/devices/);
+    await page.locator('button[aria-label^="Relay account menu for tour-reader"]').first().click();
+    await page.getByRole('menuitem', { name: 'Tutorial' }).click();
     const hub = page.locator('#pockymoe-tour-root .pm-tour-hub');
     await hub.getByRole('button', { name: /Devices & workspaces/ }).click();
     const card = page.locator('#pockymoe-tour-root .pm-tour-card');
@@ -27,9 +30,11 @@ test('a Relay account with no devices tours the sample device without touching t
     const next = () => card.getByRole('button', { name: /^(Next|Done)$/ }).click();
 
     await expect(step('relay-add-device')).toBeVisible();
+    // The form opens in a window; the tour steps aside until it closes.
     await page.locator('button[aria-controls="add-device-form"]').click();
-    await expect(step('relay-device-form')).toBeVisible();
-    await next();
+    await expect(page.locator('#add-device-form')).toBeVisible();
+    await expect(card).toHaveCount(0);
+    await page.keyboard.press('Escape');
     // No devices: the list step reads on its own instead of waiting for one.
     await expect(step('relay-device-list')).toBeVisible();
     await expect(card.locator('.pm-tour-prerequisite')).toHaveCount(0);
@@ -51,8 +56,25 @@ test('a Relay account with no devices tours the sample device without touching t
     await page.locator('button[type="submit"][form="thread-actions-share-form"]').click();
     await expect(page.locator('.matter-actions-dialog')).toContainText('alice');
     await page.keyboard.press('Escape');
+    await card.getByRole('button', { name: 'Contents' }).click();
+
+    // A signed-in PC browser's thread page: the agent chapter finds its controls.
+    await hub.getByRole('button', { name: /Agent teamwork/ }).click();
+    const pane = page.getByTestId('primary-pane');
+    await expect(step('delegate')).toBeVisible();
+    await expect(card.locator('.pm-tour-prerequisite')).toHaveCount(0);
+    await pane.locator('.thread-worked-toggle').first().click();
+    await expect(step('wake')).toBeVisible();
+    await expect(card.locator('.pm-tour-prerequisite')).toHaveCount(0);
+    await next();
+    await expect(step('children')).toBeVisible();
+    await expect(card.locator('.pm-tour-prerequisite')).toHaveCount(0);
+    await next();
+    await expect(page).toHaveURL(/\/threads\/c27d9e41-5b8a-4f3c-8e61-2d4b7a9c1e02$/);
+    await expect(step('envelope')).toBeVisible();
+    await expect(card.locator('.pm-tour-prerequisite')).toHaveCount(0);
     await card.getByRole('button', { name: 'Close tutorial' }).click();
-    await expect(page).toHaveURL(/\/relay-devices$/);
+    await expect(page).toHaveURL(/\/desktop\/devices/);
 
     expect(relayWrites.filter((entry) => !/^POST \/relay\/account\/(preferences|browsers)/.test(entry))).toEqual([]);
     const portal = ok(await f.api('/relay/portal', 'GET', undefined, reader.cookie), 'Portal');
