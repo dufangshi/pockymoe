@@ -302,6 +302,20 @@ async fn lifecycle_is_persistent_generation_fenced_and_retains_data() {
     assert!(running.observed_limits.is_some());
     let record = manager.record(&running.id).unwrap();
     let original = fixture.lock().unwrap().container.as_ref().unwrap().clone();
+    let bridge = running
+        .mounts
+        .iter()
+        .find(|mount| mount.target == compose::BRIDGE_PATH)
+        .unwrap();
+    assert!(bridge.read_only);
+    let mut writable_bridge = original.clone();
+    writable_bridge["Mounts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|mount| mount["Destination"] == compose::BRIDGE_PATH)
+        .unwrap()["RW"] = json!(true);
+    assert!(docker::verify_container(&writable_bridge, &expected(&record)).is_err());
     let bad_fields = [
         ("/HostConfig/Privileged", json!(true)),
         ("/HostConfig/NetworkMode", json!("bridge")),

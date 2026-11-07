@@ -65,10 +65,11 @@ project mounts retain their original absolute paths. Private state is mounted
 at `/pockymoe/state`; `HOME` and `CODEX_HOME` refer to that state.
 
 Every generation has a separate private `/pockymoe/bridge` directory for the
-Supervisor's restricted Unix gateway sockets. No long-lived credential is
-placed there. Network mode stays `none`. `allowedEgressHosts` is a default-empty
-list of exact DNS names consumed by the Supervisor's separately authorized
-egress broker; saving that list does not enable Docker networking.
+Supervisor's restricted Unix gateway sockets. The worker mounts this directory
+read-only, so it can connect but cannot replace socket paths. No long-lived
+credential is placed there. Network mode stays `none`. `allowedEgressHosts` is a
+default-empty list of exact DNS names consumed by the Supervisor's separately
+authorized egress broker; saving that list does not enable Docker networking.
 
 The generated Compose file uses long bind syntax with `create_host_path:
 false`, and escapes Compose variable interpolation in paths. Dokploy's

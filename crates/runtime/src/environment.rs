@@ -879,7 +879,9 @@ impl EnvironmentManager {
                 .await?,
         );
         mounts.push(
-            storage::verified_mount(docker, context, host, &bridge, compose::BRIDGE_PATH, false)
+            // Workers only connect to these sockets. Read-only directory access
+            // prevents replacing paths while the Supervisor sets socket ownership.
+            storage::verified_mount(docker, context, host, &bridge, compose::BRIDGE_PATH, true)
                 .await?,
         );
         // Never accept a caller-provided executable or persist an obsolete
