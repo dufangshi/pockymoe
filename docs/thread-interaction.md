@@ -1,12 +1,14 @@
 # Thread interaction
 
-The `pockymoe` CLI can create peer threads, send prompts, inspect runtime state, and progressively read stored conversations. These operations use the Supervisor's existing threads, prompt queue, turns and history items. No database tables or separate Task/Message lifecycle are added.
+The `pockymoe` CLI can create peer threads, send prompts, inspect runtime state, and progressively read stored conversations. These operations use the Supervisor's threads, prompt queue, turns and history items. The [worktree manager](worktrees.md) also records working copies and their associations with existing threads.
 
 ## Commands
 
 ```sh
 pockymoe skill
 pockymoe thread self
+pockymoe worktree current
+pockymoe worktree list
 pockymoe thread list --workspace WORKSPACE_ID
 pockymoe thread status THREAD_ID
 pockymoe thread delete CHILD_THREAD_ID
@@ -249,7 +251,7 @@ Runtime migration 10 (`agent_coordination`) adds `agent_name`, `agent_role`, `wo
 - **Task board.** Tasks are numbered per lineage root. `task claim` is a single transaction guarded on `status='pending'`; dependencies (`--after`) must be completed before a claim. A null claim reports `finished` (nothing pending, or nothing in progress that could unblock what is pending) and task counts; `task claim --wait` blocks while pending work is only blocked on in-progress tasks. `task done` mails the creator the result and mails assignees of newly unblocked tasks; `--assign` mails the assignee. All mail is passive.
 - **Efforts.** `thread create --reasoning-effort E` (and a role's `effort`) must be one the model lists in discovery when it lists any. Discovery learns a model's efforts from sessions on that model, so a model can list none for a while; then the effort is accepted as given, the receipt carries `reasoningEffortUnconfirmed: true`, and the harness applies or refuses it when the session starts (a refusal fails that turn visibly). Efforts are short tokens (letters, digits, `-`, `_`). A harness model list that omits a model's efforts is filled with the efforts learned from a session on it.
 - **Roles.** `--role R` reads `.pockymoe/agents/R.md` from the workspace, then `~/.pockymoe/agents/`; the pre-rename `.remote-codex/agents/` directories are still read after each. Front matter (`model`, `effort`, `agent`, `description`) supplies defaults the caller can override; the body is staged in KV and prefixed to the thread's first turn only.
-- **Worktrees.** `--worktree [--worktree-branch B]` creates `../REPO.worktrees/SLUG` on branch `agent/SLUG` (or `agent/SLUG-N` when that branch already exists; an explicit branch is checked out as is) from committed HEAD before the harness session starts (and removes it if the session fails to start). Session start, resume, goal and capability calls use the worktree as cwd.
+- **Worktrees.** `--worktree [--worktree-branch B]` creates `../REPO.worktrees/SLUG` on branch `agent/SLUG` (or `agent/SLUG-N` when that branch already exists; an explicit branch is checked out as is) from committed HEAD before the harness session starts (and removes it if the session fails to start). Session start, resume, goal and capability calls use the worktree as cwd. For an existing thread, `pockymoe worktree` creates and registers working copies, inspects actual cwd, and selects an idle thread's default checkout; see [worktree management](worktrees.md).
 - **Tree.** `thread tree` lists the lineage depth-first with each thread's state, unread count, current task, role and worktree, plus task counts.
 
 ## Delegate questions in task history

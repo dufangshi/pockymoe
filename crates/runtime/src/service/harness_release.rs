@@ -443,7 +443,7 @@ impl Supervisor {
         !claimed.contains(thread_id) && self.thread_gate(thread_id).try_write_owned().is_err()
     }
 
-    fn try_claim(&self, threads: &[String]) -> Option<Vec<OwnedRwLockWriteGuard<()>>> {
+    pub(crate) fn try_claim(&self, threads: &[String]) -> Option<Vec<OwnedRwLockWriteGuard<()>>> {
         threads
             .iter()
             .map(|id| self.thread_gate(id).try_write_owned().ok())

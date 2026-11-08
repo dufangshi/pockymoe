@@ -18,6 +18,7 @@ idle, while a turn runs and while hidden, and fails when a change exceeds them.
 | `/healthz` | Every 2 s, only while the socket is not open | none |
 | Device metrics (`/api/device/metrics`) | Opening the monitor dialog | 15 s for the topbar meter, 2 s while the dialog is open |
 | Harness processes (`/api/device/processes`) | Expanding the monitor's memory row; `thread.runtime.loaded` / `thread.runtime.released` events | 3 s while the row is expanded |
+| Thread Git context, status, diff and commits | Opening the Git panel; the thread's `updatedAt` changes; returning to the visible tab; manual refresh. Reads run only while the panel and tab are visible | none |
 
 The page loads the summary once on open. The first socket open re-reads it only
 when the thread is running, since a running turn's events may predate the

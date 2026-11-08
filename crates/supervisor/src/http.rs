@@ -399,6 +399,14 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
             get(crate::automations::command_show),
         )
         .route("/api/threads/{id}/search", get(thread_search))
+        .route(
+            "/api/threads/{id}/working-context",
+            get(crate::worktrees::context),
+        )
+        .route(
+            "/api/threads/{id}/git/{action}",
+            get(crate::worktrees::read_git),
+        )
         .route("/api/threads/{id}/summary", get(thread_summary))
         .route("/api/search", get(device_search))
         .route("/api/workspaces/{id}/search", get(workspace_search))
@@ -2934,6 +2942,9 @@ async fn create_shell(
     let thread = state.get_thread(&id).map_err(map_err)?;
     let workspace = state.get_workspace(&thread.workspace_id).map_err(map_err)?;
     let body = body.map(|Json(body)| body).unwrap_or_default();
+    let cwd = state
+        .session_cwd(&thread)
+        .unwrap_or_else(|| workspace.abs_path.clone());
     let cols = body.cols.unwrap_or(80);
     let rows = body.rows.unwrap_or(24);
     if cols == 0 || rows == 0 {
@@ -2944,14 +2955,7 @@ async fn create_shell(
         ));
     }
     let (shell_id, shell) = crate::shells::hub()
-        .create(
-            &thread.id,
-            &workspace.id,
-            &workspace.abs_path,
-            cols,
-            rows,
-            body.label,
-        )
+        .create(&thread.id, &workspace.id, &cwd, cols, rows, body.label)
         .map_err(map_err)?;
     Ok(Json(json!({
         "threadId": thread.id,

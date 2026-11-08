@@ -20,6 +20,7 @@ mod message_sender;
 mod notifications;
 mod owner_trust;
 mod preview_cli;
+mod worktrees;
 // Device-to-device messaging and files (docs/cross-device-peer.zh.md).
 mod peer_api;
 mod peer_files;

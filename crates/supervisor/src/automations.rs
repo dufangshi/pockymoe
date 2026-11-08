@@ -1,4 +1,5 @@
 use crate::http::{map_err, ApiErr};
+use anyhow::Context;
 use axum::{
     extract::{Path, Query, State},
     Json,
@@ -144,7 +145,21 @@ pub async fn cli(
         "automationResume" => s.automation_control(thread, id, "resume")?,
         "automationCancel" => s.automation_control(thread, id, "cancel")?,
         "commandRun" => {
-            s.command_run(thread, serde_json::from_value(v["input"].clone())?)
+            let mut input = v["input"].clone();
+            if let Some(id) = input
+                .get("workingCopyId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            {
+                let copy = s.worktree_copy(thread, &id)?;
+                input
+                    .as_object_mut()
+                    .context("command input must be an object")?
+                    .remove("workingCopyId");
+                input["cwd"] = json!(copy.path);
+                s.observe_worktree_location(thread, &copy.path, "controlledCommand", "", "")?;
+            }
+            s.command_run(thread, serde_json::from_value(input)?)
                 .await?
         }
         "commandShow" => s.command_show(thread, v["commandId"].as_str().unwrap_or(""))?,

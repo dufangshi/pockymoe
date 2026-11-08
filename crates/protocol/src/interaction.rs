@@ -32,6 +32,11 @@ pub const THREAD_INTERACTION_GUIDES: &[(&str, &str, &str)] = &[
         include_str!("../../../skills/thread-interaction/guides/tasks.md"),
     ),
     (
+        "worktrees",
+        "Manage working copies, inspect actual cwd and select command directories",
+        include_str!("../../../skills/thread-interaction/guides/worktrees.md"),
+    ),
+    (
         "devices",
         "Threads, files and mail on your other devices",
         include_str!("../../../skills/thread-interaction/guides/devices.md"),
