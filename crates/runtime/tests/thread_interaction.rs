@@ -904,10 +904,13 @@ async fn direct_rejects_unavailable_state_and_unsupported_steering_without_queue
     let b = thread(&state, Provider::Acp).await;
     // Use the real ACP capability fallback before a steering extension has
     // been negotiated; the fake runtime advertises steering for every provider.
-    let state = Arc::try_unwrap(state).ok().unwrap();
+    let config = state.config.clone();
+    // Drop the entire old Supervisor, including the environment sidecar's
+    // exclusive owner lock, before rebuilding it with a different runtime.
+    drop(state);
     let state = Supervisor::new(
-        state.config,
-        state.db,
+        config.clone(),
+        Database::open(&config.database_url).unwrap(),
         vec![Arc::new(pockymoe_runtime::acp::AcpRuntime::catalog(
             None, 1000,
         ))],
@@ -930,11 +933,14 @@ async fn direct_rejects_unavailable_state_and_unsupported_steering_without_queue
             })
             .unwrap();
         let error = state.send_to_thread(&b, input.clone()).unwrap_err();
-        assert!(error.to_string().contains(if status == "running" {
-            "does not support steering"
-        } else {
-            "direct requires an idle or running thread"
-        }));
+        assert!(
+            error.to_string().contains(if status == "running" {
+                "does not support steering"
+            } else {
+                "direct requires an idle or running thread"
+            }),
+            "unexpected rejection for {status}: {error:#}"
+        );
         assert_eq!(
             state.interaction_status(&b).await.unwrap()["queuedCount"],
             0
