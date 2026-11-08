@@ -3654,7 +3654,7 @@ impl AgentRuntime for AcpRuntime {
     }
 
     async fn send_input(&self, session_id: &str, turn_id: &str, prompt: &str) -> Result<()> {
-        let (process, provider_session_id, background_owned) = {
+        let (process, provider_session_id, background_owned, dsh) = {
             let mut sessions = self.inner.sessions.lock().await;
             let live = sessions
                 .get_mut(session_id)
@@ -3682,8 +3682,12 @@ impl AgentRuntime for AcpRuntime {
                 live.process.clone(),
                 live.session_id.clone(),
                 background_owned,
+                live.dsh.clone(),
             )
         };
+        if let Some(bridge) = dsh {
+            return bridge.steer(&provider_session_id, prompt).await;
+        }
         // Steering is an extension request, not a notification. Only acknowledge
         // delivery after the harness confirms it; never silently queue a prompt.
         // Release the sessions lock so updates and cancellation can still progress.
