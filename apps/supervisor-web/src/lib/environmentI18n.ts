@@ -149,6 +149,7 @@ const messages = {
   rootsCount: ['{n} 个挂载根目录', '{n} mount roots'],
   egressCount: ['{n} 个出站域名', '{n} outbound hosts'],
   noEgress: ['无出站网络', 'No outbound network'],
+  inspectorViews: ['侧栏视图', 'Panel views'],
 } as const;
 export type EnvironmentMessage = keyof typeof messages;
 export function environmentText(key: EnvironmentMessage, vars?: Record<string, string | number>): string {

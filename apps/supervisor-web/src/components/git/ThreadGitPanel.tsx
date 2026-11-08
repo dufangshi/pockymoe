@@ -1,33 +1,21 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { ChevronLeft, ChevronRight, FileDiff, GitBranch, GitCommitHorizontal, MapPin, RefreshCw, X } from 'lucide-react';
-import { CopyButton, ErrorMark, MiddleName, PathChip, Select, formatShortTimestamp, useModalFocus } from '@pockymoe/thread-ui';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronLeft, ChevronRight, FileDiff, GitBranch, GitCommitHorizontal, MapPin, RefreshCw } from 'lucide-react';
+import { CopyButton, ErrorMark, MiddleName, PathChip, Select, formatShortTimestamp } from '@pockymoe/thread-ui';
 import { formatNumber, translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { ApiError } from '../lib/api';
+import { ApiError } from '../../lib/api';
 import {
   fetchThreadGitCommits, fetchThreadGitDiff, fetchThreadGitStatus, fetchThreadWorkingContext,
   type GitCommits, type GitDiff, type GitDiffArea, type GitStatus, type ThreadWorkingContext, type WorkingCopy,
-} from '../lib/gitApi';
-import { gitText as gt } from '../lib/gitI18n';
-import { fileChange, parsePatch, type FileChange, type PatchFile, type PatchLine } from './git/patch';
+} from '../../lib/gitApi';
+import { gitText as gt } from '../../lib/gitI18n';
+import { fileChange, parsePatch, type FileChange, type PatchFile, type PatchLine } from './patch';
 import './thread-git.css';
 
-export interface ThreadGitControlProps {
+export interface ThreadGitPanelProps {
   threadId: string;
   deviceId?: string | null | undefined;
   /** Existing thread updates invalidate the open panel; no polling is started. */
   refreshKey?: string | undefined;
-}
-
-export function ThreadGitControl({ threadId, deviceId, refreshKey }: ThreadGitControlProps) {
-  useI18n();
-  const [open, setOpen] = useState(false);
-  return <>
-    <button type="button" aria-label={translate('workbench.gitOpen')} title={translate('workbench.gitOpen')} onClick={() => setOpen(true)}>
-      <GitBranch aria-hidden="true" /><span className="sr-only">Git</span>
-    </button>
-    {open && <ThreadGitDialog key={`${deviceId ?? 'local'}:${threadId}`} threadId={threadId} deviceId={deviceId} refreshKey={refreshKey} onClose={() => setOpen(false)} />}
-  </>;
 }
 
 const SOURCE_KEY = { created: 'workbench.gitSourceCreated', adopted: 'workbench.gitSourceAdopted', observed: 'workbench.gitSourceObserved', configured: 'workbench.gitSourceConfigured' } as const;
@@ -38,12 +26,11 @@ const dirName = (path: string) => path.includes('/') ? path.slice(0, path.lastIn
 
 interface ListedFile { path: string; change: FileChange; originalPath?: string | undefined }
 
-function ThreadGitDialog({ threadId, deviceId, refreshKey, onClose }: ThreadGitControlProps & { onClose(): void }) {
+/** The thread's Git inspector, docked beside the conversation (read only).
+    Narrow, files and diff stack; wide (a dragged-out dock), they sit side by side. */
+export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPanelProps) {
   useI18n();
-  const dialog = useRef<HTMLDivElement>(null);
   const diffPane = useRef<HTMLElement>(null);
-  const titleId = useId();
-  useModalFocus(dialog, true, onClose, '[data-git-close]');
   const [context, setContext] = useState<ThreadWorkingContext | null>(null);
   const [selected, setSelected] = useState('');
   const [tab, setTab] = useState<'changes' | 'commits'>('changes');
@@ -131,11 +118,9 @@ function ThreadGitDialog({ threadId, deviceId, refreshKey, onClose }: ThreadGitC
   const parsed = useMemo(() => diff ? parsePatch(diff.patch) : null, [diff]);
   const observedCopy = observedOutside && context?.workingCopies.find(copy => copy.id === observedOutside.workingCopyId);
 
-  return createPortal(<div className="thread-git-backdrop">
-    <button type="button" tabIndex={-1} className="ui-overlay-scrim thread-git-scrim" aria-label={translate('workbench.closeDialog')} onClick={onClose} />
-    <div className="host-dialog thread-git-dialog" ref={dialog} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
-      <header className="thread-git-header">
-        <h2 id={titleId}><GitBranch aria-hidden="true" />Git</h2>
+  return <div className="thread-git-panel" data-testid="thread-git">
+    <div className="thread-git-scroll">
+      <div className="thread-git-header">
         {context && context.workingCopies.length > 0 && <div className="thread-git-copy">
           <Select aria-label={translate('workbench.gitWorkingCopy')} value={selected} onValueChange={selectCopy}
             options={context.workingCopies.map(copy => ({ value: copy.id, label: copyLabel(copy) }))} />
@@ -143,9 +128,8 @@ function ThreadGitDialog({ threadId, deviceId, refreshKey, onClose }: ThreadGitC
         <div className="thread-git-actions">
           {error ? <ErrorMark message={errorMessage} detail={error instanceof Error ? error.message : undefined} kind={unavailable ? 'unavailable' : 'error'} onRetry={refresh} /> : null}
           <button type="button" className="thread-git-icon" onClick={refresh} disabled={loading} aria-label={translate('workbench.gitRefresh')} title={translate('workbench.gitRefresh')}><RefreshCw aria-hidden="true" className={loading ? 'animate-spin' : ''} /></button>
-          <button type="button" data-git-close className="thread-git-icon" onClick={onClose} aria-label={translate('workbench.closeDialog')}><X aria-hidden="true" /></button>
         </div>
-      </header>
+      </div>
       {workingCopy && <section className="thread-git-context" aria-label={translate('workbench.gitWorkingCopy')}>
         <div className="thread-git-facts">
           <span className="thread-git-branch"><GitBranch aria-hidden="true" />{status?.branch ?? workingCopy.branch ?? translate('workbench.gitDetached')}</span>
@@ -226,7 +210,7 @@ function ThreadGitDialog({ threadId, deviceId, refreshKey, onClose }: ThreadGitC
       </>}
       {!workingCopy && loading && <p role="status" className="thread-git-empty is-page">{translate('workbench.gitLoading')}</p>}
     </div>
-  </div>, document.body);
+  </div>;
 }
 
 /** The diff, file by file, with additions and deletions colored. Text is unchanged. */

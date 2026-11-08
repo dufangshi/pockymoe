@@ -53,7 +53,10 @@ grant that ownership.
 
 ## Git panel
 
-The thread toolbar's Git button opens a read-only panel. Its header switches
+The Git entry on the workbench rail (on a phone, the top bar or the dock's More
+sheet) docks a read-only Git inspector at the right of the conversation, which
+stays usable beside it; Files and the isolation inspector share that dock. It
+follows the open thread and shows that thread's title. Its first row switches
 between the configured and associated working copies; the line below names the
 branch, HEAD, whether the copy is the primary one and its source. When the
 latest tool location is in another working copy, a notice shows that path with
@@ -62,7 +65,9 @@ latest tool location is in another working copy, a notice shows that path with
 Changes list files per scope: unstaged (including untracked), staged, or a
 comparison from a revision's merge base. Selecting a file shows its diff,
 including the contents of an untracked file; the whole-scope diff is split per
-file with added and removed lines colored. On a phone the list and diff stack.
+file with added and removed lines colored. In the default dock width the list
+and diff stack in one scroll; a dock dragged wider (720px or more) puts them
+side by side.
 Commits are paginated. PR status and Git writes are not included.
 It refreshes when opened, on thread updates and on request; it does not poll.
 

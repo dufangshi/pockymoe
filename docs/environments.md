@@ -171,15 +171,17 @@ come from Supervisor records. There is no thread override or agent approve CLI.
 Unknown/secret-value fields are rejected. Proposal validation reads filesystem
 metadata, not credential contents, and does not create a deployed environment.
 
-The owner reviews the prepared proposal in the thread's Isolation window or
-Settings → Environments and approves/rejects its immutable SHA-256 digest. The
+The owner reviews the prepared proposal in the thread's isolation inspector
+(docked beside the conversation, opened from the workbench rail) or Settings →
+Environments and approves/rejects its immutable SHA-256 digest. In the dock the
+request opens in place with its decision pinned at the panel's foot. The
 review states in words where the thread will run, its paths, resources, model,
 per-harness authentication (API broker or native file), every credential
 mapping with its source → target, file/directory and RO/RW, exact HTTPS hosts,
 the migration and the agent's handoff; the full digest and IDs are under
 **Technical details**. While a request awaits approval, is migrating or has
-failed, the thread's tools entry reads "Isolated environments · approval
-needed / migrating / migration failed"; it is read when the thread's status or
+failed, the rail entry reads "Isolated environments · approval needed /
+migrating / migration failed" and its icon carries a mark; it is read when the thread's status or
 environment changes, not polled. It
 covers normalized paths, their original filesystem identities and connection
 policy. A changed spec requires a new request. Tool/yolo approval, gateway/CLI

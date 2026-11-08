@@ -16,18 +16,12 @@ type Decision = 'approve' | 'reject' | 'retry' | 'recoverHost';
 const purposeLabel = (purpose: Mount['purpose']) =>
   purpose === 'github' ? 'GitHub CLI' : purpose === 'codex' ? 'Codex' : purpose === 'claude' ? 'Claude' : t('purposeGeneric');
 
-/** The one owner review of an agent's isolation proposal, used by the thread
-    window and Settings. Every granted path, mode and host stays visible; only
-    identifiers and the long migration contract fold away (UI §13, §14). */
-export function RequestReview({ request, deviceId, canManage, onUpdate, onClose }: {
-  request: EnvironmentRequestDto; deviceId?: string | null | undefined; canManage: boolean;
-  onUpdate(request: EnvironmentRequestDto): void; onClose(): void;
-}) {
-  useI18n();
+/** One decision on a request: busy and failure state, and the explicit
+    confirmation before Restore Host destroys computation. */
+export function useRequestDecision(request: EnvironmentRequestDto, deviceId: string | null | undefined, canManage: boolean, onUpdate: (request: EnvironmentRequestDto) => void) {
   const [busy, setBusy] = useState<Decision | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [recover, setRecover] = useState(false);
-  const spec = request.spec;
   const act = async (action: Decision) => {
     if (busy || !canManage) return;
     setBusy(action); setError(null);
@@ -35,25 +29,44 @@ export function RequestReview({ request, deviceId, canManage, onUpdate, onClose 
     catch { setError(t('decisionFailed')); }
     finally { setBusy(null); }
   };
-  const decisions = request.state === 'pending' || request.state === 'failed' || request.state === 'ready';
+  return { busy, error, recover, setRecover, act, canManage, request };
+}
+export type RequestDecision = ReturnType<typeof useRequestDecision>;
+export const requestHasDecision = (state: EnvironmentRequestDto['state']) => state === 'pending' || state === 'failed' || state === 'ready';
+
+export function RequestStatusLine({ request }: { request: EnvironmentRequestDto }) {
+  return <span className="env-request-status"><StatusMark status={requestMark(request.state)} label={t(request.state)} />
+    <span>{t(request.state)}</span><span className="env-dim">· {t('submitted', { time: formatShortTimestamp(request.createdAt) })}</span></span>;
+}
+
+/** The decision bar: approve/reject, retry, or restore Host, for the owner only. */
+export function RequestDecisionBar({ decision }: { decision: RequestDecision }) {
+  const { busy, error, act, setRecover, canManage, request, recover } = decision;
+  return <div className="env-decision">
+    {request.state === 'pending' && <p className="env-decision-note">{t('ownerShort')}</p>}
+    <div className="env-decision-actions">
+      {error && <ErrorMark message={error} detail={t('owner')} />}
+      {!canManage && <ErrorMark kind="unavailable" message={t('readOnlyReason')} />}
+      {request.state === 'pending' && <>
+        <button type="button" className="relay-button-secondary" disabled={!!busy || !canManage} onClick={() => void act('reject')}>{busy === 'reject' ? t('working') : t('reject')}</button>
+        <button type="button" className="relay-button-primary" disabled={!!busy || !canManage} onClick={() => void act('approve')}>{busy === 'approve' ? t('working') : t('approve')}</button>
+      </>}
+      {(request.state === 'failed' || request.state === 'ready') && <button type="button" className="relay-button-secondary env-danger-button" disabled={!!busy || !canManage} onClick={() => setRecover(true)}>{t('recoverHost')}</button>}
+      {request.state === 'failed' && <button type="button" className="relay-button-primary" disabled={!!busy || !canManage} onClick={() => void act('retry')}>{busy === 'retry' ? t('working') : t('retry')}</button>}
+    </div>
+    <EnvironmentConfirmation open={recover} title={t('recoveryTitle')} description={t('recoveryBody')} confirmLabel={t('recoveryConfirm')} busy={!!busy} busyLabel={t('working')} error={error}
+      onCancel={() => { if (!busy) setRecover(false); }} onConfirm={() => void act('recoverHost')} />
+  </div>;
+}
+
+/** Everything the request grants, in words. Every path, mode and host stays
+    visible; only identifiers and the long migration contract fold (UI §13, §14). */
+export function RequestReviewDetails({ request }: { request: EnvironmentRequestDto }) {
+  useI18n();
+  const spec = request.spec;
   const hint = request.state === 'waitingIdle' ? t('waitingHint') : request.state === 'provisioning' ? t('provisioningHint')
     : request.state === 'failed' ? t('fencedHint') : request.state === 'ready' ? t('readyHint') : null;
-  return <EnvironmentWindow wide title={spec.name} busy={!!busy} onClose={onClose}
-    subtitle={<span className="env-request-status"><StatusMark status={requestMark(request.state)} label={t(request.state)} />
-      <span>{t(request.state)}</span><span className="env-dim">· {t('submitted', { time: formatShortTimestamp(request.createdAt) })}</span></span>}
-    footer={decisions ? <div className="env-decision">
-      {request.state === 'pending' && <p className="env-decision-note">{t('ownerShort')}</p>}
-      <div className="env-decision-actions">
-        {error && <ErrorMark message={error} detail={t('owner')} />}
-        {!canManage && <ErrorMark kind="unavailable" message={t('readOnlyReason')} />}
-        {request.state === 'pending' && <>
-          <button type="button" className="relay-button-secondary" disabled={!!busy || !canManage} onClick={() => void act('reject')}>{busy === 'reject' ? t('working') : t('reject')}</button>
-          <button type="button" className="relay-button-primary" disabled={!!busy || !canManage} onClick={() => void act('approve')}>{busy === 'approve' ? t('working') : t('approve')}</button>
-        </>}
-        {(request.state === 'failed' || request.state === 'ready') && <button type="button" className="relay-button-secondary env-danger-button" disabled={!!busy || !canManage} onClick={() => setRecover(true)}>{t('recoverHost')}</button>}
-        {request.state === 'failed' && <button type="button" className="relay-button-primary" disabled={!!busy || !canManage} onClick={() => void act('retry')}>{busy === 'retry' ? t('working') : t('retry')}</button>}
-      </div>
-    </div> : undefined}>
+  return <>
     <div className="env-review" data-request-id={request.id}>
       <MigrationSteps state={request.state} />
       {hint && <p className="env-review-hint" data-state={request.state}>{hint}
@@ -101,8 +114,20 @@ export function RequestReview({ request, deviceId, canManage, onUpdate, onClose 
         <p className="env-note">{t('owner')}</p>
       </details>
     </div>
-    <EnvironmentConfirmation open={recover} title={t('recoveryTitle')} description={t('recoveryBody')} confirmLabel={t('recoveryConfirm')} busy={!!busy} busyLabel={t('working')} error={error}
-      onCancel={() => { if (!busy) setRecover(false); }} onConfirm={() => void act('recoverHost')} />
+  </>;
+}
+
+/** Settings: the review in its own window over the settings dialog. */
+export function RequestReview({ request, deviceId, canManage, onUpdate, onClose }: {
+  request: EnvironmentRequestDto; deviceId?: string | null | undefined; canManage: boolean;
+  onUpdate(request: EnvironmentRequestDto): void; onClose(): void;
+}) {
+  useI18n();
+  const decision = useRequestDecision(request, deviceId, canManage, onUpdate);
+  return <EnvironmentWindow wide title={request.spec.name} busy={!!decision.busy} onClose={onClose}
+    subtitle={<RequestStatusLine request={request} />}
+    footer={requestHasDecision(request.state) ? <RequestDecisionBar decision={decision} /> : undefined}>
+    <RequestReviewDetails request={request} />
   </EnvironmentWindow>;
 }
 

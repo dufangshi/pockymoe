@@ -1,21 +1,21 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Box, ChevronRight, Monitor, Plus, RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowLeft, Box, ChevronRight, Monitor, Plus, RefreshCw } from 'lucide-react';
 import { ErrorMark, Select, StatusMark, getDirtyWorkspaceDocumentCount } from '@pockymoe/thread-ui';
 import { formatNumber, useI18n } from '@pockymoe/thread-ui/i18n';
 import type { ThreadDto } from '@pockymoe/shared';
 import {
   bindThreadEnvironment, createEnvironment, fetchEnvironmentRequests, fetchThreadEnvironment, notifyEnvironmentChanged,
   type EnvironmentDto, type EnvironmentRequestDto, type ThreadEnvironmentDto,
-} from '../lib/environmentApi';
-import { environmentText as t, type EnvironmentMessage } from '../lib/environmentI18n';
-import { environmentRequestText as rt } from '../lib/environmentRequestI18n';
-import { EnvironmentWindow } from './environments/EnvironmentWindow';
-import { EnvironmentFacts, EnvironmentLifecycle } from './environments/EnvironmentCard';
-import { EnvironmentConfirmation } from './environments/EnvironmentConfirmation';
-import { environmentError, useEnvironmentSnapshot } from './environments/model';
-import { RequestList, useEnvironmentRequests } from './environments/EnvironmentRequests';
-import { RequestReview } from './environments/RequestReview';
-import { EnvironmentStateMark, SectionHeading, Tag, requestMark } from './environments/ui';
+} from '../../lib/environmentApi';
+import { environmentText as t, type EnvironmentMessage } from '../../lib/environmentI18n';
+import { environmentRequestText as rt } from '../../lib/environmentRequestI18n';
+import { EnvironmentFacts, EnvironmentLifecycle } from './EnvironmentCard';
+import { EnvironmentConfirmation } from './EnvironmentConfirmation';
+import { environmentError, useEnvironmentSnapshot } from './model';
+import { RequestList, useEnvironmentRequests } from './EnvironmentRequests';
+import { RequestDecisionBar, RequestReviewDetails, RequestStatusLine, requestHasDecision, useRequestDecision } from './RequestReview';
+import { EnvironmentStateMark, SectionHeading, Tag, requestMark } from './ui';
+import './environments.css';
 
 type Props = {
   thread: Pick<ThreadDto, 'id' | 'status' | 'agentId' | 'provider' | 'providerSessionId' | 'updatedAt' | 'parentThreadId'>;
@@ -31,20 +31,10 @@ const activeRequest = (requests: EnvironmentRequestDto[]) =>
 const menuLabel = (request: EnvironmentRequestDto | undefined): EnvironmentMessage =>
   !request ? 'title' : request.state === 'pending' ? 'menuPending' : request.state === 'failed' ? 'menuFailed' : 'menuMigrating';
 
-export function ThreadEnvironmentControl(props: Props) {
-  useI18n();
-  const [open, setOpen] = useState(false);
-  const attention = useRequestAttention(props.thread.id, props.thread.status, props.deviceId, open);
-  // The tools menu shows the accessible name, so a pending approval is visible before opening (UI §13).
-  const label = t(menuLabel(attention));
-  return <>
-    <button type="button" aria-label={label} title={label} data-attention={attention ? requestMark(attention.state) : undefined} onClick={() => setOpen(true)}><Box aria-hidden="true" /></button>
-    {open && <ThreadEnvironmentDialog {...props} onClose={() => setOpen(false)} />}
-  </>;
-}
+export const isolationMenuLabel = (request: EnvironmentRequestDto | undefined) => t(menuLabel(request));
 
 /** One read when the thread's status or its environment changes; no polling while closed. */
-function useRequestAttention(threadId: string, status: string, deviceId: string | null | undefined, open: boolean) {
+export function useIsolationAttention(threadId: string | undefined, status: string | undefined, deviceId: string | null | undefined, open: boolean) {
   const [request, setRequest] = useState<EnvironmentRequestDto | undefined>();
   const [revision, setRevision] = useState(0);
   useEffect(() => {
@@ -53,6 +43,8 @@ function useRequestAttention(threadId: string, status: string, deviceId: string 
     return () => window.removeEventListener('pockymoe:environment-changed', changed);
   }, [threadId]);
   useEffect(() => {
+    setRequest(undefined);
+    if (!threadId) return;
     const controller = new AbortController();
     void fetchEnvironmentRequests(deviceId, threadId, controller.signal).then(requests => {
       if (!controller.signal.aborted) setRequest(activeRequest(requests ?? []));
@@ -62,7 +54,10 @@ function useRequestAttention(threadId: string, status: string, deviceId: string 
   return request;
 }
 
-function ThreadEnvironmentDialog({ thread, deviceId, canManage, onClose }: Props & { onClose(): void }) {
+/** The isolation inspector of one thread, docked beside the conversation:
+    where it runs, the request that decides it, requests, and a manual switch.
+    A request opens in place, with its decision pinned to the panel's foot. */
+export function ThreadIsolationPanel({ thread, deviceId, canManage }: Props) {
   useI18n();
   const { snapshot, setSnapshot, loading, error: snapshotError, refresh } = useEnvironmentSnapshot(deviceId);
   const [binding, setBinding] = useState<ThreadEnvironmentDto | null>(null);
@@ -116,7 +111,6 @@ function ThreadEnvironmentDialog({ thread, deviceId, canManage, onClose }: Props
   if (current && current.state !== 'destroyed' && !available.some(env => env.id === current.id)) available.push(current);
   const connections = snapshot?.connections.filter(value => value.configured) ?? [];
   const chosenConnection = connectionId || connections[0]?.id || '';
-  const dirty = (!!binding && selected !== (binding.environment?.id ?? '')) || !!(name || connectionId);
   const unavailable = reason || snapshotError || bindingError;
   const apply = async (resetSession?: true) => {
     if (unavailable || busy || !binding) return;
@@ -144,17 +138,27 @@ function ThreadEnvironmentDialog({ thread, deviceId, canManage, onClose }: Props
   };
   const review = requests.find(request => request.id === reviewId);
   const refreshing = loading || bindingLoading;
-  return <EnvironmentWindow title={t('title')} onClose={onClose} busy={busy} dirty={dirty}
-    tools={<>
-      {(snapshotError || bindingError) && <ErrorMark message={snapshotError || bindingError || ''} onRetry={() => { reload(); refreshRequests(); }} />}
-      <button type="button" className="env-icon-button" aria-label={t('refresh')} title={t('refresh')} disabled={refreshing || busy}
-        onClick={() => { reload(); refreshRequests(); }}><RefreshCw aria-hidden="true" className={refreshing ? 'animate-spin' : undefined} /></button>
-    </>}>
-    <div className="env-panel" data-testid="thread-environment">
-      {refreshing && !binding && <p role="status" className="env-empty">{t('loading')}</p>}
-      {binding && <section className="env-section" aria-labelledby="env-where">
-        <SectionHeading id="env-where" title={t('current')} />
-        <div className="env-group">
+  const root = useRef<HTMLDivElement>(null);
+  const backTo = useRef<string | null>(null);
+  useEffect(() => {
+    // Back from a request returns focus to its row, not to the page top.
+    if (review || !backTo.current) return;
+    const id = backTo.current; backTo.current = null;
+    root.current?.querySelector<HTMLElement>(`[data-request-id="${CSS.escape(id)}"] button`)?.focus({ preventScroll: false });
+  }, [review]);
+  if (review) return <RequestPane key={review.id} request={review} deviceId={deviceId} canManage={canManage} onUpdate={updateRequest}
+    onBack={() => { backTo.current = review.id; setReviewId(null); }} />;
+  return <div className="env-dock" ref={root} data-testid="thread-environment">
+    <div className="env-dock-scroll">
+    <div className="env-panel">
+      <section className="env-section" aria-labelledby="env-where">
+        <SectionHeading id="env-where" title={t('current')}>
+          {(snapshotError || bindingError) && <ErrorMark message={snapshotError || bindingError || ''} onRetry={() => { reload(); refreshRequests(); }} />}
+          <button type="button" className="env-icon-button" aria-label={t('refresh')} title={t('refresh')} disabled={refreshing || busy}
+            onClick={() => { reload(); refreshRequests(); }}><RefreshCw aria-hidden="true" className={refreshing ? 'animate-spin' : undefined} /></button>
+        </SectionHeading>
+        {refreshing && !binding && <p role="status" className="env-empty">{t('loading')}</p>}
+        {binding && <div className="env-group">
           {active && <ActiveRequest request={active} onOpen={() => setReviewId(active.id)} />}
           {current ? <>
             <div className="env-location" data-kind="isolated">
@@ -170,8 +174,8 @@ function ThreadEnvironmentDialog({ thread, deviceId, canManage, onClose }: Props
             <span className="env-location-icon" aria-hidden="true"><Monitor /></span>
             <span className="env-location-text"><strong>{t('hostTitle')}</strong><span>{t('hostDetail')}</span></span>
           </div>}
-        </div>
-      </section>}
+        </div>}
+      </section>
       <section className="env-section" aria-labelledby="env-requests">
         <SectionHeading id="env-requests" title={rt('requests')} count={requests.length || undefined}>
           {requestsError && <ErrorMark message={requestsError} onRetry={refreshRequests} />}
@@ -216,8 +220,32 @@ function ThreadEnvironmentDialog({ thread, deviceId, canManage, onClose }: Props
       <EnvironmentConfirmation open={resetAction !== null} title={t('resetTitle')} description={t('resetBody')} confirmLabel={t('resetConfirm')} busy={busy} busyLabel={t('working')}
         error={error} onCancel={() => { if (!busy) setResetAction(null); }} onConfirm={() => { if (resetAction === 'create') void create(true); else void apply(true); }} />
     </div>
-    {review && <RequestReview request={review} deviceId={deviceId} canManage={canManage} onUpdate={updateRequest} onClose={() => setReviewId(null)} />}
-  </EnvironmentWindow>;
+    </div>
+  </div>;
+}
+
+/** A request opened in the panel: its review scrolls, its decision stays at the foot. */
+function RequestPane({ request, deviceId, canManage, onUpdate, onBack }: {
+  request: EnvironmentRequestDto; deviceId: string | null | undefined; canManage: boolean;
+  onUpdate(request: EnvironmentRequestDto): void; onBack(): void;
+}) {
+  useI18n();
+  const decision = useRequestDecision(request, deviceId, canManage, onUpdate);
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { heading.current?.focus({ preventScroll: true }); }, []);
+  return <div className="env-dock is-detail" data-testid="isolation-request" aria-busy={decision.busy ? true : undefined}>
+    <div className="env-dock-bar">
+      <button type="button" className="env-back" disabled={!!decision.busy} onClick={onBack}><ArrowLeft aria-hidden="true" />{rt('requests')}</button>
+    </div>
+    <div className="env-dock-scroll">
+      <header className="env-dock-title">
+        <h3 ref={heading} tabIndex={-1}>{request.spec.name}</h3>
+        <RequestStatusLine request={request} />
+      </header>
+      <RequestReviewDetails request={request} />
+    </div>
+    {requestHasDecision(request.state) && <footer className="env-dock-footer"><RequestDecisionBar decision={decision} /></footer>}
+  </div>;
 }
 
 /** The request that decides where this thread runs right now, with its next step. */

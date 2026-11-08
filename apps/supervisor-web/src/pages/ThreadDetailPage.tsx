@@ -36,8 +36,7 @@ import { DeviceEncryptionStatus } from '../components/DeviceEncryptionStatus';
 import { ThreadPublicLinks } from '../components/ThreadPublicLinks';
 import { useThreadShares, type ThreadShareTarget } from '../components/ThreadShareDialog';
 import { ThreadWatchesControl } from '../components/ThreadWatchesControl';
-import { ThreadGitControl } from '../components/ThreadGitControl';
-import { ThreadEnvironmentControl } from '../components/ThreadEnvironmentControl';
+import { useThreadInspector } from '../components/ThreadInspector';
 import { requestThreadPageCatalog } from './threadPageCatalog';
 import { ThreadSubagentsControl } from '../components/ThreadSubagentsControl';
 import { PortMappingsControl } from '../components/PortMappingsControl';
@@ -87,7 +86,7 @@ import {
 import {
   threadStatusLabel,
 } from '@pockymoe/thread-ui';
-import { usePlugins } from '@pockymoe/thread-ui';
+import { closeFilesPatch, usePlugins } from '@pockymoe/thread-ui';
 import {
   isInvisibleThreadError,
   ApiError,
@@ -977,6 +976,13 @@ export function ThreadDetailPage() {
     workbenchPresentation.update(patch);
     return true;
   }, [workbenchPresentation.update, toolsUseReference, toolsDevice, toolsDetail?.workspace.id, relayRouteDeviceId, detail?.workspace.id, setFocusedPane]);
+  // Git and isolation dock at the right of the conversation (ThreadInspector).
+  const threadInspector = useThreadInspector({
+    thread: detail?.thread, deviceId: relayRouteDeviceId, canManage: relayThreadIsOwner,
+    gitAvailable: !hostScope && relayThreadReadsLinkedFiles, isolationAvailable: !hostScope,
+    filesOpen: workbenchPresentation.value.mode === 'files',
+    closeFiles: () => changePresentation(closeFilesPatch(workbenchPresentation.value)),
+  });
   const selectSplitThread = useCallback((selection: {deviceId: string | null; workspaceId: string; threadId: string; title: string}) => {
     if (toolsUseReference && (toolsDevice !== (relayRouteDeviceId ?? 'local') || toolsDetail?.workspace.id !== detail?.workspace.id) && !confirmWorkspaceDocumentLeave()) return;
     workbenchPresentation.update({ referenceId: selection.threadId, referenceDeviceId: selection.deviceId, mode: 'thread' });
@@ -4054,9 +4060,10 @@ export function ThreadDetailPage() {
           {dshPanelOpen && dshPanelProps ? <DshPluginPanel key={`${toolsDevice}:${toolsDetail?.thread.id ?? ''}`} loadCapabilities={loadToolsCapabilities} readOnly={!toolsHarnessOwner} {...dshPanelProps} /> : null}
         </>,
         onCloseTools: closeTerminal,
+        inspector: threadInspector.inspector,
         storageFailed: workbenchPresentation.storageFailed,
-      }, subscriptionUsage, statusActions: detail ? <>{!hostScope && <ThreadEnvironmentControl key={`environment-${relayRouteDeviceId ?? 'local'}-${detail.thread.id}`} thread={detail.thread} deviceId={relayRouteDeviceId} canManage={relayThreadIsOwner} />}{!hostScope && relayThreadReadsLinkedFiles && <ThreadGitControl key={`git-${relayRouteDeviceId ?? 'local'}-${detail.thread.id}`} threadId={detail.thread.id} deviceId={relayRouteDeviceId} refreshKey={detail.thread.updatedAt} />}<ThreadSubagentsControl key={`subagents-${detail.thread.id}`} detail={detail} /><UnscopedOnly><ThreadWatchesControl key={`watches-${detail.thread.id}`} thread={detail.thread} /></UnscopedOnly><ThreadPluginsControl key={`plugins-${detail.thread.id}`} readOnly={!relayThreadCanControl} {...(relayThreadIsOwner ? {} : { hiddenPluginIds: [TERMINAL_PLUGIN_ID] })} /><WorkbenchThreadPicker deviceId={relayRouteDeviceId} workspaceId={detail.workspace.id} threadId={detail.thread.id} threads={threads} navigationThreads={[...workbenchNavigation.workspaceThreads, ...workbenchNavigation.threads]} reference={referenceId ? {deviceId: referenceDevice === 'local' ? null : referenceDevice, threadId:referenceId} : null} splitActive={referenceShown} onSelect={selectSplitThread} onRestore={() => changePresentation({mode:'thread'})} onClose={() => changePresentation({mode:'focus'})} onCollaboration={() => changePresentation({mode:'collaboration'})} /></> : null, renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={workbenchNavigation.currentKey} onFavorite={workbenchNavigation.onToggleThreadFavorite} onRenamed={workbenchNavigation.onThreadRenamed} onRemoved={workbenchNavigation.onThreadRemoved} onNavigate={navigate} />, harnessSessionId: detail?.thread.providerSessionId ?? null, harnessSessionUrl: detail?.thread.providerSessionId && (detail.thread.provider === 'codex' || detail.thread.agentId === 'codex') ? `codex://threads/${encodeURIComponent(detail.thread.providerSessionId)}` : null, activeView: toolsTerminalOpen ? 'shell' : 'chat', terminalEnabled: toolsTerminalAvailable, onViewChange: view => { if (view === 'shell') toggleTerminal(); },
-        toolPanels: dshPanelAvailable ? [{ id: 'deepseek-harness', label: translate('workbench.deepseekHarness'), icon: <Puzzle data-icon="harness-panel" />, active: dshPanelOpen, onToggle: toggleDshPanel }] : [], onNavigate: navigate, onPrefetchThread: prefetchThread, onSearch: () => setSearchOpen(true), searchOpen, search: id && detail ? <ConversationSearch key={id} threadId={id} workspaceId={detail.thread.workspaceId}
+      }, subscriptionUsage, statusActions: detail ? <><ThreadSubagentsControl key={`subagents-${detail.thread.id}`} detail={detail} /><UnscopedOnly><ThreadWatchesControl key={`watches-${detail.thread.id}`} thread={detail.thread} /></UnscopedOnly><ThreadPluginsControl key={`plugins-${detail.thread.id}`} readOnly={!relayThreadCanControl} {...(relayThreadIsOwner ? {} : { hiddenPluginIds: [TERMINAL_PLUGIN_ID] })} /><WorkbenchThreadPicker deviceId={relayRouteDeviceId} workspaceId={detail.workspace.id} threadId={detail.thread.id} threads={threads} navigationThreads={[...workbenchNavigation.workspaceThreads, ...workbenchNavigation.threads]} reference={referenceId ? {deviceId: referenceDevice === 'local' ? null : referenceDevice, threadId:referenceId} : null} splitActive={referenceShown} onSelect={selectSplitThread} onRestore={() => changePresentation({mode:'thread'})} onClose={() => changePresentation({mode:'focus'})} onCollaboration={() => changePresentation({mode:'collaboration'})} /></> : null, renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={workbenchNavigation.currentKey} onFavorite={workbenchNavigation.onToggleThreadFavorite} onRenamed={workbenchNavigation.onThreadRenamed} onRemoved={workbenchNavigation.onThreadRemoved} onNavigate={navigate} />, harnessSessionId: detail?.thread.providerSessionId ?? null, harnessSessionUrl: detail?.thread.providerSessionId && (detail.thread.provider === 'codex' || detail.thread.agentId === 'codex') ? `codex://threads/${encodeURIComponent(detail.thread.providerSessionId)}` : null, activeView: toolsTerminalOpen ? 'shell' : 'chat', terminalEnabled: toolsTerminalAvailable, onViewChange: view => { if (view === 'shell') toggleTerminal(); },
+        toolPanels: [...threadInspector.toolPanels, ...(dshPanelAvailable ? [{ id: 'deepseek-harness', label: translate('workbench.deepseekHarness'), icon: <Puzzle data-icon="harness-panel" />, active: dshPanelOpen, onToggle: toggleDshPanel }] : [])], onNavigate: navigate, onPrefetchThread: prefetchThread, onSearch: () => setSearchOpen(true), searchOpen, search: id && detail ? <ConversationSearch key={id} threadId={id} workspaceId={detail.thread.workspaceId}
         deviceLabel={relayRouteDeviceId ?? searchLabels.localDevice}
         allowGlobal={!hostScope && (relayThreadIsOwner || (relayAccess?.scope === 'device' && (relayAccess.threadAccess === 'read' || relayAccess.threadAccess === 'control')))}
         onNavigate={(match, query) => {

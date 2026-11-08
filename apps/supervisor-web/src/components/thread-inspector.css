@@ -1,0 +1,19 @@
+/* Right-dock entries: the rail icon carries a small mark while a request needs
+   the owner (amber), migrates (accent) or failed (red); the name says which. */
+.inspector-rail-icon { position: relative; display: inline-grid; place-items: center; width: 18px; height: 18px; flex: none; }
+.inspector-rail-icon > svg { width: 100%; height: 100%; }
+.inspector-rail-icon[data-attention]::after {
+  content: ''; position: absolute; top: -3px; right: -4px; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--status-warning-fg); box-shadow: 0 0 0 2px var(--theme-panel);
+}
+.inspector-rail-icon[data-attention='running']::after { background: var(--theme-accent-solid); }
+.inspector-rail-icon[data-attention='failed']::after { border-radius: 1px; transform: rotate(45deg) scale(.9); background: var(--status-danger-fg); }
+.inspector-switch { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--theme-surface); }
+.workbench-inspector > header .inspector-switch button { width: 30px; height: 26px; border-radius: 6px; color: var(--theme-fg-muted); }
+.workbench-inspector > header .inspector-switch button svg { width: 15px; height: 15px; }
+.workbench-inspector > header .inspector-switch button[aria-pressed='true'] { background: var(--theme-panel); color: var(--theme-fg); box-shadow: 0 0 0 1px var(--theme-border); }
+.workbench-inspector > header .inspector-switch button:focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 1px; }
+@media (max-width: 639px) {
+  .workbench-inspector > header .inspector-switch button { width: 40px; height: 34px; }
+}
+.workbench-inspector > header > .inspector-switch { flex: none; }

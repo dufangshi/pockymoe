@@ -1,11 +1,11 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { setLocale } from '@pockymoe/thread-ui/i18n';
-import { ThreadEnvironmentControl } from './ThreadEnvironmentControl';
-import { ApiError } from '../lib/api';
-import * as api from '../lib/environmentApi';
-import { environmentsFixture, isolatedEnvironment, requestFixture } from '../test/environmentFixtures';
-vi.mock('../lib/environmentApi', async original => ({ ...await original<typeof import('../lib/environmentApi')>(), fetchEnvironments: vi.fn(), fetchEnvironmentRequests: vi.fn(), fetchThreadEnvironment: vi.fn(), createEnvironment: vi.fn(), bindThreadEnvironment: vi.fn() }));
+import { ThreadIsolationPanel } from './ThreadIsolationPanel';
+import { ApiError } from '../../lib/api';
+import * as api from '../../lib/environmentApi';
+import { environmentsFixture, isolatedEnvironment, requestFixture } from '../../test/environmentFixtures';
+vi.mock('../../lib/environmentApi', async original => ({ ...await original<typeof import('../../lib/environmentApi')>(), fetchEnvironments: vi.fn(), fetchEnvironmentRequests: vi.fn(), fetchThreadEnvironment: vi.fn(), createEnvironment: vi.fn(), bindThreadEnvironment: vi.fn() }));
 const thread = { id: 'thread-one', status: 'idle' as const, provider: 'codex' as const, agentId: 'codex', providerSessionId: 'native-session', updatedAt: '2026-11-07' };
 beforeEach(() => {
   vi.clearAllMocks(); setLocale('en', false);
@@ -15,9 +15,8 @@ beforeEach(() => {
   vi.mocked(api.createEnvironment).mockResolvedValue({ ...isolatedEnvironment, id: 'created-env', name: 'New environment' });
   vi.mocked(api.bindThreadEnvironment).mockResolvedValue({ environment: { ...isolatedEnvironment, id: 'created-env', name: 'New environment' }, supportedHarnesses: ['codex'], limitations: [] });
 });
-async function open(props: Partial<Parameters<typeof ThreadEnvironmentControl>[0]> = {}) {
-  render(<ThreadEnvironmentControl thread={thread} deviceId="device-a" canManage {...props} />);
-  fireEvent.click(screen.getByRole('button', { name: /^Isolated environments/ }));
+async function open(props: Partial<Parameters<typeof ThreadIsolationPanel>[0]> = {}) {
+  render(<ThreadIsolationPanel thread={thread} deviceId="device-a" canManage {...props} />);
   await screen.findByRole('button', { name: 'Create environment' });
 }
 it('requires explicit session release, creates only once, and binds on the captured device', async () => {
@@ -103,16 +102,22 @@ it('keeps the inherited environment visible and prevents a child from switching 
   expect(within(await screen.findByRole('dialog', { name: 'Why it is unavailable' })).getByText(/This child thread inherits/)).toBeVisible();
   expect(api.bindThreadEnvironment).not.toHaveBeenCalled();
 });
-it('names a pending approval in the tools entry and opens its review from the current location', async () => {
+it('opens a request in the panel, keeps its decision reachable and returns to its row', async () => {
   vi.mocked(api.fetchEnvironmentRequests).mockResolvedValue([requestFixture()]);
-  render(<ThreadEnvironmentControl thread={thread} deviceId="device-a" canManage />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Isolated environments · approval needed' }));
+  render(<ThreadIsolationPanel thread={thread} deviceId="device-a" canManage />);
   const where = within(await screen.findByRole('region', { name: 'Where it runs' }));
   expect(where.getByText('This device')).toBeVisible();
   fireEvent.click(await where.findByRole('button', { name: 'Review' }));
-  const review = within(await screen.findByRole('dialog', { name: 'Agent proposal' }));
-  expect(review.getByRole('button', { name: 'Approve and migrate when idle' })).toBeEnabled();
+  // In place, not a window: the heading takes focus and the decision is in the panel.
+  const heading = await screen.findByRole('heading', { name: 'Agent proposal' });
+  await waitFor(() => expect(heading).toHaveFocus());
+  expect(screen.queryByRole('dialog')).toBeNull();
+  const pane = within(screen.getByTestId('isolation-request'));
+  expect(pane.getByRole('button', { name: 'Approve and migrate when idle' })).toBeEnabled();
+  expect(pane.getAllByTitle('/private/native-codex').length).toBeGreaterThan(0);
   expect(api.fetchEnvironmentRequests).toHaveBeenCalledWith('device-a', 'thread-one', expect.any(AbortSignal));
+  fireEvent.click(pane.getByRole('button', { name: 'Isolation requests' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: /Agent proposal/ })).toHaveFocus());
 });
 it('blocks manual switching while an approved migration owns the binding', async () => {
   vi.mocked(api.fetchEnvironmentRequests).mockResolvedValue([{ ...requestFixture(), state: 'failed', approvedAt: '2026-11-07T00:00:01Z', lastError: 'redacted' }]);

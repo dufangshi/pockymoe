@@ -315,3 +315,43 @@ body:has(.environment-confirmation-focus) > div:has(> [role='dialog'][aria-label
 }
 /* The shared secondary button sets its own color; a destructive one keeps the danger color (UI §11). */
 .env-decision-actions .relay-button-secondary.env-danger-button { border-color: var(--status-danger-border); color: var(--status-danger-fg); }
+
+/* Docked in the workbench's right inspector: a slim tool bar, one scrolling
+   column, and a request's decision pinned at the foot. */
+.env-dock { container: env-dock / inline-size; display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; color: var(--theme-fg); background: var(--theme-panel); }
+.env-dock-bar { display: flex; align-items: center; gap: 6px; flex: none; min-height: 40px; padding: 4px 8px 4px 14px; border-bottom: 1px solid var(--theme-border); font-size: 12px; }
+.env-dock-bar > [role='status'] { flex: 1; min-width: 0; }
+.env-dock-scroll { flex: 1; min-height: 0; padding: 14px 14px 18px; overflow-y: auto; overscroll-behavior: contain; }
+.env-dock.is-detail .env-dock-scroll { display: grid; align-content: start; gap: 14px; }
+.env-dock-title { display: grid; gap: 4px; }
+.env-dock-title h3 { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; outline: none; }
+.env-dock-footer { flex: none; padding: 10px 14px 12px; border-top: 1px solid var(--theme-border); background: var(--theme-panel); }
+.env-dock-footer .env-decision-actions { justify-content: flex-end; }
+.env-back {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 8px 0 4px; margin-left: -6px;
+  border: 0; border-radius: 7px; background: transparent; color: var(--theme-fg-soft); font-size: 12.5px; font-weight: 500;
+}
+.env-back svg { width: 15px; height: 15px; }
+.env-back:active:not(:disabled) { background: var(--theme-hover); color: var(--theme-fg); }
+@media (hover: hover) { .env-back:hover:not(:disabled) { background: var(--theme-hover); color: var(--theme-fg); } }
+.env-back:focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 2px; }
+.env-dock .env-steps li { font-size: 11.5px; }
+
+/* A narrow dock stacks label over value and lets buttons share the row. */
+@container env-dock (max-width: 460px) {
+  .env-fact { grid-template-columns: minmax(0, 1fr); gap: 3px; }
+  .env-create-fields { grid-template-columns: minmax(0, 1fr); }
+  .env-switch > button { flex: 1 1 auto; }
+  .env-active { flex-wrap: wrap; }
+  .env-active > button { margin-left: 26px; }
+  .env-decision-actions > button { flex: 1 1 140px; }
+  .env-decision-actions .env-danger-button { margin-right: 0; }
+  .env-steps li > span:not(.sr-only):not(.env-step-dot) { font-size: 11px; }
+}
+@media (max-width: 639px) {
+  .env-dock-scroll { padding: 12px 16px 16px; }
+  .env-dock:not(:has(.env-dock-footer)) .env-dock-scroll { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+  .env-dock-footer { padding: 10px 16px max(12px, env(safe-area-inset-bottom)); }
+  .env-back { min-height: 40px; }
+  .env-decision-actions > button { flex: 1 1 140px; min-height: 44px; }
+}
