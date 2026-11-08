@@ -8,37 +8,28 @@ pub(crate) use pockymoe_protocol::pricing::match_model;
 
 fn enrich_model_options_with_catalog(models: &mut [ModelOptionDto], catalog: &Value) {
     for model in models {
-        let Some((key, variant)) = pockymoe_protocol::pricing::resolve_model(catalog, &model.model)
-        else {
-            continue;
-        };
-        let metadata = &catalog["models"][&key];
         let raw = pockymoe_protocol::pricing::model_id(&model.model);
-        let provider_prefix = model
-            .display_name
-            .strip_suffix(raw.as_ref())
-            .filter(|prefix| prefix.ends_with(" · "))
-            .map(str::to_owned);
-        if model.display_name.is_empty() || model.display_name == raw || provider_prefix.is_some() {
-            if let Some(name) = metadata["displayName"]
-                .as_str()
-                .filter(|name| !name.is_empty())
-            {
-                model.display_name = format!(
-                    "{}{name}{}",
-                    provider_prefix.unwrap_or_default(),
-                    variant
-                        .as_ref()
-                        .map(|effort| format!(" · {effort}"))
-                        .unwrap_or_default()
-                );
-            }
+        let provider_prefix = if matches!(raw, std::borrow::Cow::Owned(_)) {
+            model
+                .display_name
+                .split_once(" · ")
+                .map(|(provider, _)| format!("{provider} · "))
+        } else {
+            None
+        };
+        if let Some(name) = pockymoe_protocol::pricing::model_display_name(catalog, &model.model) {
+            model.display_name = format!("{}{name}", provider_prefix.unwrap_or_default());
         }
         // DSH validates against its native definition. Shared effort hints must
         // be projected there on apply, never offered only in the menu.
         if matches!(raw, std::borrow::Cow::Owned(_)) {
             continue;
         }
+        let Some((key, _)) = pockymoe_protocol::pricing::resolve_model(catalog, &model.model)
+        else {
+            continue;
+        };
+        let metadata = &catalog["models"][&key];
         // A harness or the upstream /models response is more precise than a
         // shared LiteLLM capability hint. Use the shared list only when the
         // active endpoint did not advertise per-model effort choices.
@@ -117,7 +108,12 @@ impl Supervisor {
             if let Some(key) = pockymoe_protocol::pricing::resolve_model(&config, id)
                 .filter(|(_, variant)| variant.is_none())
                 .map(|(key, _)| key)
-                .or_else(|| name.as_str().and_then(|n| match_model(&config, n)))
+                .or_else(|| {
+                    name.as_str()
+                        .and_then(|n| pockymoe_protocol::pricing::resolve_model(&config, n))
+                        .filter(|(_, variant)| variant.is_none())
+                        .map(|(key, _)| key)
+                })
             {
                 let mut aliases = config["models"][&key]["aliases"]
                     .as_array()
@@ -267,7 +263,35 @@ mod tests {
         assert!(models[0].supported_reasoning_efforts.is_empty());
         models[0].display_name = "Gemini channel · My custom model".into();
         enrich_model_options_with_catalog(&mut models, &catalog);
-        assert_eq!(models[0].display_name, "Gemini channel · My custom model");
+        assert_eq!(
+            models[0].display_name,
+            "Gemini channel · Gemini 4 Argon · high"
+        );
+    }
+
+    #[test]
+    fn gateway_modifiers_use_short_labels_without_inheriting_capabilities() {
+        let wire = r#"["remote-codex-channel","deepseek-v4.1-flash-abliterated"]"#;
+        let mut models: Vec<ModelOptionDto> = serde_json::from_value(json!([{
+            "id":wire, "model":wire, "displayName":"Channel · Long endpoint display name",
+            "description":"", "isDefault":true,"hidden":false,"supportedReasoningEfforts":[]
+        }]))
+        .unwrap();
+        let catalog = json!({"models":{"deepseek-v4.1-flash":{
+            "displayName":"DeepSeek V4.1 Flash", "reasoningEfforts":[{"reasoningEffort":"high","description":"High"}]
+        }}});
+        enrich_model_options_with_catalog(&mut models, &catalog);
+        assert_eq!(
+            models[0].display_name,
+            "Channel · DeepSeek V4.1 Flash · abliterated"
+        );
+        assert_eq!(models[0].model, wire);
+        assert!(models[0].supported_reasoning_efforts.is_empty());
+        // Both ACP tuples and plain gateway IDs preserve native capabilities.
+        models[0].model = "deepseek-v4.1-flash-abliterated".into();
+        enrich_model_options_with_catalog(&mut models, &catalog);
+        assert_eq!(models[0].display_name, "DeepSeek V4.1 Flash · abliterated");
+        assert!(models[0].supported_reasoning_efforts.is_empty());
     }
 
     #[test]
@@ -313,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn upstream_model_metadata_wins_over_shared_hints() {
+    fn shared_labels_win_while_upstream_capabilities_remain_authoritative() {
         let mut models = vec![ModelOptionDto {
             id: "claude-opus-5-5".into(),
             model: "claude-opus-5-5".into(),
@@ -340,7 +364,7 @@ mod tests {
 
         enrich_model_options_with_catalog(&mut models, &catalog);
 
-        assert_eq!(models[0].display_name, "Proxy Opus");
+        assert_eq!(models[0].display_name, "Opus 5.5");
         assert_eq!(models[0].default_reasoning_effort.as_deref(), Some("high"));
         assert_eq!(
             models[0].supported_reasoning_efforts[0].reasoning_effort,

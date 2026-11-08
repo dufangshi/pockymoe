@@ -602,11 +602,15 @@ mod tests {
             &state,
             "a",
             channels[0].0,
-            &json!({"models":["future-model"],"version":null}),
+            &json!({"models":["future-model","future-model-abliterated"],"version":null}),
         )
         .await;
         let first: Value = serde_json::from_str(&channels[0].1.recv().await.unwrap()).unwrap();
         assert_eq!(first["catalog"]["models"]["future-model"]["unpriced"], true);
+        assert_eq!(
+            first["catalog"]["models"]["future-model-abliterated"]["unpriced"],
+            true
+        );
         assert!(
             snapshot(&*state.store.conn.lock().await, "other").unwrap()["models"]["future-model"]
                 .is_null()
@@ -641,9 +645,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(saved.status(), StatusCode::OK);
+        let saved = saved.json::<Value>().await.unwrap();
+        assert_eq!(saved["models"]["future-model"]["custom"], true);
+        assert!(saved["models"]["future-model-abliterated"].is_null());
         assert_eq!(
-            saved.json::<Value>().await.unwrap()["models"]["future-model"]["custom"],
-            true
+            match_model(&saved, "future-model-abliterated").as_deref(),
+            Some("future-model")
         );
         for (_, rx) in &mut channels[..2] {
             assert!(rx.try_recv().unwrap().contains("pricing.changed"));

@@ -28,18 +28,23 @@ so learned levels show up there.
 
 DSH's ACP model values are opaque `[provider, model]` tuples. The provider is
 part of routing and is preserved when looking up a readable name in the shared
-Relay catalog. Applying a connection projects shared names and effort hints
-into DSH's native model definitions, after any explicit endpoint metadata. An
+Relay catalog. Shared short names (for example `Opus 5.5`) take precedence over
+endpoint display names in model menus and DSH's projected definitions. DSH labels
+retain their provider prefix, and gateway variants retain their suffix. Endpoint
+context limits and explicit effort capabilities remain authoritative. An
 explicit empty endpoint effort list disables the control. The menu then uses
 DSH's actual per-model capabilities; it does not offer additional levels that
 DSH would reject. A selected model's default effort is not written as a default
 for the entire provider: sibling models may support different levels.
 
 Some gateways expose fixed-effort IDs such as `gemini-4-argon-high`. Exact IDs
-and account aliases take precedence. Otherwise, a recognized effort suffix can
-use a known base model's display name and reference prices only when that base
-advertises the effort. The variant remains a separate selectable wire ID and
-does not inherit another effort selector. Arbitrary suffixes are not stripped.
+and account aliases take precedence. Reference pricing and short labels otherwise
+fall back to the longest known model after removing trailing hyphen-separated
+modifiers, such as `deepseek-v4.1-flash-abliterated`. The variant remains a separate
+selectable wire ID. This reference match does not establish native reasoning
+capabilities: only a recognized effort suffix explicitly supported by the known
+base supplies an effort hint, and a fixed-effort DSH variant does not inherit
+another effort selector.
 
 ## Changing them during a turn
 

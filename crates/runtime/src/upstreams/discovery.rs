@@ -43,19 +43,14 @@ pub(super) fn enrich_models(models: &mut Vec<DiscoveredModel>, selected: &str, c
         });
     }
     for model in models {
+        if let Some(name) = pockymoe_protocol::pricing::model_display_name(catalog, &model.id) {
+            model.name = name;
+        }
         let Some((key, variant)) = pockymoe_protocol::pricing::resolve_model(catalog, &model.id)
         else {
             continue;
         };
         let metadata = &catalog["models"][key];
-        if model.name.is_empty() || model.name == model.id {
-            if let Some(name) = metadata["displayName"].as_str().filter(|s| !s.is_empty()) {
-                model.name = match &variant {
-                    Some(effort) => format!("{name} · {effort}"),
-                    None => name.into(),
-                };
-            }
-        }
         if model.reasoning.is_none() {
             // A fixed-effort gateway ID stays selectable as advertised. Do not
             // offer another effort on top of it or strip its suffix on wire.

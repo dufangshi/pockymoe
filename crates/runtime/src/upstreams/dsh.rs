@@ -217,9 +217,54 @@ fn set_entry(rows: &mut Vec<Yaml>, id: &str, config: Value) -> Result<()> {
     Ok(())
 }
 pub fn changes(p: &Profile, root: &Path) -> Result<Vec<(PathBuf, String)>> {
+    changes_with_profiles(p, &[], root)
+}
+
+/// Reconstruct missing isolated routes from saved profiles when applying a
+/// connection. Never copy the legacy union: its models may belong to several
+/// endpoints. All edits share the activation backup/conflict/rollback boundary.
+pub(super) fn changes_with_profiles(
+    p: &Profile,
+    profiles: &[Profile],
+    root: &Path,
+) -> Result<Vec<(PathBuf, String)>> {
     let paths = paths(p, root)?;
-    let key_ref = credential_ref(p);
     let mut credentials = yaml_doc(&paths[0], "version: 1\nrefs: {}\n")?;
+    let mut patch = yaml_doc(&paths[1], "[]\n")?;
+    let rows = patch
+        .as_sequence_mut()
+        .ok_or_else(|| anyhow!("DSH profile patch must be a YAML sequence"))?;
+    for previous in profiles {
+        if previous.id == p.id
+            || previous.harness != "deepseek"
+            || previous.api_type == "anthropic"
+            || previous.api_key.is_empty()
+            || profile_name(previous)? != profile_name(p)?
+        {
+            continue;
+        }
+        let provider = provider_id(previous);
+        let exists = rows.iter().any(|row| {
+            row["id"].as_str() == Some("llm-pi-ai")
+                && row
+                    .get("config")
+                    .and_then(|c| c.get("providers"))
+                    .and_then(|p| p.get(provider.as_str()))
+                    .is_some()
+        });
+        if !exists {
+            project(previous, &mut credentials, rows)?;
+        }
+    }
+    project(p, &mut credentials, rows)?;
+    Ok(vec![
+        (paths[0].clone(), serde_yaml::to_string(&credentials)?),
+        (paths[1].clone(), serde_yaml::to_string(&patch)?),
+    ])
+}
+
+fn project(p: &Profile, credentials: &mut Yaml, rows: &mut Vec<Yaml>) -> Result<()> {
+    let key_ref = credential_ref(p);
     let map = credentials
         .as_mapping_mut()
         .ok_or_else(|| anyhow!("Invalid DSH credentials document"))?;
@@ -234,10 +279,6 @@ pub fn changes(p: &Profile, root: &Path) -> Result<Vec<(PathBuf, String)>> {
             Yaml::String(key_ref.clone()),
             Yaml::String(p.api_key.clone()),
         );
-    let mut patch = yaml_doc(&paths[1], "[]\n")?;
-    let rows = patch
-        .as_sequence_mut()
-        .ok_or_else(|| anyhow!("DSH profile patch must be a YAML sequence"))?;
     let provider = if p.api_type == "anthropic" {
         let models = models_with(
             rows,
@@ -322,11 +363,9 @@ pub fn changes(p: &Profile, root: &Path) -> Result<Vec<(PathBuf, String)>> {
     for id in ["acp", "agent-default-model"] {
         set_entry(rows, id, json!({"provider":provider,"model":p.model}))?;
     }
-    Ok(vec![
-        (paths[0].clone(), serde_yaml::to_string(&credentials)?),
-        (paths[1].clone(), serde_yaml::to_string(&patch)?),
-    ])
+    Ok(())
 }
+
 pub fn capture(root: &Path) -> Result<Value> {
     let patch = yaml_doc(&root.join("profiles/acp/cordis.patch.yml"), "[]\n")?;
     let rows = patch
@@ -460,6 +499,77 @@ pub fn import_live(root: &Path, name: &str) -> Result<Profile> {
 mod tests {
     use super::*;
     #[test]
+    fn applying_rebuilds_missing_routes_from_saved_profiles_without_copying_legacy_union() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("dsh");
+        let store = temp.path().join("store");
+        let path = root.join("profiles/acp/cordis.patch.yml");
+        let mut first = super::super::tests::fixture("deepseek");
+        first.api_type = "responses".into();
+        first.model = "a".into();
+        first.name = "Upstream 1".into();
+        first.models =
+            serde_json::from_value(json!([{"id":"a","name":"A"},{"id":"b","name":"B"}])).unwrap();
+        let mut second = first.clone();
+        second.id = uuid::Uuid::new_v4().to_string();
+        second.name = "Upstream 2".into();
+        second.base_url = "https://second.example/v1".into();
+        second.model = "f".into();
+        second.models =
+            serde_json::from_value(json!([{"id":"f","name":"F"},{"id":"g","name":"G"}])).unwrap();
+        let legacy = json!({"displayName":"Upstream 2","baseURL":second.base_url,"apiKeyEnv":"OLD_KEY",
+            "models":[{"id":"a"},{"id":"b"},{"id":"f"},{"id":"g"}]});
+        let original = serde_yaml::to_string(
+            &json!([{"id":"llm-pi-ai","config":{"providers":{"remote-codex":legacy}}}]),
+        )
+        .unwrap();
+        for p in [&first, &second] {
+            upsert(&store, p.clone()).unwrap();
+            activate_at(&store, p, &root).unwrap();
+        }
+        // Model a pre-isolation installation with both applied profiles saved.
+        private_write(&path, original.as_bytes()).unwrap();
+        let mut never_applied = first.clone();
+        never_applied.id = uuid::Uuid::new_v4().to_string();
+        never_applied.name = "Saved only".into();
+        upsert(&store, never_applied.clone()).unwrap();
+        let backup = activate_at(&store, &second, &root).unwrap();
+        let rows = yaml_doc(&path, "").unwrap();
+        let pi = rows
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"].as_str() == Some("llm-pi-ai"))
+            .unwrap();
+        let providers = &pi["config"]["providers"];
+        assert!(providers.get(provider_id(&never_applied)).is_none());
+        assert_eq!(
+            serde_json::to_value(&providers["remote-codex"]).unwrap(),
+            legacy
+        );
+        for (p, ids) in [(&first, vec!["a", "b"]), (&second, vec!["f", "g"])] {
+            let route = &providers[provider_id(p)];
+            assert_eq!(route["displayName"].as_str(), Some(p.name.as_str()));
+            assert_eq!(route["baseURL"].as_str(), Some(p.base_url.as_str()));
+            assert_eq!(
+                route["models"]
+                    .as_sequence()
+                    .unwrap()
+                    .iter()
+                    .map(|m| m["id"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                ids
+            );
+        }
+        // Reapplying is idempotent; all reconstruction is in the same backup.
+        let latest = activate_at(&store, &second, &root).unwrap();
+        assert_eq!(yaml_doc(&path, "").unwrap(), rows);
+        super::super::restore(&store, &latest).unwrap();
+        super::super::restore(&store, &backup).unwrap();
+        assert_eq!(read(&path).unwrap().unwrap(), original);
+    }
+
+    #[test]
     fn compatible_connections_keep_separate_routes_and_do_not_retarget_legacy_threads() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("dsh");
@@ -519,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn relay_hints_reach_native_efforts_without_replacing_endpoint_limits_or_explicit_facts() {
+    fn shared_names_reach_native_models_while_endpoint_limits_and_efforts_remain_authoritative() {
         let catalog = json!({"models":{"gemini-4-argon":{
             "displayName":"Gemini 4 Argon", "contextWindowTokens":9999999,
             "reasoningEfforts":[{"reasoningEffort":"low","description":"Low"},{"reasoningEffort":"high","description":"High"}],
@@ -549,7 +659,7 @@ mod tests {
             default: None,
         });
         super::super::discovery::enrich_models(&mut models, "gemini-4-argon", &catalog);
-        assert_eq!(models[0].name, "Endpoint name");
+        assert_eq!(models[0].name, "Gemini 4 Argon");
         assert!(models[0].reasoning.as_ref().unwrap().efforts.is_empty());
     }
     #[test]

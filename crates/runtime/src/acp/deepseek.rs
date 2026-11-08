@@ -516,18 +516,17 @@ pub(super) fn catalog(
 /// menu. The requesting thread's current ID may differ from the discovery
 /// session's default, so callers supply it explicitly.
 pub fn visible_models(models: &mut Vec<ModelOptionDto>, current: Option<&str>) {
-    let isolated_models: std::collections::HashSet<String> = models
-        .iter()
-        .filter_map(|model| {
-            let [provider, id] = serde_json::from_str::<[String; 2]>(&model.model).ok()?;
-            provider.starts_with("remote-codex-").then_some(id)
-        })
-        .collect();
+    let has_isolated_routes = models.iter().any(|model| {
+        serde_json::from_str::<[String; 2]>(&model.model)
+            .is_ok_and(|[provider, _]| provider.starts_with("remote-codex-"))
+    });
     models.retain(|model| {
-        model.is_default
-            || current == Some(model.model.as_str())
+        // A discovery session's default is not necessarily this thread's model.
+        current == Some(model.model.as_str())
+            || (current.is_none() && model.is_default)
+            || !has_isolated_routes
             || serde_json::from_str::<[String; 2]>(&model.model)
-                .map(|[provider, id]| provider != "remote-codex" || !isolated_models.contains(&id))
+                .map(|[provider, _]| provider != "remote-codex")
                 .unwrap_or(true)
     });
 }
@@ -1035,9 +1034,10 @@ mod tests {
         );
         // The requesting thread need not be the live session used for discovery.
         models[0].is_default = false;
+        models[2].is_default = true;
         visible_models(&mut models, Some(current));
         let models: Vec<_> = models.iter().map(|m| m.model.as_str()).collect();
-        assert_eq!(models, [ids[0], ids[2], ids[3], ids[4], ids[5]]);
+        assert_eq!(models, [ids[0], ids[3], ids[4], ids[5]]);
     }
 
     #[test]
