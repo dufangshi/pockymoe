@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, ensure, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use async_trait::async_trait;
 use futures_util::{future::BoxFuture, stream::FuturesUnordered, StreamExt};
 use pockymoe_protocol::{
@@ -65,6 +65,12 @@ mod compact_tests;
 #[path = "effort_tests.rs"]
 mod effort_tests;
 
+#[path = "isolated_claude.rs"]
+mod isolated_claude;
+
+#[path = "isolated_capabilities.rs"]
+mod isolated_capabilities;
+
 // Startup and cancelled probes must not leave the notification mux holding a child alive.
 struct StartupProcess(Option<Arc<AcpProcess>>);
 impl Drop for StartupProcess {
@@ -95,6 +101,7 @@ enum TurnOutcome {
 
 struct LiveSession {
     process: Arc<AcpProcess>,
+    isolated_claude: Option<isolated_claude::Route>,
     codex_bridge: Option<Arc<super::codex_bridge::CodexBridge>>,
     dsh: Option<Arc<super::deepseek::Bridge>>,
     harness_info: Option<Value>,
@@ -168,6 +175,104 @@ struct Inner {
         std::sync::Mutex<HashMap<String, HashMap<String, Vec<ReasoningEffortOptionDto>>>>,
     /// Models a probe has already visited (or is visiting), per agent.
     effort_probes: std::sync::Mutex<HashMap<String, HashSet<String>>>,
+}
+
+fn agent_cache_key(agent: &str) -> String {
+    match crate::execution::current() {
+        Some(c) => format!("{agent}@{}/{}", c.environment_id, c.generation),
+        None => agent.into(),
+    }
+}
+fn process_context_matches(process: &AcpProcess) -> bool {
+    match (crate::execution::current(), &process.execution) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.environment_id == b.environment_id && a.generation == b.generation,
+        _ => false,
+    }
+}
+fn process_session_id(live: &LiveSession) -> String {
+    match &live.process.execution {
+        Some(c) => format!(
+            "{}::env/{}/{}/{}",
+            live.adapter_id, c.environment_id, c.generation, live.session_id
+        ),
+        None => format!("{}::{}", live.adapter_id, live.session_id),
+    }
+}
+
+fn resume_session_identity(
+    session: &str,
+    default_agent: &str,
+    environment: Option<(&str, u64)>,
+) -> Result<(String, String, String)> {
+    let (agent, scoped) = session
+        .split_once("::")
+        .filter(|(agent, raw)| !agent.is_empty() && !raw.is_empty())
+        .unwrap_or((default_agent, session));
+    let raw = if let Some(reference) = scoped.strip_prefix("env/") {
+        let mut parts = reference.splitn(3, '/');
+        let original_environment = parts
+            .next()
+            .context("invalid environment session identity")?;
+        let generation: u64 = parts
+            .next()
+            .context("invalid environment session identity")?
+            .parse()?;
+        let raw = parts
+            .next()
+            .filter(|raw| !raw.is_empty())
+            .context("invalid environment session identity")?;
+        ensure!(
+            environment
+                .is_some_and(|(id, current)| id == original_environment && generation <= current),
+            "environment_session_context_mismatch"
+        );
+        raw
+    } else {
+        ensure!(
+            environment.is_none(),
+            "environment_session_context_mismatch"
+        );
+        scoped
+    };
+    let canonical = match environment {
+        Some((id, generation)) => format!("{agent}::env/{id}/{generation}/{raw}"),
+        None => format!("{agent}::{raw}"),
+    };
+    Ok((agent.into(), raw.into(), canonical))
+}
+
+#[cfg(test)]
+mod environment_resume_tests {
+    use super::resume_session_identity;
+    #[test]
+    fn old_native_state_resumes_only_in_the_same_environment_and_current_generation() {
+        let old = "custom::env/owned/3/native-state";
+        let (agent, native, current) =
+            resume_session_identity(old, "codex", Some(("owned", 4))).unwrap();
+        assert_eq!(
+            (agent.as_str(), native.as_str(), current.as_str()),
+            ("custom", "native-state", "custom::env/owned/4/native-state")
+        );
+        assert!(resume_session_identity(old, "codex", None).is_err());
+        assert!(resume_session_identity(old, "codex", Some(("other", 4))).is_err());
+        assert!(resume_session_identity(old, "codex", Some(("owned", 2))).is_err());
+        assert!(
+            resume_session_identity("custom::native-state", "codex", Some(("owned", 4))).is_err()
+        );
+        assert!(resume_session_identity(
+            "custom::env/owned/invalid/native",
+            "codex",
+            Some(("owned", 4))
+        )
+        .is_err());
+        assert_eq!(
+            resume_session_identity("custom::native-state", "codex", None)
+                .unwrap()
+                .2,
+            "custom::native-state"
+        );
+    }
 }
 
 pub struct AcpRuntime {
@@ -266,7 +371,7 @@ impl AcpRuntime {
                 .model_efforts
                 .lock()
                 .unwrap()
-                .entry(agent_id.to_string())
+                .entry(agent_cache_key(agent_id))
                 .or_default()
                 .insert(model, efforts);
         }
@@ -280,7 +385,7 @@ impl AcpRuntime {
         mut models: Vec<ModelOptionDto>,
     ) -> Vec<ModelOptionDto> {
         let learned = self.inner.model_efforts.lock().unwrap();
-        if let Some(learned) = learned.get(agent_id) {
+        if let Some(learned) = learned.get(&agent_cache_key(agent_id)) {
             for model in &mut models {
                 if let Some(efforts) = learned.get(&model.model) {
                     model.default_reasoning_effort = default_effort(efforts);
@@ -296,12 +401,12 @@ impl AcpRuntime {
     fn claim_unprobed(&self, agent_id: &str, models: &[ModelOptionDto]) -> Vec<String> {
         let learned = self.inner.model_efforts.lock().unwrap();
         let mut probes = self.inner.effort_probes.lock().unwrap();
-        let visited = probes.entry(agent_id.to_string()).or_default();
+        let visited = probes.entry(agent_cache_key(agent_id)).or_default();
         models
             .iter()
             .filter(|model| {
                 learned
-                    .get(agent_id)
+                    .get(&agent_cache_key(agent_id))
                     .is_none_or(|known| !known.contains_key(&model.model))
             })
             .filter(|model| visited.insert(model.model.clone()))
@@ -337,6 +442,9 @@ impl AcpRuntime {
     /// Learns the efforts of models no session has shown yet, in a probe session
     /// of its own; the next model list carries them.
     fn probe_efforts_in_background(&self, def: &AcpAgentDef, cwd: &str, models: &[ModelOptionDto]) {
+        if crate::execution::current().is_some() {
+            return;
+        }
         let unprobed = self.claim_unprobed(&def.id, models);
         if unprobed.is_empty() {
             return;
@@ -383,7 +491,13 @@ impl AcpRuntime {
     }
 
     fn scoped_id(agent_id: &str, session_id: &str) -> String {
-        format!("{agent_id}::{session_id}")
+        match crate::execution::current() {
+            Some(c) => format!(
+                "{agent_id}::env/{}/{}/{session_id}",
+                c.environment_id, c.generation
+            ),
+            None => format!("{agent_id}::{session_id}"),
+        }
     }
 
     async fn spawn_session(
@@ -398,7 +512,7 @@ impl AcpRuntime {
             .spawn_session_inner(def, cwd, policy, load_id, reasoning_effort)
             .await;
         self.inner.health.lock().unwrap().insert(
-            def.id.clone(),
+            agent_cache_key(&def.id),
             result.as_ref().err().map(|error| format!("{error:#}")),
         );
         result
@@ -415,13 +529,31 @@ impl AcpRuntime {
         let cwd = harness_cwd(cwd);
         let cwd = cwd.as_ref();
         let yolo = policy.auto_approve();
-        super::dependencies::ensure(def, false).await?;
-        let availability = classify_availability(def);
+        let isolated = crate::execution::current().is_some();
+        if isolated {
+            anyhow::ensure!(
+                matches!(def.id.as_str(), "codex" | "claude" | "custom"),
+                "unsupported_isolated_harness: {}",
+                def.id
+            );
+        }
+        if !isolated {
+            super::dependencies::ensure(def, false).await?;
+        }
+        let availability = if isolated {
+            "ready"
+        } else {
+            classify_availability(def)
+        };
         if availability != "ready" {
             bail!("{} is not available ({availability})", def.display_name);
         }
         let adapter = adapter_for(&def.id);
-        let mut extra_env = self.launch_environment(def);
+        let mut extra_env = if isolated {
+            crate::execution::isolated_harness_environment(&def.id)?
+        } else {
+            self.launch_environment(def)
+        };
         let mut upstream_revision = None;
         if def.id == "grok" {
             if let Some(upstreams) = &self.upstreams {
@@ -433,7 +565,7 @@ impl AcpRuntime {
                 }
             }
         }
-        let codex_bridge = if def.id == "codex" {
+        let codex_bridge = if def.id == "codex" && !isolated {
             Some(Arc::new(
                 super::codex_bridge::CodexBridge::new(&def.base_command, &mut extra_env, &policy)
                     .await?,
@@ -441,14 +573,22 @@ impl AcpRuntime {
         } else {
             None
         };
-        let mut server_command = agent_server_command(def, yolo);
+        let mut server_command = if isolated {
+            match def.id.as_str() {
+                "codex" => "codex-acp".into(),
+                "claude" => "claude-agent-acp".into(),
+                _ => agent_server_command(def, yolo),
+            }
+        } else {
+            agent_server_command(def, yolo)
+        };
         let inspection = self
             .inner
             .inspection
             .read()
             .unwrap()
             .clone()
-            .filter(|s| s.enabled());
+            .filter(|s| s.enabled() && !isolated);
         if let Some(state) = &inspection {
             if matches!(def.id.as_str(), "codex" | "claude" | "deepseek") {
                 extra_env.push(("POCKYMOE_CONTEXT_INSPECTION", "1".into()));
@@ -522,6 +662,18 @@ impl AcpRuntime {
                 }),
             )
             .await?;
+        let isolated_claude = if isolated && def.id == "claude" {
+            Some(isolated_claude::Route::verified(&init, &extra_env)?)
+        } else {
+            None
+        };
+        if isolated
+            && extra_env
+                .iter()
+                .any(|(k, v)| *k == "POCKYMOE_ENV_CODEX_NATIVE" && v == "1")
+        {
+            ensure!(init["agentInfo"]["name"].as_str()==Some("@agentclientprotocol/codex-acp") && init["agentInfo"]["version"].as_str()==Some("2.5.0"),"unsupported_environment_codex_adapter: native file authentication requires codex-acp 2.5.0 / Codex 0.167.0");
+        }
         let mut negotiated = negotiate(&init);
         if codex_bridge.is_some() {
             negotiated.fork = true;
@@ -542,6 +694,7 @@ impl AcpRuntime {
         if let Some(info) = &harness_info {
             super::deepseek::patch_capabilities(&mut caps, info, &Value::Null);
         }
+        isolated_capabilities::restrict(&mut caps, isolated);
         let toolbox = adapter.toolbox_items(&caps, &negotiated);
         negotiated.compact = caps.turns.compact;
         negotiated.fork = caps.branching.fork;
@@ -551,12 +704,12 @@ impl AcpRuntime {
             .caps_by_agent
             .lock()
             .await
-            .insert(def.id.clone(), caps);
+            .insert(agent_cache_key(&def.id), caps);
         self.inner
             .toolbox_by_agent
             .lock()
             .await
-            .insert(def.id.clone(), toolbox);
+            .insert(agent_cache_key(&def.id), toolbox);
         spawn_mux(
             self.inner.clone(),
             process.clone(),
@@ -564,21 +717,27 @@ impl AcpRuntime {
             updates_rx,
             requests_rx,
         );
+        let load_meta = match &isolated_claude {
+            Some(route) => route.pin(adapter.session_load_meta())?,
+            None => adapter.session_load_meta(),
+        };
         let raw_session = if let Some(existing) = load_id {
             if negotiated.load_session {
                 process
                     .request(
                         "session/load",
-                        json!({ "sessionId": existing, "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": adapter.session_load_meta() }),
+                        json!({ "sessionId": existing, "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": load_meta }),
                     )
-                    .await?
+                    .await
+                    .map_err(|error| isolated_claude::startup_error(error, isolated_claude.is_some()))?
             } else if negotiated.resume {
                 process
                     .request(
                         "session/resume",
-                        json!({ "sessionId": existing, "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": adapter.session_load_meta() }),
+                        json!({ "sessionId": existing, "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": load_meta }),
                     )
-                    .await?
+                    .await
+                    .map_err(|error| isolated_claude::startup_error(error, isolated_claude.is_some()))?
             } else {
                 bail!("ACP agent does not support session/load or session/resume");
             }
@@ -590,12 +749,16 @@ impl AcpRuntime {
                     meta[key] = value.clone();
                 }
             }
+            if let Some(route) = &isolated_claude {
+                meta = route.pin(meta)?;
+            }
             process
                 .request(
                     "session/new",
                     json!({ "cwd": cwd, "mcpServers": super::mcp_servers::for_session(&def.id, &negotiated), "_meta": meta }),
                 )
-                .await?
+                .await
+                .map_err(|error| isolated_claude::startup_error(error, isolated_claude.is_some()))?
         };
         let session_id = raw_session
             .get("sessionId")
@@ -623,14 +786,26 @@ impl AcpRuntime {
             .get("configOptions")
             .cloned()
             .unwrap_or_else(|| json!([]));
-        if let Some(caps) = self.inner.caps_by_agent.lock().await.get_mut(&def.id) {
+        if let Some(caps) = self
+            .inner
+            .caps_by_agent
+            .lock()
+            .await
+            .get_mut(&agent_cache_key(&def.id))
+        {
             apply_config_option_caps(caps, &config_options);
         }
         self.learn_efforts(&def.id, &config_options);
         let projection = adapter.project_session(&raw_session);
         let (harness_state, harness_models, model, reasoning_effort) =
             if let Some(proj) = projection {
-                if let Some(caps) = self.inner.caps_by_agent.lock().await.get_mut(&def.id) {
+                if let Some(caps) = self
+                    .inner
+                    .caps_by_agent
+                    .lock()
+                    .await
+                    .get_mut(&agent_cache_key(&def.id))
+                {
                     caps.management.models = true;
                 }
                 (proj.state, proj.models, proj.model, proj.reasoning_effort)
@@ -672,6 +847,7 @@ impl AcpRuntime {
         };
         let mut live = LiveSession {
             process,
+            isolated_claude,
             codex_bridge,
             dsh,
             harness_info,
@@ -720,8 +896,8 @@ impl AcpRuntime {
         extra_env: &[(&str, String)],
     ) -> Result<(
         Arc<AcpProcess>,
-        mpsc::UnboundedReceiver<Value>,
-        mpsc::UnboundedReceiver<(i64, String, Value)>,
+        mpsc::Receiver<Value>,
+        mpsc::Receiver<(i64, String, Value)>,
         Arc<super::deepseek::Bridge>,
         Value,
     )> {
@@ -893,10 +1069,9 @@ impl AcpRuntime {
         let (cached, configured, process, cwd) = {
             let sessions = self.inner.sessions.lock().await;
             let mut first = None;
-            for session in sessions
-                .values()
-                .filter(|session| session.adapter_id == agent_id)
-            {
+            for session in sessions.values().filter(|session| {
+                session.adapter_id == agent_id && process_context_matches(&session.process)
+            }) {
                 // Every session shows the efforts of the model it is on now.
                 self.learn_efforts(agent_id, &session.config_options);
                 first.get_or_insert(session);
@@ -914,7 +1089,7 @@ impl AcpRuntime {
             // takes the ones a session on that model reported.
             let learned = self.inner.model_efforts.lock().unwrap();
             let mut cached = cached;
-            if let Some(learned) = learned.get(agent_id) {
+            if let Some(learned) = learned.get(&agent_cache_key(agent_id)) {
                 for model in cached
                     .iter_mut()
                     .filter(|m| m.supported_reasoning_efforts.is_empty())
@@ -937,7 +1112,9 @@ impl AcpRuntime {
             .lock()
             .await
             .values_mut()
-            .find(|session| session.adapter_id == agent_id)
+            .find(|session| {
+                session.adapter_id == agent_id && process_context_matches(&session.process)
+            })
         {
             live.harness_models = models.clone();
         }
@@ -953,7 +1130,13 @@ impl AcpRuntime {
         let method = adapter.model_list_method()?;
         let response = process.request(method, json!({})).await.ok()?;
         let models = adapter.project_model_list(&response)?;
-        if let Some(caps) = self.inner.caps_by_agent.lock().await.get_mut(agent_id) {
+        if let Some(caps) = self
+            .inner
+            .caps_by_agent
+            .lock()
+            .await
+            .get_mut(&agent_cache_key(agent_id))
+        {
             caps.management.models = true;
             if adapter.model_list_supports_performance(&response) {
                 caps.controls.performance_mode = true;
@@ -1005,6 +1188,10 @@ impl AcpRuntime {
     ) -> Result<()> {
         match op {
             SessionSettingOp::SetConfig { config_id, value } => {
+                let isolated_claude_model = live.isolated_claude.is_some() && config_id == "model";
+                if isolated_claude_model {
+                    isolated_claude::require_model(&live.config_options, &value)?;
+                }
                 let response = process
                     .request(
                         "session/set_config_option",
@@ -1014,7 +1201,12 @@ impl AcpRuntime {
                             "value": value
                         }),
                     )
-                    .await?;
+                    .await;
+                let response = if isolated_claude_model {
+                    response.map_err(|_| anyhow!("unsupported_environment_claude_model: the adapter did not accept the requested model; select an advertised model"))?
+                } else {
+                    response?
+                };
                 if live.adapter_id == "grok" && config_id == "reasoning_effort" {
                     let actual = response["configOptions"]
                         .as_array()
@@ -1126,6 +1318,10 @@ impl AcpRuntime {
                 }
             }
             SessionSettingOp::LoadWithMeta { meta } => {
+                let meta = match &live.isolated_claude {
+                    Some(route) => route.pin(meta)?,
+                    None => meta,
+                };
                 let response = process
                     .request(
                         "session/load",
@@ -1176,7 +1372,13 @@ impl AcpRuntime {
             Self::store_dsh_session(live, &state);
             return Ok(());
         }
-        if let Some(mode_id) = resolve_mode(&live.available_modes, &policy) {
+        let claude_mode = if live.isolated_claude.is_some() {
+            isolated_claude::product_mode(&live.available_modes, &policy)?
+        } else {
+            None
+        };
+        if let Some(mode_id) = claude_mode.or_else(|| resolve_mode(&live.available_modes, &policy))
+        {
             if live.current_mode_id.as_deref() != Some(mode_id.as_str()) {
                 Self::apply_setting_op(process, live, SessionSettingOp::SetMode { mode_id })
                     .await?;
@@ -1536,7 +1738,7 @@ impl AcpRuntime {
             .caps_by_agent
             .lock()
             .await
-            .get(&id)
+            .get(&agent_cache_key(&id))
             .cloned()
             .unwrap_or_else(|| {
                 let mut caps = AgentProviderCapabilitiesDto::conversational();
@@ -1653,7 +1855,10 @@ impl AgentRuntime for AcpRuntime {
         let verified = {
             let health = self.inner.health.lock().unwrap();
             if self.provider == Provider::Acp {
-                health.values().any(Option::is_none)
+                health
+                    .iter()
+                    .filter(|(key, _)| !key.contains('@'))
+                    .any(|(_, value)| value.is_none())
             } else {
                 health.get(&bound) == Some(&None)
             }
@@ -1728,7 +1933,7 @@ impl AgentRuntime for AcpRuntime {
             .caps_by_agent
             .try_lock()
             .ok()
-            .and_then(|g| g.get(&id).cloned())
+            .and_then(|g| g.get(&agent_cache_key(&id)).cloned())
             .unwrap_or_else(|| {
                 let mut caps = AgentProviderCapabilitiesDto::conversational();
                 adapter_for(&id).patch_capabilities(&mut caps, &NegotiatedCaps::default());
@@ -1745,7 +1950,7 @@ impl AgentRuntime for AcpRuntime {
             .toolbox_by_agent
             .try_lock()
             .ok()
-            .and_then(|toolboxes| toolboxes.get(&id).cloned())
+            .and_then(|toolboxes| toolboxes.get(&agent_cache_key(&id)).cloned())
             .unwrap_or_else(|| toolbox_from_capabilities(&self.negotiated_caps(Some(&id))))
     }
 
@@ -1814,6 +2019,26 @@ impl AgentRuntime for AcpRuntime {
             Ok(def) => def,
             Err(_) => return Ok(default_model_stub(agent_id.or(self.bound_agent.as_deref()))),
         };
+        if crate::execution::current().is_some() {
+            crate::execution::current().unwrap().checked()?;
+            anyhow::ensure!(
+                matches!(def.id.as_str(), "codex" | "claude" | "custom"),
+                "unsupported_isolated_harness: {}",
+                def.id
+            );
+            if let Some((models, _)) = self.live_models(&def.id).await {
+                if !models.is_empty() {
+                    return Ok(models);
+                }
+            }
+            if let Some(cwd) = cwd {
+                let models = self.probe_models(&def, cwd).await?;
+                if !models.is_empty() {
+                    return Ok(models);
+                }
+            }
+            return Ok(default_model_stub(Some(&def.id)));
+        }
         // DSH's own ACP options name its models (`["provider","model"]`) and
         // already reflect an applied upstream; plain catalog ids are not values.
         let upstreams = self.upstreams.as_ref().filter(|_| def.id != "deepseek");
@@ -1888,7 +2113,7 @@ impl AgentRuntime for AcpRuntime {
                 let (base, server) = tokio::join!(
                     crate::management::inspect(&entry.base_command, &entry.id),
                     crate::management::inspect(&entry.server_command, &entry.id));
-                let health = self.inner.health.lock().unwrap().get(&entry.id).cloned();
+                let health = self.inner.health.lock().unwrap().get(&agent_cache_key(&entry.id)).cloned();
                 let verified = availability == "ready" && matches!(health, Some(None));
                 ModelOptionDto {
                     id: entry.id.clone(),
@@ -1937,11 +2162,18 @@ impl AgentRuntime for AcpRuntime {
             .map(str::to_string)
             .or_else(|| self.bound_agent.clone())
             .unwrap_or_else(|| "acp".into());
-        let availability = self
-            .agent_def(Some(&id))
-            .ok()
-            .map(|def| classify_availability(&def))
-            .unwrap_or("base_missing");
+        let availability = if crate::execution::current().is_some() {
+            if self.inner.health.lock().unwrap().get(&agent_cache_key(&id)) == Some(&None) {
+                "ready"
+            } else {
+                "environment_unverified"
+            }
+        } else {
+            self.agent_def(Some(&id))
+                .ok()
+                .map(|def| classify_availability(&def))
+                .unwrap_or("base_missing")
+        };
         let effective = if availability == "ready" {
             Some(self.caps_for(Some(&id)).await)
         } else {
@@ -1965,12 +2197,10 @@ impl AgentRuntime for AcpRuntime {
     ) -> Result<AgentCapabilitySnapshotDto> {
         let mut snapshot = self.capabilities(agent_id).await?;
         let sessions = self.inner.sessions.lock().await;
-        if let Some(live) = sessions.values().find(|live| {
-            session_ids_match(
-                &Self::scoped_id(&live.adapter_id, &live.session_id),
-                session_id,
-            )
-        }) {
+        if let Some(live) = sessions
+            .values()
+            .find(|live| session_ids_match(&process_session_id(live), session_id))
+        {
             let mut negotiated = live.negotiated.clone();
             if let Some(commands) = self
                 .inner
@@ -1989,6 +2219,7 @@ impl AgentRuntime for AcpRuntime {
                 super::deepseek::patch_capabilities(&mut caps, info, &live.dsh_session);
             }
             apply_config_option_caps(&mut caps, &live.config_options);
+            isolated_capabilities::restrict(&mut caps, live.process.execution.is_some());
             snapshot.toolbox_items = adapter.toolbox_items(&caps, &negotiated);
             snapshot.effective_capabilities = Some(caps);
             if let Some(info) = &live.harness_info {
@@ -2038,7 +2269,7 @@ impl AgentRuntime for AcpRuntime {
                     return Err(error);
                 }
             } else {
-                let _ = Self::apply_setting_op(
+                let result = Self::apply_setting_op(
                     &live.process.clone(),
                     &mut live,
                     SessionSettingOp::SetConfig {
@@ -2047,6 +2278,10 @@ impl AgentRuntime for AcpRuntime {
                     },
                 )
                 .await;
+                if live.isolated_claude.is_some() && result.is_err() {
+                    let _ = live.process.shutdown().await;
+                    bail!("unsupported_environment_claude_model: the adapter did not accept the requested model; select an advertised model");
+                }
                 live.model = Some(input.model.clone());
             }
         }
@@ -2108,16 +2343,28 @@ impl AgentRuntime for AcpRuntime {
         cwd: Option<&str>,
         settings: SessionSettings,
     ) -> Result<StartSessionResult> {
+        let context = crate::execution::current();
+        if let Some(context) = &context {
+            context.checked()?;
+        }
+        let (agent_id, raw, canonical) = resume_session_identity(
+            session_id,
+            self.bound_agent.as_deref().unwrap_or("codex"),
+            context
+                .as_ref()
+                .map(|context| (context.environment_id.as_str(), context.generation)),
+        )?;
         let _lifecycle = self.inner.lifecycle.lock().await;
         let old_process = {
             let mut sessions = self.inner.sessions.lock().await;
             let existing = sessions
                 .keys()
-                .find(|key| session_ids_match(key, session_id))
+                .find(|key| session_ids_match(key, &canonical))
                 .cloned();
             if let Some(existing) = existing {
                 let live = &sessions[&existing];
-                if cli_context_matches(&live.process.cli_env)
+                if process_context_matches(&live.process)
+                    && cli_context_matches(&live.process.cli_env)
                     && (live.active.is_some()
                         || !matches!(live.adapter_id.as_str(), "codex" | "claude" | "deepseek")
                         || self
@@ -2157,15 +2404,6 @@ impl AgentRuntime for AcpRuntime {
         if let Some(process) = old_process {
             process.shutdown().await?;
         }
-        let (agent_id, raw) = match session_id.split_once("::") {
-            Some((agent, rest)) if !agent.is_empty() && !rest.is_empty() => {
-                (agent.to_string(), rest.to_string())
-            }
-            _ => (
-                self.bound_agent.clone().unwrap_or_else(|| "codex".into()),
-                session_id.to_string(),
-            ),
-        };
         let def = self.agent_def(Some(&agent_id))?;
         let cwd = cwd
             .map(str::to_string)
@@ -2408,9 +2646,10 @@ impl AgentRuntime for AcpRuntime {
             live.claude_lifecycle.begin_turn()
         };
         let mut adapter_usage = super::usage::AdapterUsageAccumulator::default();
-        let mut usage_reader =
-            (adapter_id == "codex").then(|| super::usage::CodexUsageReader::new(&session_id));
-        let mut claude_usage_reader = (adapter_id == "claude")
+        let host_state = process.execution.is_none();
+        let mut usage_reader = (adapter_id == "codex" && host_state)
+            .then(|| super::usage::CodexUsageReader::new(&session_id));
+        let mut claude_usage_reader = (adapter_id == "claude" && host_state)
             .then(|| super::claude_usage::ClaudeUsageReader::new(&session_id));
         if let Some(reader) = claude_usage_reader
             .as_mut()
@@ -2425,7 +2664,7 @@ impl AgentRuntime for AcpRuntime {
             .read()
             .unwrap()
             .clone()
-            .filter(|_| !input.hidden);
+            .filter(|_| !input.hidden && host_state);
         let context_reader = self
             .inner
             .context_readers
@@ -3243,6 +3482,10 @@ impl AgentRuntime for AcpRuntime {
             if live.active.is_some() {
                 bail!("conflict: Cannot fork an active turn.");
             }
+            ensure!(
+                live.isolated_claude.is_none(),
+                "unsupported_environment_fork: create a child thread to retain isolation"
+            );
             if !live.negotiated.fork {
                 bail!("this harness does not support session/fork");
             }
@@ -3358,6 +3601,7 @@ impl AgentRuntime for AcpRuntime {
             scoped.clone(),
             LiveSession {
                 process,
+                isolated_claude: None,
                 codex_bridge,
                 dsh: None,
                 harness_info: None,
@@ -4000,10 +4244,11 @@ fn spawn_mux(
     inner: Arc<Inner>,
     process: Arc<AcpProcess>,
     agent_id: &str,
-    mut updates: mpsc::UnboundedReceiver<Value>,
-    mut requests: mpsc::UnboundedReceiver<(i64, String, Value)>,
+    mut updates: mpsc::Receiver<Value>,
+    mut requests: mpsc::Receiver<(i64, String, Value)>,
 ) {
     let adapter = adapter_for(agent_id);
+    let requests_limit = Arc::new(tokio::sync::Semaphore::new(16));
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -4028,9 +4273,13 @@ fn spawn_mux(
                     let _ = inner.updates.send(update);
                 }
                 Some((req_id, method, params)) = requests.recv() => {
+                    let Ok(permit)=requests_limit.clone().try_acquire_owned()else{
+                        let _=process.respond_error(req_id,"ACP callback concurrency limit").await;let _=process.terminate(Duration::from_millis(250)).await;break;
+                    };
                     let inner = inner.clone();
                     let process = process.clone();
                     tokio::spawn(async move {
+                        let _permit=permit;
                         if let Err(err) = handle_agent_request(&inner, &process, req_id, &method, params).await {
                             tracing::warn!(error = %err, method, req_id, "ACP client request failed");
                             let _ = process.respond_error(req_id, &err.to_string()).await;
@@ -4369,6 +4618,23 @@ async fn handle_agent_request(
     method: &str,
     params: Value,
 ) -> Result<()> {
+    crate::execution::host_process::scope(
+        process.host_guard.clone(),
+        crate::execution::scope(
+            process.execution.clone(),
+            handle_agent_request_unscoped(inner, process, req_id, method, params),
+        ),
+    )
+    .await
+}
+
+async fn handle_agent_request_unscoped(
+    inner: &Inner,
+    process: &AcpProcess,
+    req_id: i64,
+    method: &str,
+    params: Value,
+) -> Result<()> {
     let raw_session = params
         .get("sessionId")
         .or_else(|| params.get("threadId"))
@@ -4377,7 +4643,9 @@ async fn handle_agent_request(
         .to_string();
     let (cwd, policy, active) = {
         let sessions = inner.sessions.lock().await;
-        let live = sessions.values().find(|s| s.session_id == raw_session);
+        let live = sessions
+            .values()
+            .find(|s| s.session_id == raw_session && s.process.id == process.id);
         match live {
             Some(live) => (
                 live.cwd.clone(),
@@ -4386,7 +4654,12 @@ async fn handle_agent_request(
                     .as_ref()
                     .map(|a| (a.thread_id.clone(), a.turn_id.clone(), a.bus.clone())),
             ),
-            None => (PathBuf::from("."), ProductSessionPolicy::default(), None),
+            None => {
+                process
+                    .respond_error(req_id, "unknown or foreign ACP session")
+                    .await?;
+                return Ok(());
+            }
         }
     };
     match method {
@@ -4454,14 +4727,18 @@ async fn handle_agent_request(
         }
         "fs/read_text_file" => {
             let path = params.get("path").and_then(Value::as_str).unwrap_or("");
-            let content = tokio::fs::read_to_string(
-                PathBuf::from(path)
-                    .is_absolute()
-                    .then(|| PathBuf::from(path))
-                    .unwrap_or_else(|| cwd.join(path)),
-            )
-            .await
-            .unwrap_or_default();
+            let content = if let Some(value) =
+                crate::execution::file_request("readText", &cwd, path, json!({}))?
+            {
+                value["content"].as_str().unwrap_or("").to_string()
+            } else {
+                tokio::fs::read_to_string(if PathBuf::from(path).is_absolute() {
+                    PathBuf::from(path)
+                } else {
+                    cwd.join(path)
+                })
+                .await?
+            };
             process
                 .respond(req_id, json!({ "content": content }))
                 .await?;
@@ -4543,6 +4820,7 @@ async fn handle_agent_request(
                 .get("terminalId")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            inner.terminals.ensure_owner(id, &process.id)?;
             let output = inner
                 .terminals
                 .output(id)
@@ -4554,6 +4832,7 @@ async fn handle_agent_request(
                 .get("terminalId")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            inner.terminals.ensure_owner(id, &process.id)?;
             let status = inner.terminals.wait_for_exit(id).await?;
             process.respond(req_id, status).await?;
         }
@@ -4562,6 +4841,7 @@ async fn handle_agent_request(
                 .get("terminalId")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            inner.terminals.ensure_owner(id, &process.id)?;
             let _ = inner.terminals.kill(id);
             process.respond(req_id, json!({})).await?;
         }
@@ -4570,6 +4850,7 @@ async fn handle_agent_request(
                 .get("terminalId")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            inner.terminals.ensure_owner(id, &process.id)?;
             inner.terminals.release(id);
             process.respond(req_id, json!({})).await?;
         }

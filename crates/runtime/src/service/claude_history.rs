@@ -183,6 +183,9 @@ impl Supervisor {
 
     /// Recover finished native scheduler turns before UI/CLI history reads.
     pub async fn sync_claude_scheduled_history(&self, id: &str) -> Result<()> {
+        if self.environments.for_thread(id)?.is_some() {
+            return Ok(());
+        }
         // Never import an in-flight user turn or race its admission/settlement.
         let live = self.live.lock().await;
         if live.contains_key(id) {

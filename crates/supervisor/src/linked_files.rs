@@ -31,6 +31,10 @@ pub(crate) async fn read(
     ) -> anyhow::Result<Response> {
         state.get_thread(&id)?;
         anyhow::ensure!(
+            state.environments.for_thread(&id)?.is_none(),
+            "unsupported_environment_linked_host_file: use files in the authorized environment workspace"
+        );
+        anyhow::ensure!(
             matches!(action.as_str(), "stat" | "preview" | "raw"),
             "Unknown file action"
         );

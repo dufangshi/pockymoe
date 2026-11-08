@@ -1,5 +1,6 @@
 mod attach;
 mod automations;
+mod environments;
 mod legacy_env;
 mod plugins;
 mod threads;
@@ -369,6 +370,15 @@ enum PasscodeAction {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Propose isolated execution; the owner approves immutable permissions in Web.
+    Environment {
+        #[command(subcommand)]
+        command: environments::EnvironmentCommand,
+    },
+    /// Internal I/O worker. Never starts or registers a Supervisor.
+    #[command(hide = true)]
+    EnvironmentWorker { mode: String, args: Vec<String> },
+
     /// Bind one Treer Agent to a hub thread and keep its interface registered.
     Attach(attach::Options),
     /// Reserve, inspect and diagnose private device web previews.
@@ -618,6 +628,7 @@ fn enrollment_secret(
 }
 
 async fn run() -> Result<()> {
+    pockymoe_runtime::execution::host_process::enable();
     // Remove the secret before any child or Supervisor can inherit the environment.
     let enrollment_env = std::env::var_os("POCKYMOE_ENROLL_SECRET");
     std::env::remove_var("POCKYMOE_ENROLL_SECRET");
@@ -653,6 +664,18 @@ async fn run() -> Result<()> {
         pockymoe_runtime::host_mode::require_feature(caps.account_binding, "accountBinding")?;
     }
     match cli.command {
+        Commands::Environment { command } => println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &threads::Client::new(cli.connection)?
+                    .environment(command)
+                    .await?
+            )?
+        ),
+        Commands::EnvironmentWorker { mode, args } => {
+            pockymoe_runtime::execution::worker::run(&mode, &args).await?
+        }
+
         Commands::Attach(options) => attach::run(options, cli.connection).await?,
         Commands::Preview { command } => {
             let value = threads::Client::new(cli.connection)?

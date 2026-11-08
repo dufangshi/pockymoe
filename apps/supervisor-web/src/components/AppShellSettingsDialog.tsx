@@ -6,6 +6,8 @@ import { RuntimeManagement } from './RuntimeManagement';
 import { LocalPasscodeSettings } from './LocalPasscodeSettings';
 import { UpstreamsSettings } from './UpstreamsSettings';
 import { HarnessResourceSettings } from './HarnessResourceSettings';
+import { DokploySettings } from './DokploySettings';
+import { environmentText } from '../lib/environmentI18n';
 import { ModelPricingSettings } from './ModelPricingSettings';
 import { ComposerShortcutSettings } from './ComposerShortcutSettings';
 import { TourSettingsEntry } from './onboarding/TourProvider';
@@ -630,6 +632,7 @@ export function AppShellSettingsDialog({
           )}
           {section === 'upstreams' && <UpstreamsSettings />}
           {section === 'resources' && <HarnessResourceSettings />}
+          {section === 'environments' && <DokploySettings />}
           {section === 'device' && !hostScope && <LocalPasscodeSettings />}
           {(section === 'device' || section === 'harnesses') && (
             <RuntimeManagement view={section === 'device' && hostScope ? 'supervisor' : section} />
@@ -692,6 +695,11 @@ export function appSettingsSections({ scoped = false }: { scoped?: boolean } = {
       id: 'resources',
       label: translate('settings.resourcesTab'),
       description: translate('settings.resourcesDescription'),
+    },
+    {
+      id: 'environments',
+      label: environmentText('title'),
+      description: environmentText('description'),
     },
     {
       id: 'device',

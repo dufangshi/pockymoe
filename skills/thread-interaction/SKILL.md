@@ -16,6 +16,7 @@ delivery state.
 
 | Goal | Start with | Details |
 | --- | --- | --- |
+| Request isolated execution with optional credential mappings | `environment connections`, then `environment request --spec FILE` | `guide environments` |
 | Show the user a local web app | `preview create --port P` **before** starting the server; give the user `openUrl` | `guide preview` |
 | Delegate work and collect it | `thread create --name N --kind task --subject S --text-file F`, then `thread wait N`, then `thread close N` | `guide delegate` |
 | Send a peer a result, question, task or correction | `thread send ID --kind K --subject S` | `guide messaging` |

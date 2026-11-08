@@ -7,6 +7,11 @@ pub const THREAD_INTERACTION_SKILL: &str =
 /// (name, one-line summary, text)
 pub const THREAD_INTERACTION_GUIDES: &[(&str, &str, &str)] = &[
     (
+        "environments",
+        "Propose isolation, optional credential mappings and same-thread migration for owner approval",
+        include_str!("../../../skills/thread-interaction/guides/environments.md"),
+    ),
+    (
         "preview",
         "Show a local web app to the user through a private preview",
         include_str!("../../../skills/thread-interaction/guides/preview.md"),

@@ -86,12 +86,14 @@ impl AcpRuntime {
 
     /// A scheduled Claude turn ran in the live process without a client prompt.
     pub(super) async fn touch(&self, session_id: &str) {
-        if let Some(live) = self.inner.sessions.lock().await.values_mut().find(|live| {
-            session_ids_match(
-                &Self::scoped_id(&live.adapter_id, &live.session_id),
-                session_id,
-            )
-        }) {
+        if let Some(live) = self
+            .inner
+            .sessions
+            .lock()
+            .await
+            .values_mut()
+            .find(|live| session_ids_match(&process_session_id(live), session_id))
+        {
             live.load.touch();
         }
     }

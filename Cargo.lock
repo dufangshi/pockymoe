@@ -2568,6 +2568,7 @@ dependencies = [
  "hex",
  "hmac",
  "hpke",
+ "http-body-util",
  "image",
  "p256",
  "percent-encoding",

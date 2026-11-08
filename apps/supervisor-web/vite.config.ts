@@ -5,6 +5,7 @@ import { copyFileSync, mkdirSync } from 'node:fs';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig, loadEnv } from 'vite';
+import { configDefaults } from 'vitest/config';
 import { staticHosting } from './staticHosting';
 
 import { themePacksPlugin } from './build/themePacksPlugin';
@@ -184,6 +185,8 @@ export default defineConfig(({ mode }) => {
     },
     test: {
       environment: 'jsdom',
+      // Browser suites use Playwright's explicit config and project selection.
+      exclude: [...configDefaults.exclude, 'e2e/**'],
       setupFiles: './src/test/setup.ts',
       server: {
         deps: {

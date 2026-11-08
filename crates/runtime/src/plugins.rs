@@ -415,6 +415,7 @@ impl Supervisor {
         let (thread, raw, event, receipt): (String, String, String, String) = self.db.with(|c| {
             Ok(c.query_row("SELECT a.thread_id,r.definition_json,r.event_json,r.receipt_json FROM automation_runs r JOIN automations a ON a.id=r.automation_id WHERE r.id=?1 AND r.state='running'", [run_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?)
         })?;
+        let _execution = self.hold_execution(&thread).await;
         let definition: pockymoe_protocol::AutomationDefinition = serde_json::from_str(&raw)?;
         let pockymoe_protocol::AutomationAction::PluginAction {
             plugin_id,
@@ -429,6 +430,7 @@ impl Supervisor {
         let result: Result<Value> = async {
             // The running claim is the scope authorization boundary. Disabling a
             // thread cancels due work; already claimed invocations may finish.
+            ensure!(self.execution_context(&thread)?.is_none(),"unsupported_environment_plugin: plugin execution has not declared an isolated backend");
             self.validate_plugin_action_input(&plugin_id, &action, &input, timeout_seconds)?;
             let settings: PluginSettings = serde_json::from_value(receipt["settings"].clone())?;
             let plugin = self.plugins.get(&plugin_id)?;

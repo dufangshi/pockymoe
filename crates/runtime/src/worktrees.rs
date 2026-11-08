@@ -46,6 +46,14 @@ struct GitOutput {
 // Drain both pipes even after the response cap. Commands are bounded and cannot
 // retain an unbounded diff in memory or block a runtime worker indefinitely.
 fn git(root: &Path, args: &[&str]) -> Result<GitOutput> {
+    if let Some(value) = crate::execution::file_request("git", root, "", json!({"args":args}))? {
+        use base64::Engine;
+        return Ok(GitOutput {
+            bytes: base64::engine::general_purpose::STANDARD
+                .decode(value["bytes"].as_str().context("missing Git response")?)?,
+            truncated: value["truncated"].as_bool().unwrap_or(false),
+        });
+    }
     fn drain(mut pipe: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
         let mut kept = Vec::new();
         let mut truncated = false;
@@ -88,7 +96,13 @@ fn git(root: &Path, args: &[&str]) -> Result<GitOutput> {
     ] {
         cmd.env_remove(key);
     }
-    let mut child = cmd.spawn().context("Git is unavailable")?;
+    let process_id = uuid::Uuid::new_v4().to_string();
+    let host = crate::execution::host_process::enabled_context();
+    // Git inherits PATH/locale/tool configuration, with explicit identity and
+    // worktree overrides removed above. This Command deliberately has no env_clear.
+    let mut child = crate::execution::host_process::spawn_sync(&mut cmd, &process_id, true)
+        .context("Git is unavailable")?;
+    let _transport = child.stdin.take();
     let out = child.stdout.take().unwrap();
     let err = child.stderr.take().unwrap();
     let stdout = std::thread::spawn(move || drain(out));
@@ -99,7 +113,11 @@ fn git(root: &Path, args: &[&str]) -> Result<GitOutput> {
             break Some(status);
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
+            if let Some(context) = &host {
+                context.stop_process_sync(&process_id)?;
+            } else {
+                let _ = child.kill();
+            }
             let _ = child.wait();
             break None;
         }
@@ -410,6 +428,13 @@ impl Supervisor {
                     .context("missing repo name")?
                     .to_string_lossy()
             ));
+        let parent = if let Some(context) = self.execution_context(thread)? {
+            context
+                .manager
+                .managed_worktree_root(&context.environment_id)?
+        } else {
+            parent
+        };
         if parent.exists() {
             ensure!(
                 !parent.symlink_metadata()?.file_type().is_symlink(),
@@ -525,6 +550,7 @@ impl Supervisor {
         });
     }
     pub async fn worktree_use(&self, thread: &str, id: &str) -> Result<Value> {
+        ensure!(!self.environments.request_blocks_turn(thread)?,"environment_migration_pending: cancel the waiting request or use owner failure recovery before changing the worktree");
         self.worktree_copy(thread, id)?;
         let target = self.get_thread(thread)?;
         ensure!(
@@ -685,27 +711,39 @@ impl Supervisor {
                     .split(|b| *b == 0)
                     .any(|name| name == path.as_bytes())
                 {
-                    let target = root.join(path);
-                    let parent = target
-                        .parent()
-                        .context("file has no parent")?
-                        .canonicalize()?;
-                    ensure!(
-                        parent.starts_with(root),
-                        "file resolves outside the working copy"
-                    );
-                    let metadata = target.symlink_metadata()?;
-                    let bytes = if metadata.file_type().is_symlink() {
-                        std::fs::read_link(&target)?
-                            .to_string_lossy()
-                            .as_bytes()
-                            .to_vec()
+                    let bytes = if let Some(value) = crate::execution::file_request(
+                        "diffBytes",
+                        root,
+                        path,
+                        json!({"limit":OUTPUT_LIMIT}),
+                    )? {
+                        use base64::Engine;
+                        base64::engine::general_purpose::STANDARD
+                            .decode(value["bytes"].as_str().context("invalid diff bytes")?)?
                     } else {
-                        ensure!(metadata.is_file(), "diff target is not a regular file");
-                        let mut bytes = Vec::new();
-                        std::fs::File::open(target)?
-                            .take(OUTPUT_LIMIT as u64 + 1)
-                            .read_to_end(&mut bytes)?;
+                        let target = root.join(path);
+                        let parent = target
+                            .parent()
+                            .context("file has no parent")?
+                            .canonicalize()?;
+                        ensure!(
+                            parent.starts_with(root),
+                            "file resolves outside the working copy"
+                        );
+                        let metadata = target.symlink_metadata()?;
+                        let bytes = if metadata.file_type().is_symlink() {
+                            std::fs::read_link(&target)?
+                                .to_string_lossy()
+                                .as_bytes()
+                                .to_vec()
+                        } else {
+                            ensure!(metadata.is_file(), "diff target is not a regular file");
+                            let mut bytes = Vec::new();
+                            std::fs::File::open(target)?
+                                .take(OUTPUT_LIMIT as u64 + 1)
+                                .read_to_end(&mut bytes)?;
+                            bytes
+                        };
                         bytes
                     };
                     let mut truncated = bytes.len() > OUTPUT_LIMIT;

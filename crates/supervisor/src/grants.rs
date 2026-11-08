@@ -299,7 +299,10 @@ pub(crate) fn effective_access(
 }
 pub(crate) fn owner_only(path: &str) -> bool {
     let path = path.split('?').next().unwrap_or(path);
-    path.starts_with("/api/transport/trust")
+    (path.starts_with("/api/threads/") && path.ends_with("/environment"))
+        || path.starts_with("/api/environments")
+        || path.starts_with("/api/environment-requests")
+        || path.starts_with("/api/transport/trust")
         || path.starts_with("/api/transport/device-certificate")
         || path.starts_with("/api/transport/grants")
         || path.starts_with("/api/ports")

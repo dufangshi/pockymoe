@@ -38,6 +38,31 @@ examples are `runtime/src/service.rs` + `service/{reliability,update}.rs`,
 over growing a single file; see [code-structure.md](code-structure.md) for the
 current size inventory and the modules that most need it.
 
+## Execution environments
+
+The original Supervisor remains the only device and authority for a thread.
+[Dokploy environments](environments.md) add an execution backend, rather than a
+second Supervisor. Rust `environment.rs` owns lifecycle, storage proofs, resource
+budgets and generation; `execution.rs` carries the selected thread/environment
+through async and blocking work. `execution/worker.rs` implements the bounded
+stdio process/file protocol inside the container. Docker exec transports that
+protocol without a PTY; terminal UI requests use a separate Docker PTY.
+
+ACP fs/terminal callbacks restore the owning process's execution context. File,
+Git, command, managed-worktree and preview operations select the same backend;
+a stopped, stale or unsupported backend returns an error. New isolated threads
+bind stopped storage before their thread row becomes visible and defer native
+initialization until the environment runs. Existing threads explicitly release
+the native session before rebinding. Children inherit the binding.
+
+The host's restricted Unix gateway exposes thread-scoped CLI operations and an
+API model broker. A separate CONNECT broker grants exact public HTTPS hosts.
+Neither exposes the general Supervisor HTTP service or its machine identity.
+The worker receives ephemeral capabilities; management and upstream credentials
+remain on the host. Native subscriptions and host global MCP/auth configuration
+are unsupported in this backend. The environment record and worker protocol are
+provider boundaries; E2B has no adapter in this release.
+
 ## Clients
 
 Native Android/iOS/Windows clients are not duplicated in this rewrite. They keep

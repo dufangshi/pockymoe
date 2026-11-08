@@ -210,6 +210,9 @@ raw TCP bridge and does not require a new device wire protocol.
 HTTP bodies stream with backpressure over binary WebSockets rather than through
 the chat control channel. Unfinished responses are not returned to the idle
 pool. WebSocket upgrades use dedicated connections; SSE remains streamed.
+When a device stream ends naturally, the Relay finishes reading buffered HTTP
+response bytes before closing its HTTP connection. Revocation and explicit
+stop still cancel active streams immediately.
 There are at most 32 enabled mappings per device. Simultaneous preview
 connections are limited to 128 per device and 1024 per Relay, and per mapping to
 the `previewStreamLimit` the Supervisor reports in its heartbeat (128; 32 for

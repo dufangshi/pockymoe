@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -60,6 +60,8 @@ impl Drop for PendingGuard {
 /// One ACP stdio process. stdin is locked only for the write, so multiple
 /// sessions on the same process can request/notify concurrently.
 pub struct AcpProcess {
+    pub(crate) host_guard: Option<crate::execution::host_process::HostProcessContext>,
+    pub(crate) execution: Option<crate::execution::ExecutionContext>,
     pub(crate) context_inspection: bool,
     context_trace_root: Option<std::path::PathBuf>,
     pub(crate) cli_env: Vec<(String, String)>,
@@ -102,12 +104,27 @@ pub(crate) fn parse_spawn_command(command: &str) -> Result<ParsedCommand> {
 
 impl AcpProcess {
     pub async fn connection_open(&self) -> bool {
+        if self
+            .execution
+            .as_ref()
+            .is_some_and(|c| c.checked().is_err())
+        {
+            return false;
+        }
         let open = self.state.lock().await.closed_reason.is_none();
         open && !self.exited().await.unwrap_or(true)
     }
 
     pub async fn shutdown(&self) -> Result<()> {
         close_rpc_state(&self.state, "Harness restarted".into()).await;
+        if let Some(guard) = &self.host_guard {
+            guard.quiesce_process(&self.id).await?;
+            self.cleanup_context_trace();
+            return Ok(());
+        }
+        if let Some(context) = &self.execution {
+            let _ = context.kill(&self.id).await;
+        }
         let mut child = self.child.lock().await;
         if child.try_wait()?.is_none() {
             terminate_tree(&child);
@@ -123,6 +140,14 @@ impl AcpProcess {
     /// exit, then SIGKILL for anything left. Windows ends the tree at once.
     pub async fn terminate(&self, grace: Duration) -> Result<()> {
         close_rpc_state(&self.state, "Harness released".into()).await;
+        if let Some(guard) = &self.host_guard {
+            guard.quiesce_process(&self.id).await?;
+            self.cleanup_context_trace();
+            return Ok(());
+        }
+        if let Some(context) = &self.execution {
+            let _ = context.kill(&self.id).await;
+        }
         let mut child = self.child.lock().await;
         // A root reaped earlier may have freed its PID for another process group.
         let running = child.try_wait()?.is_none();
@@ -191,10 +216,20 @@ impl AcpProcess {
         extra_env: &[(&str, String)],
     ) -> Result<(
         Self,
-        mpsc::UnboundedReceiver<Value>,
-        mpsc::UnboundedReceiver<(i64, String, Value)>,
+        mpsc::Receiver<Value>,
+        mpsc::Receiver<(i64, String, Value)>,
     )> {
-        let parsed = parse_spawn_command(command)?;
+        let execution = crate::execution::current();
+        let parsed = if execution.is_some() {
+            let mut parts = shell_words::split(command)?;
+            anyhow::ensure!(!parts.is_empty(), "empty command");
+            ParsedCommand {
+                program: parts.remove(0),
+                args: parts,
+            }
+        } else {
+            parse_spawn_command(command)?
+        };
         let mut cmd = Command::new(&parsed.program);
         #[cfg(unix)]
         cmd.process_group(0);
@@ -224,9 +259,27 @@ impl AcpProcess {
         }
         let cli_env = crate::interaction::launch_env();
         cmd.envs(cli_env.iter().cloned());
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("spawn ACP `{command}`"))?;
+        let process_id = uuid::Uuid::new_v4().to_string();
+        let mut child = if let Some(context) = &execution {
+            let mut argv = vec![parsed.program.clone()];
+            argv.extend(parsed.args.clone());
+            let mut env = context.launch_env();
+            // These are projected nonsecret settings and short-lived gateway capabilities.
+            env.extend(extra_env.iter().map(|(k, v)| (k.to_string(), v.clone())));
+            context
+                .spawn(&crate::execution::RunRequest {
+                    id: process_id.clone(),
+                    argv,
+                    cwd: cwd.into(),
+                    env,
+                    stdin_closed: false,
+                })
+                .await?
+        } else {
+            crate::execution::host_process::spawn(&mut cmd, &process_id, true, false)
+                .await
+                .with_context(|| format!("spawn ACP `{command}`"))?
+        };
         let stdin = child.stdin.take().ok_or_else(|| anyhow!("missing stdin"))?;
         let stdout = child
             .stdout
@@ -246,9 +299,23 @@ impl AcpProcess {
             });
         }
         let state = Arc::new(Mutex::new(RpcState::default()));
-        let (updates_tx, updates_rx) = mpsc::unbounded_channel();
-        let (req_tx, req_rx) = mpsc::unbounded_channel();
+        let (updates_tx, updates_rx) = mpsc::channel(16);
+        let (req_tx, req_rx) = mpsc::channel(16);
         let reader_state = state.clone();
+        let host_guard = execution
+            .is_none()
+            .then(crate::execution::host_process::enabled_context)
+            .flatten();
+        let pid = if execution.is_some() {
+            None
+        } else {
+            child.id()
+        };
+        let child = Arc::new(Mutex::new(child));
+        let reader_child = child.clone();
+        let reader_execution = execution.clone();
+        let reader_process_id = process_id.clone();
+        let reader_guard = host_guard.clone();
         tokio::spawn(async move {
             let reason = match read_loop(stdout, reader_state.clone(), updates_tx, req_tx).await {
                 Ok(()) => "ACP stdout closed".to_string(),
@@ -258,12 +325,23 @@ impl AcpProcess {
                 }
             };
             close_rpc_state(&reader_state, reason).await;
+            if let Some(context) = reader_execution {
+                let _ = context.kill(&reader_process_id).await;
+            }
+            if let Some(guard) = reader_guard {
+                let _ = guard.quiesce_process(&reader_process_id).await;
+                return;
+            }
+            let mut child = reader_child.lock().await;
+            if child.try_wait().ok().flatten().is_none() {
+                terminate_tree(&child);
+                let _ = child.start_kill();
+            }
         });
-        let pid = child.id();
-        let child = Arc::new(Mutex::new(child));
         spawn_exit_monitor(child.clone(), state.clone());
         Ok((
             Self {
+                host_guard,
                 context_inspection: extra_env
                     .iter()
                     .any(|(k, v)| *k == "POCKYMOE_CONTEXT_INSPECTION" && v == "1"),
@@ -272,7 +350,8 @@ impl AcpProcess {
                     .find(|(k, _)| *k == "CODEX_ROLLOUT_TRACE_ROOT")
                     .map(|(_, v)| v.into()),
                 cli_env,
-                id: uuid::Uuid::new_v4().to_string(),
+                id: process_id,
+                execution,
                 started_at: pockymoe_protocol::now_rfc3339(),
                 pid,
                 stdin: Mutex::new(stdin),
@@ -286,6 +365,9 @@ impl AcpProcess {
     }
 
     pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        if let Some(context) = &self.execution {
+            context.checked()?;
+        }
         self.request_with_timeout(method, params, timeout_for_method(method))
             .await
     }
@@ -318,6 +400,9 @@ impl AcpProcess {
         params: Value,
         wait: Option<Duration>,
     ) -> Result<futures_util::future::BoxFuture<'static, Result<Value>>> {
+        if let Some(context) = &self.execution {
+            context.checked()?;
+        }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         {
@@ -385,6 +470,9 @@ impl AcpProcess {
     }
 
     pub async fn notify(&self, method: &str, params: Value) -> Result<()> {
+        if let Some(context) = &self.execution {
+            context.checked()?;
+        }
         let mut stdin = self.stdin.lock().await;
         write_message(
             &mut stdin,
@@ -409,62 +497,82 @@ async fn write_message(stdin: &mut ChildStdin, value: &Value) -> Result<()> {
 async fn read_loop(
     stdout: tokio::process::ChildStdout,
     state: Arc<Mutex<RpcState>>,
-    updates: mpsc::UnboundedSender<Value>,
-    requests: mpsc::UnboundedSender<(i64, String, Value)>,
+    updates: mpsc::Sender<Value>,
+    requests: mpsc::Sender<(i64, String, Value)>,
 ) -> Result<()> {
     let mut reader = BufReader::new(stdout);
-    let mut buf = Vec::new();
+    while let Some(message) = read_message(&mut reader).await? {
+        dispatch(message, &state, &updates, &requests).await?;
+    }
+    Ok(())
+}
+const MAX_ACP_FRAME: usize = 4 * 1024 * 1024;
+async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(reader: &mut R) -> Result<Option<Value>> {
+    let mut line = Vec::new();
     loop {
-        buf.clear();
-        let n = reader.read_until(b'\n', &mut buf).await?;
+        line.clear();
+        let n = (&mut *reader)
+            .take((MAX_ACP_FRAME + 1) as u64)
+            .read_until(b'\n', &mut line)
+            .await?;
         if n == 0 {
-            break;
+            return Ok(None);
         }
-        let line = String::from_utf8_lossy(&buf);
-        let msg = if line.to_ascii_lowercase().starts_with("content-length:") {
-            let len: usize = line
-                .split(':')
-                .nth(1)
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(0);
-            let mut rest = String::new();
+        ensure!(n <= MAX_ACP_FRAME, "ACP frame exceeds transport limit");
+        let text = std::str::from_utf8(&line)?;
+        if text.trim().is_empty() {
+            continue;
+        }
+        if text.to_ascii_lowercase().starts_with("content-length:") {
+            let len: usize = text
+                .split_once(':')
+                .and_then(|(_, v)| v.trim().parse().ok())
+                .context("invalid ACP Content-Length")?;
+            ensure!(
+                len > 0 && len <= MAX_ACP_FRAME,
+                "ACP frame exceeds transport limit"
+            );
+            let mut total = 0;
             loop {
-                rest.clear();
-                reader.read_line(&mut rest).await?;
-                if rest.trim().is_empty() {
+                line.clear();
+                let n = (&mut *reader)
+                    .take(16385)
+                    .read_until(b'\n', &mut line)
+                    .await?;
+                total += n;
+                ensure!(
+                    n > 0 && total <= 16384,
+                    "ACP headers exceed transport limit"
+                );
+                if line.iter().all(|b| b.is_ascii_whitespace()) {
                     break;
                 }
             }
             let mut body = vec![0; len];
             reader.read_exact(&mut body).await?;
-            serde_json::from_slice::<Value>(&body)?
-        } else {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            serde_json::from_str::<Value>(trimmed)?
-        };
-        dispatch(msg, &state, &updates, &requests).await;
+            return Ok(Some(serde_json::from_slice(&body)?));
+        }
+        return Ok(Some(serde_json::from_str(text.trim())?));
     }
-    Ok(())
 }
 
 async fn dispatch(
     msg: Value,
     state: &Arc<Mutex<RpcState>>,
-    updates: &mpsc::UnboundedSender<Value>,
-    requests: &mpsc::UnboundedSender<(i64, String, Value)>,
-) {
+    updates: &mpsc::Sender<Value>,
+    requests: &mpsc::Sender<(i64, String, Value)>,
+) -> Result<()> {
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
     if let Some(id) = msg.get("id").and_then(Value::as_i64) {
         if !method.is_empty() {
-            let _ = requests.send((
-                id,
-                method.to_string(),
-                msg.get("params").cloned().unwrap_or(json!({})),
-            ));
-            return;
+            requests
+                .try_send((
+                    id,
+                    method.to_string(),
+                    msg.get("params").cloned().unwrap_or(json!({})),
+                ))
+                .map_err(|_| anyhow!("ACP callback queue exceeds transport limit"))?;
+            return Ok(());
         }
         if let Some(pending) = state.lock().await.pending.remove(&id) {
             if let Some(error) = msg.get("error") {
@@ -475,16 +583,23 @@ async fn dispatch(
                     .send(Ok(msg.get("result").cloned().unwrap_or(Value::Null)));
             }
         }
-        return;
+        return Ok(());
     }
     if method == "session/update" || method.starts_with('_') {
         let mut params = msg.get("params").cloned().unwrap_or(json!({}));
         let Some(object) = params.as_object_mut() else {
-            return;
+            return Ok(());
         };
         object.insert("_remoteMethod".into(), json!(method));
-        let _ = updates.send(params);
+        ensure!(
+            serde_json::to_vec(&params)?.len() <= 256 * 1024,
+            "ACP update exceeds transport limit"
+        );
+        updates
+            .try_send(params)
+            .map_err(|_| anyhow!("ACP update queue exceeds transport limit"))?;
     }
+    Ok(())
 }
 
 async fn close_rpc_state(state: &Arc<Mutex<RpcState>>, reason: String) {
@@ -547,6 +662,11 @@ fn terminate_tree(child: &Child) {
 impl Drop for AcpProcess {
     fn drop(&mut self) {
         self.cleanup_context_trace();
+        // Dropping stdin closes the guardian transport; it must survive long
+        // enough to reap descendants and write its receipt, not receive SIGKILL.
+        if self.host_guard.is_some() {
+            return;
+        }
         if let Ok(mut child) = self.child.try_lock() {
             terminate_tree(&child);
             let _ = child.start_kill();
@@ -574,6 +694,63 @@ pub(crate) fn timeout_for_method(method: &str) -> Option<Duration> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn transport_rejects_oversized_lengths_and_lines_before_dispatch() {
+        for bytes in [
+            b"Content-Length: 999999999999999\r\n\r\n".to_vec(),
+            vec![b'x'; MAX_ACP_FRAME + 1],
+            [b"Content-Length: 2\r\n".as_slice(), &vec![b'x'; 16385]].concat(),
+        ] {
+            let mut reader = BufReader::new(bytes.as_slice());
+            let error = read_message(&mut reader).await.unwrap_err();
+            assert!(error.to_string().contains("transport limit"));
+        }
+        for bytes in [
+            b"{\"result\":42}\n".to_vec(),
+            b"Content-Length: 13\r\nContent-Type: application/json\r\n\r\n{\"result\":42}".to_vec(),
+        ] {
+            let mut reader = BufReader::new(bytes.as_slice());
+            assert_eq!(
+                read_message(&mut reader).await.unwrap(),
+                Some(json!({"result":42}))
+            );
+            assert_eq!(read_message(&mut reader).await.unwrap(), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn callback_flood_closes_transport_instead_of_allocating_without_bound() {
+        let state = Arc::new(Mutex::new(RpcState::default()));
+        let (updates, _updates_rx) = mpsc::channel(1);
+        let (requests, _requests_rx) = mpsc::channel(1);
+        dispatch(
+            json!({"id":1,"method":"fs/read_text_file"}),
+            &state,
+            &updates,
+            &requests,
+        )
+        .await
+        .unwrap();
+        let error = dispatch(
+            json!({"id":2,"method":"fs/read_text_file"}),
+            &state,
+            &updates,
+            &requests,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("callback queue"));
+        let error = dispatch(
+            json!({"method":"session/update","params":{"text":"x".repeat(256*1024)}}),
+            &state,
+            &updates,
+            &requests,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("update exceeds"));
+    }
     #[test]
     fn spawn_command_preserves_structured_windows_arguments() {
         let args = [

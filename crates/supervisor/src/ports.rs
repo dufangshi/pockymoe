@@ -23,6 +23,10 @@ use uuid::Uuid;
 pub(crate) struct Mapping {
     pub id: String,
     pub port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_generation: Option<u64>,
     pub label: String,
     pub created_at: String,
     /// The last conversation whose own CLI credential approved the port. The
@@ -275,8 +279,16 @@ fn create_mapping(
 ) -> Result<Mapping> {
     pockymoe_runtime::host_mode::require_feature(state.host_capabilities.previews, "previews")?;
     if port == 0 || port == state.config.port || label.len() > 120 {
-        bail!("Choose an HTTP service port from 1–65535, excluding the Supervisor port. Labels may contain up to 120 bytes.");
+        bail!(
+            "Choose an HTTP service port from 1–65535, excluding the Supervisor port. Labels may contain up to 120 bytes."
+        );
     }
+    let environment = thread
+        .map(|t| state.environments.for_thread(t))
+        .transpose()?
+        .flatten();
+    let environment_id = environment.as_ref().map(|e| e.id.clone());
+    let environment_generation = environment.as_ref().map(|e| e.generation);
     let mapping = state.db.with(|conn| {
         // Serialize provenance and mapping creation with local binding/reset writes.
         let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
@@ -301,7 +313,7 @@ fn create_mapping(
         )?;
         let mut mappings: Vec<Mapping> = serde_json::from_str(&saved)?;
         let mut local = local_mappings(&tx)?;
-        let mapping = if let Some(existing) = mappings.iter_mut().find(|m| m.port == port) {
+        let mapping = if let Some(existing) = mappings.iter_mut().find(|m| m.port == port && m.environment_id==environment_id && m.environment_generation==environment_generation) {
             // The latest thread to approve the port decides who else opens it;
             // owner approvals never take it away from that thread's recipients.
             if let Some(thread) = thread {
@@ -314,7 +326,7 @@ fn create_mapping(
         } else {
             if mappings.len() >= 32 { bail!("At most 32 port mappings can be enabled on a device"); }
             let mapping = Mapping {
-                id: Uuid::new_v4().simple().to_string(), port,
+                id: Uuid::new_v4().simple().to_string(), port,environment_id:environment_id.clone(),environment_generation,
                 label: label.trim().to_string(), created_at: pockymoe_protocol::now_rfc3339(),
                 thread_id: thread.map(str::to_owned),
                 preserve_origin: preserve_origin.unwrap_or(false),
@@ -443,6 +455,10 @@ pub(crate) async fn remove(
 }
 
 pub(crate) fn remove_mapping(state: &Supervisor, id: &str) -> Result<()> {
+    remove_mapping_handles(state, id).map(|_| ())
+}
+
+fn remove_mapping_handles(state: &Supervisor, id: &str) -> Result<Vec<tokio::task::AbortHandle>> {
     state.db.with(|conn| {
         let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
         let saved: String = tx.query_row("SELECT COALESCE((SELECT value FROM kv WHERE key=?1),'[]')", [KEY], |r| r.get(0))?;
@@ -457,6 +473,7 @@ pub(crate) fn remove_mapping(state: &Supervisor, id: &str) -> Result<()> {
         tx.commit()?;
         Ok(())
     })?;
+    let mut pending = Vec::new();
     if let Some(handles) = active()
         .lock()
         .unwrap()
@@ -464,9 +481,30 @@ pub(crate) fn remove_mapping(state: &Supervisor, id: &str) -> Result<()> {
     {
         for handle in handles {
             handle.handle.abort();
+            pending.push(handle.handle);
         }
     }
     changed(state);
+    Ok(pending)
+}
+
+/// Binding completion must not leave an already connected host preview usable
+/// until the periodic lease watcher runs. Drain every old stream before ACK.
+pub(crate) async fn revoke_thread_mappings(state: &Supervisor, thread: &str) -> Result<()> {
+    let mut pending = Vec::new();
+    for mapping in snapshot(state)
+        .into_iter()
+        .filter(|mapping| mapping.thread_id.as_deref() == Some(thread))
+    {
+        pending.extend(remove_mapping_handles(state, &mapping.id)?);
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while pending.iter().any(|handle| !handle.is_finished()) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("preview teardown is not confirmed; retry environment binding"))?;
     Ok(())
 }
 
@@ -515,10 +553,10 @@ pub(crate) fn open(state: Arc<Supervisor>, message: &Value) {
             return;
         }
         tokio::select! {
-            result = connect(&state, mapping.port, &ticket) => {
+            result = connect_mapping(&state, &mapping, &ticket) => {
                 if let Err(error) = result { tracing::debug!(%error, port=mapping.port, "port preview stream ended"); }
             }
-            _ = watch_lease(&state, &mapping.id, lease.as_deref()) => {}
+            _ = watch_mapping(&state, &mapping, lease.as_deref()) => {}
         }
     });
     handles.push(ActiveConnection {
@@ -527,9 +565,11 @@ pub(crate) fn open(state: Arc<Supervisor>, message: &Value) {
     });
 }
 
-async fn watch_lease(state: &Supervisor, mapping: &str, lease: Option<&str>) {
+async fn watch_mapping(state: &Supervisor, mapping: &Mapping, lease: Option<&str>) {
     loop {
-        if !lease_live(state, mapping, lease) {
+        if !lease_live(state, &mapping.id, lease)
+            || mapping_execution_context(state, mapping).is_err()
+        {
             return;
         }
         // Sleep to the exact expiry, while rechecking binding changes and renewed
@@ -587,19 +627,81 @@ async fn connect_preview_socket(
     Ok(socket)
 }
 
+trait PreviewIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send> PreviewIo for T {}
 async fn connect(state: &Supervisor, port: u16, ticket: &str) -> Result<()> {
-    let upstream = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        match tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await {
-            Ok(socket) => Ok(socket),
-            Err(_) => tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, port)).await,
+    connect_target(state, port, ticket, None).await
+}
+async fn connect_mapping(state: &Supervisor, mapping: &Mapping, ticket: &str) -> Result<()> {
+    let context = mapping_execution_context(state, mapping)?;
+    connect_target(state, mapping.port, ticket, context).await
+}
+
+fn validate_mapping_environment(mapping: &Mapping, bound: Option<(&str, u64)>) -> Result<()> {
+    match (mapping.environment_id.as_deref(), bound) {
+        (None, None) if mapping.environment_generation.is_none() => Ok(()),
+        (Some(expected), Some((actual, generation)))
+            if expected == actual
+                && mapping.environment_generation == Some(generation)
+                && mapping.thread_id.is_some() =>
+        {
+            Ok(())
         }
-    })
-    .await??;
-    // Small request/SSE/WS writes must not wait for TCP delayed ACKs.
-    upstream.set_nodelay(true)?;
+        _ => anyhow::bail!("stale preview execution environment; create a new mapping"),
+    }
+}
+
+pub(crate) fn mapping_execution_context(
+    state: &Supervisor,
+    mapping: &Mapping,
+) -> Result<Option<pockymoe_runtime::execution::ExecutionContext>> {
+    let bound = mapping
+        .thread_id
+        .as_deref()
+        .map(|thread| state.environments.for_thread(thread))
+        .transpose()?
+        .flatten();
+    validate_mapping_environment(
+        mapping,
+        bound
+            .as_ref()
+            .map(|environment| (environment.id.as_str(), environment.generation)),
+    )?;
+    match (&mapping.environment_id, &mapping.thread_id) {
+        (Some(_), Some(thread)) => {
+            let context = state
+                .execution_context(thread)?
+                .ok_or_else(|| anyhow::anyhow!("environment mapping is unbound"))?;
+            context.checked()?;
+            Ok(Some(context))
+        }
+        _ => Ok(None),
+    }
+}
+async fn connect_target(
+    state: &Supervisor,
+    port: u16,
+    ticket: &str,
+    context: Option<pockymoe_runtime::execution::ExecutionContext>,
+) -> Result<()> {
+    let upstream: Box<dyn PreviewIo> = if let Some(context) = context {
+        Box::new(context.open_tcp(port).await?)
+    } else {
+        let socket = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            match tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await {
+                Ok(s) => Ok(s),
+                Err(_) => {
+                    tokio::net::TcpStream::connect((std::net::Ipv6Addr::LOCALHOST, port)).await
+                }
+            }
+        })
+        .await??;
+        socket.set_nodelay(true)?;
+        Box::new(socket)
+    };
     let socket = connect_preview_socket(state, ticket).await?;
     let (mut sink, mut source) = socket.split();
-    let (mut read, mut write) = upstream.into_split();
+    let (mut read, mut write) = tokio::io::split(upstream);
     {
         let send = async {
             let mut buffer = vec![0; 64 * 1024];
@@ -645,6 +747,55 @@ async fn connect(state: &Supervisor, port: u16, ticket: &str) -> Result<()> {
 #[cfg(test)]
 mod owner_mapping_tests {
     use super::*;
+    #[test]
+    fn preview_provenance_cannot_survive_a_change_of_execution_environment() {
+        let mut mapping = Mapping {
+            id: "preview".into(),
+            port: 18765,
+            label: String::new(),
+            created_at: String::new(),
+            thread_id: Some("thread".into()),
+            environment_id: None,
+            environment_generation: None,
+            preserve_origin: false,
+        };
+        assert!(validate_mapping_environment(&mapping, None).is_ok());
+        assert!(validate_mapping_environment(&mapping, Some(("environment", 1))).is_err());
+        mapping.environment_id = Some("environment".into());
+        mapping.environment_generation = Some(1);
+        assert!(validate_mapping_environment(&mapping, Some(("environment", 1))).is_ok());
+        assert!(validate_mapping_environment(&mapping, None).is_err());
+        assert!(validate_mapping_environment(&mapping, Some(("environment", 2))).is_err());
+        assert!(validate_mapping_environment(&mapping, Some(("other", 1))).is_err());
+        mapping.thread_id = None;
+        assert!(validate_mapping_environment(&mapping, Some(("environment", 1))).is_err());
+    }
+
+    #[tokio::test]
+    async fn unbound_environment_preview_never_opens_host_loopback() {
+        let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mapping = Mapping {
+            id: "preview".into(),
+            port: listener.local_addr().unwrap().port(),
+            label: String::new(),
+            created_at: String::new(),
+            thread_id: Some("thread".into()),
+            environment_id: Some("environment".into()),
+            environment_generation: Some(1),
+            preserve_origin: false,
+        };
+        assert!(
+            connect_mapping(&state, &mapping, &Uuid::new_v4().to_string())
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
+                .await
+                .is_err()
+        );
+    }
     use crate::owner_trust::tests::{decoded, encrypted, live_owner};
     use axum::{
         body::{to_bytes, Body},
@@ -768,7 +919,7 @@ mod owner_mapping_tests {
     }
     #[tokio::test]
     async fn revocation_and_stop_close_active_preview_tcp_and_websocket() {
-        for revoke in [true, false] {
+        for action in ["revoke", "stop", "bind"] {
             let relay = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let (_dir, state) = crate::tunnel::tests::state_with_relay_url(&format!(
                 "http://{}",
@@ -776,9 +927,13 @@ mod owner_mapping_tests {
             ));
             let owner = live_owner(&state);
             let app = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let mapping =
-                create_local_mapping(&state, app.local_addr().unwrap().port(), "local", None)
-                    .unwrap();
+            let mapping = create_local_mapping(
+                &state,
+                app.local_addr().unwrap().port(),
+                "local",
+                (action == "bind").then_some("bound-thread"),
+            )
+            .unwrap();
             let lease =
                 create_lease(&state, &mapping.id, MappingAuthority::Tunnel(Some(&owner))).unwrap();
             open(
@@ -793,14 +948,24 @@ mod owner_mapping_tests {
                 socket.next().await.unwrap().unwrap().into_data().as_ref(),
                 b"live stream"
             );
-            if revoke {
+            if action == "revoke" {
                 crate::owner_trust::apply_revocations(
                     &state,
                     &[crate::owner_trust::tests::browser_revocation(&owner)],
                 )
                 .unwrap();
-            } else {
+            } else if action == "stop" {
                 remove_mapping(&state, &mapping.id).unwrap();
+            } else {
+                let owner_only =
+                    create_local_mapping(&state, 1, "separate owner service", None).unwrap();
+                revoke_thread_mappings(&state, "bound-thread")
+                    .await
+                    .unwrap();
+                assert!(!snapshot(&state).iter().any(|saved| saved.id == mapping.id));
+                assert!(snapshot(&state)
+                    .iter()
+                    .any(|saved| saved.id == owner_only.id));
             }
             let count = tokio::time::timeout(
                 std::time::Duration::from_secs(1),
