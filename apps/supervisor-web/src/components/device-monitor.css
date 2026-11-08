@@ -447,3 +447,15 @@ a.dm-na:active { color: var(--theme-accent-strong); }
   .device-monitor-button .dm-summary-capacity b { font-size: 7px; }
   .device-monitor-button .dm-summary-reading > svg { width: 7px; height: 7px; }
 }
+/* A computer's thread sidebar ends with the device and its readings, one row. */
+.thread-ui-shell .matter-workbench .matter-sidebar-device .device-monitor-button {
+  width: auto;
+  height: auto;
+  min-height: 0;
+  margin-left: auto;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+}
+.matter-sidebar-device-icon { width: 13px; height: 13px; flex: none; }
+.matter-sidebar-device-name { min-width: 0; overflow: hidden; color: var(--theme-fg-soft, var(--theme-fg)); text-overflow: ellipsis; white-space: nowrap; }

@@ -2,10 +2,11 @@ import { useUsageColors } from './UsageColors';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import { ArrowRight, ArrowUpRight, ArrowUpCircle, EllipsisVertical, Folder, List } from 'lucide-react';
+import { ArrowRight, ArrowUpRight, ArrowUpCircle, EllipsisVertical, Folder, List, Lock } from 'lucide-react';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
 import { ErrorMark, StatusMark, type MapDeviceMenuItem, useLongPress, useMenuKeyboard } from '@pockymoe/thread-ui';
 import { DeviceMonitor } from '../../components/DeviceMonitor';
+import { fetchAgentIsolation } from '../../lib/api';
 import { DeviceStateMark } from '../../pages/relayAdmin/ui';
 import type { DesktopDevice } from '../data/types';
 import { Info } from './UsagePanel';
@@ -24,9 +25,20 @@ export interface DeviceCardProps {
   skeleton: boolean;
   onUpdate(): void;
   menuItems: MapDeviceMenuItem[];
+  /** Changes when the device's settings may have changed, to read its isolation again. */
+  isolationRevision?: number;
 }
-export function DeviceCard({ device, metric, today, history, counts, cacheLabel, partial, loading, skeleton, onUpdate, menuItems }: DeviceCardProps) {
+export function DeviceCard({ device, metric, today, history, counts, cacheLabel, partial, loading, skeleton, onUpdate, menuItems, isolationRevision = 0 }: DeviceCardProps) {
   const { t } = useI18n();
+  // Isolation is the device's own setting, read from it while it is online; a
+  // device shared with you (owner only) or an older one shows no mark.
+  const [isolated, setIsolated] = useState(false);
+  useEffect(() => {
+    if (!device.connected) return;
+    let alive = true;
+    fetchAgentIsolation(device.id).then(value => { if (alive) setIsolated(Boolean(value.device)); }).catch(() => {});
+    return () => { alive = false; };
+  }, [device.id, device.connected, isolationRevision]);
   const { deviceColor } = useUsageColors();
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -68,6 +80,7 @@ export function DeviceCard({ device, metric, today, history, counts, cacheLabel,
     <header className="pd-card-heading">
       <DeviceStateMark showLabel={false} state={!device.connected ? 'offline' : unstable ? 'unstable' : 'online'} label={!device.connected ? t('desktopDevices.offline') : unstable ? t('desktopDevices.unstable') : t('desktopDevices.online')} />
       <Link to={`/desktop/devices/${encodeURIComponent(device.id)}`} className="pd-device-title" title={`${device.name} · Pockymoe ${metric?.version ?? '—'}`}><strong>{device.name}</strong></Link>
+      {isolated ? <span className="pd-isolated" role="img" aria-label={t('devices.deviceIsolated')} title={t('devices.deviceIsolationDescription')}><Lock size={11} data-icon="isolated" aria-hidden /></span> : null}
       <span className="pd-presence">{device.connected && metric?.latencyMs != null ? <small>{metric.latencyMs}ms</small> : null}</span>
       {update ? <button className="pd-update-badge" disabled={!device.connected} onClick={onUpdate} aria-label={t('desktopDevices.updateAvailable', { version: metric?.latestVersion })} title={t('desktopDevices.updateAvailable', { version: metric?.latestVersion })}>{metric?.version}<ArrowUpRight size={10} aria-hidden /></button> : null}
       <Link className="pd-icon-button pd-workspaces-arrow" to={`/devices/${encodeURIComponent(device.id)}/workspaces`} aria-label={t('desktopDevices.openDeviceWorkspaces', { device: device.name })} title={t('desktopDevices.openDeviceWorkspaces', { device: device.name })}><ArrowRight size={14} aria-hidden /></Link>

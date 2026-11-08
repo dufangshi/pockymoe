@@ -11,6 +11,7 @@ import {
 import { relayUrl } from './relayOrigin';
 import { reportSharePendingBody } from './sharePending';
 import { sharingTrustEntries, sharingTrustStore } from './sharingTrustStore';
+import { isTourDevice } from './tourSandbox/tourDevice';
 
 export type PublicAccount = Pick<AccountKeyInfo, 'accountKeyId' | 'accountPublicKey'>;
 const nativeFetch = globalThis.fetch.bind(globalThis);
@@ -105,6 +106,8 @@ export async function sharingGrantDevices() {
   return [...ids];
 }
 async function deviceDescriptor(deviceId: string, threadId?: string, workspaceId?: string) {
+  // The tour's sample device has no device key: its shares are unsigned rows in the page.
+  if (isTourDevice(deviceId)) return null;
   const challenge = encode64(crypto.getRandomValues(new Uint8Array(32)));
   // A thread or workspace share reads the key under its own resource.
   const prefix = threadId ? supervisorPath(`api/threads/${encodeURIComponent(threadId)}`)
