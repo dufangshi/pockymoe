@@ -34,7 +34,10 @@ pub use actor::{EventBus, SharedRuntime};
 pub use config::RuntimeConfig;
 pub use db::Database;
 pub use restart::{RestartStrategy, HOST_MANAGED_RESTART_EXIT_CODE};
-pub use service::{bootstrap_runtimes, Supervisor, UploadedPromptAttachment};
+pub use service::{
+    bootstrap_runtimes, prompt_attachment_file_name, PromptAttachmentDir, Supervisor,
+    UploadedPromptAttachment,
+};
 
 use anyhow::Result;
 use std::sync::Arc;

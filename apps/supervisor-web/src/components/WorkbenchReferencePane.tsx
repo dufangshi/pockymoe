@@ -98,6 +98,8 @@ export function WorkbenchReferencePane({
               sendShortcut: sendShortcut ?? 'ctrlEnter',
               busy: controller.busy,
               settingsBusy: controller.busy,
+              uploadProgress: controller.uploadProgress,
+              onCancelUpload: controller.cancelUpload,
               error: null,
               shellAvailable: false,
               model: detail.thread.model,

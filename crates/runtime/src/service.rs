@@ -296,6 +296,40 @@ fn upsert_legacy_turn_metadata(
     Ok(())
 }
 
+pub struct PromptAttachmentDir {
+    pub root: PathBuf,
+    pub dir: PathBuf,
+    pub context: Option<crate::execution::ExecutionContext>,
+}
+
+impl PromptAttachmentDir {
+    /// Creates the directory, and keeps every thread's attachments, which can be
+    /// large, away from a `git add` in the workspace.
+    pub fn ensure(&self) -> Result<()> {
+        let ignore = self.root.join(".temp").join("threads").join(".gitignore");
+        if let Some(context) = &self.context {
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD.encode("*\n");
+            context.request(
+                &json!({"op":"writeBytes","root":self.root,"path":ignore,"bytes":bytes}),
+            )?;
+            return Ok(());
+        }
+        crate::files::assert_within(&self.root, &self.dir)
+            .map_err(|_| anyhow!("Attachments must stay inside the workspace."))?;
+        std::fs::create_dir_all(&self.dir)?;
+        if !ignore.exists() {
+            std::fs::write(ignore, "*\n")?;
+        }
+        Ok(())
+    }
+}
+
+/// The name an attachment is stored under: safe characters, never an existing one.
+pub fn prompt_attachment_file_name(name: &str) -> String {
+    sanitize_file_name(name)
+}
+
 pub struct UploadedPromptAttachment {
     pub kind: String,
     pub original_name: String,
@@ -4224,6 +4258,22 @@ impl Supervisor {
         self.settle_reconnected_execution(id).await
     }
 
+    /// Where a thread's attachments go: under the directory its harness runs in,
+    /// which is what `./.temp/threads/...` in the prompt is relative to.
+    pub fn prompt_attachment_dir(&self, thread_id: &str) -> Result<PromptAttachmentDir> {
+        let thread = self.get_thread(thread_id)?;
+        let context = self.execution_context(thread_id)?;
+        let root = match &context {
+            Some(context) => context.working_directory.clone(),
+            None => PathBuf::from(
+                self.session_cwd(&thread)
+                    .ok_or_else(|| anyhow!("The thread's workspace no longer exists."))?,
+            ),
+        };
+        let dir = root.join(".temp").join("threads").join(thread_id);
+        Ok(PromptAttachmentDir { root, dir, context })
+    }
+
     pub fn prepare_prompt_attachments(
         &self,
         thread_id: &str,
@@ -4233,23 +4283,14 @@ impl Supervisor {
         if attachments.is_empty() {
             return Ok(prompt.to_string());
         }
-        let thread = self.get_thread(thread_id)?;
-        let workspace = self.get_workspace(&thread.workspace_id)?;
-        let context = self.execution_context(thread_id)?;
-        let root = context
-            .as_ref()
-            .map(|c| c.working_directory.clone())
-            .unwrap_or_else(|| PathBuf::from(&workspace.abs_path));
-        let dir = root.join(".temp").join("threads").join(thread_id);
+        let target = self.prompt_attachment_dir(thread_id)?;
+        target.ensure()?;
+        let PromptAttachmentDir { root, dir, context } = &target;
         // Uploads land inside the workspace even when a link inside it points out.
         let inside = |path: &std::path::Path| {
-            crate::files::assert_within(&root, path)
+            crate::files::assert_within(root, path)
                 .map_err(|_| anyhow!("Attachments must stay inside the workspace."))
         };
-        if context.is_none() {
-            inside(&dir)?;
-            std::fs::create_dir_all(&dir)?;
-        }
         let mut rewritten = prompt.to_string();
         for attachment in attachments {
             if !rewritten.contains(&attachment.placeholder) {
@@ -4259,7 +4300,7 @@ impl Supervisor {
                 );
             }
             let safe = sanitize_file_name(&attachment.original_name);
-            if let Some(context) = &context {
+            if let Some(context) = context {
                 use base64::Engine;
                 context.request(&json!({"op":"writeBytes","root":root,"path":dir.join(&safe),"bytes":base64::engine::general_purpose::STANDARD.encode(&attachment.bytes)}))?;
             } else {

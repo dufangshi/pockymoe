@@ -572,6 +572,12 @@ fn operation(input: Value) -> Result<Value> {
             std::fs::write(p, bytes)?;
             Ok(Value::Null)
         }
+        "appendChunk" => {
+            let bytes = STANDARD.decode(input["bytes"].as_str().context("bytes required")?)?;
+            let offset = input["offset"].as_u64().context("offset required")?;
+            let received = crate::files::append_chunk(root, Path::new(path), offset, &bytes)?;
+            Ok(json!({"received":received}))
+        }
         "createFile" => {
             crate::files::create_empty_file(root, path)?;
             Ok(Value::Null)

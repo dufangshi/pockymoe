@@ -288,6 +288,15 @@ pub fn shared_thread_path_allowed(
             _ => false,
         };
     }
+    if automation.first() == Some(&"uploads") {
+        // A large prompt attachment, sent before the prompt that refers to it.
+        return match (method, automation.as_slice()) {
+            ("POST", ["uploads"])
+            | ("GET" | "PUT" | "DELETE", ["uploads", _])
+            | ("POST", ["uploads", _, "complete"]) => control,
+            _ => false,
+        };
+    }
     if automation.first() == Some(&"commands") {
         // Shell commands and their output are terminal use (`terminal_route`).
         return false;
