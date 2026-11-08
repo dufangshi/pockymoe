@@ -94,7 +94,7 @@ fn require_peer(
     Ok(caller.0)
 }
 
-fn data_dir(state: &Supervisor) -> &Path {
+pub(crate) fn data_dir(state: &Supervisor) -> &Path {
     state
         .config
         .database_url
@@ -115,7 +115,7 @@ fn upload_lock(state: &Supervisor) -> Result<Arc<Mutex<()>>, ApiErr> {
     Ok(lock)
 }
 
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, ApiErr> + Send + 'static,
 ) -> Result<T, ApiErr> {
     tokio::task::spawn_blocking(work)

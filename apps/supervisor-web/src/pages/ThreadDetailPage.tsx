@@ -177,6 +177,7 @@ import { useMobileComposerLayout } from './useMobileComposerLayout';
 import { useThreadAuxiliaryActions } from './useThreadAuxiliaryActions';
 import { useThreadListPolling } from './useThreadListPolling';
 import { useEventDrivenRefresh } from '../lib/useEventDrivenRefresh';
+import { useAttachmentUploads } from '../lib/threadUploads';
 import { useThreadView } from '../lib/threadView';
 import { announceHarnessRuntimeEvent } from '../lib/harnessRuntimeEvents';
 import { useThreadWorkspaceAdapter } from './useThreadWorkspaceAdapter';
@@ -684,6 +685,7 @@ export function ThreadDetailPage() {
     useState(false);
   const [settingsBusy, setSettingsBusy] = useScopedState(routeKey, false);
   const [compactBusy, setCompactBusy] = useScopedState(routeKey, false);
+  const attachmentUploads = useAttachmentUploads(id ?? null, undefined);
   const [respondingRequestId, setRespondingRequestId] = useScopedState<string | null>(routeKey, null);
   const [realtimeConnection, setRealtimeConnection] =
     useState<RealtimeConnectionSnapshot>({
@@ -2674,6 +2676,21 @@ export function ThreadDetailPage() {
 
     setBusy(true);
     setError(null);
+    if (input.attachments?.length) {
+      // Before anything of the prompt shows: its draft stays until the files are there.
+      try {
+        const prepared = await attachmentUploads.upload(input);
+        if (!prepared || activeRouteRef.current !== routeKey) {
+          setBusy(false);
+          return false;
+        }
+        input = prepared;
+      } catch (caught) {
+        setError(caught instanceof ApiError ? caught.payload.message : caught instanceof Error ? caught.message : translate("workbench.unableToSendPrompt"));
+        setBusy(false);
+        return false;
+      }
+    }
     setScrollRequestKey((current) => current + 1);
     const activeDetail = detailRef.current;
     const effectiveThread = activeDetail
@@ -3807,6 +3824,8 @@ export function ThreadDetailPage() {
         onShellCopy: handleShellCopy,
         ...(relayThreadCanControl ? { onShellControl: handleShellControl } : {}),
         compactBusy,
+        uploadProgress: attachmentUploads.progress,
+        onCancelUpload: attachmentUploads.cancel,
         skillsState,
         mcpState,
         hooksState,

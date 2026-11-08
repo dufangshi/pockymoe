@@ -65,3 +65,7 @@
 :theme .thread-context-surface.is-sheet { border-radius: 0; border-color: var(--term-line); }
 :theme .thread-context-action, :theme .thread-context-row, :theme .thread-context-close { border-radius: 0; }
 :theme .thread-context-palette { --context-fill: var(--theme-accent-solid); }
+
+:theme .thread-ui-shell .thread-composer-upload {
+  border-radius: 0;
+}

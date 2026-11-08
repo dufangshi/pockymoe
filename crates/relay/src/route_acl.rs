@@ -167,6 +167,32 @@ mod tests {
     }
 
     #[test]
+    fn large_attachment_uploads_need_control() {
+        for (method, path) in [
+            ("POST", "/api/threads/thread-1/uploads"),
+            ("PUT", "/api/threads/thread-1/uploads/upload-1"),
+            ("GET", "/api/threads/thread-1/uploads/upload-1"),
+            ("DELETE", "/api/threads/thread-1/uploads/upload-1"),
+            ("POST", "/api/threads/thread-1/uploads/upload-1/complete"),
+        ] {
+            assert!(shared_thread_path_allowed(method, path, "thread-1", true));
+            assert!(!shared_thread_path_allowed(method, path, "thread-1", false));
+        }
+        assert!(!shared_thread_path_allowed(
+            "PUT",
+            "/api/threads/thread-1/uploads",
+            "thread-1",
+            true
+        ));
+        assert!(!shared_thread_path_allowed(
+            "PUT",
+            "/api/threads/thread-2/uploads/upload-1",
+            "thread-1",
+            true
+        ));
+    }
+
+    #[test]
     fn conversation_search_is_scoped_read_access() {
         assert!(shared_thread_path_allowed(
             "GET",

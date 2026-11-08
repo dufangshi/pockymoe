@@ -103,6 +103,20 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
         )
         .route("/api/cli", post(crate::interaction::command))
         .route(
+            "/api/threads/{thread}/uploads",
+            post(crate::thread_uploads::begin),
+        )
+        .route(
+            "/api/threads/{thread}/uploads/{upload}",
+            get(crate::thread_uploads::status)
+                .put(crate::thread_uploads::chunk)
+                .delete(crate::thread_uploads::cancel),
+        )
+        .route(
+            "/api/threads/{thread}/uploads/{upload}/complete",
+            post(crate::thread_uploads::complete),
+        )
+        .route(
             "/api/threads/{thread}/plugins",
             get(crate::plugins::thread_list),
         )

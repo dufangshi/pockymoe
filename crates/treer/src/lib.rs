@@ -216,10 +216,16 @@ pub fn gate(method: &str, path: &str, allowed_thread: impl Fn(&str) -> bool) -> 
                         | "fork"
                 ) || action.starts_with("requests/")
                     || action.starts_with("pending-steers/")
+                    || action == "uploads"
+                    || (action.starts_with("uploads/") && action.ends_with("/complete"))
             }
+            "PUT" => action.starts_with("uploads/"),
             "PATCH" => action.is_empty() || action == "settings" || action == "goal",
             "DELETE" => {
-                action.is_empty() || action.starts_with("pending-steers/") || action == "goal"
+                action.is_empty()
+                    || action.starts_with("pending-steers/")
+                    || action == "goal"
+                    || action.starts_with("uploads/")
             }
             _ => false,
         };

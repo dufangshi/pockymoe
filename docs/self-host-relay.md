@@ -109,6 +109,11 @@ relay.example.com {
 }
 ```
 
+Do not let the proxy write request bodies to disk. Large attachments pass through
+the relay in 4 MiB chunks ([prompt attachments](prompt-attachments.md)), and Caddy
+already forwards them as they arrive. On nginx, set `proxy_request_buffering off`
+for the relay, or each chunk spends time in its temporary directory.
+
 Open `https://relay.example.com`, create your account, and continue with the
 [quick start](../README.md#quick-start). This relay serves the Web UI itself; to
 keep the Web code out of the relay's hands, host it separately

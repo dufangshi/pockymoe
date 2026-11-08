@@ -94,6 +94,8 @@ relay.example.com {
 }
 ```
 
+不要让代理把请求体写到磁盘。大附件以 4 MiB 分块经过 Relay（见 [Prompt attachments](prompt-attachments.md)），Caddy 默认边收边转发；nginx 需要为 Relay 设置 `proxy_request_buffering off`，否则每个分块都会先落到它的临时目录。
+
 打开 `https://relay.example.com`，注册账号，然后按[快速上手](../README.zh-CN.md#快速上手)继续。这样部署的 Relay 自己提供网页；如果不想让 Relay 掌握网页代码，就把网页单独托管（见[独立的 Web origin](#独立的-web-origin)）。
 
 ## Docker

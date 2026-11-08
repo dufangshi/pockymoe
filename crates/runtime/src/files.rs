@@ -149,6 +149,53 @@ pub fn assert_mutation_within(root: &Path, candidate: &Path) -> Result<PathBuf> 
     Ok(resolved)
 }
 
+/// Adds a chunk to a growing file only when `offset` is where the file ends, and
+/// returns the size afterwards, so a caller can tell a chunk that did not fit from
+/// one that landed. A repeat of a chunk that already landed changes nothing.
+pub fn append_chunk(root: &Path, path: &Path, offset: u64, bytes: &[u8]) -> Result<u64> {
+    use std::io::Write;
+    let path = assert_within(root, path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path)?;
+    let size = file.metadata()?.len();
+    if size != offset {
+        return Ok(size);
+    }
+    file.write_all(bytes)?;
+    Ok(size + bytes.len() as u64)
+}
+
+/// Bytes an ordinary user can still write on the disk holding `path`, or its
+/// nearest existing parent. None where the system does not say.
+pub fn available_space(path: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let existing = path.ancestors().find(|ancestor| ancestor.exists())?;
+        let path = std::ffi::CString::new(existing.as_os_str().as_bytes()).ok()?;
+        let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        let stat = unsafe { stat.assume_init() };
+        Some((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf> {
     let mut ancestor = path.to_path_buf();
     let mut suffix = Vec::<OsString>::new();

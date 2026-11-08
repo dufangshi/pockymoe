@@ -11,6 +11,7 @@ import {
   steerSubmittedPrompt, updateThreadSettings, type SendThreadPromptRequestInput,
 } from '../lib/api';
 import { translate as t } from '@pockymoe/thread-ui/i18n';
+import { useAttachmentUploads } from '../lib/threadUploads';
 import { useThreadView } from '../lib/threadView';
 import { createClientRequestId, prependTurns } from './threadDetailModel';
 import { useScopedState } from './useScopedState';
@@ -119,6 +120,7 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
     };
   }, [device, hostDevice, threadId, threadView]);
 
+  const attachmentUploads = useAttachmentUploads(threadId, device);
   async function mutate(action: () => Promise<unknown>) {
     if (!threadId || !isCurrent() || !canControl || owner.mutation) return false;
     owner.mutation = true; owner.version += 1;
@@ -148,8 +150,12 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
     const target = threadId;
     const current = detailRef.current;
     const clientRequestId = createClientRequestId();
-    return mutate(async () => {
+    let stopped = false;
+    const finished = await mutate(async () => {
       if (!current) throw new Error(t('workbench.threadDetailIsStillLoading'));
+      const prepared = await attachmentUploads.upload(input);
+      if (!prepared) { stopped = true; return; }
+      input = prepared;
       if (!current.thread.isLoaded && current.thread.status !== 'recovering')
         await resumeThread(target, current.thread.model ? { model: current.thread.model } : {}, device);
       await sendThreadPrompt(target, {
@@ -166,6 +172,7 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
         }
       }
     });
+    return finished && !stopped;
   }
   const loadEarlier = useCallback(async () => {
     const current = detailRef.current;
@@ -185,6 +192,7 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
     unavailable,
     deviceId: device, detail, error, busy, canControl, access, accessReady, disabledReason, capabilities, models,
     onEvent, loadEarlier, loadingEarlier, respondingRequestId, send,
+    uploadProgress: attachmentUploads.progress, cancelUpload: attachmentUploads.cancel,
     interrupt: () => mutate(() => interruptThread(threadId!, {}, device)),
     cancelQueued: (queueId: string) => mutate(() => cancelPendingSteer(threadId!, queueId, device)),
     steerQueued: (queueId: string) => mutate(() => steerPendingPrompt(threadId!, queueId, device)),
