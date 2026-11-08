@@ -592,12 +592,17 @@ async fn dispatch(
         };
         object.insert("_remoteMethod".into(), json!(method));
         ensure!(
-            serde_json::to_vec(&params)?.len() <= 256 * 1024,
+            serde_json::to_vec(&params)?.len() <= MAX_ACP_FRAME,
             "ACP update exceeds transport limit"
         );
+        // Normal streaming bursts can fill this bounded queue while the mux
+        // handles session state. Apply backpressure without dropping updates or
+        // killing a healthy harness. The frame cap and queue capacity still
+        // bound memory; callbacks retain their separate concurrency limit.
         updates
-            .try_send(params)
-            .map_err(|_| anyhow!("ACP update queue exceeds transport limit"))?;
+            .send(params)
+            .await
+            .map_err(|_| anyhow!("ACP update receiver closed"))?;
     }
     Ok(())
 }
@@ -742,7 +747,7 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("callback queue"));
         let error = dispatch(
-            json!({"method":"session/update","params":{"text":"x".repeat(256*1024)}}),
+            json!({"method":"session/update","params":{"text":"x".repeat(MAX_ACP_FRAME)}}),
             &state,
             &updates,
             &requests,
@@ -751,6 +756,65 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("update exceeds"));
     }
+    #[tokio::test]
+    async fn streaming_burst_waits_for_capacity_and_preserves_order() {
+        let state = Arc::new(Mutex::new(RpcState::default()));
+        let (updates, mut updates_rx) = mpsc::channel(16);
+        let (requests, _requests_rx) = mpsc::channel(16);
+        let producer = tokio::spawn(async move {
+            for index in 0..128 {
+                dispatch(
+                    json!({"method":"session/update","params":{"index":index}}),
+                    &state,
+                    &updates,
+                    &requests,
+                )
+                .await
+                .unwrap();
+            }
+            // A large legitimate tool result must use the same frame budget.
+            dispatch(
+                json!({"method":"_claude/sdkMessage","params":{"text":"x".repeat(300*1024)}}),
+                &state,
+                &updates,
+                &requests,
+            )
+            .await
+            .unwrap();
+        });
+        while updates_rx.len() < 16 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!producer.is_finished());
+        for index in 0..128 {
+            let update = tokio::time::timeout(Duration::from_secs(5), updates_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(update["index"], index);
+        }
+        let update = updates_rx.recv().await.unwrap();
+        assert_eq!(update["text"].as_str().unwrap().len(), 300 * 1024);
+        producer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn update_receiver_closure_unblocks_reader() {
+        let state = Arc::new(Mutex::new(RpcState::default()));
+        let (updates, updates_rx) = mpsc::channel(1);
+        let (requests, _requests_rx) = mpsc::channel(1);
+        drop(updates_rx);
+        let error = dispatch(
+            json!({"method":"session/update","params":{}}),
+            &state,
+            &updates,
+            &requests,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("receiver closed"));
+    }
+
     #[test]
     fn spawn_command_preserves_structured_windows_arguments() {
         let args = [
