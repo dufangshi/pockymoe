@@ -150,14 +150,16 @@ export function useThreadWorkspaceAdapter({
             getSaveOperation: (input) => fetchWorkspaceSaveOperation(workspaceId,input.operationId,deviceId,threadId ?? input.threadId),
           }
         : {}),
+      // A control that shows the download's progress also shows its failure: the
+      // promise rejects. Without one, the failure goes to the workbench's message.
       downloadNode: async (input) => {
-        setError(null);
+        if (!input.onProgress) setError(null);
         try {
           inside(input.path);
           if (isLinked(input.path) && !linkedFiles) throw new Error(translate("files.linkedFileAccessIsUnavailable"));
           const result = isLinked(input.path)
-            ? await downloadLinkedFile(input.threadId, input.path, deviceId)
-            : await downloadWorkspaceFile(workspaceId, { path: input.path }, deviceId, undefined, threadId ?? input.threadId);
+            ? await downloadLinkedFile(input.threadId, input.path, deviceId, undefined, input.onProgress)
+            : await downloadWorkspaceFile(workspaceId, { path: input.path }, deviceId, undefined, threadId ?? input.threadId, input.onProgress);
           if (window.pockymoeHost && await (await import('../desktop/download')).nativeSave(result.blob, result.filename)) return;
           const url = URL.createObjectURL(result.blob);
           const anchor = document.createElement('a');
@@ -166,15 +168,17 @@ export function useThreadWorkspaceAdapter({
           document.body.append(anchor);
           anchor.click();
           anchor.remove();
-          URL.revokeObjectURL(url);
+          // The browser (or the desktop client's download manager) reads a large
+          // file from this URL after the click; release it only later.
+          window.setTimeout(() => URL.revokeObjectURL(url), 120_000);
         } catch (caught) {
-          setError(
-            caught instanceof ApiError
-              ? caught.payload.message
-              : caught instanceof Error
-                ? caught.message
-                : translate("files.workspaceDownloadFailed"),
-          );
+          const message = caught instanceof ApiError
+            ? caught.payload.message
+            : caught instanceof Error && caught.message
+              ? caught.message
+              : translate("files.workspaceDownloadFailed");
+          if (input.onProgress) throw new Error(message);
+          setError(message);
         }
       },
     };
