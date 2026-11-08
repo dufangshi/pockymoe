@@ -15,6 +15,7 @@ import { unlockCause, type UnlockCause } from './unlockCause';
 import { AccountTrustError, browserRequestHeaders, isBrowserRegistered, markBrowserRegistered,
   forgetBrowserRegistration, handleBrowserRevoked, syncDeviceRevocations, verifyTransportDevice,
   hasAccountDeviceCertificate, resetBrowserTransport } from './accountTransport';
+import { isTourRequest, tourFetch } from './tourSandbox/tourDevice';
 const encoder = new TextEncoder(),
   decoder = new TextDecoder();
 const suite = new CipherSuite({
@@ -473,6 +474,12 @@ export async function exchange(
   authenticated?: boolean;
   trustedIdentity?: boolean;
 }> {
+  // The tour's sample device has no transport: the page answers it (docs/guided-tour.md).
+  const tourPath = (() => { const url = new URL(request.url); return `${url.pathname.replace(/^\//, '')}${url.search}`; })();
+  if (isTourRequest(tourPath)) {
+    const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.clone().text();
+    return { response: await tourFetch(tourPath, { method: request.method, ...(body === undefined ? {} : { body }) }) };
+  }
   if (request.method === 'HEAD') {
     const result = await exchange(
       new Request(request, { method: 'GET' }),

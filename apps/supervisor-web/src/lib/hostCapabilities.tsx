@@ -3,6 +3,7 @@ import type { HostCapabilitiesDto, HostScopeDto } from '@pockymoe/shared';
 import { translate } from '@pockymoe/thread-ui/i18n';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { fetchRuntimeConfig, relayModeActive } from './api';
+import { isTourDevice } from './tourSandbox/tourDevice';
 
 const standalone: HostCapabilitiesDto = {
   relay: true, accountBinding: true, devicePeer: true, previews: true,
@@ -50,7 +51,8 @@ export function HostCapabilitiesProvider({ scope, children }: { scope: string; c
   // On the relay, moving to another device keeps the app mounted: the device's
   // last answer, or the previous device's until this one answers (returning
   // nothing here unmounted the whole app and blanked the page between devices).
-  const shown = snapshot?.scope === scope ? snapshot : known.current.get(scope) ?? (relay ? snapshot : null);
+  // The tour's sample device is answered in the page; it keeps the app mounted too.
+  const shown = snapshot?.scope === scope ? snapshot : known.current.get(scope) ?? (relay || isTourDevice(scope) ? snapshot : null);
   if (!shown) return failed !== null
     ? <p className="flex items-center gap-2">{translate('workbench.statusUnavailable')}<ErrorMark message={failed} /><button onClick={() => setAttempt(value => value + 1)}>{translate('files.retry')}</button></p>
     : null;
