@@ -31,7 +31,7 @@ it('reports an unsupported download from the server through the workbench error 
   const { result } = renderHook(() => useThreadWorkspaceAdapter({ setError, workspaceId: 'w', deviceId: 'device', threadId: 'isolated-thread' }));
   await result.current!.downloadNode!({ threadId: 'other-thread', workspaceId: 'w', path: 'docs', kind: 'directory' });
   expect(setError).toHaveBeenLastCalledWith('Archive downloads are unsupported in this isolated environment.');
-  expect(api.downloadWorkspaceFile).toHaveBeenCalledWith('w', { path: 'docs' }, 'device', undefined, 'isolated-thread');
+  expect(api.downloadWorkspaceFile).toHaveBeenCalledWith('w', { path: 'docs' }, 'device', undefined, 'isolated-thread', undefined);
 });
 describe('workspace adapter source identity', () => {
   it('creates only in the workspace bound to the writable adapter', async () => {
@@ -126,4 +126,26 @@ it('keeps a thread or workspace share inside its workspace root', async () => {
   expect(api.downloadWorkspaceFile).not.toHaveBeenCalled();
   await adapter.readFile({ threadId: 't', workspaceId: 'shared-ws', path: 'docs/readme.md' });
   expect(api.fetchWorkspaceFilePreview).toHaveBeenCalledWith('shared-ws', { path: 'docs/readme.md' }, 'device', 't');
+});
+
+describe('workspace downloads with progress', () => {
+  it('rejects with the reason, for the button that shows the progress', async () => {
+    const setError = vi.fn();
+    vi.mocked(api.downloadWorkspaceFile).mockRejectedValueOnce(new Error('Download expired; start it again'));
+    const { result } = renderHook(() => useThreadWorkspaceAdapter({ setError, workspaceId: 'ws' }));
+    await expect(result.current!.downloadNode!({ threadId: 'thread', path: 'big.zip', kind: 'file', onProgress: vi.fn() })).rejects.toThrow('Download expired; start it again');
+    expect(setError).not.toHaveBeenCalled();
+  });
+
+  it('passes progress through to the download', async () => {
+    vi.mocked(api.downloadWorkspaceFile).mockResolvedValueOnce({ blob: new Blob(['x']), filename: 'x.txt' });
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:x'), revokeObjectURL: vi.fn() }));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const onProgress = vi.fn();
+    const { result } = renderHook(() => useThreadWorkspaceAdapter({ setError: vi.fn(), workspaceId: 'ws' }));
+    await result.current!.downloadNode!({ threadId: 'thread', path: 'x.txt', kind: 'file', onProgress });
+    expect(api.downloadWorkspaceFile).toHaveBeenCalledWith('ws', { path: 'x.txt' }, undefined, undefined, 'thread', onProgress);
+    expect(click).toHaveBeenCalledTimes(1);
+    click.mockRestore();
+  });
 });

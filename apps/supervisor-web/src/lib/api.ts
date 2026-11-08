@@ -305,8 +305,8 @@ function buildBrowserMediaUrl(path: string, deviceId?: string | null) {
 export function deviceRequest<T>(deviceId: string | null | undefined, input: RequestInfo, init?: RequestInit, threadScope?: string) {
   return request<T>(input, init, { deviceId, threadScope });
 }
-function deviceDownload(deviceId: string | null | undefined, input: RequestInfo | URL, init?: RequestInit) {
-  return downloadFile(input, init, deviceId);
+function deviceDownload(deviceId: string | null | undefined, input: RequestInfo | URL, init?: RequestInit, onProgress?: DownloadProgress) {
+  return downloadFile(input, init, deviceId, onProgress);
 }
 function buildDeviceApiUrl(deviceId: string | null | undefined, path: string) {
   return relayUrl(apiPath(path, deviceId));
@@ -552,10 +552,33 @@ function parseContentDispositionFilename(value: string | null) {
   return plainMatch?.[1]?.trim() ?? null;
 }
 
+/** Bytes received so far, and the total when the device reports one. */
+export type DownloadProgress = (loaded: number, total: number | null) => void;
+
+/** The body as a Blob; with a progress callback it is read piece by piece. */
+async function readDownload(response: Response, onProgress?: DownloadProgress) {
+  if (!onProgress || !response.body) return response.blob();
+  const length = Number(response.headers.get('content-length'));
+  const total = Number.isFinite(length) && length > 0 ? length : null;
+  const parts: BlobPart[] = [];
+  let loaded = 0;
+  onProgress(0, total);
+  const reader = response.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value);
+    loaded += value.byteLength;
+    onProgress(loaded, total);
+  }
+  return new Blob(parts, { type: response.headers.get('content-type') ?? '' });
+}
+
 async function downloadFile(
   input: RequestInfo | URL,
   init?: RequestInit,
   deviceId?: string | null,
+  onProgress?: DownloadProgress,
 ): Promise<FileDownloadResult> {
   const response = await fetchApi(String(input), withAuthInit(init), deviceId);
 
@@ -570,7 +593,7 @@ async function downloadFile(
     ) ?? fallbackDownloadFilename(input);
 
   return {
-    blob: await response.blob(),
+    blob: await readDownload(response, onProgress),
     filename,
   };
 }
@@ -1255,8 +1278,9 @@ export function fetchLinkedFilePreview(threadId: string, input: {path: string; o
 export async function downloadLinkedFile(threadId: string, path: string,
   deviceId?: string | null,
   signal?: AbortSignal,
+  onProgress?: DownloadProgress,
 ) {
-  const result = await deviceDownload(deviceId, `api/threads/${encodeURIComponent(threadId)}/linked-files/raw?${new URLSearchParams({path})}`, signal ? { signal } : undefined);
+  const result = await deviceDownload(deviceId, `api/threads/${encodeURIComponent(threadId)}/linked-files/raw?${new URLSearchParams({path})}`, signal ? { signal } : undefined, onProgress);
   return { ...result, filename: path.replace(/\\/g, '/').split('/').pop() || 'download' };
 }
 
@@ -1381,6 +1405,7 @@ export function downloadWorkspaceFile(
   deviceId?: string | null,
   signal?: AbortSignal,
   threadId?: string,
+  onProgress?: DownloadProgress,
 ) {
   const params = new URLSearchParams({ path: input.path });
   if (threadId) params.set('threadId', threadId);
@@ -1390,6 +1415,7 @@ export function downloadWorkspaceFile(
       cache: 'no-store',
       ...(signal ? { signal } : {}),
     },
+    onProgress,
   );
 }
 

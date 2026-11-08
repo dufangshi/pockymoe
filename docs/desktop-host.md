@@ -59,3 +59,14 @@ It deliberately does not persist draft bodies or files to browser storage.
 Consequently a full page reload or native app quit/relaunch loses unsent composer
 drafts. Running agent work belongs to Supervisors and is independent of this
 local draft lifetime.
+
+## File downloads
+
+A workspace file is read from the device in pieces (1 MiB chunks over the
+encrypted relay), and its Download button shows a bar with bytes received, the
+total and the percentage. A failed download shows its reason after that button;
+the toolbar and menu downloads report it in the workbench's message.
+
+The desktop client's `files.saveAs` takes a whole file in one message of at most
+64 MB. A larger file goes through the client's download manager instead, which
+asks where to save it and streams it to disk (`desktop/download.ts`).
