@@ -711,8 +711,10 @@ fn claude_protocol_headers(incoming: &HeaderMap) -> Result<HeaderMap> {
 }
 
 pub(crate) fn start(state: Arc<Supervisor>) {
+    let weak = Arc::downgrade(&state);
     tokio::spawn(async move {
         loop {
+            let Some(state) = weak.upgrade() else { break };
             if let Ok(snapshot) = state.environments.reconcile_all().await {
                 for env in snapshot
                     .environments
@@ -747,6 +749,9 @@ pub(crate) fn start(state: Arc<Supervisor>) {
                     let _ = ensure_gateway(state.clone(), &env);
                 }
             }
+            // A sleeping reconciler must not keep a dropped server's database
+            // and environment ownership locks alive.
+            drop(state);
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
     });
@@ -910,6 +915,24 @@ fn redact_secret(bytes: &mut Vec<u8>, secret: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn dropped_router_releases_supervisor_and_database_ownership() {
+        let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+        let config = state.config.clone();
+        let weak = Arc::downgrade(&state);
+        let router = crate::http::router(state.clone());
+        tokio::task::yield_now().await;
+        drop(router);
+        drop(state);
+        assert!(
+            weak.upgrade().is_none(),
+            "background work retained the Supervisor"
+        );
+        let db = pockymoe_runtime::Database::open(&config.database_url).unwrap();
+        let restarted = Supervisor::new(config, db, vec![]);
+        assert!(restarted.environments.snapshot().await.is_ok());
+    }
 
     #[test]
     fn claude_preserves_only_bounded_protocol_selectors() {
