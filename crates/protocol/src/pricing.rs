@@ -22,7 +22,39 @@ pub fn normalized(value: &str) -> String {
 }
 
 pub fn match_model(catalog: &Value, model: &str) -> Option<String> {
-    resolve_model(catalog, model).map(|(key, _)| key)
+    resolve_reference_model(catalog, model).map(|(key, _)| key)
+}
+
+/// Reference estimates use the longest known model/alias after removing trailing
+/// hyphen-separated gateway modifiers. This does not change wire IDs or native
+/// capabilities. Exact entries (including explicit zero prices) always win.
+pub fn resolve_reference_model(catalog: &Value, model: &str) -> Option<(String, Option<String>)> {
+    let model = model_id(model);
+    let model = model.trim();
+    if let Some(key) = match_plain_model(catalog, model) {
+        return Some((key, None));
+    }
+    let candidate = model.rsplit('/').next().unwrap_or(model);
+    for (index, _) in candidate.rmatch_indices('-') {
+        if let Some(key) = match_plain_model(catalog, &candidate[..index]) {
+            return Some((key, Some(candidate[index + 1..].to_owned())));
+        }
+    }
+    None
+}
+
+/// Shared short labels apply even when an endpoint supplies a longer name.
+/// Keep gateway modifiers visible so distinct selectable IDs stay distinguishable.
+pub fn model_display_name(catalog: &Value, model: &str) -> Option<String> {
+    let (key, suffix) = resolve_reference_model(catalog, model)?;
+    let name = catalog["models"][&key]["displayName"].as_str()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(match suffix {
+        Some(suffix) => format!("{name} · {suffix}"),
+        None => name.to_owned(),
+    })
 }
 
 /// Exact IDs and configured aliases win. A gateway effort suffix is a reference
@@ -298,7 +330,7 @@ mod tests {
             "[1,2]",
             "[]",
         ] {
-            assert_eq!(match_model(&catalog, unknown), None, "{unknown}");
+            assert_eq!(resolve_model(&catalog, unknown), None, "{unknown}");
         }
         // A channel-specific override stays independent of its base model.
         let mut overrides = json!({});
@@ -318,6 +350,55 @@ mod tests {
         assert!(catalog["models"]["gemini-4-argon"]
             .get("inputUsdPerMillion")
             .is_none());
+    }
+
+    #[test]
+    fn reference_suffixes_choose_longest_known_base_and_keep_variant_overrides_independent() {
+        let mut catalog = json!({"models":{
+            "deepseek-v4.1":{"inputUsdPerMillion":1},
+            "deepseek-v4.1-flash":{"inputUsdPerMillion":2,"displayName":"DeepSeek V4.1 Flash","aliases":["ds-flash"]},
+            "deepseek-v4.1-flash-abliterated":{"unpriced":true}
+        }});
+        for raw in [
+            "deepseek-v4.1-flash-abliterated",
+            "vendor/deepseek-v4.1-flash-abliterated-fast",
+            r#"["provider","deepseek-v4.1-flash-abliterated"]"#,
+            "ds-flash-abliterated",
+        ] {
+            assert_eq!(
+                match_model(&catalog, raw).as_deref(),
+                Some("deepseek-v4.1-flash")
+            );
+        }
+        assert_eq!(
+            model_display_name(&catalog, "ds-flash-abliterated").as_deref(),
+            Some("DeepSeek V4.1 Flash · abliterated")
+        );
+        assert_eq!(match_model(&catalog, "deepseek-v4.10-flash-unknown"), None);
+        let mut overrides = json!({});
+        update_override(
+            &catalog,
+            &mut overrides,
+            &json!({"id":"deepseek-v4.1-flash-abliterated", "rates":{
+                "inputUsdPerMillion":0,"cachedInputUsdPerMillion":0,"outputUsdPerMillion":0
+            }}),
+        )
+        .unwrap();
+        apply_overrides(&mut catalog, &overrides);
+        assert_eq!(
+            match_model(&catalog, "deepseek-v4.1-flash-abliterated").as_deref(),
+            Some("deepseek-v4.1-flash-abliterated")
+        );
+        assert_eq!(
+            catalog["models"]["deepseek-v4.1-flash"]["inputUsdPerMillion"],
+            2
+        );
+        // New exact feed entries supersede the fallback too.
+        catalog["models"]["ds-flash-abliterated"] = json!({"inputUsdPerMillion":3});
+        assert_eq!(
+            match_model(&catalog, "ds-flash-abliterated").as_deref(),
+            Some("ds-flash-abliterated")
+        );
     }
 
     #[test]

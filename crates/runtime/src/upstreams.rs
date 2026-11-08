@@ -715,6 +715,22 @@ fn activate_at(dir: &Path, target: &Profile, root: &Path) -> Result<String> {
         let mut doc = toml_doc(&path)?;
         configure_grok_models(&mut doc, &p, std::iter::empty(), &mut s.grok_models)?;
         vec![(path, doc.to_string())]
+    } else if p.harness == "deepseek" {
+        // Saving a connection is not permission to apply it. Only reconstruct
+        // profiles that this device previously activated, recorded in backups.
+        let applied = s
+            .profiles
+            .iter()
+            .filter(|profile| {
+                s.active.get("deepseek") == Some(&profile.id)
+                    || s.backups.iter().any(|backup| {
+                        backup.harness == "deepseek"
+                            && backup.active.as_deref() == Some(profile.id.as_str())
+                    })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        dsh::changes_with_profiles(&p, &applied, root)?
     } else {
         changes(&p, root)?
     };

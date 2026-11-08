@@ -111,11 +111,16 @@ Each OpenAI-compatible DSH connection has its own stable provider ID, endpoint,
 credential reference and retained model list. Applying another connection no
 longer relabels or reroutes the earlier connection's models. The old shared
 `remote-codex` provider is retained for existing ACP session values; it is not
-silently reassigned. On installations with the old mixed model list, apply each
-connection once and select its new provider/model entry in affected threads.
-Once new entries exist, duplicate old choices are omitted from the menu; a
-session's current old choice stays visible until it is explicitly switched.
-The old list cannot reliably reveal which endpoint originally owned each model.
+silently reassigned. Applying a connection reconstructs missing isolated routes
+for previously applied profiles from their saved endpoint, credential and model
+catalogs, within the same backup and conflict checks. Saved-only profiles are not
+applied. Existing isolated routes and unrelated native providers are preserved.
+Once isolated entries exist, the old mixed list is omitted from the menu; a
+thread's current old choice stays visible until it is explicitly switched.
+For installations with the old mixed list, apply a connection and select its
+isolated provider/model entry in affected threads. If a historical profile has no
+saved model catalog, reapply that connection after refreshing its model list;
+the old union cannot reliably reveal which endpoint originally owned each model.
 
 Metadata belongs to the device that gathered it. Synchronization does not copy
 it; the destination gathers its own after importing.

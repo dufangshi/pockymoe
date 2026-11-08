@@ -5,6 +5,12 @@ use serde_json::{json, Value};
 #[tokio::test]
 async fn unknown_historical_usage_is_repriced_without_rewriting_tokens_and_cache_survives_restart()
 {
+    check_historical_repricing("future-model").await;
+    check_historical_repricing("future-model-abliterated-fast").await;
+    check_historical_repricing(r#"["remote-codex","future-model-abliterated"]"#).await;
+}
+
+async fn check_historical_repricing(wire_model: &str) {
     let dir = tempfile::tempdir().unwrap();
     let mut config = RuntimeConfig::from_env().unwrap();
     config.mode = Mode::Relay;
@@ -22,11 +28,14 @@ async fn unknown_historical_usage_is_repriced_without_rewriting_tokens_and_cache
     state.db.with(|c| {
         c.execute_batch("INSERT INTO workspaces(id,host_id,label,abs_path,created_at) VALUES('ws','host','Workspace','/isolated','now');
             INSERT INTO threads(id,workspace_id,provider,title,created_at,updated_at,status) VALUES('thread','ws','codex','Thread','now','now','idle');")?;
-        c.execute("INSERT INTO thread_turns(id,thread_id,status,started_at,completed_at,ordinal,model,token_usage_json) VALUES('turn','thread','completed','2026-01-01T00:00:00Z','2026-01-01T00:01:00Z',1,'future-model',?1)",[&usage])?;
+        c.execute("INSERT INTO thread_turns(id,thread_id,status,started_at,completed_at,ordinal,model,token_usage_json) VALUES('turn','thread','completed','2026-01-01T00:00:00Z','2026-01-01T00:01:00Z',1,?1,?2)",[wire_model,&usage])?;
         Ok(())
     }).unwrap();
     let frame = state.model_pricing_sync(true, None).unwrap();
-    assert_eq!(frame["models"], json!(["future-model"]));
+    assert_eq!(
+        frame["models"],
+        json!([pockymoe_protocol::pricing::model_id(wire_model)])
+    );
     let pending = json!({"version":"pending","models":{"future-model":{"unpriced":true}}});
     state.accept_relay_model_pricing(&pending).unwrap();
     let stats = state.stats_summary("all", "UTC").unwrap();
@@ -39,6 +48,18 @@ async fn unknown_historical_usage_is_repriced_without_rewriting_tokens_and_cache
     assert_eq!(stats["totals"]["unpricedTokens"], 0);
     assert!((stats["totals"]["costUsd"].as_f64().unwrap() - 2.44).abs() < 1e-10);
     assert_eq!(stats["totals"]["tokens"], 1100000);
+    if wire_model != "future-model" {
+        let mut exact = catalog.clone();
+        exact["version"] = json!("exact-variant");
+        let id = pockymoe_protocol::pricing::model_id(wire_model);
+        exact["models"][id.as_ref()] =
+            json!({"inputUsdPerMillion":0,"cachedInputUsdPerMillion":0,"outputUsdPerMillion":0});
+        state.accept_relay_model_pricing(&exact).unwrap();
+        assert_eq!(
+            state.stats_summary("all", "UTC").unwrap()["totals"]["costUsd"],
+            0.0
+        );
+    }
     let mut revised = catalog.clone();
     revised["version"] = json!("account-override");
     revised["models"]["future-model"]["inputUsdPerMillion"] = json!(4);

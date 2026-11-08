@@ -31,10 +31,14 @@ price changes refresh open thread views. Raw token records are not rewritten.
 Historical estimates always follow the current reference prices.
 
 DSH provider/model tuples are decoded before price lookup, including historical
-records. Fixed-effort gateway suffixes use the base model's reference price only
-when no exact price/alias exists and the known base explicitly supports that
-effort. A separately configured price for the full variant ID takes precedence
-and does not overwrite the base price. The upstream request ID is unchanged.
+records. When the full ID has no exact reference entry or alias, lookup removes
+trailing hyphen-separated modifiers one at a time and uses the longest matching
+known model. For example, `deepseek-v4.1-flash-abliterated` uses
+`deepseek-v4.1-flash` when that base has prices. Pending placeholders do not block
+this fallback. A later exact feed entry or account override for the variant takes
+precedence, including explicit free rates, without overwriting the base price.
+If no known base has prices, usage remains unpriced. The upstream request ID and
+raw token records are unchanged.
 
 Existing device overrides can be imported from the selected device in Account
 settings. Import keeps existing account overrides and retains the original local
