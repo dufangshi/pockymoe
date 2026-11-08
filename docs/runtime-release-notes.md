@@ -1,32 +1,39 @@
-Isolation now only closes the way in, sign-in always says why it did not
-happen, threads can be shared from their menu, and prompts can quote the
-conversation.
+Git working copies and Dokploy execution environments now live beside the
+conversation, with an agent-first request and approval flow for moving a thread
+into an isolated worker.
 
-- **Isolation is inbound only**: an isolated device, or one with peer access
-  off, refuses requests from your other devices but its own agents can still
-  reach them.
-- **Sign-in explains itself**: a Google or GitHub account with no Pockymoe
-  account goes on to registration, or to Create account asking for the invite
-  code when one is needed. A registration waiting for approval, a rejected one,
-  a disabled account, closed registration or a cancelled sign-in each show
-  their reason.
-- **Admin badges**: waiting registrations show a red count on Users and on its
-  Registrations tab in the relay admin console.
-- **Share thread**: the thread menu in the sidebar, recent conversations, tabs
-  and the phone thread panel opens the thread's share window.
-- **Quotes**: select part of the conversation and press Quote to add it to the
-  prompt as a numbered quote.
-- **Session IDs and transcripts**: Copy Pockymoe session ID copies a labelled
-  line an agent can act on, and `pockymoe transcript ID --view summary` shows
-  each user message and its reply by turn.
-- **Conversation**: a finished turn shows its answer, folded replies end on a
-  clean break, finished commands fold while running ones stay out, and
-  registered wakes are a small bell above the composer.
-- **Port previews**: `pockymoe preview create --origin preserve` forwards the
-  browser's own Origin for apps that check it.
+- **Working copies**: agents can create, select and inspect worktrees through
+  `pockymoe worktree`. The thread records its selected working copy separately
+  from observed tool directories, so the Git panel can show when an agent works
+  elsewhere. Inspect unstaged and staged changes, compare revisions and browse
+  commits. GitHub PR status and Git write controls are not included.
+- **Docked tools**: Files, Git and isolation share a resizable right sidebar on
+  desktop. The conversation stays usable while the inspector is open. Phones
+  use a full-width tool view with a return action.
+- **Dokploy workers**: the host Supervisor retains device and thread identity,
+  approvals and history while the worker runs in a constrained container.
+  Project and required Git metadata use verified bind mounts. CPU, memory,
+  swap, process and file-descriptor limits are checked on the actual container;
+  lifecycle, recovery and preview routing use the same execution target.
+- **Agent-first migration**: an agent proposes limits, network access and
+  credential grants with `pockymoe environment request`. The owner reviews the
+  exact proposal before an idle thread moves into the environment. Approval
+  and recovery state survive Supervisor restarts.
+- **Optional credentials**: API mode keeps long-lived model keys on the host
+  and gives the worker revocable broker access. Owner-approved native Codex
+  and Claude file logins, gh configuration and generic credential mounts are
+  also supported; their access and refresh behavior are shown for review.
+- **Navigation and tour**: device readings sit in the desktop sidebar, isolated
+  devices have a clear mark, and the guided tour runs against an in-page sample
+  device without creating work on a real one.
 
-The relay and Web parts (sign-in outcomes, admin badges, Share thread) go live
-with this release; the isolation change, quotes, transcript summaries and
-preview origins need the device update. Validated with the relay suite, the
-Web and shared UI unit tests, type checks and screenshots in every theme.
-Installing this release is a separate device update.
+Dokploy connections require Linux and verified shared storage on the same
+storage node. A connection and compatible harness image must be configured
+before creating workers. Remote storage, E2B, OS keyrings/Keychain and SSH
+credential agents are not supported. Bind storage has no hard disk quota.
+Native subscription access remains subject to the provider's account rules.
+
+Validated with the relevant Rust and Web checks, real Dokploy lifecycle and
+recovery runs, a real Claude subscription turn, and focused desktop/phone
+sidebar tests. The Web and Relay deploy separately; devices need this runtime
+update to use worktree and isolated-execution features.
