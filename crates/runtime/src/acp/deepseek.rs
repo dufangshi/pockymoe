@@ -439,6 +439,16 @@ impl Bridge {
         result
     }
 
+    pub async fn steer(&self, session_id: &str, prompt: &str) -> Result<()> {
+        let result = self
+            .call("steer", json!({"sessionId":session_id,"prompt":prompt}))
+            .await?;
+        if result["outcome"] == "injected" {
+            return Ok(());
+        }
+        bail!("conflict: DSH did not confirm steering delivery: {result}")
+    }
+
     pub async fn command(&self, session_id: &str, line: &str) -> Result<Value> {
         let timeout = if MODE_COMMANDS.iter().any(|mode| line.starts_with(mode)) {
             CALL_TIMEOUT
@@ -643,6 +653,7 @@ pub(super) fn patch_capabilities(
             list.iter().any(|command| command["name"] == name)
         })
     };
+    caps.turns.steer = features["steer"].as_bool().unwrap_or(false);
     caps.controls.plan_mode = commands && has("plan");
     caps.turns.compact = commands && has("compact");
     caps.controls.goals = commands && features["goals"].as_bool().unwrap_or(false) && has("goal");
@@ -853,6 +864,78 @@ pub(super) fn goal_state(value: &Value) -> Option<crate::actor::GoalState> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn steering_is_acknowledged_only_after_native_injection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let launch = Launch {
+            listener,
+            token: "fixture".into(),
+            directory: tempfile::tempdir().unwrap(),
+        };
+        let native = tokio::spawn(async move {
+            let socket = tokio::net::TcpStream::connect(address).await.unwrap();
+            let (read, mut write) = socket.into_split();
+            write
+                .write_all(b"{\"token\":\"fixture\",\"hello\":{\"protocol\":1}}\n")
+                .await
+                .unwrap();
+            let mut reader = BufReader::new(read);
+            for outcome in [
+                json!({"outcome":"injected"}),
+                json!({"outcome":"promptRequired","reason":"noRunningTurn"}),
+                json!({"outcome":"queued"}),
+            ] {
+                let mut line = String::new();
+                reader.read_line(&mut line).await.unwrap();
+                let call: Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(call["method"], "steer");
+                assert_eq!(
+                    call["params"],
+                    json!({"sessionId":"session","prompt":"correction"})
+                );
+                write
+                    .write_all(
+                        format!("{}\n", json!({"id":call["id"],"result":outcome})).as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        let (bridge, _) = launch.connect().await.unwrap();
+        bridge.steer("session", "correction").await.unwrap();
+        assert!(bridge
+            .steer("session", "correction")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("noRunningTurn"));
+        assert!(bridge
+            .steer("session", "correction")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("queued"));
+        native.await.unwrap();
+        assert!(bridge.steer("session", "correction").await.is_err());
+    }
+
+    #[test]
+    fn steering_requires_the_bridge_capability() {
+        for enabled in [false, true] {
+            let mut caps = AgentProviderCapabilitiesDto::conversational();
+            patch_capabilities(
+                &mut caps,
+                &json!({"features":{"steer":enabled}}),
+                &Value::Null,
+            );
+            assert_eq!(caps.turns.steer, enabled);
+        }
+        let mut caps = AgentProviderCapabilitiesDto::conversational();
+        patch_capabilities(&mut caps, &json!({"features":{}}), &Value::Null);
+        assert!(!caps.turns.steer);
+    }
+
     #[test]
     fn the_bridge_fork_feature_enables_fork_at_any_turn() {
         let mut caps = AgentProviderCapabilitiesDto::conversational();

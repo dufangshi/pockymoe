@@ -264,3 +264,12 @@ E2E_REAL_DSH=1 E2E_DSH_SCRIPTED=1 E2E_DSH_HOME=/absolute/isolated-dsh-home \
 ```
 
 Playwright 配置在真实 DSH 运行时设置 `DSH_TELEMETRY_DISABLED=1`。真实模型的 `e2e/dsh.spec.ts` 需要 DeepSeek 或其他 provider 凭据。
+
+## 活动轮次中的消息
+
+DSH bridge 在检测到原生 agent loop 时声明 steer 能力。运行中的文本 steer
+通过该轮次 agent 的 `inject` 方法进入下一步输入，不使用 ACP 的
+`_session/steering`，也不调用会启动新轮次的 followup 或 wakeup。
+bridge 在同一次同步操作内检查运行状态并注入；轮次已结束、会话已释放或
+原生方法缺失时明确拒绝，不把失败伪装成 queue 成功。queue 仍由 Supervisor
+在当前轮次结束后启动后续轮次。

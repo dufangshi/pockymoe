@@ -271,6 +271,17 @@ export function apply(ctx, config) {
 
   async function call(method, params) {
     switch (method) {
+      case 'steer': {
+        const agent = liveRoot(params.sessionId);
+        if (typeof agent.inject !== 'function') throw new Error('This DSH agent does not support steering');
+        if (typeof params.prompt !== 'string' || !params.prompt.trim()) throw new Error('Steering requires a text prompt');
+        // No await between checking the loop and admission. inject targets the
+        // next step without wakeup, so a finishing loop cannot start a new turn.
+        if (agent.status !== 'running') return { outcome: 'promptRequired', reason: 'noRunningTurn' };
+        agent.inject(Object.freeze({ id: randomUUID(), role: 'user', source: Object.freeze({ kind: 'user' }),
+          content: Object.freeze([Object.freeze({ type: 'text', text: params.prompt })]) }));
+        return { outcome: 'injected' };
+      }
       case 'snapshot': return snapshot(ctx);
       case 'session': return session(params.sessionId);
       case 'context': return inspectContext ? contextReader(liveRoot(params.sessionId)) : null;
@@ -612,6 +623,7 @@ async function snapshot(ctx) {
         ?? (mode.id === 'ptc' && !process.features?.typescript ? 'needs Node.js with TypeScript support' : null),
     })),
     features: {
+      steer: Boolean(ctx.get('agentLoop')),
       stream: true,
       questions: true,
       projections: Boolean(ctx.get('sessionProjections')),

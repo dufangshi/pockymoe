@@ -94,6 +94,43 @@ function lines(socket) {
   return () => (queue.length ? Promise.resolve(queue.shift()) : new Promise(resolve => waiters.push(resolve)));
 }
 
+test('steering injects into the running loop without waking idle sessions or following up', async () => {
+  const { server, port, connection } = await supervisor();
+  const dsh = fakeDsh({ agentLoop: {} });
+  const received = [];
+  dsh.agent.inject = message => received.push(message);
+  dsh.agent.followup = () => assert.fail('steering must not queue a new turn');
+  dsh.agent.steer = () => assert.fail('steering must not wake an idle loop');
+  try {
+    apply(dsh.ctx, { port, token: 't' });
+    dsh.ready();
+    const socket = await connection;
+    const next = lines(socket);
+    assert.equal((await next()).hello.features.steer, true);
+    const send = (id, sessionId, prompt) => socket.write(JSON.stringify({ id, method: 'steer', params: { sessionId, prompt } }) + '\n');
+    dsh.agent.status = 'running';
+    send(1, 'session-1', 'Change direction now');
+    assert.equal((await next()).result.outcome, 'injected');
+    assert.equal(received.length, 1);
+    assert.equal(received[0].role, 'user');
+    assert.deepEqual(received[0].source, { kind: 'user' });
+    assert.deepEqual(received[0].content, [{ type: 'text', text: 'Change direction now' }]);
+    assert.match(received[0].id, /^[0-9a-f-]{36}$/);
+    dsh.agent.status = 'idle';
+    send(2, 'session-1', 'Too late');
+    assert.deepEqual((await next()).result, { outcome: 'promptRequired', reason: 'noRunningTurn' });
+    assert.equal(received.length, 1);
+    send(3, 'child-session', 'Wrong owner');
+    assert.match((await next()).error.message, /not live/);
+    dsh.agent.status = 'running';
+    send(4, 'session-1', '  ');
+    assert.match((await next()).error.message, /text prompt/);
+    delete dsh.agent.inject;
+    send(5, 'session-1', 'Unsupported');
+    assert.match((await next()).error.message, /does not support steering/);
+  } finally { await stop(server, dsh); }
+});
+
 test('hello carries per-model reasoning and allowlisted inventory, never plugin config', async () => {
   const { server, port, connection } = await supervisor();
   const dsh = fakeDsh();
@@ -104,6 +141,7 @@ test('hello carries per-model reasoning and allowlisted inventory, never plugin 
     const hello = await next();
     assert.equal(hello.token, 'test-token');
     assert.equal(hello.hello.protocol, 1);
+    assert.equal(hello.hello.features.steer, false);
     assert.equal(hello.hello.models[0].model, '["custom","with-reasoning"]');
     assert.deepEqual(hello.hello.models[0].supportedReasoningEfforts.map(e => e.reasoningEffort), ['', 'xhigh']);
     assert.deepEqual(hello.hello.models[1].supportedReasoningEfforts, []);
