@@ -53,11 +53,22 @@ grant that ownership.
 
 ## Git panel
 
-The thread toolbar's Git button opens a read-only panel. It lists the configured
-and associated working copies, marks their source and shows recent tool location
-evidence. Selecting a copy changes this view only. The panel shows staged and
-unstaged changes, selected untracked file contents, comparison from a revision's
-merge base, and paginated commits. PR status and Git writes are not included.
+The Git entry on the workbench rail (on a phone, the top bar or the dock's More
+sheet) docks a read-only Git inspector at the right of the conversation, which
+stays usable beside it; Files and the isolation inspector share that dock. It
+follows the open thread and shows that thread's title. Its first row switches
+between the configured and associated working copies; the line below names the
+branch, HEAD, whether the copy is the primary one and its source. When the
+latest tool location is in another working copy, a notice shows that path with
+**View that copy**. Selecting a copy changes this view only.
+
+Changes list files per scope: unstaged (including untracked), staged, or a
+comparison from a revision's merge base. Selecting a file shows its diff,
+including the contents of an untracked file; the whole-scope diff is split per
+file with added and removed lines colored. In the default dock width the list
+and diff stack in one scroll; a dock dragged wider (720px or more) puts them
+side by side.
+Commits are paginated. PR status and Git writes are not included.
 It refreshes when opened, on thread updates and on request; it does not poll.
 
 The endpoints are `GET /api/threads/{id}/working-context` and

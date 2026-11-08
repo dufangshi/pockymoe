@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
 import { saveEnvironmentConnection, type EnvironmentConnectionDto } from '../../lib/environmentApi';
@@ -23,6 +23,7 @@ export function ConnectionEditor({ connection, deviceId, onClose, onSaved }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attempted, setAttempted] = useState(false);
+  const formId = useId();
   const dirty = Object.keys(initial).some(key => draft[key as keyof typeof draft] !== initial[key as keyof typeof initial]);
   const change = (field: keyof typeof draft, value: string) => { setDraft(current => ({ ...current, [field]: value })); setError(null); };
   const roots = draft.allowedRoots.split('\n').map(value => value.trim()).filter(Boolean);
@@ -51,34 +52,37 @@ export function ConnectionEditor({ connection, deviceId, onClose, onSaved }: {
     } catch (cause) { setError(environmentError(cause)); }
     finally { setBusy(false); }
   };
-  const textField = (field: keyof typeof draft, label: EnvironmentMessage, type = 'text', hint?: EnvironmentMessage) => <label>
+  const textField = (field: keyof typeof draft, label: EnvironmentMessage, type = 'text', hint?: EnvironmentMessage, wide = false) => <label className={wide ? 'is-wide' : undefined}>
     <span>{t(label)}</span><input className="relay-input" type={type} value={draft[field]} disabled={busy}
       autoComplete={field === 'apiKey' ? 'new-password' : 'off'} spellCheck={false} onChange={event => change(field, event.target.value)} />
-    {hint && <span className="environment-hint">{t(hint)}</span>}
+    {hint && <small className="env-note">{t(hint)}</small>}
   </label>;
-  return <EnvironmentWindow title={t(connection ? 'editConnection' : 'addConnection')} dirty={dirty} busy={busy} onClose={onClose}>
-    {close => <form className="environment-form" noValidate onSubmit={event => { event.preventDefault(); void save(); }}>
-      <fieldset disabled={busy}>
+  return <EnvironmentWindow wide title={t(connection ? 'editConnection' : 'addConnection')} dirty={dirty} busy={busy} onClose={onClose}
+    footer={close => <div className="env-form-actions">
+      {attempted && !valid && <p className="env-validation" role="status">{t('invalidConnection')}</p>}
+      {error && <ErrorMark message={error} onRetry={() => void save()} />}
+      <button type="button" className="relay-button-secondary" onClick={close} disabled={busy}>{t('cancel')}</button>
+      <button type="submit" form={formId} className="relay-button-primary" disabled={busy}>{t(busy ? 'saving' : 'save')}</button>
+    </div>}>
+    <form id={formId} className="env-form" noValidate onSubmit={event => { event.preventDefault(); void save(); }}>
+      <fieldset disabled={busy} className="env-fieldset"><legend>{t('groupDokploy')}</legend>
         {textField('name', 'name')}{textField('baseUrl', 'baseUrl', 'url')}
-        {textField('apiKey', 'apiKey', 'password', 'keyHint')}
-        {textField('dokployEnvironmentId', 'dokployEnvironmentId')}{textField('image', 'image', 'text', 'imageHint')}
-        {textField('dockerHost', 'dockerHost')}
-        <p className="environment-hint">{t('localStorage')}</p>
-        <label><span>{t('allowedRoots')}</span><textarea className="relay-input" spellCheck={false} value={draft.allowedRoots} onChange={event => change('allowedRoots', event.target.value)} /><span className="environment-hint">{t('rootsHint')}</span></label>
-        <label><span>{t('allowedEgressHosts')}</span><textarea className="relay-input" spellCheck={false} value={draft.allowedEgressHosts} aria-invalid={!validEgress || undefined} onChange={event => change('allowedEgressHosts', event.target.value)} /><span className="environment-hint">{t('egressHint')}</span></label>
-        {!validEgress && <p className="environment-validation">{t('egressInvalid')}</p>}
+        {textField('apiKey', 'apiKey', 'password', 'keyHint')}{textField('dokployEnvironmentId', 'dokployEnvironmentId')}
       </fieldset>
-      <fieldset disabled={busy}><legend>{t('defaultLimits')}</legend><div className="environment-form-grid">
+      <fieldset disabled={busy} className="env-fieldset"><legend>{t('groupContainer')}</legend>
+        {textField('image', 'image', 'text', 'imageHint')}{textField('dockerHost', 'dockerHost')}
+      </fieldset>
+      <fieldset disabled={busy} className="env-fieldset"><legend>{t('groupAccess')} <span className="env-dim">· {t('localStorage')}</span></legend>
+        <label><span>{t('allowedRoots')}</span><textarea className="relay-input" spellCheck={false} value={draft.allowedRoots} onChange={event => change('allowedRoots', event.target.value)} /><small className="env-note">{t('rootsHint')}</small></label>
+        <label><span>{t('allowedEgressHosts')}</span><textarea className="relay-input" spellCheck={false} value={draft.allowedEgressHosts} aria-invalid={!validEgress || undefined} onChange={event => change('allowedEgressHosts', event.target.value)} />
+          {!validEgress ? <small className="env-validation">{t('egressInvalid')}</small> : <small className="env-note">{t('egressHint')}</small>}</label>
+      </fieldset>
+      <fieldset disabled={busy} className="env-fieldset is-limits"><legend>{t('defaultLimits')}</legend>
         {(['cpu', 'memory', 'pids', 'nofile'] as const).map(field => <label key={field}><span>{t(field)}</span>
           <input type="number" className="relay-input" min={field === 'cpu' || field === 'memory' ? '0.01' : '1'} step={field === 'cpu' || field === 'memory' ? 'any' : '1'} value={draft[field]}
             onChange={event => change(field, event.target.value)} aria-invalid={!positive(draft[field], field === 'pids' || field === 'nofile') || undefined} />
         </label>)}
-      </div></fieldset>
-      {attempted && !valid && <p className="environment-validation" role="status">{t('invalidConnection')}</p>}
-      <footer className="environment-actions"><button type="button" className="host-secondary-button" onClick={close} disabled={busy}>{t('cancel')}</button>
-        <button type="submit" className="relay-button-primary" disabled={busy}>{t(busy ? 'saving' : 'save')}</button>
-        {error && <ErrorMark message={error} onRetry={() => void save()} />}
-      </footer>
-    </form>}
+      </fieldset>
+    </form>
   </EnvironmentWindow>;
 }
