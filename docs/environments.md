@@ -94,6 +94,8 @@ Ordinary bind storage has no disk hard quota; `diskQuotaSupported` is `false`.
 `EnvironmentManager::new(database_path)` owns the private sidecar
 `<database_path>.environments`. Directories use mode `0700`, records use `0600`,
 and a process lock prevents a second manager from overwriting the same store.
+Between reconciliation ticks, the periodic worker holds only a weak Supervisor
+reference, allowing an idle Supervisor and its ownership locks to be released.
 Resource records and connection credentials are replaced atomically. A failed
 persistence operation disables that manager's execution authority until
 Supervisor recovery. Public
