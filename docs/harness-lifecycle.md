@@ -252,3 +252,8 @@ Existing open child threads must be closed before changing the parent's binding.
 A historical child without its ancestor's environment cannot resume on Host;
 create a new child from the isolated parent. New children inherit before any
 initialization, and their creation holds the parent's admission guard.
+
+ACP streaming updates use a bounded queue with backpressure: a full queue pauses
+stdio reading until the mux catches up, preserving update order without closing
+a healthy harness. Individual updates share the 4 MiB ACP frame budget, including
+Claude SDK tool results; callback queues and callback concurrency remain bounded.
