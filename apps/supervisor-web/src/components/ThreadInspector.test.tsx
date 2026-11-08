@@ -12,7 +12,7 @@ vi.mock('./environments/ThreadIsolationPanel', async original => ({ ...await ori
   ThreadIsolationPanel: (props: { thread: { id: string }; deviceId?: string | null; canManage: boolean }) => <p>isolation {props.deviceId}:{props.thread.id}:{String(props.canManage)}</p> }));
 
 const thread = (id: string) => ({ id, title: `Thread ${id}`, status: 'idle' as const, provider: 'codex' as const, agentId: 'codex', providerSessionId: null, updatedAt: '2026-11-07', parentThreadId: null });
-type HarnessProps = { id?: string; device?: string; filesOpen?: boolean; closeFiles?: () => void };
+type HarnessProps = { id?: string; device?: string; filesOpen?: boolean; closeFiles?: () => boolean | void };
 function Harness({ id = 'one', device = 'device-a', filesOpen = false, closeFiles = () => {} }: HarnessProps) {
   const { toolPanels, inspector } = useThreadInspector({ thread: thread(id), deviceId: device, canManage: true, gitAvailable: true, isolationAvailable: true, filesOpen, closeFiles });
   return <>
@@ -62,7 +62,25 @@ it('shares the dock with Files: opening one closes the other', () => {
   expect(closeFiles).toHaveBeenCalledOnce();
   view.rerender(<Harness closeFiles={closeFiles} />);
   expect(screen.getByText('git device-a:one')).toBeVisible();
+  expect(localStorage.getItem('pockymoe.workbench.inspector')).toBe('git');
   view.rerender(<Harness filesOpen closeFiles={closeFiles} />);
   expect(screen.queryByRole('complementary')).toBeNull();
   expect(screen.getByRole('button', { name: 'Git' })).toHaveAttribute('aria-pressed', 'false');
+  // Files replaced Git: a reload must not bring Git back.
+  expect(localStorage.getItem('pockymoe.workbench.inspector')).toBeNull();
+});
+
+it('keeps Files and switches nothing when closing Files is refused', () => {
+  // ThreadDetailPage refuses when unsaved documents in another workspace would be left.
+  const closeFiles = vi.fn(() => false);
+  render(<Harness filesOpen closeFiles={closeFiles} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Git' }));
+  expect(closeFiles).toHaveBeenCalledOnce();
+  expect(screen.getByRole('button', { name: 'Git' })).toHaveAttribute('aria-pressed', 'false');
+  expect(screen.queryByRole('complementary')).toBeNull();
+  expect(localStorage.getItem('pockymoe.workbench.inspector')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Isolated environments' }));
+  expect(closeFiles).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('button', { name: 'Isolated environments' })).toHaveAttribute('aria-pressed', 'false');
+  expect(localStorage.getItem('pockymoe.workbench.inspector')).toBeNull();
 });

@@ -17,7 +17,7 @@
 .thread-git-header h2 { display: flex; align-items: center; gap: 8px; flex: none; margin: 0; font-size: 16px; font-weight: 600; }
 .thread-git-header h2 > svg { width: 17px; height: 17px; color: var(--theme-fg-muted); }
 .thread-git-copy { flex: 1 1 0; min-width: 0; }
-.thread-git-copy .ui-select { width: 100%; min-width: 0; }
+.thread-git-copy .pm-select { width: 100%; min-width: 0; }
 .thread-git-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
 .thread-git-icon {
   display: grid; place-items: center; flex: none; width: 36px; height: 36px; border: 0; border-radius: 8px;
@@ -191,7 +191,8 @@
   .thread-git-icon { width: 40px; height: 40px; }
   .thread-git-tabs > button { min-height: 44px; }
   .thread-git-file { min-height: 44px; }
-  .thread-git-segments button { min-height: 36px; }
+  .thread-git-segments button { min-height: 40px; }
+  .thread-git-copy .pm-select { min-height: 40px; }
   .thread-git-base input, .thread-git-button { min-height: 40px; font-size: 16px; }
   .thread-git-button { font-size: 13px; }
   .thread-git-commits > li { align-items: flex-start; }

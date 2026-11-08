@@ -153,12 +153,12 @@ ul.env-list > li + li { border-top: 1px solid var(--theme-border); }
 .env-active-text span { color: var(--theme-fg-soft); }
 
 .env-switch { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.env-switch .ui-select { flex: 1 1 220px; min-width: 0; }
+.env-switch .pm-select { flex: 1 1 220px; min-width: 0; }
 .env-create { display: grid; gap: 10px; padding: 12px 14px; border: 1px solid var(--theme-border); border-radius: 10px; background: var(--theme-panel); }
 .env-create .env-note { margin: 0; }
 .env-create-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .env-create label, .env-form label { display: grid; gap: 5px; min-width: 0; font-size: 12.5px; color: var(--theme-fg-soft); }
-.env-create .ui-select, .env-create input, .env-form input, .env-form textarea { width: 100%; min-width: 0; }
+.env-create .pm-select, .env-create input, .env-form input, .env-form textarea { width: 100%; min-width: 0; }
 .env-form-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .env-form-actions .env-validation { margin-right: auto; }
 
@@ -353,5 +353,6 @@ body:has(.environment-confirmation-focus) > div:has(> [role='dialog'][aria-label
   .env-dock:not(:has(.env-dock-footer)) .env-dock-scroll { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
   .env-dock-footer { padding: 10px 16px max(12px, env(safe-area-inset-bottom)); }
   .env-back { min-height: 40px; }
+  .env-switch .pm-select, .env-create .pm-select { min-height: 40px; }
   .env-decision-actions > button { flex: 1 1 140px; min-height: 44px; }
 }

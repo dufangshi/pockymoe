@@ -81,6 +81,15 @@ test('Git docks beside a usable conversation and follows the open thread', async
   await expect(added).toBeVisible();
   expect(await added.evaluate(node => getComputedStyle(node).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
   if (phone(page)) {
+    // Touch targets (UI §10): the scope switch is at least 40px tall.
+    for (const name of ['Unstaged 1', 'Staged 1', 'Compare']) {
+      expect((await dock.getByRole('button', { name, exact: true }).boundingBox())!.height).toBeGreaterThanOrEqual(40);
+    }
+    // A long working-copy name truncates instead of running under Refresh.
+    const select = (await dock.getByRole('combobox', { name: 'Working copy' }).boundingBox())!;
+    const refresh = (await dock.getByRole('button', { name: 'Refresh Git status' }).boundingBox())!;
+    expect(select.x + select.width).toBeLessThanOrEqual(refresh.x + 1);
+    expect(select.height).toBeGreaterThanOrEqual(40);
     // A phone has no room for both: the dock is a full view and Back closes it.
     await insideViewport(page, '[data-testid="workbench-inspector"]');
     await page.goBack();

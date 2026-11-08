@@ -30,7 +30,8 @@ export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, 
   gitAvailable: boolean;
   isolationAvailable: boolean;
   filesOpen: boolean;
-  closeFiles(): void;
+  /** False when closing Files was refused (unsaved documents in another workspace). */
+  closeFiles(): boolean | void;
 }): { toolPanels: WorkbenchToolPanel[]; inspector: WorkbenchInspector | null } {
   useI18n();
   const [view, setViewState] = useState<InspectorView | null>(readView);
@@ -38,13 +39,15 @@ export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, 
     setViewState(next);
     try { if (next) localStorage.setItem(STORAGE_KEY, next); else localStorage.removeItem(STORAGE_KEY); } catch { /* Optional preference. */ }
   }, []);
-  // Files and the inspectors share the dock: Files opening closes an inspector.
-  useEffect(() => { if (filesOpen) setViewState(null); }, [filesOpen]);
+  // Files and the inspectors share the dock: Files opening closes an inspector,
+  // and forgets it, so a reload does not bring back the view Files replaced.
+  useEffect(() => { if (filesOpen) setView(null); }, [filesOpen, setView]);
   const shown = view === 'git' && gitAvailable ? 'git' : view === 'isolation' && isolationAvailable ? 'isolation' : null;
   const attention = useIsolationAttention(isolationAvailable ? thread?.id : undefined, thread?.status, deviceId, shown === 'isolation');
   const toggle = (next: InspectorView) => {
     if (shown === next) { setView(null); return; }
-    if (filesOpen) closeFiles();
+    // Files stays open when the reader keeps unsaved documents: then nothing switches.
+    if (filesOpen && closeFiles() === false) return;
     setView(next);
   };
   const isolationLabel = isolationMenuLabel(attention);
