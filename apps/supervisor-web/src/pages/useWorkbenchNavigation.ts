@@ -12,6 +12,7 @@ import type {
 } from '@pockymoe/thread-ui';
 import { ApiError, isInvisibleThreadError, relayModeActive, request } from '../lib/api';
 import { threadHref } from '../lib/relayRoutes';
+import { isTourDevice, tourStateKey } from '../lib/tourSandbox/tourDevice';
 import { threadThemeAgentKey } from '@pockymoe/thread-ui';
 
 /** The avatar key a theme shows for a thread's harness. */
@@ -126,11 +127,14 @@ export function useWorkbenchNavigation(
   const hostScope = useHostScope();
   const sharedIndex = useContext(DesktopStoreContext);
   const enabled = options.enabled !== false;
-  const storageKey = useBrowserStateKey(LOCAL_KEY);
+  // The tour's sample device keeps its recents and tabs apart, in this browser only.
+  const tour = isTourDevice(deviceId);
+  const scopedKey = (key: string) => tour ? tourStateKey(key) : key;
+  const storageKey = scopedKey(useBrowserStateKey(LOCAL_KEY));
   // The order the reader dragged each workspace's conversations into, kept in
   // this browser: `device:workspace` -> root thread keys, first to last.
-  const orderKey = useBrowserStateKey(WORKSPACE_ORDER_KEY);
-  const openTabsKey = useBrowserStateKey(OPEN_TABS_KEY);
+  const orderKey = scopedKey(useBrowserStateKey(WORKSPACE_ORDER_KEY));
+  const openTabsKey = scopedKey(useBrowserStateKey(OPEN_TABS_KEY));
   const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => loadOpenTabs(openTabsKey));
   useEffect(() => { if (enabled) setOpenTabs(loadOpenTabs(openTabsKey)); }, [openTabsKey, enabled]);
   const [workspaceOrders, setWorkspaceOrders] = useState<Record<string, string[]>>(() => loadWorkspaceOrders(orderKey));
@@ -141,7 +145,7 @@ export function useWorkbenchNavigation(
   const unreachableRef = useRef<Unreachable>(new Map());
   threadsRef.current = threads;
   useI18n();
-  const relay = !hostScope && relayModeActive();
+  const relay = !hostScope && !tour && relayModeActive();
   // Thread switches remount the page: start from the last navigation state seen
   // in this browser scope (favorites, read marks, statuses) until it refreshes.
   const cacheKey = `${relay ? 'relay' : 'local'}:${storageKey}`;

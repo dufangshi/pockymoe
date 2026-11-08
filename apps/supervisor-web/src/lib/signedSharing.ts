@@ -7,6 +7,7 @@ import type {
   CreateRelaySessionShareInput,
 } from '@pockymoe/shared';
 import { request } from './api';
+import { onTourRoute } from './tourSandbox/tourDevice';
 import { requestGrantReview, type GrantChange, type GrantSummary } from './sharingApproval';
 import {
   isProtectedSharingDevice,
@@ -274,6 +275,8 @@ export async function sharingMutation<T>(
   mutate: () => Promise<T>,
   dialogInput?: SharingInput,
 ): Promise<T> {
+  // The tour's sample shares are kept in the page: nothing to sign or deliver.
+  if (onTourRoute()) return mutate();
   const input = dialogInput
     ? structuredClone(Object.fromEntries(
       Object.entries(dialogInput).filter(([, value]) => value !== undefined),

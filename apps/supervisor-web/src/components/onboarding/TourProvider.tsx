@@ -15,8 +15,8 @@ import {
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 
-import { fetchAuthSession, fetchRelaySession, readSelectedRelayDeviceId, relayModeActive } from '../../lib/api';
-import { relayDeviceIdFromPath, relayScopedPath } from '../../lib/relayRoutes';
+import { fetchAuthSession, fetchRelaySession, relayModeActive } from '../../lib/api';
+import { onTourRoute, resetTourSandbox, TOUR_DEVICE_ID, TOUR_HELPER_THREAD, TOUR_MAIN_THREAD } from '../../lib/tourSandbox/tourDevice';
 import {
   TOUR_CHAPTER_IDS,
   resolveSelector,
@@ -27,6 +27,7 @@ import {
   type TourPage,
   type TourStep,
   type TourTargetVariant,
+  type TourThread,
 } from './tourChapters';
 import { placeCard, sameRect, unionRect, type TourRect } from './tourPlacement';
 import './tour.css';
@@ -49,7 +50,6 @@ export function useTour() {
 const TARGET_GRACE_MS = 700;
 const MOBILE_QUERY = '(max-width: 639px)';
 const ROOT_ID = 'pockymoe-tour-root';
-const CONNECT_BUTTON = 'section[aria-labelledby="devices-heading"] article button.relay-button-primary:not(:disabled), .pd-device-card:not(.is-offline) .pd-workspaces-arrow';
 
 export function pageFromPath(pathname: string): TourPage | null {
   const path = pathname.replace(/^\/devices\/[^/]+(?=\/)/, '');
@@ -61,21 +61,61 @@ export function pageFromPath(pathname: string): TourPage | null {
   return null;
 }
 
-const LAST_THREAD_KEY = 'pockymoe.onboarding.lastThread';
+const TOUR_THREADS: Record<TourThread, string> = { main: TOUR_MAIN_THREAD, helper: TOUR_HELPER_THREAD };
+const TOUR_BASE = `/devices/${TOUR_DEVICE_ID}`;
 
-function readLastThread() {
-  try {
-    return window.sessionStorage.getItem(LAST_THREAD_KEY);
-  } catch {
-    return null;
+/** Where a step is: the sample device's pages, or the account's device list. */
+export function tourPageFromPath(pathname: string): { page: TourPage; threadId: string | null } | null {
+  if (pageFromPath(pathname) === 'relayDevices') return { page: 'relayDevices', threadId: null };
+  if (!pathname.startsWith(`${TOUR_BASE}/`)) return null;
+  const page = pageFromPath(pathname);
+  return page ? { page, threadId: page === 'thread' ? decodeURIComponent(pathname.split('/').pop() ?? '') : null } : null;
+}
+
+function tourHref(page: TourPage, thread: TourThread = 'main') {
+  switch (page) {
+    case 'relayDevices': return devicesHref();
+    case 'workspaces': return `${TOUR_BASE}/workspaces`;
+    case 'workspaceNew': return `${TOUR_BASE}/workspaces/new`;
+    case 'threadImport': return `${TOUR_BASE}/threads/import`;
+    case 'thread': return `${TOUR_BASE}/threads/${TOUR_THREADS[thread]}`;
   }
 }
 
-function writeLastThread(href: string) {
+const VIEW_KEY = 'pockymoe.onboarding.view';
+
+function readView(): TourView {
   try {
-    window.sessionStorage.setItem(LAST_THREAD_KEY, href);
+    const value = JSON.parse(window.sessionStorage.getItem(VIEW_KEY) ?? 'null') as TourView | null;
+    if (value?.kind === 'hub') return value;
+    if (value?.kind === 'step' && TOUR_CHAPTER_IDS.includes(value.chapter) && Number.isInteger(value.index)) return value;
+  } catch { /* A broken value starts closed. */ }
+  return { kind: 'closed' };
+}
+
+function writeView(view: TourView) {
+  try {
+    if (view.kind === 'closed') window.sessionStorage.removeItem(VIEW_KEY);
+    else window.sessionStorage.setItem(VIEW_KEY, JSON.stringify(view));
+  } catch { /* The tour still works for this visit. */ }
+}
+
+// The page the reader opened the tour from, to return to when it closes.
+const RETURN_KEY = 'pockymoe.onboarding.return';
+
+function rememberReturn(href: string) {
+  try {
+    if (!window.sessionStorage.getItem(RETURN_KEY)) window.sessionStorage.setItem(RETURN_KEY, href);
+  } catch { /* Without storage, closing the tour stays on the sample page. */ }
+}
+
+function takeReturn() {
+  try {
+    const href = window.sessionStorage.getItem(RETURN_KEY);
+    window.sessionStorage.removeItem(RETURN_KEY);
+    return href;
   } catch {
-    /* Optional: the tour then asks the user to open a thread. */
+    return null;
   }
 }
 
@@ -189,18 +229,16 @@ export function TourProvider({ children }: { children: ReactNode }) {
   const storageKey = account ? progressStorageKey(account) : null;
   const [progress, setProgress] = useState<TourProgress>(EMPTY_PROGRESS);
   const [progressLoaded, setProgressLoaded] = useState(false);
-  const [view, setView] = useState<TourView>({ kind: 'closed' });
+  // The open chapter and step survive a reload or remount, like the page they show.
+  const [view, setViewState] = useState<TourView>(readView);
+  const setView = useCallback((next: TourView) => {
+    setViewState(next);
+    writeView(next);
+  }, []);
   const root = useTourRoot();
-  const page = pageFromPath(location.pathname);
-  // Thread steps return to the last thread opened in this tab, even after a reload.
-  const lastThreadHref = useRef<string | null>(readLastThread());
-  if (page === 'thread') {
-    const href = `${location.pathname}${location.search}`;
-    if (lastThreadHref.current !== href) {
-      lastThreadHref.current = href;
-      writeLastThread(href);
-    }
-  }
+  const pathname = location.pathname;
+  const page = pageFromPath(pathname);
+  const here = tourPageFromPath(pathname);
 
   useEffect(() => {
     setProgress(storageKey ? readProgress(storageKey) : EMPTY_PROGRESS);
@@ -218,18 +256,27 @@ export function TourProvider({ children }: { children: ReactNode }) {
     [storageKey],
   );
 
+  // A tour starts on the sample device from where the reader is, and returns there.
+  const begin = useCallback(() => {
+    if (onTourRoute()) return;
+    rememberReturn(`${location.pathname}${location.search}${location.hash}`);
+    void resetTourSandbox();
+  }, [location.hash, location.pathname, location.search]);
+
   const api = useMemo<TourApi>(
     () => ({
       openHub: () => {
         updateProgress((current) => ({ ...current, welcomeDismissed: true }));
+        begin();
         setView({ kind: 'hub' });
       },
       startChapter: (chapter) => {
         updateProgress((current) => ({ ...current, welcomeDismissed: true }));
+        begin();
         setView({ kind: 'step', chapter, index: 0 });
       },
     }),
-    [updateProgress],
+    [begin, updateProgress],
   );
 
   const chapterId = view.kind === 'step' ? view.chapter : null;
@@ -245,28 +292,25 @@ export function TourProvider({ children }: { children: ReactNode }) {
     );
   }, [chapter, step, updateProgress]);
 
-  const deviceId = relayDeviceIdFromPath(location.pathname) ?? (mode === 'relay' ? readSelectedRelayDeviceId() : null);
-  const pageHref = useCallback(
-    (target: TourPage): string | null => {
-      if (target === 'relayDevices') return devicesHref();
-      if (target === 'thread') return lastThreadHref.current;
-      if (mode === 'relay' && !deviceId) return null;
-      const path = target === 'workspaces' ? '/workspaces' : target === 'workspaceNew' ? '/workspaces/new' : '/threads/import';
-      return relayScopedPath(path, mode === 'relay' ? deviceId : null);
-    },
-    [deviceId, mode],
-  );
+  const onStepPage = (target: TourStep) => !target.page || (here?.page === target.page
+    && (target.page !== 'thread' || here.threadId === TOUR_THREADS[target.thread ?? 'main']));
+  const stepHref = step?.page ? tourHref(step.page, step.thread) : null;
+  const stepMismatch = Boolean(step && !onStepPage(step));
 
-  // Plain pages are opened for the user once per step; they can still navigate away.
+  // Each step opens its page once; the reader can still navigate away.
   const navigatedFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!step || !stepKey || !step.page || step.page === page || navigatedFor.current === stepKey) return;
+    if (!stepKey || !stepMismatch || !stepHref || navigatedFor.current === stepKey) return;
     navigatedFor.current = stepKey;
-    const href = pageHref(step.page);
-    if (href) navigate(href);
-  }, [navigate, page, pageHref, step, stepKey]);
+    navigate(stepHref);
+  }, [navigate, stepHref, stepKey, stepMismatch]);
 
-  const close = useCallback(() => setView({ kind: 'closed' }), []);
+  // Closing the tour leaves the sample device for the page it started from.
+  const close = useCallback(() => {
+    setView({ kind: 'closed' });
+    const back = takeReturn();
+    if (onTourRoute()) navigate(back && !back.startsWith(TOUR_BASE) ? back : '/');
+  }, [navigate]);
   const goTo = useCallback(
     (index: number) => {
       if (!chapter || view.kind !== 'step') return;
@@ -310,9 +354,6 @@ export function TourProvider({ children }: { children: ReactNode }) {
       />
     );
   } else if (chapter && step && view.kind === 'step' && stepKey) {
-    const href = step.page && step.page !== page ? pageHref(step.page) : null;
-    // Relay workspaces live on a device: point at an online device's Connect button.
-    const relayNeedsDevice = mode === 'relay' && step.page !== 'relayDevices' && step.page !== 'thread' && !deviceId;
     overlay = (
       <TourStepOverlay
         key={stepKey}
@@ -321,24 +362,9 @@ export function TourProvider({ children }: { children: ReactNode }) {
         step={step}
         index={Math.min(view.index, chapter.steps.length - 1)}
         total={chapter.steps.length}
-        pageMismatch={Boolean(step.page && step.page !== page)}
-        pageTarget={relayNeedsDevice && page === 'relayDevices' ? CONNECT_BUTTON : null}
-        pageAction={
-          step.page && step.page !== page && !(relayNeedsDevice && page === 'relayDevices')
-            ? href
-              ? { label: 'tour.goThere', run: () => navigate(href) }
-              : step.page === 'thread'
-                ? { label: 'tour.openWorkspaces', run: () => navigate(pageHref('workspaces') ?? devicesHref()) }
-                : { label: 'tour.openDevices', run: () => navigate(devicesHref()) }
-            : null
-        }
-        pagePrerequisite={
-          step.page === 'thread'
-            ? 'tour.threads.thread.prereq'
-            : relayNeedsDevice
-              ? 'tour.devices.relayWorkspaces.prereq'
-              : null
-        }
+        pageMismatch={stepMismatch}
+        pageAction={stepMismatch && stepHref ? { label: 'tour.goThere', run: () => navigate(stepHref) } : null}
+        pagePrerequisite={stepMismatch ? 'tour.elsewhere' : null}
         onBack={() => goTo(view.index - 1)}
         onNext={() => goTo(view.index + 1)}
         onContents={() => setView({ kind: 'hub' })}
@@ -408,7 +434,6 @@ function TourStepOverlay({
   index,
   total,
   pageMismatch,
-  pageTarget,
   pageAction,
   pagePrerequisite,
   onBack,
@@ -422,8 +447,6 @@ function TourStepOverlay({
   index: number;
   total: number;
   pageMismatch: boolean;
-  /** Highlighted while on the wrong page, e.g. the control that leads to the right one. */
-  pageTarget: string | null;
   pageAction: { label: TranslationKey; run: () => void } | null;
   pagePrerequisite: TranslationKey | null;
   onBack: () => void;
@@ -439,10 +462,7 @@ function TourStepOverlay({
   useEffect(() => {
     let frame = 0;
     const tick = () => {
-      const pageElement = pageMismatch && pageTarget ? firstVisible(pageTarget) : null;
-      const found = pageMismatch
-        ? pageElement && { element: pageElement, rect: toRect(pageElement), variant: null }
-        : findTarget(step);
+      const found = pageMismatch ? null : findTarget(step);
       if (found?.variant && !scrolled.current) {
         const { rect } = found;
         if (rect.top < 0 || rect.left < 0 || rect.top + rect.height > window.innerHeight || rect.left + rect.width > window.innerWidth) {
@@ -459,7 +479,7 @@ function TourStepOverlay({
     };
     tick();
     return () => cancelAnimationFrame(frame);
-  }, [pageMismatch, pageTarget, step]);
+  }, [pageMismatch, step]);
 
   const ready = Boolean(tracked?.variant);
   useEffect(() => {
@@ -498,7 +518,7 @@ function TourStepOverlay({
   }, [visible]);
 
   if (!visible) return null;
-  const prerequisite = pageMismatch ? pagePrerequisite : ready ? null : step.prerequisite ?? 'tour.waiting';
+  const prerequisite = pageMismatch ? pagePrerequisite : ready || step.optional ? null : step.prerequisite ?? 'tour.waiting';
   const body = tracked?.variant?.body ?? step.body;
   const last = index === total - 1;
   const titleId = 'pockymoe-tour-title';

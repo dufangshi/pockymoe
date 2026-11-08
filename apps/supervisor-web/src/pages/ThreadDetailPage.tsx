@@ -43,7 +43,7 @@ import { ThreadSubagentsControl } from '../components/ThreadSubagentsControl';
 import { PortMappingsControl } from '../components/PortMappingsControl';
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { Download, Link2, Network, Puzzle, Users } from 'lucide-react';
+import { Download, Link2, MonitorSmartphone, Network, Puzzle, Users } from 'lucide-react';
 
 import { RecentThreadMenu } from '../components/RecentThreadMenu';
 import {
@@ -120,6 +120,7 @@ import {
   respondToThreadRequest,
   resumeThread,
   relayModeActive,
+  relaySharingActive,
   sendThreadPrompt,
   type PromptAttachmentUpload,
   type SendThreadPromptRequestInput,
@@ -793,7 +794,7 @@ export function ThreadDetailPage() {
     workspaceLabel: workbenchNavigation.workspaceLabel,
   });
   const relayDeviceRouteActive =
-    relayModeActive() && Boolean(relayRouteDeviceId);
+    relaySharingActive() && Boolean(relayRouteDeviceId);
   const relayAccess = relayAccessState.access;
   const relayThreadIsOwner =
     !hostScope && (!relayDeviceRouteActive || relayAccess?.kind === 'owner');
@@ -958,6 +959,14 @@ export function ThreadDetailPage() {
     : toolsAccess?.kind === 'shared' && ((toolsAccess.scope === 'device' && toolsAccess.workspaceScope !== 'selected') || toolsAccess.workspaceId === toolsDetail?.workspace.id)
       ? toolsAccess.workspaceAccess : 'none';
   const toolsCanControl = toolsUseReference ? referenceController.canControl : relayThreadCanControl;
+  const deviceLabel = presentationDeviceName ?? (relayRouteDeviceId ? relayRouteDeviceId.slice(0, 8) : translate('workbench.localDeviceName'));
+  // The desktop clients and a signed-in PC browser keep the rail for navigation:
+  // this conversation's device and its monitor end the sidebar instead.
+  const sidebarDevice = desktopSurface && !hostScope ? <>
+    <MonitorSmartphone aria-hidden="true" className="matter-sidebar-device-icon" />
+    <span className="matter-sidebar-device-name" title={deviceLabel}>{deviceLabel}</span>
+    <DeviceMonitor key={relayRouteDeviceId ?? 'local'} />
+  </> : null;
   const toolsTargetLabel = `${toolsDevice === (relayRouteDeviceId ?? 'local') ? (presentationDeviceName ?? translate('workbench.localDeviceName')) : toolsDevice.slice(0,8)} · ${toolsDetail?.workspace.label ?? ''} · ${toolsDetail?.thread.title ?? ''}`;
   const focusPane = useCallback((pane: 'primary' | 'reference') => {
     if (pane === focusedPane) return true;
@@ -1045,7 +1054,7 @@ export function ThreadDetailPage() {
   useEffect(() => {
     const currentDetail = detailRef.current;
     const deviceId = currentRelayDeviceIdFromPath();
-    if (!relayModeActive() || !currentDetail || !deviceId) {
+    if (!relaySharingActive() || !currentDetail || !deviceId) {
       setRelayAccessState({
         status: 'idle',
         access: null,
@@ -4010,9 +4019,9 @@ export function ThreadDetailPage() {
     <ThreadDetailSurface
       restrictedNavigation={Boolean(hostScope)}
       scopedSettings={Boolean(hostScope)}
-      deviceMonitor={hostScope ? <OpenFullPageButton /> : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
-      workbench={workbenchUrls({ ...workbenchNavigation, ...desktopWorkbench, panels: {
-        deviceLabel: presentationDeviceName ?? (relayRouteDeviceId ? relayRouteDeviceId.slice(0, 8) : translate('workbench.localDeviceName')),
+      deviceMonitor={hostScope ? <OpenFullPageButton /> : desktopSurface ? <TourLauncherButton /> : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
+      workbench={workbenchUrls({ ...workbenchNavigation, ...desktopWorkbench, ...(sidebarDevice ? { sidebarFooter: sidebarDevice } : {}), panels: {
+        deviceLabel,
         workspaceLabel: detail?.workspace.label ?? workbenchNavigation.workspacePath,
         primaryTitle: detail?.thread.title ?? translate('workbench.loadingThreadDetail'),
         primaryHarness: detail?.thread.agentId ?? detail?.thread.provider ?? '',
