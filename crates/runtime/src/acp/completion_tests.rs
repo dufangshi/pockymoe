@@ -62,6 +62,7 @@ async fn claude_background_wake_output_stays_live_and_persists_after_foreground_
                 ProductSessionPolicy::default(),
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -419,6 +420,7 @@ async fn claude_coalesced_prompt_drains_only_proven_completed_work() {
                 ProductSessionPolicy::default(),
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -598,6 +600,7 @@ async fn claude_incomplete_tool_reconciles_only_abandoned_streams() {
                 &def,
                 dir.path().to_str().unwrap(),
                 ProductSessionPolicy::default(),
+                None,
                 None,
                 None,
             )

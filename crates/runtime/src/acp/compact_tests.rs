@@ -42,6 +42,7 @@ async fn compact_uses_the_loaded_sessions_late_command_and_rejects_withdrawal() 
                 ProductSessionPolicy::default(),
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
