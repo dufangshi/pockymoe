@@ -114,6 +114,9 @@ struct LiveSession {
     dsh_running: bool,
     /// `DSH_PERMISSION_MODE` the process booted with.
     dsh_env_preset: Option<String>,
+    /// The `["provider","model"]` route DSH's ACP was configured with at boot.
+    /// DSH decides at `initialize` whether it takes images, from that model.
+    dsh_route: Option<String>,
     session_id: String,
     cwd: PathBuf,
     yolo: bool,
@@ -461,6 +464,7 @@ impl AcpRuntime {
                     },
                     None,
                     None,
+                    None,
                 )
                 .await;
             let Ok((_scoped, live)) = probe else {
@@ -507,9 +511,10 @@ impl AcpRuntime {
         policy: ProductSessionPolicy,
         load_id: Option<&str>,
         reasoning_effort: Option<&str>,
+        model: Option<&str>,
     ) -> Result<(String, LiveSession)> {
         let result = self
-            .spawn_session_inner(def, cwd, policy, load_id, reasoning_effort)
+            .spawn_session_inner(def, cwd, policy, load_id, reasoning_effort, model)
             .await;
         self.inner.health.lock().unwrap().insert(
             agent_cache_key(&def.id),
@@ -525,6 +530,7 @@ impl AcpRuntime {
         policy: ProductSessionPolicy,
         load_id: Option<&str>,
         reasoning_effort: Option<&str>,
+        boot_model: Option<&str>,
     ) -> Result<(String, LiveSession)> {
         let cwd = harness_cwd(cwd);
         let cwd = cwd.as_ref();
@@ -621,7 +627,7 @@ impl AcpRuntime {
         }
         let (process, updates_rx, requests_rx, dsh, harness_info) = if dsh_env_preset.is_some() {
             let (process, updates, requests, bridge, hello) = self
-                .spawn_dsh(def, &server_command, cwd, &extra_env)
+                .spawn_dsh(def, &server_command, cwd, &extra_env, boot_model)
                 .await?;
             *self.inner.dsh_catalog.lock().await = Some(super::deepseek::catalog_view(&hello));
             (process, updates, requests, Some(bridge), Some(hello))
@@ -845,6 +851,9 @@ impl AcpRuntime {
             ),
             None => harness_models,
         };
+        let dsh_route = boot_model
+            .filter(|model| dsh.is_some() && super::deepseek::route(model).is_some())
+            .map(str::to_string);
         let mut live = LiveSession {
             process,
             isolated_claude,
@@ -856,6 +865,7 @@ impl AcpRuntime {
             dsh_title: None,
             dsh_running: false,
             dsh_env_preset,
+            dsh_route: dsh_route.clone(),
             session_id,
             cwd: PathBuf::from(cwd),
             yolo,
@@ -894,6 +904,7 @@ impl AcpRuntime {
         command: &str,
         cwd: &str,
         extra_env: &[(&str, String)],
+        model: Option<&str>,
     ) -> Result<(
         Arc<AcpProcess>,
         mpsc::Receiver<Value>,
@@ -915,6 +926,7 @@ impl AcpRuntime {
                 extra_env
                     .iter()
                     .any(|(key, value)| *key == "POCKYMOE_CONTEXT_INSPECTION" && value == "1"),
+                model,
             )
             .await?;
             let (process, updates, requests) = tokio::time::timeout(
@@ -1154,6 +1166,7 @@ impl AcpRuntime {
                     approval_mode: Some("yolo".into()),
                     ..ProductSessionPolicy::default()
                 },
+                None,
                 None,
                 None,
             )
@@ -1635,6 +1648,7 @@ impl AcpRuntime {
                     collaboration_mode: live.collaboration_mode.clone(),
                 },
                 Some(&live.session_id),
+                None,
                 None,
             )
             .await?;
@@ -2257,6 +2271,7 @@ impl AgentRuntime for AcpRuntime {
                 },
                 None,
                 input.reasoning_effort.as_deref(),
+                Some(input.model.as_str()),
             )
             .await?;
         let adapter = adapter_for(&live.adapter_id);
@@ -2424,6 +2439,7 @@ impl AgentRuntime for AcpRuntime {
                 },
                 Some(raw.as_str()),
                 None,
+                settings.model.as_deref(),
             )
             .await?;
         self.announce_load(&scoped, &live);
@@ -2519,7 +2535,12 @@ impl AgentRuntime for AcpRuntime {
                 live.process.clone(),
                 live.session_id.clone(),
                 live.cwd.clone(),
-                live.negotiated.image,
+                // DSH answered `initialize` for its boot model; after a switch,
+                // an image could reach a model that cannot read it, which fails
+                // every later turn of the session.
+                live.negotiated.image
+                    && (live.dsh.is_none()
+                        || (live.dsh_route.is_some() && live.dsh_route == live.model)),
                 live.adapter_id.clone(),
                 live.harness_state.clone(),
                 live.context_thread_id.as_deref() != Some(input.thread_id.as_str())
@@ -3611,6 +3632,7 @@ impl AgentRuntime for AcpRuntime {
                 dsh_title: None,
                 dsh_running: false,
                 dsh_env_preset: None,
+                dsh_route: None,
                 session_id: new_id,
                 cwd,
                 yolo,

@@ -255,3 +255,46 @@ test('a run mode without plan mode cannot silently drop the thread plan', async 
   expect(after.session.projections.agentPreset).toBe('standard');
   expect(after.session.projections.plan.active).toBe(true);
 });
+
+async function runTurnOn(request: APIRequestContext, id: string, prompt: string) {
+  const accepted = await request.post(`${base}/api/threads/${id}/prompt`, { data: { prompt } });
+  expect(accepted.ok(), await accepted.text()).toBeTruthy();
+  await expect.poll(async () => {
+    const current = await (await request.get(`${base}/api/threads/${id}`)).json();
+    return current.turns.length && current.thread.status !== 'running' ? current.turns.at(-1).status : 'pending';
+  }, { timeout: 60_000 }).toBe('completed');
+}
+
+// DSH takes inline images only when the model it boots with reads them; a
+// photo for any other model arrives as a file link and the turn still finishes.
+for (const [name, route, expected] of [
+  ['a vision model sees an attached photo inline', '["e2e-scripted","vision"]', /IMAGES=1 LINKS=0 TYPES=image\/png/],
+  ['a text-only model gets an attached photo as a file link', '["e2e-scripted","scripted"]', /IMAGES=0 LINKS=1/],
+  ['a photo after switching away from the vision model is a file link', '["e2e-scripted","vision"]', /IMAGES=0 LINKS=1/],
+] as const) test(name, async ({ request }) => {
+  const absPath = path.join(workspaceDir, name.replace(/\W+/g, '-'));
+  mkdirSync(absPath, { recursive: true });
+  const workspace = await (await request.post(`${base}/api/workspaces`, { data: { absPath, label: 'DSH images' } })).json();
+  const thread = await (await request.post(`${base}/api/threads/start`, {
+    data: { workspaceId: workspace.id, provider: 'acp', agentId: 'deepseek', model: route, title: name, approvalMode: 'guarded' },
+  })).json();
+  if (name.includes('switching')) {
+    // The process booted with the vision model; the thread now uses a text-only one.
+    await runTurnOn(request, thread.id, 'hello');
+    const switched = await request.patch(`${base}/api/threads/${thread.id}/settings`, { data: { model: '["e2e-scripted","scripted"]' } });
+    expect(switched.ok(), await switched.text()).toBeTruthy();
+  }
+  // A 1×1 red PNG.
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==', 'base64');
+  const accepted = await request.post(`${base}/api/threads/${thread.id}/prompt`, { multipart: {
+    prompt: 'IMAGES? [PHOTO red.png]',
+    attachmentManifest: JSON.stringify([{ clientId: 'red', kind: 'photo', originalName: 'red.png', placeholder: '[PHOTO red.png]' }]),
+    attachments: { name: 'red.png', mimeType: 'image/png', buffer: png },
+  } });
+  expect(accepted.ok(), await accepted.text()).toBeTruthy();
+  await expect.poll(async () => {
+    const current = await (await request.get(`${base}/api/threads/${thread.id}`)).json();
+    const turn = current.turns.at(-1);
+    return turn && current.thread.status !== 'running' ? `${turn.status} ${turn.items.map((item: { text?: string }) => item.text ?? '').join(' ')}` : 'pending';
+  }, { timeout: 60_000 }).toMatch(new RegExp(`^completed .*${expected.source}`));
+});

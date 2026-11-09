@@ -1,7 +1,8 @@
 // Keyless DSH provider for E2E: `CALL <tool> <json>` in the latest user text
 // makes one tool call, `TOOLS?` lists the tools DSH offered (the run mode's
 // tool set), `HISTORY?` lists the earlier user texts the model saw (what a
-// fork kept); otherwise it answers. Text and reasoning stream in small chunks
+// fork kept), `IMAGES?` lists the image blocks and the texts of the latest user
+// message (`vision` is the model that takes images); otherwise it answers. Text and reasoning stream in small chunks
 // so bridge streaming is observable.
 export const name = 'pockymoe-e2e-scripted-llm';
 export const inject = ['llm'];
@@ -20,13 +21,25 @@ function lastUserText(messages) {
   return userTexts(messages).at(-1) ?? '';
 }
 
+function imagesAnswer(messages) {
+  const asked = messages.filter(message => message.role === 'user' && Array.isArray(message.content)
+    && message.content.some(block => block.type === 'text' && block.text.includes('IMAGES?'))).at(-1);
+  const blocks = asked?.content ?? [];
+  const images = blocks.filter(block => block.type === 'image');
+  const links = blocks.filter(block => block.type === 'text' && block.text.includes('resource_link')).length;
+  return `IMAGES=${images.length} LINKS=${links} TYPES=${images.map(block => block.mediaType ?? block.mimeType ?? block.attachment?.mediaType ?? Object.keys(block).join('+')).join(',')}`;
+}
+
 class ScriptedAdapter {
   providerInfo(provider) { return { id: provider, name: 'E2E Scripted' }; }
   providerRetryPolicy() { return undefined; }
   imageRequestPricing() { return undefined; }
-  async listModels(provider) { return [{ provider, id: 'scripted', name: 'Scripted' }]; }
+  async listModels(provider) {
+    return [{ provider, id: 'scripted', name: 'Scripted' }, { provider, id: 'vision', name: 'Scripted Vision', inputModalities: ['text', 'image'] }];
+  }
   async resolveModel(provider, model) {
     return { provider, id: model, name: model, context: { contextWindow: 128000 },
+      ...(model === 'vision' ? { inputModalities: ['text', 'image'] } : {}),
       reasoning: { efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }], defaultEffort: 'high' } };
   }
   async prepareCall(provider, model, signal) {
@@ -61,6 +74,7 @@ class ScriptedAdapter {
     const answer = afterTool ? 'Tool finished; final answer SCRIPTED_DONE.'
       : text.includes('TOOLS?') ? `TOOLS=${tools.map(tool => tool.name).sort().join(',')}`
       : text.includes('HISTORY?') ? `HISTORY=${userTexts(messages).slice(0, -1).join(' | ')}`
+      : userTexts(messages).some(user => user.includes('IMAGES?')) ? imagesAnswer(messages)
       : `Plain answer SCRIPTED_OK for: ${text.slice(0, 60)}`;
     yield* block('text', answer);
     yield { type: 'usage', usage: { inputTokens: 90, outputTokens: 10, totalTokens: 100 } };
