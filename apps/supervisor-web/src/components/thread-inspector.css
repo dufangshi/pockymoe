@@ -2,6 +2,8 @@
    the owner (amber), migrates (accent) or failed (red); the name says which. */
 .inspector-rail-icon { position: relative; display: inline-grid; place-items: center; width: 18px; height: 18px; flex: none; }
 .inspector-rail-icon > svg { width: 100%; height: 100%; }
+/* In a phone's thread tools menu it lines up with the other items' icons. */
+.matter-thread-tools-panels .inspector-rail-icon { width: 16px; height: 16px; color: var(--theme-fg-soft, var(--theme-fg-muted)); }
 .inspector-rail-icon[data-attention]::after {
   content: ''; position: absolute; top: -3px; right: -4px; width: 7px; height: 7px; border-radius: 50%;
   background: var(--status-warning-fg); box-shadow: 0 0 0 2px var(--theme-panel);
