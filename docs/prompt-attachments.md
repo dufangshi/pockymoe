@@ -4,6 +4,15 @@ A file dragged, pasted or picked in the composer goes to the device and is named
 the prompt as `[FILE ./.temp/threads/<thread>/<name>]` or `[PHOTO ...]`. Each file
 can be up to 1 GiB, and a prompt can carry 10.
 
+## How an agent receives them
+
+`[FILE]` reaches an ACP agent as a `resource_link` to the file. `[PHOTO]` is an
+inline image block when the agent advertises `promptCapabilities.image`, or its
+adapter says it takes images anyway (Grok, `accepts_unadvertised_images` in
+`crates/runtime/src/acp/adapter.rs`). Any other agent, such as the DeepSeek
+Harness, gets the picture as a `resource_link` with its image type, which it can
+open with its tools.
+
 ## Two paths
 
 | Files of one prompt | Path |

@@ -2582,6 +2582,7 @@ impl AgentRuntime for AcpRuntime {
         } else {
             prompt
         };
+        let image_capable = image_capable || adapter_for(&adapter_id).accepts_unadvertised_images();
         let prompt_blocks = build_prompt_blocks(&prompt, &cwd, image_capable, &input.images)?;
         if !input.hidden {
             // Settings may have reloaded the process; identify the actual writer
