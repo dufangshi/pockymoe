@@ -14,6 +14,10 @@ pub fn build_prompt_blocks(
     extra_images: &[PromptImage],
 ) -> Result<Vec<Value>> {
     let mut blocks = expand_attachment_tokens(prompt, cwd, image_capable)?;
+    if !image_capable && !extra_images.is_empty() {
+        // These have no file to link to instead.
+        bail!("This agent does not accept images in a prompt.");
+    }
     for image in extra_images {
         blocks.push(json!({
             "type": "image",
@@ -27,7 +31,7 @@ pub fn build_prompt_blocks(
     Ok(blocks)
 }
 
-fn expand_attachment_tokens(prompt: &str, cwd: &Path, _image_capable: bool) -> Result<Vec<Value>> {
+fn expand_attachment_tokens(prompt: &str, cwd: &Path, image_capable: bool) -> Result<Vec<Value>> {
     let mut blocks = Vec::new();
     // `cursor` marks text not yet emitted; `search` only advances the scan. Moving
     // `cursor` past an ordinary bracket used to drop everything before it.
@@ -61,7 +65,7 @@ fn expand_attachment_tokens(prompt: &str, cwd: &Path, _image_capable: bool) -> R
         let uri = url::Url::from_file_path(&abs)
             .map_err(|_| anyhow::anyhow!("cannot convert attachment path to a file URL"))?
             .to_string();
-        if kind == "PHOTO" {
+        if kind == "PHOTO" && image_capable {
             let file_bytes = std::fs::read(&abs)?;
             if file_bytes.len() > 20 * 1024 * 1024 {
                 bail!("ACP image attachment is missing or exceeds 20 MiB.");
@@ -78,11 +82,16 @@ fn expand_attachment_tokens(prompt: &str, cwd: &Path, _image_capable: bool) -> R
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| requested.to_string());
-            blocks.push(json!({
+            // An agent that does not take images gets the picture as a file it can open.
+            let mut link = json!({
                 "type": "resource_link",
                 "name": name,
                 "uri": uri
-            }));
+            });
+            if kind == "PHOTO" {
+                link["mimeType"] = json!(mime_for(&abs));
+            }
+            blocks.push(link);
         }
         cursor = end;
         search = end;
@@ -144,5 +153,23 @@ mod tests {
         assert_eq!(blocks[0]["text"], "[ctx] read ");
         assert_eq!(blocks[1]["type"], "resource_link");
         assert_eq!(blocks[2]["text"], " then a[1]");
+    }
+
+    #[test]
+    fn a_photo_is_a_file_link_for_an_agent_without_images() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("red.png"), b"png").unwrap();
+        let blocks = build_prompt_blocks("see [PHOTO red.png]", dir.path(), false, &[]).unwrap();
+        assert_eq!(blocks[1]["type"], "resource_link");
+        assert_eq!(blocks[1]["name"], "red.png");
+        assert_eq!(blocks[1]["mimeType"], "image/png");
+        let inline = [PromptImage {
+            mime_type: "image/png".into(),
+            data: "AA==".into(),
+        }];
+        let err = build_prompt_blocks("x", dir.path(), false, &inline).unwrap_err();
+        assert!(err.to_string().contains("does not accept images"));
+        let blocks = build_prompt_blocks("[PHOTO red.png]", dir.path(), true, &inline).unwrap();
+        assert_eq!(blocks.iter().filter(|b| b["type"] == "image").count(), 2);
     }
 }

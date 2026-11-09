@@ -81,6 +81,11 @@ pub trait HarnessAdapter: Send + Sync {
     fn prompt_preamble(&self) -> Option<&'static str> {
         None
     }
+    /// Takes inline image blocks without advertising `promptCapabilities.image`.
+    /// Other agents that do not advertise it get the picture as a file link.
+    fn accepts_unadvertised_images(&self) -> bool {
+        false
+    }
     fn model_list_method(&self) -> Option<&'static str> {
         None
     }
@@ -349,6 +354,9 @@ impl HarnessAdapter for GrokAdapter {
     }
     fn id(&self) -> &'static str {
         "grok"
+    }
+    fn accepts_unadvertised_images(&self) -> bool {
+        true
     }
     fn fs_read_text_file(&self) -> bool {
         false
