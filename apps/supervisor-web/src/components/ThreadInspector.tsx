@@ -54,6 +54,7 @@ export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, 
   const toolPanels: WorkbenchToolPanel[] = [
     ...(gitAvailable ? [{ id: 'git', label: 'Git', icon: <GitBranch data-icon="git" />, active: shown === 'git', onToggle: () => toggle('git') }] : []),
     ...(isolationAvailable ? [{ id: 'isolation', label: isolationLabel, active: shown === 'isolation', onToggle: () => toggle('isolation'),
+      attention: attention ? requestMark(attention.state) : undefined,
       icon: <span className="inspector-rail-icon" data-attention={attention ? requestMark(attention.state) : undefined}><Box data-icon="isolation" /></span> }] : []),
   ];
   const scope = `${deviceId ?? 'local'}:${thread?.id ?? ''}`;

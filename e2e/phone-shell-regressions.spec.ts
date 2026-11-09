@@ -102,6 +102,33 @@ test('normal and one-handed composers sit against their intended bottom anchor',
   await writeFile('/tmp/rc-ios/evidence/phone-shell/composer-metrics.json', JSON.stringify(measurements, null, 2));
 });
 
+// However many tools a conversation has: nothing in the classic top bar overlaps or leaves the screen.
+test('classic phone top bar fits, with tools in the thread tools menu', async ({ page, request }) => {
+  const id = await threadFixture(request);
+  await setPhone(page, false);
+  for (const pack of ['classic', 'plum-pocket', 'terminal']) {
+    await page.addInitScript((pack) => localStorage.setItem('pockymoe-theme-preset', pack), pack);
+    for (const width of [360, 390, 402, 430]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.goto(`/threads/${id}`);
+      await page.locator('header.matter-topbar').waitFor();
+      await page.locator('header.matter-topbar .device-monitor-button').waitFor();
+      const problems = await page.evaluate(() => {
+        const items = [...document.querySelectorAll<HTMLElement>('header.matter-topbar :is(button, a)')].filter(item => item.offsetParent);
+        const boxes = items.map(item => ({ name: item.getAttribute('aria-label') ?? item.className, box: item.getBoundingClientRect() }));
+        return boxes.flatMap(({ name, box }, index) => [
+          ...(box.left < 0 || box.right > innerWidth ? [`${name} leaves the screen`] : []),
+          ...(index && box.left < boxes[index - 1]!.box.right - 1 ? [`${name} overlaps ${boxes[index - 1]!.name}`] : []),
+        ]);
+      });
+      expect(problems, `${pack} at ${width}`).toEqual([]);
+      await expect(page.locator('header.matter-topbar button[aria-label="Git"]')).toHaveCount(0);
+    }
+  }
+  await page.locator('button.matter-toolbar-toggle').tap();
+  await expect(page.locator('#matter-thread-tools .matter-thread-tools-panels button[aria-label="Git"]')).toBeVisible();
+});
+
 test('phone shell theme matrix keeps composer and dock visible', async ({ page, request }) => {
   const id = await threadFixture(request);
   for (const pack of ['classic', 'plum-pocket', 'terminal']) {
