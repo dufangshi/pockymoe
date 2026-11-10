@@ -29,7 +29,3 @@ only what it holds now.
 - **Show agent status summaries follows the account** (Web): signed in, the
   setting is saved to your account, so every browser and client shows the same.
   A browser that already had it on turns it on for the account.
-- **Device readings on the rail** (Web): in the desktop clients and a signed-in
-  computer browser, a thread page shows its device's CPU, memory and GPU readings
-  at the foot of the rail again, where they stay in view with the sidebar
-  closed.

@@ -963,12 +963,12 @@ export function ThreadDetailPage() {
       ? toolsAccess.workspaceAccess : 'none';
   const toolsCanControl = toolsUseReference ? referenceController.canControl : relayThreadCanControl;
   const deviceLabel = presentationDeviceName ?? (relayRouteDeviceId ? relayRouteDeviceId.slice(0, 8) : translate('workbench.localDeviceName'));
-  // On the desktop clients and a signed-in PC browser the sidebar ends with the
-  // name of this conversation's device. Its readings sit at the foot of the rail,
-  // where they stay in view with the sidebar closed.
+  // The desktop clients and a signed-in PC browser keep the rail for navigation:
+  // this conversation's device and its monitor end the sidebar instead.
   const sidebarDevice = desktopSurface && !hostScope ? <>
     <MonitorSmartphone aria-hidden="true" className="matter-sidebar-device-icon" />
     <span className="matter-sidebar-device-name" title={deviceLabel}>{deviceLabel}</span>
+    <DeviceMonitor key={relayRouteDeviceId ?? 'local'} />
   </> : null;
   const toolsTargetLabel = `${toolsDevice === (relayRouteDeviceId ?? 'local') ? (presentationDeviceName ?? translate('workbench.localDeviceName')) : toolsDevice.slice(0,8)} · ${toolsDetail?.workspace.label ?? ''} · ${toolsDetail?.thread.title ?? ''}`;
   const focusPane = useCallback((pane: 'primary' | 'reference') => {
@@ -4046,7 +4046,7 @@ export function ThreadDetailPage() {
     <ThreadDetailSurface
       restrictedNavigation={Boolean(hostScope)}
       scopedSettings={Boolean(hostScope)}
-      deviceMonitor={hostScope ? <OpenFullPageButton /> : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
+      deviceMonitor={hostScope ? <OpenFullPageButton /> : desktopSurface ? <TourLauncherButton /> : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
       workbench={workbenchUrls({ ...workbenchNavigation, ...desktopWorkbench, ...(sidebarDevice ? { sidebarFooter: sidebarDevice } : {}), panels: {
         deviceLabel,
         workspaceLabel: detail?.workspace.label ?? workbenchNavigation.workspacePath,
