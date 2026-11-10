@@ -72,7 +72,11 @@ estimates; full readings can call the harness's token-count API. Opening the
 Claude panel requests full counting automatically; each usage report during a prompt and prompt
 completion obtain a summary in the background. The API bounds control requests to twenty seconds. Unsupported
 adapter layouts retain ordinary ACP behavior and report inspection unavailable.
-The wrapper currently supports the adapter's ACP v1 builder export.
+The wrapper uses the adapter's ACP v1 builder export, `v1AgentApp`, found in
+`dist/acp-agent.js` (through 0.102) or `dist/v1/acp-agent.js` (0.104 and later).
+The bridge is optional: with any other layout, or when it cannot be prepared,
+the adapter starts as installed and the Supervisor logs that inspection is
+unavailable for it. It never fails a model probe or a session start.
 
 Claude reports category totals for system tools and system prompts, but its
 optional `systemTools`, `systemPromptSections` and `deferredBuiltinTools`
