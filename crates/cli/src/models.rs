@@ -6,6 +6,12 @@ use serde_json::{json, Value};
 pub enum ModelCommand {
     /// Saved connections you can call, their models, and the base URL for each SDK.
     List,
+    /// Print `export` lines that point the OpenAI and Anthropic SDKs at a
+    /// connection: `eval "$(pockymoe model env CONNECTION)"`.
+    Env {
+        /// Connection id or name; optional when only one is open to you.
+        connection: Option<String>,
+    },
     /// Ask one question and print the answer text.
     Ask {
         /// Connection id or name, from `model list`.
@@ -52,6 +58,43 @@ impl crate::threads::Client {
     pub async fn model(&self, command: ModelCommand) -> Result<()> {
         let value = match command {
             ModelCommand::List => self.request(json!({"operation":"modelList"})).await?,
+            ModelCommand::Env { connection } => {
+                let listed = self.request(json!({"operation":"modelList"})).await?;
+                let all = listed["connections"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default();
+                let found = match connection {
+                    Some(wanted) => all.iter().find(|c| {
+                        c["id"] == wanted.as_str()
+                            || c["name"]
+                                .as_str()
+                                .is_some_and(|name| name.eq_ignore_ascii_case(&wanted))
+                    }),
+                    None if all.len() == 1 => all.first(),
+                    None => bail!(
+                        "{} connections are open to you; name one (see `pockymoe model list`)",
+                        all.len()
+                    ),
+                }
+                .context("no such connection is open to you; see `pockymoe model list`")?;
+                let key = listed["apiKey"].as_str().context("no model key returned")?;
+                let quote = |value: &str| format!("'{}'", value.replace('\'', r"'\''"));
+                println!("export POCKYMOE_MODEL_API_KEY={}", quote(key));
+                for (sdk, base, secret) in [
+                    ("openai", "OPENAI_BASE_URL", "OPENAI_API_KEY"),
+                    ("anthropic", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"),
+                ] {
+                    if let Some(url) = found["sdk"][sdk]["baseUrl"].as_str() {
+                        println!("export {base}={}", quote(url));
+                        println!("export {secret}=\"$POCKYMOE_MODEL_API_KEY\"");
+                    }
+                }
+                if let Some(model) = found["defaultModel"].as_str().filter(|m| !m.is_empty()) {
+                    println!("export POCKYMOE_MODEL={}", quote(model));
+                }
+                return Ok(());
+            }
             ModelCommand::Ask {
                 connection,
                 text,

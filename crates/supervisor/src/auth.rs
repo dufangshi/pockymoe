@@ -245,11 +245,21 @@ pub async fn require_auth(
     if request.uri().path() == "/api/cli" || model_proxy {
         let presented = bearer_token(request.headers())
             .or_else(|| model_proxy.then(|| sdk_key(request.headers())).flatten());
+        // A model key opens the model proxy and nothing else.
+        let model_key = model_proxy
+            .then(|| {
+                presented
+                    .as_deref()
+                    .and_then(|token| crate::model_proxy::token_caller(&state, token))
+            })
+            .flatten();
         let scoped = presented
             .as_deref()
-            .and_then(|token| state.cli_token_thread(token));
+            .and_then(|token| state.cli_token_thread(token))
+            .or_else(|| model_key.clone().flatten());
         let valid = request.extensions().get::<TrustedRelayForward>().is_none()
             && (scoped.is_some()
+                || model_key.is_some()
                 || state
                     .interaction
                     .context

@@ -31,6 +31,67 @@ fn dir(state: &Supervisor) -> std::path::PathBuf {
     upstreams::directory(&state.config.database_url)
 }
 
+/// Model API keys begin with this, so a script that holds one says what it is.
+const TOKEN_PREFIX: &str = "pmk_";
+/// The subject of the owner's own model key; thread ids are UUIDs.
+const OWNER: &str = "owner";
+type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+
+/// The device's private signing key for model API keys, made on first use.
+fn token_key(state: &Supervisor) -> Result<Vec<u8>> {
+    let path = state.config.database_url.with_extension("model-proxy.key");
+    match std::fs::read(&path) {
+        Ok(key) if key.len() == 32 => Ok(key),
+        Ok(_) => bail!(
+            "the model key store is damaged; remove {} to make a new one",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let key: [u8; 32] = rand::random();
+            upstreams::private_write(&path, &key)?;
+            Ok(key.to_vec())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn signature(state: &Supervisor, subject: &str) -> Result<HmacSha256> {
+    use hmac::Mac;
+    let mut mac = HmacSha256::new_from_slice(&token_key(state)?)?;
+    mac.update(b"pockymoe-model-proxy\n");
+    mac.update(subject.as_bytes());
+    Ok(mac)
+}
+
+/// A key that opens only the model proxy, for one thread (or the owner). Unlike
+/// the thread's CLI credential it can sit in a script or a config file: it
+/// cannot send messages, create threads or read files. It stays the same
+/// across restarts and stops working when its thread is deleted.
+fn model_token(state: &Supervisor, requester: AgentRequester<'_>) -> Result<String> {
+    use hmac::Mac;
+    let subject = match requester {
+        AgentRequester::Owner => OWNER,
+        AgentRequester::Thread(thread) => thread,
+        _ => bail!("forbidden: model keys are only for this device's own agents"),
+    };
+    let mac = signature(state, subject)?.finalize().into_bytes();
+    Ok(format!("{TOKEN_PREFIX}{subject}_{}", hex::encode(mac)))
+}
+
+/// Whom a model key was made for: `Some(None)` for the owner, `Some(Some(id))`
+/// for a thread that still exists, `None` for anything else.
+pub(crate) fn token_caller(state: &Supervisor, token: &str) -> Option<Option<String>> {
+    use hmac::Mac;
+    let (subject, mac) = token.strip_prefix(TOKEN_PREFIX)?.rsplit_once('_')?;
+    let mac = hex::decode(mac).ok()?;
+    signature(state, subject).ok()?.verify_slice(&mac).ok()?;
+    if subject == OWNER {
+        return Some(None);
+    }
+    state.get_thread(subject).ok()?;
+    Some(Some(subject.to_owned()))
+}
+
 /// Threads of this device and the owner may call models; other devices and
 /// isolated environments may not.
 fn ensure_may_call(state: &Supervisor, requester: AgentRequester<'_>) -> Result<()> {
@@ -108,7 +169,8 @@ pub(crate) async fn cli(
                 .collect();
             let mut result = json!({
                 "connections": connections,
-                "apiKeyEnv": "POCKYMOE_TOKEN",
+                // Every base URL above takes this key, in each SDK's usual place.
+                "apiKey": model_token(state, requester)?,
                 "guide": "pockymoe guide models",
             });
             if !owner && closed > 0 {
@@ -276,7 +338,61 @@ pub(crate) async fn forward(
             )),
         }
     });
+    // Fused: a kept-alive connection polls the body once more after its end,
+    // which an unfused stream answers with a panic that drops the connection.
     response
-        .body(Body::from_stream(stream))
+        .body(Body::from_stream(futures_util::StreamExt::fuse(stream)))
         .unwrap_or_else(|_| refuse(&anyhow::anyhow!("Invalid upstream response")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn model_keys_name_their_thread_survive_restarts_and_end_with_the_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_relay, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+        let mut config = state.config.clone();
+        drop(state);
+        config.database_url = dir.path().join("supervisor.sqlite");
+        let open = |config: &pockymoe_runtime::RuntimeConfig| {
+            let db = pockymoe_runtime::Database::open(&config.database_url).unwrap();
+            Arc::new(Supervisor::new(config.clone(), db, vec![]))
+        };
+        let state = open(&config);
+        let owner = model_token(&state, AgentRequester::Owner).unwrap();
+        assert!(owner.starts_with("pmk_owner_"));
+        assert_eq!(token_caller(&state, &owner), Some(None));
+        // A thread's key is only valid while the thread exists.
+        let ghost = model_token(&state, AgentRequester::Thread("not-a-thread")).unwrap();
+        assert_eq!(token_caller(&state, &ghost), None);
+        assert!(model_token(&state, AgentRequester::Peer).is_err());
+        // Tampering with either half fails.
+        let swapped = owner.replacen("owner", "admin", 1);
+        assert_eq!(token_caller(&state, &swapped), None);
+        let mut flipped = owner.clone();
+        let last = flipped.pop().unwrap();
+        flipped.push(if last == '0' { '1' } else { '0' });
+        assert_eq!(token_caller(&state, &flipped), None);
+        for junk in ["", "pmk_", "pmk_owner", "pmk_owner_zz", "owner_00"] {
+            assert_eq!(token_caller(&state, junk), None, "{junk}");
+        }
+        // The signing key is private and outlives the process.
+        let key = config.database_url.with_extension("model-proxy.key");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        drop(state);
+        let state = open(&config);
+        assert_eq!(model_token(&state, AgentRequester::Owner).unwrap(), owner);
+        // A new signing key retires every model key.
+        std::fs::remove_file(&key).unwrap();
+        assert_eq!(token_caller(&state, &owner), None);
+    }
 }
