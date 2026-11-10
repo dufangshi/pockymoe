@@ -7,3 +7,6 @@ DeepSeek-V4.1-Flash sees attached pictures in DeepSeek Harness conversations.
 - **After a model switch**: until the harness restarts, pictures go as files the
   agent can open, never inline to a model that cannot read them, which would
   break every later turn of the conversation.
+- **Thinking summaries** (Web): with agent status summaries shown, a summary no
+  longer blinks as if running, and a working turn shows its latest one above the
+  work line with a moving sheen.
