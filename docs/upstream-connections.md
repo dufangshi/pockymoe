@@ -19,6 +19,50 @@ saved connection and returns only `{"text","model"}`. It takes `system`, `user` 
 an optional `model`, in any of the connection's protocols, with the same owner-only
 access as the connection test. The desktop pet uses it for spoken summaries.
 
+## Agent access
+
+An agent on the device can call models through a saved connection without holding
+its key: for an experiment, an evaluation script, a second opinion. The owner
+opens each connection to agents separately. It is off until then.
+
+- **Turn it on:** Settings > Upstreams, a connection's menu, **Agents can call it**;
+  or `pockymoe model allow CONNECTION` with the computer's own CLI credential
+  (`deny` turns it off). The row then carries an **Agents** mark. The choice
+  belongs to this device: it is stored beside the connections, is not
+  synchronized, and stays with the connection when it is edited.
+- **What an agent sees:** `pockymoe model list` gives each open connection's id,
+  name, wire formats, default model, declared models and a base URL per SDK. It
+  never includes the key, custom headers or the upstream's address.
+- **How it calls:** `pockymoe model ask CONNECTION TEXT` for one answer, or any
+  OpenAI, Anthropic or Gemini client pointed at the listed base URL with the
+  agent's own `POCKYMOE_TOKEN` as the API key (`pockymoe guide models`).
+
+The base URL is `http://127.0.0.1:PORT/api/agent-models/{connection}` on the
+Supervisor (OpenAI clients add `/v1`). The Supervisor accepts the local CLI
+credential as `Authorization: Bearer`, `x-api-key` or `x-goog-api-key`, drops
+every credential the client sent, adds the connection's own, and streams the
+upstream's answer back as it arrives.
+
+| Reachable | Route after the base URL |
+| --- | --- |
+| OpenAI-compatible | `v1/chat/completions`, `v1/responses`, `v1/embeddings` |
+| Anthropic | `v1/messages`, `v1/messages/count_tokens` |
+| Gemini | `v1beta/models/NAME:generateContent`, `:streamGenerateContent`, `:countTokens`, `:embedContent` |
+| Model listing | `GET v1/models` (`v1beta/models` for Gemini) |
+
+Everything else answers 404, so the key cannot reach an upstream's files, batches
+or account administration. A request body is at most 32 MiB and a request may run
+for 15 minutes. If a response contains the key, the stream is cut. Each request is
+logged with the calling thread, the connection, the route and the status, never
+its content.
+
+Who can call: a thread of this device, with its own thread credential, for the
+connections opened to agents; the computer's own CLI credential, for every
+connection. Requests arriving through the Relay, from another device, or from a
+thread in an isolated environment are refused. A share recipient who can prompt a
+thread can make its agent spend an open connection's quota, as with the harness's
+own model: open only connections you accept that for.
+
 ## Local storage and migration
 
 Connections are stored privately beside the Supervisor database in

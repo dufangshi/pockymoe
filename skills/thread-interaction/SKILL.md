@@ -27,6 +27,7 @@ delivery state.
 | Read a peer's history, or retry a send safely | `transcript ID`, `--request-id` | `guide transcript` |
 | Consult a thread the prompt names (`pockymoe_session_id: ID` or `DEVICE/ID`) | `transcript ID --view summary`, then `transcript ID --turn TURN_ID --view overview` | `guide transcript` |
 | Schedule a prompt or react to a turn ending | `automation create` | `guide automation` |
+| Call a model API for an experiment or script | `model list`, then `model ask` or the listed base URL with `$POCKYMOE_TOKEN` as the key | `guide models` |
 | See where you are | `thread self`, `thread tree`, `thread status ID` | `guide delegate` |
 | Fix connection or credential problems | | `guide connection` |
 

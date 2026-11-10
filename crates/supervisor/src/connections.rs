@@ -307,6 +307,23 @@ pub async fn complete(
         json!({"text":text,"model":if input.model.is_empty(){&c.model}else{&input.model}}),
     ))
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAccessInput {
+    enabled: bool,
+}
+/// Lets this device's agents call the connection through the model proxy
+/// (`model_proxy`), or stops them. Never synchronized.
+pub async fn agent_access(
+    State(s): State<Arc<Supervisor>>,
+    Path(id): Path<String>,
+    Json(input): Json<AgentAccessInput>,
+) -> Result<Json<Value>, Failure> {
+    let _g = s.upstream_gate.lock().await;
+    saved::set_agent_access(&dir(&s), &id, input.enabled)
+        .map(Json)
+        .map_err(failure)
+}
 pub async fn test_draft(
     State(s): State<Arc<Supervisor>>,
     Json(input): Json<Value>,

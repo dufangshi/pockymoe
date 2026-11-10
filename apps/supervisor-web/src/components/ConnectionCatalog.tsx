@@ -1,6 +1,8 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import {
+  Bot,
+  Check,
   CloudDownload,
   FlaskConical,
   MoreHorizontal,
@@ -187,6 +189,30 @@ export function ConnectionCatalog({
     }
   }
 
+  async function setAgentAccess(c: ConnectionSummary, enabled: boolean) {
+    clearRow(c.id);
+    setRowError(({ [c.id]: _, ...rest }) => rest);
+    try {
+      const saved = await api.setAgentAccess(c.id, enabled);
+      upsert({ ...c, agentAccess: saved.agentAccess ?? enabled });
+      noteRow(
+        c.id,
+        translate(
+          enabled ? 'settings.connAgentOn' : 'settings.connAgentOff',
+          { name: c.name },
+        ),
+      );
+    } catch (e) {
+      setRowError((current) => ({
+        ...current,
+        [c.id]: connectionErrorMessage(
+          e,
+          translate('settings.connAgentFailed'),
+        ),
+      }));
+    }
+  }
+
   return (
     <section className="min-w-0" aria-label={translate('settings.connTitle')}>
       <div className="flex items-center justify-between gap-2">
@@ -315,6 +341,7 @@ export function ConnectionCatalog({
               onSync={() => void startSync(c)}
               onEdit={() => setEditing(c)}
               onTest={() => void runTest(c)}
+              onAgentAccess={(enabled) => void setAgentAccess(c, enabled)}
               onDelete={() => setDeleting(c)}
             />
           ))}
@@ -395,6 +422,7 @@ function ConnectionRow({
   onSync,
   onEdit,
   onTest,
+  onAgentAccess,
   onDelete,
 }: {
   connection: ConnectionSummary;
@@ -410,6 +438,7 @@ function ConnectionRow({
   onSync: () => void;
   onEdit: () => void;
   onTest: () => void;
+  onAgentAccess: (enabled: boolean) => void;
   onDelete: () => void;
 }) {
   const remote = remoteSources(c, deviceId);
@@ -457,6 +486,15 @@ function ConnectionRow({
                     ? 'settings.connStateOffline'
                     : 'settings.connStateConflict',
                 )}
+              </span>
+            )}
+            {c.local && c.agentAccess && (
+              <span
+                className="inline-flex shrink-0 items-center gap-0.5 rounded bg-[var(--theme-hover)] px-1 text-[10px] leading-[15px] text-[var(--theme-fg-soft)]"
+                title={translate('settings.connAgentAccessHint')}
+              >
+                <Bot size={10} aria-hidden />
+                {translate('settings.connAgentPill')}
               </span>
             )}
             {usage.map((u) => (
@@ -515,6 +553,8 @@ function ConnectionRow({
               testing={testing}
               onEdit={onEdit}
               onTest={onTest}
+              agentAccess={c.agentAccess}
+              onAgentAccess={onAgentAccess}
               onDelete={onDelete}
             />
           )}
@@ -537,12 +577,17 @@ function RowMenu({
   testing,
   onEdit,
   onTest,
+  agentAccess,
+  onAgentAccess,
   onDelete,
 }: {
   name: string;
   testing: boolean;
   onEdit: () => void;
   onTest: () => void;
+  /** Undefined on a Supervisor without the model proxy: the item is left out. */
+  agentAccess: boolean | undefined;
+  onAgentAccess: (enabled: boolean) => void;
   onDelete: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -552,7 +597,7 @@ function RowMenu({
   const items = () =>
     Array.from(
       list.current?.querySelectorAll<HTMLButtonElement>(
-        '[role="menuitem"]:not(:disabled)',
+        ':is([role="menuitem"], [role="menuitemcheckbox"]):not(:disabled)',
       ) ?? [],
     );
   useEffect(() => {
@@ -641,6 +686,22 @@ function RowMenu({
             <FlaskConical size={14} aria-hidden />
             {translate(testing ? 'settings.connTesting' : 'settings.connTest')}
           </button>
+          {agentAccess !== undefined && (
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={agentAccess}
+              className={item}
+              title={translate('settings.connAgentAccessHint')}
+              onClick={() => choose(() => onAgentAccess(!agentAccess))}
+            >
+              <Bot size={14} aria-hidden />
+              <span className="min-w-0 flex-1">
+                {translate('settings.connAgentAccess')}
+              </span>
+              {agentAccess && <Check size={14} aria-hidden />}
+            </button>
+          )}
           {/* At least 8px between the destructive item and the others. */}
           <div className="my-1 border-t border-[var(--theme-border)]" />
           <button

@@ -179,15 +179,19 @@ async fn run_as(
             crate::worktrees::cli(state, input.clone()).await
         }
         "pluginList" | "pluginInstall" | "pluginUpdate" | "pluginRemove" | "pluginEnable"
-        | "pluginRun" | "pluginRuns" | "modelComplete" | "workspaceEnsure" | "mcpList"
-        | "mcpSet" | "mcpRemove" => {
-            // Installing runs code and completions spend the owner's upstream
-            // keys: only the machine's own credential, never a thread or peer.
+        | "pluginRun" | "pluginRuns" | "workspaceEnsure" | "mcpList" | "mcpSet" | "mcpRemove" => {
+            // Installing runs code: only the machine's own credential, never a
+            // thread or peer.
             anyhow::ensure!(
                 matches!(requester, AgentRequester::Owner),
-                "Only the computer's owner can manage plugins, MCP servers or call models"
+                "Only the computer's owner can manage plugins or MCP servers"
             );
             crate::plugins::cli(state, &input).await
+        }
+        // Model calls spend the owner's upstream keys: a thread reaches only the
+        // connections the owner opened to agents, a peer none.
+        "modelList" | "modelAccess" | "modelComplete" => {
+            crate::model_proxy::cli(state, &input, requester).await
         }
         "info" => {
             let identity = crate::peer_link::relay_identity(state);

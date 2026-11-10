@@ -1,12 +1,16 @@
-DeepSeek-V4.1-Flash sees attached pictures in DeepSeek Harness conversations.
+Agents can call model APIs through your saved upstream connections, without
+seeing their keys.
 
-- **Pictures for DeepSeek-V4.1-Flash**: the DeepSeek Harness decides at start
-  whether it takes images, from a built-in default model id that no longer names
-  the vision model, so pictures were refused. Pockymoe now starts it with the
-  conversation's model, and a model that reads images gets the picture inline.
-- **After a model switch**: until the harness restarts, pictures go as files the
-  agent can open, never inline to a model that cannot read them, which would
-  break every later turn of the conversation.
-- **Thinking summaries** (Web): with agent status summaries shown, a summary no
-  longer blinks as if running, and a working turn shows its latest one above the
-  work line with a moving sheen.
+- **Agent access to connections**: in Settings > Upstreams, a connection's menu has
+  **Agents can call it**. It is off for every connection until you turn it on.
+  The choice belongs to the device and is not synchronized.
+- **For agents**: `pockymoe model list` shows the open connections, their models
+  and a base URL per SDK. `pockymoe model ask` returns one answer; OpenAI,
+  Anthropic and Gemini clients work against the base URL with the agent's own
+  `POCKYMOE_TOKEN` as the key, including streaming. `pockymoe guide models` has
+  examples.
+- **What stays protected**: the key never leaves the Supervisor. Only inference
+  and model-listing routes are reachable, and requests from other devices, through
+  the Relay or from isolated environments are refused.
+- **Asking without a system prompt**: a completion through a saved connection no
+  longer sends an empty system prompt, which some upstreams rejected.

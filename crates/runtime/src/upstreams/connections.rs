@@ -81,6 +81,18 @@ struct Connections {
     applied: BTreeMap<String, Binding>,
     #[serde(default)]
     backup_bindings: BTreeMap<String, Option<Binding>>,
+    /// Connections the owner lets this device's agents call (`agent_proxy`).
+    /// Kept beside the connections, not in them: it is this device's decision,
+    /// is never synchronized, and older versions can still read the file.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    agent_access: BTreeSet<String>,
+}
+impl Connections {
+    fn summary(&self, c: &Connection) -> Value {
+        let mut summary = c.summary();
+        summary["agentAccess"] = json!(self.agent_access.contains(&c.id));
+        summary
+    }
 }
 fn read(dir: &Path) -> Result<Connections> {
     match std::fs::read(dir.join("connections.json")) {
@@ -400,7 +412,7 @@ pub fn migrate(dir: &Path) -> Result<()> {
 pub fn list(dir: &Path) -> Result<Value> {
     let s = read(dir)?;
     Ok(
-        json!({"connections":s.connections.iter().map(Connection::summary).collect::<Vec<_>>(),"bindings":effective_bindings(dir,&s)?}),
+        json!({"connections":s.connections.iter().map(|c| s.summary(c)).collect::<Vec<_>>(),"bindings":effective_bindings(dir,&s)?}),
     )
 }
 pub fn metadata(dir: &Path) -> Result<Value> {
@@ -478,9 +490,9 @@ pub fn set_catalog(dir: &Path, id: &str, revision: &str, catalog: Catalog) -> Re
         bail!("Connection edit conflict: reload before saving");
     }
     c.catalog = Some(catalog);
-    let summary = c.summary();
+    let c = c.clone();
     write(dir, &s)?;
-    Ok(summary)
+    Ok(s.summary(&c))
 }
 pub fn upsert(dir: &Path, c: Connection) -> Result<Value> {
     let mut c = prepare(dir, c)?;
@@ -492,7 +504,32 @@ pub fn upsert(dir: &Path, c: Connection) -> Result<Value> {
     s.connections.retain(|v| v.id != c.id);
     s.connections.push(c.clone());
     write(dir, &s)?;
-    Ok(c.summary())
+    Ok(s.summary(&c))
+}
+/// Lets this device's agents call the connection, or stops them.
+pub fn set_agent_access(dir: &Path, id: &str, enabled: bool) -> Result<Value> {
+    let mut s = read(dir)?;
+    let c = s
+        .connections
+        .iter()
+        .find(|c| c.id == id)
+        .cloned()
+        .ok_or_else(|| anyhow!("Connection not found"))?;
+    if enabled {
+        s.agent_access.insert(c.id.clone());
+    } else {
+        s.agent_access.remove(&c.id);
+    }
+    write(dir, &s)?;
+    Ok(s.summary(&c))
+}
+/// Every saved connection with whether agents may call it.
+pub fn with_agent_access(dir: &Path) -> Result<Vec<(Connection, bool)>> {
+    let s = read(dir)?;
+    Ok(s.connections
+        .iter()
+        .map(|c| (c.clone(), s.agent_access.contains(&c.id)))
+        .collect())
 }
 pub fn remove(dir: &Path, id: &str) -> Result<()> {
     let mut s = read(dir)?;
@@ -503,6 +540,7 @@ pub fn remove(dir: &Path, id: &str) -> Result<()> {
         bail!("Connection is in use by a harness");
     }
     s.connections.retain(|c| c.id != id);
+    s.agent_access.remove(id);
     write(dir, &s)
 }
 pub fn binding(dir: &Path, harness: &str) -> Result<Option<Binding>> {
@@ -549,7 +587,7 @@ pub fn import(dir: &Path, c: Connection, expected: Option<&str>) -> Result<Value
     let mut s = read(dir)?;
     if let Some(old) = s.connections.iter().find(|v| v.id == c.id) {
         if old.revision == c.revision {
-            return Ok(old.summary());
+            return Ok(s.summary(old));
         }
         if expected != Some(old.revision.as_str()) {
             bail!("Connection sync conflict: reload and explicitly update this device");
@@ -560,7 +598,7 @@ pub fn import(dir: &Path, c: Connection, expected: Option<&str>) -> Result<Value
     s.connections.retain(|v| v.id != c.id);
     s.connections.push(c.clone());
     write(dir, &s)?;
-    Ok(c.summary())
+    Ok(s.summary(&c))
 }
 
 /// Transport for direct text clients such as Content Quality; no harness activation.
@@ -574,7 +612,7 @@ fn completion_body(
     max_tokens: usize,
 ) -> Result<Value> {
     let data_url = |i: &CompletionImage| format!("data:{};base64,{}", i.media_type, i.data);
-    Ok(match protocol {
+    let mut body = match protocol {
         "openai_chat" => {
             let content = if images.is_empty() {
                 json!(user)
@@ -626,7 +664,28 @@ fn completion_body(
             json!({"systemInstruction":{"parts":[{"text":system}]},"contents":[{"role":"user","parts":parts}],"generationConfig":{"maxOutputTokens":max_tokens,"temperature":0.2}})
         }
         _ => bail!("Unsupported connection protocol"),
-    })
+    };
+    // No system prompt means none is sent: some upstreams reject an empty one.
+    if system.trim().is_empty() {
+        let fields = body.as_object_mut().unwrap();
+        match protocol {
+            "openai_chat" => {
+                if let Some(messages) = fields["messages"].as_array_mut() {
+                    messages.retain(|message| message["role"] != "system");
+                }
+            }
+            "openai_responses" => {
+                fields.remove("instructions");
+            }
+            "anthropic" => {
+                fields.remove("system");
+            }
+            _ => {
+                fields.remove("systemInstruction");
+            }
+        }
+    }
+    Ok(body)
 }
 
 /// An image attached to a completion: MIME type and base64 bytes.
@@ -830,27 +889,33 @@ fn endpoint(base_url: &str, protocol: &str, model: &str) -> Result<String> {
         _ => bail!("Unsupported connection protocol"),
     })
 }
+/// The headers that authenticate one request in `protocol`'s wire format,
+/// then the connection's own custom headers.
+pub(super) fn auth_headers(c: &Connection, protocol: &str) -> Vec<(String, String)> {
+    let bearer = || ("authorization".to_string(), format!("Bearer {}", c.api_key));
+    let mut headers = match protocol {
+        "gemini" => vec![("x-goog-api-key".to_string(), c.api_key.clone())],
+        "anthropic" => vec![
+            ("anthropic-version".to_string(), "2023-06-01".to_string()),
+            if c.auth_type == "bearer" {
+                bearer()
+            } else {
+                ("x-api-key".to_string(), c.api_key.clone())
+            },
+        ],
+        _ => vec![bearer()],
+    };
+    headers.extend(c.headers.iter().map(|(k, v)| (k.clone(), v.clone())));
+    headers
+}
 fn authorize(
     req: reqwest::RequestBuilder,
     c: &Connection,
     protocol: &str,
 ) -> reqwest::RequestBuilder {
-    let mut req = match protocol {
-        "gemini" => req.header("x-goog-api-key", &c.api_key),
-        "anthropic" => {
-            let r = req.header("anthropic-version", "2023-06-01");
-            if c.auth_type == "bearer" {
-                r.bearer_auth(&c.api_key)
-            } else {
-                r.header("x-api-key", &c.api_key)
-            }
-        }
-        _ => req.bearer_auth(&c.api_key),
-    };
-    for (k, v) in &c.headers {
-        req = req.header(k, v);
-    }
-    req
+    auth_headers(c, protocol)
+        .into_iter()
+        .fold(req, |req, (k, v)| req.header(k, v))
 }
 
 /// The wire formats the endpoint serves with this credential. An empty body
@@ -1120,6 +1185,75 @@ mod tests {
             500_000
         );
         assert!(c.profile("codex", "", "").unwrap().models.is_empty());
+    }
+    #[test]
+    fn an_empty_system_prompt_is_not_sent() {
+        for (protocol, pointer) in [
+            ("openai_responses", "/instructions"),
+            ("anthropic", "/system"),
+            ("gemini", "/systemInstruction"),
+        ] {
+            assert!(completion_body(protocol, "m", " ", "hi", &[], 8)
+                .unwrap()
+                .pointer(pointer)
+                .is_none());
+            assert!(completion_body(protocol, "m", "Be brief.", "hi", &[], 8)
+                .unwrap()
+                .pointer(pointer)
+                .is_some());
+        }
+        let roles = |system: &str| {
+            completion_body("openai_chat", "m", system, "hi", &[], 8).unwrap()["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["role"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(roles(""), ["user"]);
+        assert_eq!(roles("Be brief."), ["system", "user"]);
+    }
+    #[test]
+    fn agent_access_is_a_device_decision_kept_beside_the_connections() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path();
+        let c = saved(dir, "openai_chat");
+        let listed = |dir: &Path| list(dir).unwrap()["connections"][0]["agentAccess"].clone();
+        assert_eq!(listed(dir), false);
+        assert_eq!(
+            set_agent_access(dir, &c.id, true).unwrap()["agentAccess"],
+            true
+        );
+        assert_eq!(listed(dir), true);
+        assert!(with_agent_access(dir).unwrap()[0].1);
+        // An edit keeps it; a client cannot set it through a draft.
+        let draft = json!({"id":c.id,"name":"Renamed","protocol":"openai_chat","baseUrl":c.base_url,
+            "revision":c.revision,"agentAccess":true});
+        assert!(serde_json::from_value::<Connection>(draft).is_err());
+        let mut edit = c.clone();
+        edit.name = "Renamed".into();
+        edit.api_key.clear();
+        assert_eq!(upsert(dir, edit).unwrap()["agentAccess"], true);
+        // The connection entries themselves are unchanged, so an older version reads the file.
+        let raw: Value =
+            serde_json::from_slice(&std::fs::read(dir.join("connections.json")).unwrap()).unwrap();
+        assert!(raw["connections"][0].get("agentAccess").is_none());
+        assert_eq!(raw["agentAccess"], json!([c.id]));
+        assert_eq!(
+            set_agent_access(dir, &c.id, false).unwrap()["agentAccess"],
+            false
+        );
+        assert!(raw_without_access(dir));
+        assert!(set_agent_access(dir, "missing", true).is_err());
+        // Removing a connection forgets its access.
+        set_agent_access(dir, &c.id, true).unwrap();
+        remove(dir, &c.id).unwrap();
+        assert!(raw_without_access(dir));
+    }
+    fn raw_without_access(dir: &Path) -> bool {
+        let raw: Value =
+            serde_json::from_slice(&std::fs::read(dir.join("connections.json")).unwrap()).unwrap();
+        raw.get("agentAccess").is_none()
     }
     #[test]
     fn metadata_is_server_owned_and_dropped_when_the_endpoint_changes() {

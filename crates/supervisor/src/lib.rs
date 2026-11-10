@@ -20,6 +20,7 @@ mod linked_files;
 mod local_passcode_tests;
 mod management;
 mod message_sender;
+mod model_proxy;
 mod notifications;
 mod owner_trust;
 mod preview_cli;

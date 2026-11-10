@@ -57,6 +57,11 @@ pub const THREAD_INTERACTION_GUIDES: &[(&str, &str, &str)] = &[
         include_str!("../../../skills/thread-interaction/guides/connection.md"),
     ),
     (
+        "models",
+        "Call model APIs through the owner's saved connections, without their keys",
+        include_str!("../../../skills/thread-interaction/guides/models.md"),
+    ),
+    (
         "automation",
         "Durable hooks: schedules, completion triggers, scripts",
         include_str!("../../../skills/thread-interaction/guides/automation.md"),

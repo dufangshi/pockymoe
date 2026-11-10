@@ -2,6 +2,7 @@ mod attach;
 mod automations;
 mod environments;
 mod legacy_env;
+mod models;
 mod plugins;
 mod threads;
 mod worktrees;
@@ -411,6 +412,12 @@ enum Commands {
         #[command(subcommand)]
         command: automations::CommandCommand,
     },
+    /// Call models through the owner's saved upstream connections, without their keys.
+    #[command(after_long_help = r#"More: pockymoe guide models"#)]
+    Model {
+        #[command(subcommand)]
+        command: models::ModelCommand,
+    },
     /// Manage a thread's Git worktrees and inspect its actual working directory.
     Worktree(worktrees::WorktreeArgs),
     /// Create, contact, and inspect local threads or same-owner device peers.
@@ -699,6 +706,7 @@ async fn run() -> Result<()> {
                     .await?
             )?
         ),
+        Commands::Model { command } => threads::Client::new(cli.connection)?.model(command).await?,
         Commands::Mcp { command } => println!(
             "{}",
             serde_json::to_string_pretty(

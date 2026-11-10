@@ -1141,3 +1141,41 @@ it('keeps the list order when a harness uses a connection and shows each result 
   fireEvent.click(screen.getByRole('menuitem', { name: 'Test connection' }));
   expect(await within(beta()).findByText('Beta works (12 ms).')).toBeVisible();
 });
+
+it('lets the owner open a connection to agents from its menu, where the device supports it', async () => {
+  let access = false;
+  server(({ path, method, body }) => {
+    if (path === 'api/management/connections' && method === 'GET')
+      return catalog([
+        local({ id: 'alpha', name: 'Alpha', agentAccess: access }),
+        // A Supervisor from before the model proxy reports nothing.
+        local({ id: 'beta', name: 'Beta' }),
+      ]);
+    if (path === 'api/management/connections/alpha/agent-access' && method === 'PUT') {
+      access = body.enabled === true;
+      return local({ id: 'alpha', name: 'Alpha', agentAccess: access });
+    }
+    throw Error(`unexpected ${method} ${path}`);
+  });
+  renderPage();
+  const alpha = () => screen.getByRole('listitem', { name: 'Alpha' });
+  await waitFor(() => expect(alpha()).toBeVisible());
+  expect(within(alpha()).queryByText('Agents')).toBeNull();
+  fireEvent.click(within(alpha()).getByRole('button', { name: 'More actions for Alpha' }));
+  const item = screen.getByRole('menuitemcheckbox', { name: 'Agents can call it' });
+  expect(item).toHaveAttribute('aria-checked', 'false');
+  fireEvent.click(item);
+  expect(
+    await within(alpha()).findByText('Agents on this device can now call Alpha. They never see its key.'),
+  ).toBeVisible();
+  expect(within(alpha()).getByText('Agents')).toBeVisible();
+  expect(calls.at(-1)).toMatchObject({ method: 'PUT', body: { enabled: true } });
+  fireEvent.click(within(alpha()).getByRole('button', { name: 'More actions for Alpha' }));
+  expect(screen.getByRole('menuitemcheckbox', { name: 'Agents can call it' })).toHaveAttribute('aria-checked', 'true');
+  fireEvent.keyDown(document, { key: 'Escape' });
+  // No item where the device cannot do it.
+  fireEvent.click(
+    within(screen.getByRole('listitem', { name: 'Beta' })).getByRole('button', { name: 'More actions for Beta' }),
+  );
+  expect(screen.queryByRole('menuitemcheckbox')).toBeNull();
+});
