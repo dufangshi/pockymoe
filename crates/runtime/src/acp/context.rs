@@ -3,13 +3,20 @@ use anyhow::Result;
 use serde_json::Value;
 use std::{path::Path, sync::Arc};
 
-/// Only wrap the known installed package. Custom executables keep their own protocol.
+/// Where adapter releases keep the ACP v1 application, newest layout last.
+const CLAUDE_V1_MODULES: [&str; 2] = ["dist/acp-agent.js", "dist/v1/acp-agent.js"];
+
+/// Only wrap the known installed package. Custom executables keep their own
+/// protocol, and so does a release whose layout this build does not know: the
+/// bridge is optional, and a session must start without it.
 pub(super) fn claude_command(command: &str, root: &Path) -> Result<Option<String>> {
     let parsed = super::rpc::parse_spawn_command(command)?;
     if !parsed.args.is_empty() {
         return Ok(None);
     }
-    let executable = std::fs::canonicalize(&parsed.program)?;
+    let Ok(executable) = std::fs::canonicalize(&parsed.program) else {
+        return Ok(None);
+    };
     let Some(directory) = executable.parent().and_then(Path::parent) else {
         return Ok(None);
     };
@@ -19,14 +26,23 @@ pub(super) fn claude_command(command: &str, root: &Path) -> Result<Option<String
     if package
         .as_ref()
         .is_none_or(|v| v["name"] != "@agentclientprotocol/claude-agent-acp")
-        || !directory.join("dist/managed-policy.js").is_file()
+        || !["dist/managed-policy.js", "dist/utils.js"]
+            .iter()
+            .all(|module| directory.join(module).is_file())
     {
         return Ok(None);
     }
-    let source = std::fs::read_to_string(directory.join("dist/acp-agent.js"))?;
-    if !source.contains("export function v1AgentApp") {
+    let Some(module) = CLAUDE_V1_MODULES.into_iter().find(|module| {
+        std::fs::read_to_string(directory.join(module))
+            .is_ok_and(|source| source.contains("export function v1AgentApp"))
+    }) else {
+        tracing::warn!(
+            adapter = %directory.display(),
+            version = package.as_ref().and_then(|v| v["version"].as_str()).unwrap_or("unknown"),
+            "Claude adapter layout is not recognized; context inspection is unavailable for it"
+        );
         return Ok(None);
-    }
+    };
     std::fs::create_dir_all(root)?;
     let script = root.join("claude-context-bridge.mjs");
     let body = include_str!("claude-context-bridge.mjs");
@@ -37,6 +53,7 @@ pub(super) fn claude_command(command: &str, root: &Path) -> Result<Option<String
         "node",
         &script.to_string_lossy(),
         &directory.to_string_lossy(),
+        module,
     ])))
 }
 
@@ -99,5 +116,63 @@ pub(super) fn native_usage(
                 crate::context_inspection::emit(&state, &session, &thread, &bus, snapshot);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::claude_command;
+    use std::path::Path;
+
+    fn adapter(root: &Path, files: &[(&str, &str)]) -> String {
+        std::fs::create_dir_all(root.join("dist")).unwrap();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name":"@agentclientprotocol/claude-agent-acp","version":"0.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("dist/index.js"), "").unwrap();
+        for (path, body) in files {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+        root.join("dist/index.js").to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn the_claude_bridge_follows_the_adapter_layout_and_is_skipped_for_an_unknown_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let bridge = dir.path().join("bridge");
+        let app = "export function v1AgentApp(logger, onAgent) {}";
+        let common = [("dist/managed-policy.js", ""), ("dist/utils.js", "")];
+        let with = |name: &str, extra: &[(&str, &str)]| {
+            let files: Vec<_> = common.iter().chain(extra).copied().collect();
+            claude_command(&adapter(&dir.path().join(name), &files), &bridge).unwrap()
+        };
+        // Through 0.102 the application sat in dist/; 0.104 moved it under dist/v1/.
+        let old = with("old", &[("dist/acp-agent.js", app)]).unwrap();
+        assert!(old.ends_with(" dist/acp-agent.js"), "{old}");
+        let new = with("new", &[("dist/v1/acp-agent.js", app)]).unwrap();
+        assert!(new.ends_with(" dist/v1/acp-agent.js"), "{new}");
+        assert!(bridge.join("claude-context-bridge.mjs").is_file());
+        // A layout this build does not know, a module without the export, a
+        // missing executable: the adapter starts as installed, never an error.
+        assert_eq!(with("moved", &[("dist/elsewhere.js", app)]), None);
+        assert_eq!(
+            with(
+                "renamed",
+                &[("dist/v1/acp-agent.js", "export function other() {}")]
+            ),
+            None
+        );
+        assert_eq!(
+            claude_command("/nonexistent/claude-agent-acp", &bridge).unwrap(),
+            None
+        );
+        assert_eq!(
+            claude_command("claude-agent-acp --flag", &bridge).unwrap(),
+            None
+        );
     }
 }
