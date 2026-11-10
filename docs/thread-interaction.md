@@ -12,6 +12,9 @@ pockymoe worktree list
 pockymoe thread list --workspace WORKSPACE_ID
 pockymoe thread status THREAD_ID
 pockymoe thread delete CHILD_THREAD_ID
+pockymoe thread queue CHILD
+pockymoe thread unqueue CHILD MESSAGE_ID
+pockymoe thread stop CHILD --clear-queue --reason "wrong branch"
 pockymoe thread models --provider acp --agent grok
 pockymoe thread create --provider acp --agent grok \
   --model grok-4.6 --reasoning-effort xhigh --title helper
@@ -59,6 +62,40 @@ Deleting a helper removes its Pockymoe turns/history/mailbox, revokes its CLI
 credential and updates parent/root group counts. Terminal completion results are
 delivered to the parent inbox before history removal. Existing result messages,
 workspace files, worktrees, branches and native harness logs remain intact.
+
+## Stopping a delegate and its queue
+
+A thread can stop a delegate that is on the wrong path and withdraw the messages it
+queued behind that delegate's turn. Steering (`thread send --delivery steer`) stays
+the first tool; these are for when the delegate does not turn, or corrections are
+only piling up in its queue.
+
+- `thread stop ID [--reason TEXT] [--clear-queue]` interrupts the running turn, the
+  same way the Stop button does. With `--clear-queue` the caller's waiting messages
+  are withdrawn first. The receipt has `stopped`, `stoppedTurnId`, `status`,
+  `removed`, `queuedCount` and a `next` hint. A thread that is not running is left
+  alone (`stopped: false`).
+- `thread queue ID` lists the waiting messages, oldest first: `messageId`, `state`
+  (`queued`, `held`, `steered` or `resume`), `fromThreadId`, `mine`, `createdAt`
+  and a 240-character `preview`.
+- `thread unqueue ID MESSAGE_ID...` or `--all` withdraws waiting messages.
+
+Who may do what:
+
+- A thread credential acts only on threads under it in the lineage (any depth), never
+  on itself, an ancestor, a sibling or another root, and must give `--reason` to
+  stop. `--from` cannot name another caller.
+- A thread withdraws only messages it sent. The sender is recorded when a local
+  thread's message is queued (`cli:prompt-from:<id>`); for messages queued by an
+  older Supervisor it is read from the header the receiver sees. The owner's prompts
+  and other senders' messages stay in the queue.
+- The machine's own credential acts for the owner: any thread, any waiting message.
+- Requests from other devices are refused.
+- A message already steered into the running turn cannot be withdrawn.
+
+After a stop the delegate runs what still waits in its queue. A stop does not close
+or delete the delegate (operations `stop`, `queueList`, `queueRemove` in
+`crates/supervisor/src/interaction.rs`; `crates/runtime/src/interaction/control.rs`).
 
 ## Progressive reads
 

@@ -3169,6 +3169,7 @@ impl Supervisor {
                     user_item.extra.insert("sender".into(), sender);
                     conn.execute("DELETE FROM kv WHERE key=?1", [thread_summary::prompt_sender_key(pending)])?;
                 }
+                conn.execute("DELETE FROM kv WHERE key=?1", [crate::interaction::control::sender_key(pending)])?;
             }
             conn.execute(
                 "INSERT INTO thread_history_items(id, thread_id, turn_id, item_id, item_json, created_at, updated_at)
@@ -3580,11 +3581,12 @@ impl Supervisor {
             )?;
             if removed > 0 {
                 tx.execute(
-                    "DELETE FROM kv WHERE key IN (?1,?2,?3)",
+                    "DELETE FROM kv WHERE key IN (?1,?2,?3,?4)",
                     params![
                         format!("cli:notify:pending:{pending_steer_id}"),
                         format!("cli:peer-work:pending:{pending_steer_id}"),
-                        thread_summary::prompt_sender_key(pending_steer_id)
+                        thread_summary::prompt_sender_key(pending_steer_id),
+                        crate::interaction::control::sender_key(pending_steer_id)
                     ],
                 )?;
             }
@@ -3713,6 +3715,7 @@ impl Supervisor {
                     serde_json::to_string(&item)?, submitted_at, now],
             )?;
             conn.execute("DELETE FROM kv WHERE key=?1", [thread_summary::prompt_sender_key(&pending.id)])?;
+            conn.execute("DELETE FROM kv WHERE key=?1", [crate::interaction::control::sender_key(&pending.id)])?;
             conn.execute(
                 "UPDATE thread_pending_steers SET delivery='steer',turn_id=?1,updated_at=?2 WHERE thread_id=?3 AND id=?4",
                 params![active_turn_id, now, thread_id, pending.id],
