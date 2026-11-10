@@ -679,7 +679,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             preferences,
-            json!({"sendShortcut":"ctrlEnter","requireSafetyCode":false})
+            json!({"sendShortcut":"ctrlEnter","requireSafetyCode":false,"showReasoningSummaries":null})
         );
         let (_, share) = f
             .call(Method::POST, "/relay/shares", &owner, Some(json!({
