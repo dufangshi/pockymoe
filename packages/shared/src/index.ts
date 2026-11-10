@@ -888,6 +888,8 @@ export interface ContextInspectionCategoryDto {
   kind: ContextInspectionKindDto;
   tokens: number;
   precision?: ContextInspectionPrecisionDto | null;
+  /** How many request items the category holds, where the collector counts them. */
+  count?: number | null;
 }
 
 export interface ContextInspectionGroupItemDto {
@@ -926,6 +928,56 @@ export interface ContextInspectionSnapshotDto {
   groups?: ContextInspectionGroupDto[] | null;
   turnId?: string | null;
   requestId?: string | null;
+}
+
+/** One model request of a thread: what it read and wrote, how long the model
+    and the tools before it took, and what the context consisted of when context
+    inspection described it. */
+export interface ThreadContextStepDto {
+  seq: number;
+  turnId: string;
+  /** The turn's place in the thread, from 1; null once the turn is gone. */
+  turn: number | null;
+  /** The request's place in its turn, from 1. */
+  step: number;
+  at: string;
+  model?: string | null;
+  /** Everything the request read, cached part included. */
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  /** Since the step before (or the turn's start): the model's time, and the
+      tools and waits that came first. */
+  modelMs: number;
+  toolMs: number;
+  usedTokens?: number | null;
+  windowTokens?: number | null;
+  source?: ContextInspectionSnapshotDto['source'] | null;
+  /** Category id to tokens; absent when nothing described this request. */
+  categories?: Record<string, number> | null;
+  counts?: Record<string, number> | null;
+}
+
+/** The thread's own totals over the turns that ran in it. */
+export interface ThreadContextTotalsDto {
+  usageTurns: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  modelTimeMs: number;
+  wallTimeMs: number;
+  outputTimeMs: number;
+  timedOutputTokens: number;
+}
+
+export interface ThreadContextStepsDto {
+  steps: ThreadContextStepDto[];
+  turnCount: number;
+  totals: ThreadContextTotalsDto;
 }
 
 export type ContextInspectionDetailDto = 'summary' | 'full';

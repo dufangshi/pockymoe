@@ -32,3 +32,12 @@ macOS 上 Command 可代替 Ctrl。中文等输入法组合期间 Enter 不触�
 结果：Rust 账号接口回归 1 项、Web 回归 8 项、共享 UI 回归 40 项、桌面 Chromium 专项 1 项通过；Rust 格式／编译、两份 UI 的类型检查、共享包和 Web 构建通过。生产账号偏好未修改，运行中的设备 Supervisor 不需要为这两项 Web 功能升级。
 
 Watch 次数和费用统计另见 [Watch 摘要](watch-statistics.md)，该项需要设备 Supervisor 升级到 0.12.62。
+
+## 账号级的智能体状态摘要
+
+设置 → Preferences →「显示智能体状态摘要」同样存在 `relay_account_preferences` 里（`showReasoningSummaries`），登录后在同一账号的所有浏览器和客户端生效。页面打开、重新获得焦点或从后台返回时读取。
+
+- 账号从未选择过时该字段是 `null`：浏览器沿用自己原来的本地设置；如果某个浏览器原来已经打开，它会把「打开」写进账号，其他浏览器随后跟随。
+- 浏览器保留一份本地副本，用于首屏和没有账号的本地模式。
+- 修改时本地立刻生效；账号没收到（离线，或 Relay 版本还不认识这个字段）时保留为未保存的修改，下次读取前先重发，所以读取不会把它改回去（`lib/useReasoningSummaries.ts`）。
+

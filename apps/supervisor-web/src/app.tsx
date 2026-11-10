@@ -91,6 +91,7 @@ import {
 import { builtinFrontendPlugins } from './plugins/builtin-plugin-modules';
 import { ConnectionPicker } from './components/ConnectionPicker';
 import { useComposerPreferences } from './lib/useComposerPreferences';
+import { useReasoningSummaries } from './lib/useReasoningSummaries';
 import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/themePacks';
 
 const DesktopWindowFrame = lazy(() => import('./desktop/DesktopWindowFrame'));
@@ -307,9 +308,7 @@ function AppShell({
   const composerPreferences = useComposerPreferences();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<string | null>(null);
-  const [showReasoningSummaries, setShowReasoningSummaries] = useState(() => {
-    try { return localStorage.getItem('remote-codex-show-reasoning-summaries') === 'true'; } catch { return false; }
-  });
+  const [showReasoningSummaries, setShowReasoningSummaries] = useReasoningSummaries();
   const [defaultBackend, setDefaultBackendState] = useState<AgentBackendIdDto>(readInitialBackend);
   const [autoCollapseCompletedTurns, setAutoCollapseCompletedTurnsState] = useState(
     readInitialAutoCollapseCompletedTurns,
@@ -414,10 +413,7 @@ function AppShell({
     phoneHand,
     setPhoneHand,
     showReasoningSummaries,
-    setShowReasoningSummaries: (enabled: boolean) => {
-      setShowReasoningSummaries(enabled);
-      try { localStorage.setItem('remote-codex-show-reasoning-summaries', String(enabled)); } catch { /* Private browsing may disable storage. */ }
-    },
+    setShowReasoningSummaries,
   };
 
   // The account-wide desktop map must outlive a device scope's discovery gate;

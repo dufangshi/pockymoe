@@ -514,7 +514,8 @@ export function AppShellSettingsDialog({
                   <span className="block text-sm font-semibold">
                     {translate("files.showAgentStatusSummaries")}</span>
                   <span className="settings-hint mt-1 block text-xs text-[var(--theme-fg-muted)]">
-                    {translate("files.showIntermediateThinkingSummariesWithTheirOwn")}</span>
+                    {translate("files.showIntermediateThinkingSummariesWithTheirOwn")}
+                    {relayModeActive() ? ` ${translate("settings.savedToAccount")}` : null}</span>
                 </span>
                 <input
                   type="checkbox"

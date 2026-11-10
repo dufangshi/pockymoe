@@ -356,6 +356,44 @@ impl AcpRuntime {
     }
 
     /// The same runtime for work that outlives the request that started it.
+    /// Reads a summary of the session's context in the background and emits it.
+    /// One read at a time per turn: `busy` skips a request while one is out.
+    fn spawn_context_summary(
+        &self,
+        session: &str,
+        thread: &str,
+        bus: &EventBus,
+        busy: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) {
+        use std::sync::atomic::Ordering;
+        if busy
+            .as_ref()
+            .is_some_and(|busy| busy.swap(true, Ordering::AcqRel))
+        {
+            return;
+        }
+        let runtime = self.detached();
+        let session = session.to_owned();
+        let thread = thread.to_owned();
+        let context_bus = bus.session_observation();
+        tokio::spawn(async move {
+            if let Ok(Some(snapshot)) = runtime.inspect_context(&session, "summary").await {
+                if let Some(state) = runtime.inner.inspection.read().unwrap().as_ref() {
+                    crate::context_inspection::emit(
+                        state,
+                        &session,
+                        &thread,
+                        &context_bus,
+                        snapshot,
+                    );
+                }
+            }
+            if let Some(busy) = busy {
+                busy.store(false, Ordering::Release);
+            }
+        });
+    }
+
     fn detached(&self) -> Self {
         Self {
             upstreams: self.upstreams.clone(),
@@ -2680,6 +2718,9 @@ impl AgentRuntime for AcpRuntime {
             reader.expect_prompt(&prompt);
         }
         let mut usage_tick = tokio::time::interval(Duration::from_secs(1));
+        // Claude only says what its context consists of when asked: ask after each
+        // model request, so every step of the turn has a composition.
+        let context_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let inspection = self
             .inner
             .inspection
@@ -2687,6 +2728,9 @@ impl AgentRuntime for AcpRuntime {
             .unwrap()
             .clone()
             .filter(|_| !input.hidden && host_state);
+        let claude_step_context = adapter_id == "claude"
+            && process.context_inspection
+            && inspection.as_ref().is_some_and(|state| state.enabled());
         let context_reader = self
             .inner
             .context_readers
@@ -2897,7 +2941,9 @@ impl AgentRuntime for AcpRuntime {
                         }
                     }
                     if let Some(reader) = claude_usage_reader.as_mut() {
-                        for usage in reader.poll() { emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden); }
+                        let mut reported = false;
+                        for usage in reader.poll() { reported = true; emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden); }
+                        if reported && claude_step_context { self.spawn_context_summary(&input.provider_session_id, &input.thread_id, &bus, Some(context_busy.clone())); }
                         for notice in reader.take_task_notices() {
                             emit_mapped(&bus, &input.thread_id, &input.turn_id, mapper.native_task_notification(&notice), input.hidden);
                         }
@@ -3016,7 +3062,9 @@ impl AgentRuntime for AcpRuntime {
                                 continue;
                             }
                             if let Some(reader) = claude_usage_reader.as_mut() {
-                                for usage in reader.poll() { emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden); }
+                                let mut reported = false;
+                                for usage in reader.poll() { reported = true; emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden); }
+                                if reported && claude_step_context { self.spawn_context_summary(&input.provider_session_id, &input.thread_id, &bus, Some(context_busy.clone())); }
                                 for notice in reader.take_task_notices() {
                                     emit_mapped(&bus, &input.thread_id, &input.turn_id, mapper.native_task_notification(&notice), input.hidden);
                                 }
@@ -3189,23 +3237,7 @@ impl AgentRuntime for AcpRuntime {
             && !input.hidden
             && inspection.as_ref().is_some_and(|s| s.enabled())
         {
-            let runtime = self.detached();
-            let session = input.provider_session_id.clone();
-            let thread = input.thread_id.clone();
-            let context_bus = bus.session_observation();
-            tokio::spawn(async move {
-                if let Ok(Some(snapshot)) = runtime.inspect_context(&session, "summary").await {
-                    if let Some(state) = runtime.inner.inspection.read().unwrap().as_ref() {
-                        crate::context_inspection::emit(
-                            state,
-                            &session,
-                            &thread,
-                            &context_bus,
-                            snapshot,
-                        );
-                    }
-                }
-            });
+            self.spawn_context_summary(&input.provider_session_id, &input.thread_id, &bus, None);
         }
         let (status, error) = match &outcome {
             TurnOutcome::Completed => ("completed", None),

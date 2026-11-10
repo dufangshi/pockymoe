@@ -369,6 +369,8 @@ pub struct Supervisor {
     pub(crate) local_session_homes: LocalSessionHomes,
     usage_history: crate::usage_history::UsageHistoryCache,
     generation: generation::GenerationCache,
+    /// Per-request context records of each thread (`context_steps`).
+    pub context_steps: crate::context_steps::ContextSteps,
     claude_history: claude_history::HistoryCache,
     claude_reply_phases: claude_reply_phases::ReplyPhaseCache,
     pub(crate) native_subagents:
@@ -467,6 +469,7 @@ impl Supervisor {
                 &db,
                 &config.database_url,
             )),
+            context_steps: crate::context_steps::ContextSteps::new(&config.database_url),
             local_access: std::sync::RwLock::new(local_access),
             thread_host: Default::default(),
             automation_gate: Default::default(),
@@ -633,6 +636,15 @@ impl Supervisor {
                         .get("contextUsage")
                         .filter(|v| v["availability"] == "available")
                     {
+                        // A snapshot this event carries describes a model request;
+                        // one merely kept from before (below) does not.
+                        if let Some(details) = context.get("details") {
+                            let _ = supervisor.context_steps.observe_snapshot(
+                                &event.thread_id,
+                                details,
+                                &event.timestamp,
+                            );
+                        }
                         let mut context = context.clone();
                         if context.get("details").is_none() {
                             let previous: Option<String> = conn
@@ -3817,7 +3829,9 @@ impl Supervisor {
             )?;
             conn.execute("DELETE FROM threads WHERE id=?1", params![id])?;
             Ok(())
-        })
+        })?;
+        self.context_steps.remove(id);
+        Ok(())
     }
 
     pub async fn update_settings(
