@@ -650,10 +650,14 @@ impl AcpRuntime {
                     root.to_string_lossy().into_owned(),
                 ));
             } else if def.id == "claude" {
-                if let Some(command) =
-                    super::context::claude_command(&server_command, &state.root.join("bridge"))?
-                {
-                    server_command = command;
+                // The bridge only adds context inspection: whatever goes wrong
+                // preparing it, the adapter still starts as installed.
+                match super::context::claude_command(&server_command, &state.root.join("bridge")) {
+                    Ok(Some(command)) => server_command = command,
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, "Claude context bridge is unavailable; starting the adapter without it")
+                    }
                 }
             }
         }

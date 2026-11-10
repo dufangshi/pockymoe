@@ -4,7 +4,8 @@ import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 const directory=process.argv[2];
 const require=createRequire(join(directory,'package.json'));
-const { v1AgentApp }=await import(pathToFileURL(join(directory,'dist/acp-agent.js')).href);
+// The Supervisor names the module: releases moved it (dist/acp-agent.js, then dist/v1/).
+const { v1AgentApp }=await import(pathToFileURL(join(directory,process.argv[3]??'dist/acp-agent.js')).href);
 const { applyManagedPolicyEnv }=await import(pathToFileURL(join(directory,'dist/managed-policy.js')).href);
 const { nodeToWebReadable,nodeToWebWritable }=await import(pathToFileURL(join(directory,'dist/utils.js')).href);
 const { ndJsonStream }=await import(pathToFileURL(require.resolve('@agentclientprotocol/sdk')).href);
