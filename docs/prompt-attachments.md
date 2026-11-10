@@ -9,9 +9,14 @@ can be up to 1 GiB, and a prompt can carry 10.
 `[FILE]` reaches an ACP agent as a `resource_link` to the file. `[PHOTO]` is an
 inline image block when the agent advertises `promptCapabilities.image`, or its
 adapter says it takes images anyway (Grok, `accepts_unadvertised_images` in
-`crates/runtime/src/acp/adapter.rs`). Any other agent, such as the DeepSeek
-Harness, gets the picture as a `resource_link` with its image type, which it can
-open with its tools.
+`crates/runtime/src/acp/adapter.rs`). Any other agent gets the picture as a
+`resource_link` with its image type, which it can open with its tools.
+
+The DeepSeek Harness advertises images from the model its ACP is configured with
+when it starts, so Pockymoe starts it with the thread's model (see
+[dsh-adapter.md](dsh-adapter.md#图片)). After a model switch, until the process
+restarts, pictures go as file links: an inline image in DSH's history fails
+every later turn of a model that cannot read images.
 
 ## Two paths
 

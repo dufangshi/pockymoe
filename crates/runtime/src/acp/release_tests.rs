@@ -380,6 +380,7 @@ async fn release_of_a_shared_fork_process_waits_for_every_session() {
             ProductSessionPolicy::default(),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -467,6 +468,7 @@ async fn release_of_one_session_keeps_a_process_shared_with_another() {
             &def,
             dir.path().to_str().unwrap(),
             ProductSessionPolicy::default(),
+            None,
             None,
             None,
         )

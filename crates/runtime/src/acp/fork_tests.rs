@@ -29,7 +29,7 @@ async fn codex_fork_releases_writer_before_independent_load() {
         ..Default::default()
     };
     let (source_id, source) = runtime
-        .spawn_session(&def, cwd, policy.clone(), None, None)
+        .spawn_session(&def, cwd, policy.clone(), None, None, None)
         .await
         .unwrap();
     let source_process = source.process.clone();
@@ -82,7 +82,7 @@ async fn codex_fork_releases_writer_before_independent_load() {
         let raw = fork.provider_session_id.split_once("::").unwrap().1;
         // This is the independent load required when the fork gets its own CLI identity.
         let (_, loaded) = runtime
-            .spawn_session(&def, cwd, policy.clone(), Some(raw), None)
+            .spawn_session(&def, cwd, policy.clone(), Some(raw), None, None)
             .await
             .expect("fork must release its writer before another process resumes it");
         let _fork_cleanup = StartupProcess(Some(loaded.process.clone()));

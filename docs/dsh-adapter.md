@@ -252,6 +252,17 @@ relay 会把 Host/Origin 改写成 `127.0.0.1:<端口>`，正好通过代理围�
   - 插件安装/卸载：pnpm 长任务，含进度、registry 选择（DSH 内置 npmmirror 回退）、版本兼容检查和重启编排。
   - 向上游争取：ACP 的 mode/permission config options、流式 chunk、`_meta` 中的工具展示。
 
+## 图片
+
+DSH 的 ACP 在 `initialize` 时按其配置的 `provider`/`model` 判断是否声明
+`promptCapabilities.image`。DSH 自带的 ACP 配置写的是 `deepseek-v4-flash`，不在模型目录里，
+会被当作纯文本模型；支持图片的 DeepSeek-V4.1-Flash 在目录里的 ID 是 `deepseek-flash`。
+因此 Pockymoe 启动 DSH 时用 `--patch` 把 `acp` 插件的 `provider`/`model` 设为线程的
+`["provider","model"]`，模型支持图片时附件图片以内嵌图片块发送。
+
+DSH 在历史里保存了内嵌图片后，换成不读图片的模型会让之后每次请求失败。所以只有线程当前模型与
+进程启动时的模型相同，`[PHOTO]` 才发内嵌图片；否则发 `resource_link`。进程在释放后下次以新模型启动。
+
 ## 测试
 
 无需模型密钥：用 scripted provider 驱动真实 DSH（`dsh` 需在 PATH 上），`DSH_HOME` 与工作区都必须是隔离的绝对路径。

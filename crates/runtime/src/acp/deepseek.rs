@@ -103,6 +103,7 @@ impl Launch {
         command: &mut String,
         composition: Option<&Composition>,
         inspection: bool,
+        model: Option<&str>,
     ) -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let token = uuid::Uuid::new_v4().to_string();
@@ -127,14 +128,17 @@ impl Launch {
             )?;
             patches.push(overrides);
         }
+        let mut entries = vec![json!({"insert":[{
+            "id":"remote-codex-bridge", "name":plugin,
+            "config":{"port":listener.local_addr()?.port(),"token":token,"contextInspection":inspection}
+        }]})];
+        // DSH's ACP advertises image prompts at `initialize` from its configured
+        // model, which the bundle sets to a stale id. Boot it with the thread's.
+        if let Some((provider, model)) = model.and_then(route) {
+            entries.push(json!({"id":"acp","config":{"provider":provider,"model":model}}));
+        }
         let patch = directory.path().join("patch.json");
-        std::fs::write(
-            &patch,
-            serde_json::to_vec(&json!([{"insert":[{
-                "id":"remote-codex-bridge", "name":plugin,
-                "config":{"port":listener.local_addr()?.port(),"token":token,"contextInspection":inspection}
-            }]}]))?,
-        )?;
+        std::fs::write(&patch, serde_json::to_vec(&entries)?)?;
         patches.push(patch);
         for patch in patches {
             command.push_str(" --patch ");
@@ -520,6 +524,14 @@ pub(super) fn catalog(
             model
         })
         .collect()
+}
+
+/// A DSH model value, `["provider","model"]`, split into its parts.
+pub fn route(model: &str) -> Option<(String, String)> {
+    serde_json::from_str::<[String; 2]>(model)
+        .ok()
+        .filter(|[provider, model]| !provider.is_empty() && !model.is_empty())
+        .map(|[provider, model]| (provider, model))
 }
 
 /// Keep legacy IDs resumable while preferring isolated routes in a thread's
