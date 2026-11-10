@@ -15,3 +15,7 @@ messages it queued for it.
   queue. Requests from other devices are refused.
 - `pockymoe guide messaging` describes when to steer, when to stop, and how to
   replace a delegate's work.
+- **Claude adapter 0.104**: Claude threads and the model list work again with
+  `claude-agent-acp` 0.104, which had failed with "Probe Claude Agent models: No
+  such file or directory". A later adapter change of this kind now only turns
+  off the detailed context analysis for Claude instead of stopping sessions.
