@@ -239,11 +239,27 @@ pub async fn require_auth(
                 .into_response()
         };
     }
-    if request.uri().path() == "/api/cli" {
-        let scoped =
-            bearer_token(request.headers()).and_then(|token| state.cli_token_thread(&token));
+    // The model proxy takes the same local CLI credential, where each model
+    // SDK puts its API key.
+    let model_proxy = request.uri().path().starts_with("/api/agent-models/");
+    if request.uri().path() == "/api/cli" || model_proxy {
+        let presented = bearer_token(request.headers())
+            .or_else(|| model_proxy.then(|| sdk_key(request.headers())).flatten());
+        // A model key opens the model proxy and nothing else.
+        let model_key = model_proxy
+            .then(|| {
+                presented
+                    .as_deref()
+                    .and_then(|token| crate::model_proxy::token_caller(&state, token))
+            })
+            .flatten();
+        let scoped = presented
+            .as_deref()
+            .and_then(|token| state.cli_token_thread(token))
+            .or_else(|| model_key.clone().flatten());
         let valid = request.extensions().get::<TrustedRelayForward>().is_none()
             && (scoped.is_some()
+                || model_key.is_some()
                 || state
                     .interaction
                     .context
@@ -251,7 +267,7 @@ pub async fn require_auth(
                     .unwrap()
                     .as_ref()
                     .is_some_and(|context| {
-                        bearer_token(request.headers()).is_some_and(|token| {
+                        presented.as_deref().is_some_and(|token| {
                             constant_time_equal(token.as_bytes(), context.token.as_bytes())
                         })
                     }));
@@ -515,6 +531,16 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
     let (scheme, token) = value.split_once(' ')?;
     (scheme.eq_ignore_ascii_case("bearer") && !token.trim().is_empty())
         .then(|| token.trim().to_string())
+}
+
+/// Where the Anthropic and Gemini SDKs send their API key.
+fn sdk_key(headers: &HeaderMap) -> Option<String> {
+    ["x-api-key", "x-goog-api-key"]
+        .into_iter()
+        .find_map(|name| {
+            let value = headers.get(name)?.to_str().ok()?.trim();
+            (!value.is_empty()).then(|| value.to_string())
+        })
 }
 
 fn query_token(uri: &Uri) -> Option<String> {

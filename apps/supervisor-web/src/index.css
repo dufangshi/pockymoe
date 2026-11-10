@@ -2983,12 +2983,14 @@ main:has(.product-navigation) { padding-top: 0 !important; }
 .host-secondary-window > [data-slot='dialog-close'] { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; top: 12px; right: 12px; }
 @media (max-width: 639px) {
   .host-secondary-window[data-slot='dialog-content'] {
-    left: 0 !important; right: 0; top: auto !important; bottom: 0;
-    width: 100%; max-width: none !important; max-height: calc(100dvh - 24px) !important;
+    /* On the visible part of the page: a keyboard shrinks only the visual viewport (useSheetViewport). */
+    left: 0 !important; right: 0; top: auto !important; bottom: var(--sheet-bottom, 0px);
+    width: 100%; max-width: none !important; max-height: calc(var(--sheet-height, 100dvh) - 24px) !important;
     transform: none !important; translate: none !important;
     border-radius: 18px 18px 0 0; padding: 20px 20px max(20px, env(safe-area-inset-bottom));
     animation: host-secondary-enter 180ms ease-out;
   }
 }
-@keyframes host-secondary-enter { from { opacity: 0; bottom: -24px; } }
+/* Rises 24px from wherever it sits, above a keyboard too. */
+@keyframes host-secondary-enter { from { opacity: 0; margin-bottom: -24px; } }
 @media (prefers-reduced-motion: reduce) { .host-secondary-window[data-slot='dialog-content'] { animation: none; } }

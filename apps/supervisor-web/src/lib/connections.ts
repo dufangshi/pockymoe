@@ -33,6 +33,11 @@ export type ConnectionSummary = {
   legacyHarness?: string;
   /** What the upstream declared when the Supervisor last inspected it. */
   catalog?: UpstreamCatalog;
+  /**
+   * This device's agents may call models through it (`pockymoe model`).
+   * Absent on Supervisors from before the model proxy.
+   */
+  agentAccess?: boolean;
 };
 
 export type UpstreamCatalog = {
@@ -156,6 +161,12 @@ export function connectionsApi(apiRoot: string) {
             `/${encodeURIComponent(target.id)}/test`,
             target.model ? { model: target.model } : {},
           ),
+    /** Lets this device's agents call the connection, or stops them. */
+    setAgentAccess: (id: string, enabled: boolean) =>
+      request<ConnectionSummary>(
+        `${base}/${encodeURIComponent(id)}/agent-access`,
+        { method: 'PUT', body: JSON.stringify({ enabled }) },
+      ),
     /** Switches a harness back to its own sign-in or native configuration. */
     activateNative: (harness: string, revision?: string) =>
       request<{ ok?: boolean }>(

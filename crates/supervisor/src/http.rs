@@ -103,6 +103,11 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
         )
         .route("/api/cli", post(crate::interaction::command))
         .route(
+            "/api/agent-models/{connection}/{*path}",
+            axum::routing::any(crate::model_proxy::forward)
+                .layer(DefaultBodyLimit::max(crate::model_proxy::MAX_REQUEST_BYTES)),
+        )
+        .route(
             "/api/threads/{thread}/uploads",
             post(crate::thread_uploads::begin),
         )
@@ -225,6 +230,10 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
                 .route(
                     "/api/management/connections/{id}/complete",
                     post(crate::connections::complete),
+                )
+                .route(
+                    "/api/management/connections/{id}/agent-access",
+                    put(crate::connections::agent_access),
                 )
                 .route(
                     "/api/management/upstreams/native/{harness}/activate",

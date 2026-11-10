@@ -2599,7 +2599,7 @@ impl AgentRuntime for AcpRuntime {
             && !process.cli_env.is_empty()
             && dsh_goal_command.is_none();
         let prompt = if include_context {
-            format!("[remoteCodex: this conversation is a Pockymoe thread; `pockymoe thread self` shows its identity. Manage Git worktrees through `pockymoe worktree`, not direct git worktree add/remove/move/prune; read `pockymoe worktree --help` and `pockymoe guide worktrees`. Use returned paths as explicit tool cwd; creating a worktree does not change your current directory. Before you create or message threads, or show the user a local web app, read `pockymoe skill` (short: rules and an index); every command's `--help` has its flags and rules. Never put credentials in prompts or output.]\n\n{prompt}")
+            format!("[remoteCodex: this conversation is a Pockymoe thread; `pockymoe thread self` shows its identity. Manage Git worktrees through `pockymoe worktree`, not direct git worktree add/remove/move/prune; read `pockymoe worktree --help` and `pockymoe guide worktrees`. Use returned paths as explicit tool cwd; creating a worktree does not change your current directory. Before you create or message threads, or show the user a local web app, read `pockymoe skill` (short: rules and an index); every command's `--help` has its flags and rules. To call a model API (OpenAI Chat Completions or Responses, Anthropic Messages) through the upstream connections the owner saved in Pockymoe, get a base URL and API key from `pockymoe model list` or `pockymoe model env` (`pockymoe guide models`); do not ask the user for a key. Never put credentials in prompts or output.]\n\n{prompt}")
         } else {
             prompt
         };

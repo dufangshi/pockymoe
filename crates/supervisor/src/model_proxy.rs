@@ -1,0 +1,398 @@
+//! Agents call models through the owner's saved connections
+//! (docs/upstream-connections.md, "Agent access"). The agent authenticates with
+//! its own CLI credential; the upstream key never leaves the Supervisor.
+use crate::auth::CliCaller;
+use anyhow::{bail, ensure, Context, Result};
+use axum::{
+    body::{Body, Bytes},
+    extract::{Path, RawQuery, State},
+    http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
+    response::{IntoResponse, Response},
+    Extension, Json,
+};
+use pockymoe_runtime::{
+    interaction::AgentRequester,
+    upstreams::{
+        self,
+        agent_proxy::{self, KeyScan},
+        connections::{self as saved, Connection},
+    },
+    Supervisor,
+};
+use serde_json::{json, Value};
+use std::{sync::Arc, time::Duration};
+
+/// A request body is a prompt with its attachments, not a file upload.
+pub(crate) const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
+/// Long enough for a slow reasoning model to finish one answer.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(900);
+
+fn dir(state: &Supervisor) -> std::path::PathBuf {
+    upstreams::directory(&state.config.database_url)
+}
+
+/// Model API keys begin with this, so a script that holds one says what it is.
+const TOKEN_PREFIX: &str = "pmk_";
+/// The subject of the owner's own model key; thread ids are UUIDs.
+const OWNER: &str = "owner";
+type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+
+/// The device's private signing key for model API keys, made on first use.
+fn token_key(state: &Supervisor) -> Result<Vec<u8>> {
+    let path = state.config.database_url.with_extension("model-proxy.key");
+    match std::fs::read(&path) {
+        Ok(key) if key.len() == 32 => Ok(key),
+        Ok(_) => bail!(
+            "the model key store is damaged; remove {} to make a new one",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let key: [u8; 32] = rand::random();
+            upstreams::private_write(&path, &key)?;
+            Ok(key.to_vec())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn signature(state: &Supervisor, subject: &str) -> Result<HmacSha256> {
+    use hmac::Mac;
+    let mut mac = HmacSha256::new_from_slice(&token_key(state)?)?;
+    mac.update(b"pockymoe-model-proxy\n");
+    mac.update(subject.as_bytes());
+    Ok(mac)
+}
+
+/// A key that opens only the model proxy, for one thread (or the owner). Unlike
+/// the thread's CLI credential it can sit in a script or a config file: it
+/// cannot send messages, create threads or read files. It stays the same
+/// across restarts and stops working when its thread is deleted.
+fn model_token(state: &Supervisor, requester: AgentRequester<'_>) -> Result<String> {
+    use hmac::Mac;
+    let subject = match requester {
+        AgentRequester::Owner => OWNER,
+        AgentRequester::Thread(thread) => thread,
+        _ => bail!("forbidden: model keys are only for this device's own agents"),
+    };
+    let mac = signature(state, subject)?.finalize().into_bytes();
+    Ok(format!("{TOKEN_PREFIX}{subject}_{}", hex::encode(mac)))
+}
+
+/// Whom a model key was made for: `Some(None)` for the owner, `Some(Some(id))`
+/// for a thread that still exists, `None` for anything else.
+pub(crate) fn token_caller(state: &Supervisor, token: &str) -> Option<Option<String>> {
+    use hmac::Mac;
+    let (subject, mac) = token.strip_prefix(TOKEN_PREFIX)?.rsplit_once('_')?;
+    let mac = hex::decode(mac).ok()?;
+    signature(state, subject).ok()?.verify_slice(&mac).ok()?;
+    if subject == OWNER {
+        return Some(None);
+    }
+    state.get_thread(subject).ok()?;
+    Some(Some(subject.to_owned()))
+}
+
+/// Threads of this device and the owner may call models; other devices and
+/// isolated environments may not.
+fn ensure_may_call(state: &Supervisor, requester: AgentRequester<'_>) -> Result<()> {
+    match requester {
+        AgentRequester::Owner => Ok(()),
+        AgentRequester::Thread(thread) => {
+            ensure!(
+                state.environments.for_thread(thread)?.is_none(),
+                "forbidden: saved connections are not available inside an isolated environment"
+            );
+            Ok(())
+        }
+        _ => bail!("forbidden: saved connections are only available to this device's own agents"),
+    }
+}
+
+/// The connection named by id or exact name, if this caller may use it.
+async fn connection(
+    state: &Supervisor,
+    requester: AgentRequester<'_>,
+    wanted: &str,
+) -> Result<Connection> {
+    ensure_may_call(state, requester)?;
+    let all = {
+        let _gate = state.upstream_gate.lock().await;
+        saved::migrate(&dir(state))?;
+        saved::with_agent_access(&dir(state))?
+    };
+    let owner = requester == AgentRequester::Owner;
+    let mut matches = all
+        .into_iter()
+        .filter(|(c, _)| c.id == wanted || c.name.eq_ignore_ascii_case(wanted));
+    let (found, access) = matches
+        .next()
+        .with_context(|| format!("not_found: no saved connection named {wanted}"))?;
+    ensure!(
+        matches.next().is_none(),
+        "conflict: several connections are named {wanted}; use the id"
+    );
+    ensure!(
+        owner || access,
+        "forbidden: the owner has not let agents call this connection (Settings > Upstreams, or `pockymoe model allow`)"
+    );
+    Ok(found)
+}
+
+/// `modelList`, `modelAccess` and `modelComplete` of the local CLI.
+pub(crate) async fn cli(
+    state: &Arc<Supervisor>,
+    input: &Value,
+    requester: AgentRequester<'_>,
+) -> Result<Value> {
+    match input["operation"].as_str().unwrap_or("") {
+        "modelList" => {
+            ensure_may_call(state, requester)?;
+            let root = state
+                .interaction
+                .context
+                .read()
+                .unwrap()
+                .as_ref()
+                .map(|context| context.url.clone())
+                .context("the local CLI is not configured")?;
+            let owner = requester == AgentRequester::Owner;
+            let all = {
+                let _gate = state.upstream_gate.lock().await;
+                saved::migrate(&dir(state))?;
+                saved::with_agent_access(&dir(state))?
+            };
+            let closed = all.iter().filter(|(_, access)| !access).count();
+            let connections: Vec<Value> = all
+                .iter()
+                .filter(|(_, access)| owner || *access)
+                .map(|(c, access)| agent_proxy::agent_view(c, *access, &root))
+                .collect();
+            let mut result = json!({
+                "connections": connections,
+                // Every base URL above takes this key, in each SDK's usual place.
+                "apiKey": model_token(state, requester)?,
+                "guide": "pockymoe guide models",
+            });
+            if !owner && closed > 0 {
+                result["notOpenToAgents"] = json!(closed);
+            }
+            Ok(result)
+        }
+        "modelAccess" => {
+            ensure!(
+                requester == AgentRequester::Owner,
+                "Only the computer's owner decides which connections agents can call"
+            );
+            let wanted = input["connectionId"]
+                .as_str()
+                .context("connection required")?;
+            let enabled = input["enabled"].as_bool().context("enabled required")?;
+            let found = connection(state, requester, wanted).await?;
+            let _gate = state.upstream_gate.lock().await;
+            let summary = saved::set_agent_access(&dir(state), &found.id, enabled)?;
+            Ok(json!({"id": found.id, "name": found.name, "agentAccess": summary["agentAccess"]}))
+        }
+        "modelComplete" => {
+            let wanted = input["connectionId"]
+                .as_str()
+                .context("connectionId required")?;
+            let user = input["user"].as_str().context("user prompt required")?;
+            let system = input["system"].as_str().unwrap_or("");
+            ensure!(
+                system.len() + user.len() <= 262144,
+                "prompt exceeds 256 KiB"
+            );
+            let max_tokens = input["maxTokens"].as_u64().unwrap_or(1024).clamp(1, 16384) as usize;
+            let found = connection(state, requester, wanted).await?;
+            let images: Vec<saved::CompletionImage> = match input.get("images") {
+                None | Some(Value::Null) => vec![],
+                Some(value) => serde_json::from_value(value.clone()).context("invalid images")?,
+            };
+            let model = input["model"].as_str().unwrap_or("");
+            let text =
+                saved::complete_with_images(&found, model, system, user, &images, max_tokens)
+                    .await?;
+            log(requester, &found, "complete", StatusCode::OK);
+            Ok(json!({"text": text, "model": if model.is_empty() { &found.model } else { model }}))
+        }
+        _ => bail!("unknown model operation"),
+    }
+}
+
+fn log(requester: AgentRequester<'_>, c: &Connection, route: &str, status: StatusCode) {
+    let caller = match requester {
+        AgentRequester::Thread(thread) => thread,
+        _ => "owner",
+    };
+    tracing::info!(caller, connection = %c.id, route, status = status.as_u16(), "model request through a saved connection");
+}
+
+/// Errors in the shape the SDKs print: `{"error":{"message":…}}`.
+fn refuse(error: &anyhow::Error) -> Response {
+    let message = error.to_string();
+    let (status, code) = if message.starts_with("forbidden:") {
+        (StatusCode::FORBIDDEN, "forbidden")
+    } else if message.starts_with("not_found:") || message == "Unsupported model route" {
+        (StatusCode::NOT_FOUND, "not_found")
+    } else if message.starts_with("conflict:") {
+        (StatusCode::CONFLICT, "conflict")
+    } else {
+        (StatusCode::BAD_GATEWAY, "upstream_unavailable")
+    };
+    (
+        status,
+        Json(json!({"error": {"message": message, "type": "pockymoe_model_proxy", "code": code}})),
+    )
+        .into_response()
+}
+
+/// `ANY /api/agent-models/{connection}/{*path}`: one request to the upstream,
+/// its answer streamed back as it arrives.
+pub(crate) async fn forward(
+    State(state): State<Arc<Supervisor>>,
+    Extension(caller): Extension<CliCaller>,
+    Path((wanted, path)): Path<(String, String)>,
+    RawQuery(query): RawQuery,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let requester = crate::interaction::requester(caller.0.as_deref(), false);
+    let prepared = async {
+        let found = connection(&state, requester, &wanted).await?;
+        let target = agent_proxy::target(&found, method.as_str(), &path, query.as_deref())?;
+        Ok::<_, anyhow::Error>((found, target))
+    }
+    .await;
+    let (found, target) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => return refuse(&error),
+    };
+    let sent: Vec<(String, String)> = headers
+        .iter()
+        .filter_map(|(name, value)| {
+            Some((name.as_str().to_owned(), value.to_str().ok()?.to_owned()))
+        })
+        .collect();
+    let client = match reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return refuse(&anyhow::anyhow!("Cannot initialize upstream client")),
+    };
+    let mut request = client.request(method.clone(), target.url.clone());
+    for (name, value) in agent_proxy::upstream_headers(&found, target.protocol, &sent) {
+        request = request.header(name, value);
+    }
+    if method != Method::GET {
+        request = request.body(body);
+    }
+    let upstream = match request.send().await {
+        Ok(upstream) => upstream,
+        // The error's text could name the upstream URL; the agent gets a plain reason.
+        Err(error) => {
+            let reason = if error.is_timeout() {
+                "timed out"
+            } else {
+                "could not be reached"
+            };
+            return refuse(&anyhow::anyhow!("The connection's upstream {reason}"));
+        }
+    };
+    let status =
+        StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    log(requester, &found, path.trim_matches('/'), status);
+    let mut response = Response::builder().status(status);
+    for (name, value) in upstream.headers() {
+        if agent_proxy::returns_response_header(name.as_str()) {
+            if let (Ok(name), Ok(value)) = (
+                HeaderName::from_bytes(name.as_str().as_bytes()),
+                HeaderValue::from_bytes(value.as_bytes()),
+            ) {
+                response = response.header(name, value);
+            }
+        }
+    }
+    // Events reach the agent as they are produced, not when a buffer fills.
+    response = response
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("x-accel-buffering", "no");
+    let scan = KeyScan::new(&found);
+    let stream = futures_util::stream::unfold(Some((upstream, scan)), |state| async move {
+        let (mut upstream, mut scan) = state?;
+        match upstream.chunk().await {
+            Ok(Some(chunk)) if scan.leaks(&chunk) => Some((
+                Err(std::io::Error::other(
+                    "the upstream response contained the connection's credential",
+                )),
+                None,
+            )),
+            Ok(Some(chunk)) => Some((Ok(chunk), Some((upstream, scan)))),
+            Ok(None) => None,
+            Err(_) => Some((
+                Err(std::io::Error::other("the upstream response ended early")),
+                None,
+            )),
+        }
+    });
+    // Fused: a kept-alive connection polls the body once more after its end,
+    // which an unfused stream answers with a panic that drops the connection.
+    response
+        .body(Body::from_stream(futures_util::StreamExt::fuse(stream)))
+        .unwrap_or_else(|_| refuse(&anyhow::anyhow!("Invalid upstream response")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn model_keys_name_their_thread_survive_restarts_and_end_with_the_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_relay, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+        let mut config = state.config.clone();
+        drop(state);
+        config.database_url = dir.path().join("supervisor.sqlite");
+        let open = |config: &pockymoe_runtime::RuntimeConfig| {
+            let db = pockymoe_runtime::Database::open(&config.database_url).unwrap();
+            Arc::new(Supervisor::new(config.clone(), db, vec![]))
+        };
+        let state = open(&config);
+        let owner = model_token(&state, AgentRequester::Owner).unwrap();
+        assert!(owner.starts_with("pmk_owner_"));
+        assert_eq!(token_caller(&state, &owner), Some(None));
+        // A thread's key is only valid while the thread exists.
+        let ghost = model_token(&state, AgentRequester::Thread("not-a-thread")).unwrap();
+        assert_eq!(token_caller(&state, &ghost), None);
+        assert!(model_token(&state, AgentRequester::Peer).is_err());
+        // Tampering with either half fails.
+        let swapped = owner.replacen("owner", "admin", 1);
+        assert_eq!(token_caller(&state, &swapped), None);
+        let mut flipped = owner.clone();
+        let last = flipped.pop().unwrap();
+        flipped.push(if last == '0' { '1' } else { '0' });
+        assert_eq!(token_caller(&state, &flipped), None);
+        for junk in ["", "pmk_", "pmk_owner", "pmk_owner_zz", "owner_00"] {
+            assert_eq!(token_caller(&state, junk), None, "{junk}");
+        }
+        // The signing key is private and outlives the process.
+        let key = config.database_url.with_extension("model-proxy.key");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        drop(state);
+        let state = open(&config);
+        assert_eq!(model_token(&state, AgentRequester::Owner).unwrap(), owner);
+        // A new signing key retires every model key.
+        std::fs::remove_file(&key).unwrap();
+        assert_eq!(token_caller(&state, &owner), None);
+    }
+}

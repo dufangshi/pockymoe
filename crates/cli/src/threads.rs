@@ -540,6 +540,33 @@ impl Client {
         ensure!(status.is_success(), "HTTP {status}: {value}");
         Ok(value)
     }
+    /// One request through the Supervisor's model proxy with this CLI's credential.
+    pub(crate) async fn model_proxy(
+        &self,
+        connection: &str,
+        path: &str,
+        body: Option<String>,
+    ) -> Result<(u16, String)> {
+        let url = format!(
+            "{}/api/agent-models/{connection}/{}",
+            self.url.trim_end_matches('/'),
+            path.trim_start_matches('/')
+        );
+        let request = match body {
+            Some(body) => self
+                .http
+                .post(url)
+                .header("content-type", "application/json")
+                .body(body),
+            None => self.http.get(url),
+        };
+        let response = request
+            .bearer_auth(&self.token)
+            .timeout(std::time::Duration::from_secs(900))
+            .send()
+            .await?;
+        Ok((response.status().as_u16(), response.text().await?))
+    }
     async fn target(&self, value: &str, device: Option<&str>) -> Result<ThreadTarget> {
         if let Some(mut target) = parse_target(value, device)? {
             // A URL or DEVICE/THREAD naming this Supervisor is a local thread.

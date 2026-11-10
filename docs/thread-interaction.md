@@ -16,6 +16,8 @@ pockymoe thread models --provider acp --agent grok
 pockymoe thread create --provider acp --agent grok \
   --model grok-4.6 --reasoning-effort xhigh --title helper
 pockymoe thread send THREAD_ID --delivery queue --kind task --text-file task.txt --notify-on-complete
+pockymoe model list
+pockymoe model ask CONNECTION "question" --model MODEL
 pockymoe transcript THREAD_ID --view summary
 pockymoe transcript THREAD_ID --view summary --before-turn TURN_ID --limit 10
 pockymoe transcript THREAD_ID
@@ -25,6 +27,8 @@ pockymoe transcript THREAD_ID --turn TURN_ID --view overview
 pockymoe transcript THREAD_ID --turn TURN_ID --item ITEM_ID
 pockymoe transcript THREAD_ID --turn TURN_ID --item ITEM_ID --raw
 ```
+
+`model` calls model APIs through the saved connections the owner opened to agents, without their keys; see [upstream connections](upstream-connections.md#agent-access).
 
 `thread create` also accepts `--text` / `--text-file` for an initial prompt. Without a managed caller, specify `--workspace`. Model IDs and reasoning levels must be advertised by the target harness. Creation inherits the caller's workspace and approval mode unless explicitly overridden. It does not copy the caller's history.
 

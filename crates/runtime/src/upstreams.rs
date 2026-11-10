@@ -6,10 +6,11 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 use toml_edit::{value, DocumentMut};
+pub mod agent_proxy;
 mod cc_switch;
 pub mod connections;
 mod discovery;
