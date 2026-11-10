@@ -38,6 +38,10 @@ Choosing a delivery for an existing peer:
 - Stopping, replacing, reprioritizing or correcting its **active** work: `--delivery steer`
   (or `direct` when its state is uncertain) with `--interrupt-reason` naming the concrete
   harm or wasted work. Never queue a correction: queue waits for its entire turn.
+- A delegate of yours that is on the wrong path and that steering does not turn:
+  `thread stop NAME --reason "..."`, with `--clear-queue` to withdraw what you queued
+  behind it, then send the new instructions. `thread queue NAME` lists what waits for
+  it; `thread unqueue NAME MESSAGE_ID...` withdraws messages you sent (`guide messaging`).
 - Distinct work that can wait for the peer's whole current turn: `--delivery queue --kind task`.
 - Results, progress, ready inputs, ordinary questions and acknowledgements: the default
   passive inbox. "Important", "urgent" or "the peer is idle" is not a reason to use

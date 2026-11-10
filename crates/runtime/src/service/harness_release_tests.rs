@@ -1057,3 +1057,145 @@ async fn an_effort_changed_mid_turn_is_the_running_turns_effort() {
         Some("max")
     );
 }
+
+#[tokio::test]
+async fn a_thread_stops_its_delegate_and_withdraws_only_its_own_queued_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let s = supervisor(dir.path());
+    let parent = thread(&s, dir.path(), None).await;
+    let child = thread(&s, dir.path(), Some(&parent)).await;
+    let grandchild = thread(&s, dir.path(), Some(&child)).await;
+    let stranger = thread(&s, dir.path(), None).await;
+
+    // Control reaches down the lineage only.
+    s.ensure_delegate_of(&parent, &child).unwrap();
+    s.ensure_delegate_of(&parent, &grandchild).unwrap();
+    for (who, target) in [
+        (&child, &parent),
+        (&stranger, &child),
+        (&parent, &parent),
+        (&grandchild, &child),
+    ] {
+        let error = s.ensure_delegate_of(who, target).unwrap_err().to_string();
+        assert!(error.starts_with("forbidden"), "{error}");
+    }
+
+    let running = s.clone();
+    let turn_thread = child.clone();
+    let turn = tokio::spawn(async move {
+        running
+            .prompt(
+                &turn_thread,
+                pockymoe_protocol::SendThreadPromptInput {
+                    prompt: "inspect this repository slowly".into(),
+                    client_request_id: None,
+                    model: None,
+                    reasoning_effort: None,
+                    collaboration_mode: None,
+                    images: Vec::new(),
+                },
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !s.live.lock().await.contains_key(&child) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    // The parent piles up two tasks behind the running turn; someone else's
+    // message waits there too.
+    let send = |text: &str| {
+        s.send_to_thread(
+            &child,
+            serde_json::from_value(
+                json!({"text":text,"delivery":"queue","kind":"task","fromThreadId":parent}),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let first = send("first correction");
+    let second = send("second correction");
+    assert_eq!(first["delivery"], "queued");
+    s.db.with(|conn| {
+        conn.execute(
+            "INSERT INTO thread_pending_steers(id,thread_id,turn_id,display_prompt,submitted_prompt,delivery,created_at,updated_at)
+             VALUES('theirs',?1,'gone','held note','held note','cli-steer','9999','9999')",
+            params![child],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    let listed = s.queued_messages(&child, Some(&parent)).unwrap();
+    assert_eq!(listed["queuedCount"], 3);
+    let rows = listed["messages"].as_array().unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|row| (
+                row["mine"].as_bool().unwrap(),
+                row["state"].as_str().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        [(true, "queued"), (true, "queued"), (false, "held")]
+    );
+    assert_eq!(rows[0]["fromThreadId"], parent);
+    assert!(rows[0]["preview"]
+        .as_str()
+        .unwrap()
+        .contains("first correction"));
+
+    // One by id; never someone else's.
+    let error = s
+        .remove_queued_messages(&child, &["theirs".into()], false, Some(&parent))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.starts_with("forbidden"), "{error}");
+    let removed = s
+        .remove_queued_messages(
+            &child,
+            &[first["messageId"].as_str().unwrap().into()],
+            false,
+            Some(&parent),
+        )
+        .await
+        .unwrap();
+    assert_eq!(removed["removed"], json!([first["messageId"]]));
+    assert_eq!(removed["remainingCount"], 2);
+
+    // Stop with the queue cleared: the parent's remaining message goes, the
+    // other sender's stays, and the turn ends.
+    let stopped = s
+        .stop_thread_for_agent(&child, Some("wrong branch"), true, Some(&parent))
+        .await
+        .unwrap();
+    assert_eq!(stopped["stopped"], true);
+    assert_eq!(stopped["removed"], json!([second["messageId"]]));
+    assert_eq!(stopped["queuedCount"], 1);
+    let _ = turn.await;
+    assert!(!s.live.lock().await.contains_key(&child));
+    let kept: i64 =
+        s.db.with(|conn| {
+            Ok(conn.query_row(
+                "SELECT count(*) FROM kv WHERE key LIKE 'cli:prompt-from:%'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(kept, 0, "a withdrawn message leaves no sender record");
+
+    // Stopping an idle thread interrupts nothing; the owner may clear anything.
+    let again = s
+        .stop_thread_for_agent(&child, None, true, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        (again["stopped"].clone(), again["queuedCount"].clone()),
+        (json!(false), json!(0))
+    );
+}

@@ -1,5 +1,6 @@
 //! Provider-independent local thread operations. Uses the existing prompt queue and KV store.
 mod agents;
+pub(crate) mod control;
 pub(crate) mod inbox;
 mod isolation;
 mod peer;
@@ -529,6 +530,13 @@ impl Supervisor {
                     input.client_request_id.as_deref(),
                     &now,
                 )?;
+                // Lets the sender find and withdraw it while it waits.
+                if let (None, Some(from)) = (&remote, &input.from_thread_id) {
+                    tx.execute(
+                        "INSERT OR REPLACE INTO kv(key,value) VALUES(?1,?2)",
+                        params![control::sender_key(&pending_id), from],
+                    )?;
+                }
                 if peer_prompt {
                     tx.execute("INSERT INTO kv(key,value) VALUES(?1,'peer')",
                         [format!("cli:prompt-origin:{pending_id}")])?;

@@ -247,6 +247,39 @@ More: pockymoe guide delegate"#)]
         #[arg(long)]
         remove_worktree: bool,
     },
+    /// Stop what a delegate is doing now. For when it is on the wrong path and
+    /// steering is not enough; its history stays, and it runs again on its next
+    /// message.
+    #[command(after_help = r#"You may stop only threads under you in your lineage.
+A stop is followed by whatever still waits in the delegate's queue, in order.
+To replace its work: stop it with --clear-queue, then send the new instructions:
+  pockymoe thread stop NAME --clear-queue --reason "building against the wrong branch"
+  pockymoe thread send NAME --delivery direct --kind task --interrupt-reason "..." --subject "..." --text "..."
+--clear-queue removes only the messages you sent; the owner's and other senders'
+stay, and the receipt says how many remain. To redirect without stopping, use
+`thread send --delivery steer`.
+
+More: pockymoe guide messaging"#)]
+    Stop {
+        id: String,
+        /// What is wrong with what it is doing. Required from a thread.
+        #[arg(long)]
+        reason: Option<String>,
+        /// First withdraw the messages you sent that still wait in its queue.
+        #[arg(long)]
+        clear_queue: bool,
+    },
+    /// List the messages waiting in a delegate's queue, oldest first, with ids.
+    Queue { id: String },
+    /// Withdraw messages you sent that still wait in a delegate's queue, by id
+    /// (from `thread queue`) or all of yours with --all. A message that has
+    /// started, or that someone else sent, is not removed.
+    Unqueue {
+        id: String,
+        message_ids: Vec<String>,
+        #[arg(long, conflicts_with = "message_ids")]
+        all: bool,
+    },
     /// Role templates available to `thread create --role`.
     Roles,
     /// Send passive mail or request execution; direct/steer also await the steering acknowledgement when running.
@@ -673,6 +706,12 @@ impl Client {
                     match result { Ok(v) => closed.push(v), Err(e) => failed.push(json!({"thread":id,"error":e.to_string()})) }
                 }
                 Ok(json!({"closed":closed,"failed":failed}))
+            }
+            ThreadCommand::Stop { id, reason, clear_queue } => self.request(json!({"operation":"stop","threadId":self.id(&id).await?,"reason":reason,"clearQueue":clear_queue,"fromThreadId":self.from})).await,
+            ThreadCommand::Queue { id } => self.request(json!({"operation":"queueList","threadId":self.id(&id).await?,"fromThreadId":self.from})).await,
+            ThreadCommand::Unqueue { id, message_ids, all } => {
+                ensure!(all != !message_ids.is_empty(), "name the message ids to withdraw, or pass --all");
+                self.request(json!({"operation":"queueRemove","threadId":self.id(&id).await?,"messageIds":message_ids,"all":all,"fromThreadId":self.from})).await
             }
             ThreadCommand::Roles => self.request(json!({"operation":"roles","fromThreadId":self.from})).await,
             ThreadCommand::Create { device, workspace, title, provider, agent, model, reasoning_effort, approval_mode, name, role, worktree, worktree_branch, body } => {

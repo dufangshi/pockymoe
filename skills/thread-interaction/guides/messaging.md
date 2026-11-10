@@ -109,6 +109,33 @@ instead of sending the same outcome through all three. Do not subscribe peers to
 each other's completion just to keep them active.
 
 
+## Stop a delegate, and manage its queue
+
+Steering changes a delegate's course without ending its turn. When it keeps going the
+wrong way, or your corrections are piling up in its queue behind a long turn, stop it:
+
+```sh
+pockymoe thread queue NAME                       # what waits for it, oldest first, with ids
+pockymoe thread unqueue NAME MESSAGE_ID...       # withdraw messages you sent
+pockymoe thread unqueue NAME --all               # withdraw all of yours
+pockymoe thread stop NAME --reason "building against the wrong branch"
+pockymoe thread stop NAME --clear-queue --reason "..."   # withdraw yours, then stop
+```
+
+- You control only threads under you in your lineage: your delegates and theirs. Never
+  yourself, a parent, a sibling or another conversation. A stop from a thread needs
+  `--reason`.
+- You withdraw only messages you sent. The owner's and other senders' messages stay, and
+  the receipt's `queuedCount` says how many remain. A message that has started, or that
+  was already steered into the running turn, cannot be withdrawn.
+- After a stop the delegate runs whatever still waits in its queue, in order. To replace
+  its work, use `--clear-queue` and then send the new instructions with
+  `thread send NAME --delivery direct --kind task --interrupt-reason "..."`: on a
+  stopped thread `direct` starts a new turn at once.
+- A stopped delegate keeps its history and its slot. It is not closed or deleted.
+- In `thread queue`, `queued` runs in order, `held` is a steer whose turn ended (it never
+  runs; withdraw it or resend), and `steered` is already in the running turn.
+
 ## Execution receipts and steering failures
 
 ```bash

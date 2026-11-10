@@ -300,6 +300,50 @@ async fn run_as(
             }
             Ok(receipt)
         }
+        // A thread stops and unqueues only under itself, and only its own
+        // messages; the machine's credential acts for the owner. Never a peer.
+        "stop" | "queueList" | "queueRemove" => {
+            anyhow::ensure!(
+                !peer,
+                "forbidden: stopping a thread or changing its queue requires a local credential"
+            );
+            reach(id)?;
+            if let Some(caller) = caller.as_deref() {
+                anyhow::ensure!(
+                    from.is_none_or(|from| from == caller),
+                    "forbidden: --from cannot override the authenticated caller"
+                );
+                state.ensure_delegate_of(caller, id)?;
+            }
+            match input["operation"].as_str() {
+                Some("queueList") => state.queued_messages(id, caller.as_deref()),
+                Some("queueRemove") => {
+                    state
+                        .remove_queued_messages(
+                            id,
+                            &strings(&input["messageIds"]),
+                            all,
+                            caller.as_deref(),
+                        )
+                        .await
+                }
+                _ => {
+                    let reason = input["reason"].as_str();
+                    anyhow::ensure!(
+                        caller.is_none() || reason.is_some(),
+                        "stopping a delegate requires a reason (--reason): what is wrong with what it is doing"
+                    );
+                    state
+                        .stop_thread_for_agent(
+                            id,
+                            reason,
+                            input["clearQueue"] == true,
+                            caller.as_deref(),
+                        )
+                        .await
+                }
+            }
+        }
         "resolve" => {
             Ok(json!({"threadId":state.resolve_agent(from, input["name"].as_str().unwrap_or(""))?}))
         }
