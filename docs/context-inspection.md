@@ -47,7 +47,8 @@ cannot be told apart stays in `messages`. A category may carry a `count` of the
 items behind it.
 
 Charts fold the categories into eight groups with one fixed color each: system
-(system prompt, MCP instructions, runtime context, custom agents), tool
+(system prompt, MCP instructions, runtime context, custom agents, provider
+overhead), tool
 definitions, memory files, skills, user messages, model output (assistant
 messages, reasoning, tool calls, unsplit messages), tool results and injected
 content. The difference between the native total and the category sum is drawn
@@ -84,9 +85,7 @@ visible prompt is active. It counts request fragments with a bundled
 `o200k_base` tokenizer and reuses hashes/counts across requests. This is an
 estimate, not a promise that the tokenizer matches every upstream model.
 Media bytes, encrypted state, item IDs and transport metadata are never
-stringified for text counting. Only readable content blocks and tool-call
-arguments are counted; images/audio and opaque reasoning remain in the native
-unattributed difference. A request stays pending until its provider response is
+stringified for text counting. A request stays pending until its provider response is
 correlated, so an uncalibrated estimate cannot briefly replace native occupancy.
 If the local tokenizer still estimates more than Codex reports, the category sum
 and signed discrepancy are displayed separately using `compositionTokens` and
@@ -95,9 +94,36 @@ occupancy is always the correlated native response total. The Web also discards
 old malformed Codex category caches that exceed their native occupancy without
 explicit separate-composition metadata. Refreshing cached Codex details does not
 re-emit them as a new occupancy reading.
-Responses are correlated with inference IDs before calibrating the input total;
-unattributed overhead remains separate instead of being distributed across
-categories. The response's native total updates occupancy after output.
+Responses are correlated with inference IDs before calibrating the input total.
+The response's native total updates occupancy after output.
+
+What the request text cannot show is taken from the provider's own counts
+instead of being left unattributed:
+
+- **The response.** After a response, the window holds what it wrote. Its
+  `output_tokens` are added by kind: `reasoning_output_tokens` to reasoning, and
+  the rest to assistant messages and tool calls in proportion to their readable
+  size.
+- **Items the model wrote earlier.** Each response's counts are remembered per
+  output item id. A later request that carries those items uses the remembered
+  counts, so encrypted reasoning counts as the reasoning tokens the provider
+  reported, not as its summary. An encrypted reasoning item whose response was
+  not observed (after a restart, or history from before inspection was on) is
+  sized from its ciphertext: about 1,800 characters of envelope and 11
+  characters per token, measured on Codex responses.
+- **Framing.** A tool result carries 10 tokens and a message the client supplies
+  6 tokens beyond its text; a tool call counts its tool name. These are the
+  constant steps measured between consecutive Codex requests.
+- **Provider overhead** (`provider_overhead`). The provider counts a constant
+  number of tokens that no request shows (about 3,300 on the Codex install
+  where this was measured). It is the smallest difference between the provider's input total
+  and the counted request that the session has shown, taken only from requests
+  without media or an encrypted compaction summary; a session that has not shown
+  such a request borrows the last figure seen for its model on this Supervisor.
+  Charts draw it with the system group.
+- **Unattributed** (`unattributed`) is what remains above that: images, audio,
+  files and encrypted compaction summaries, whose tokens cannot be counted
+  locally. It is never distributed across categories.
 
 The collector accepts complete request inputs. Incremental WebSocket requests
 that reference `previous_response_id` are not treated as complete windows;

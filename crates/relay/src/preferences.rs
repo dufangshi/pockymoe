@@ -18,6 +18,16 @@ pub(super) fn ensure_schema(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    // NULL means the account never chose: browsers keep their own setting until one does.
+    if conn
+        .prepare("SELECT show_reasoning_summaries FROM relay_account_preferences LIMIT 0")
+        .is_err()
+    {
+        conn.execute(
+            "ALTER TABLE relay_account_preferences ADD COLUMN show_reasoning_summaries INTEGER",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -40,6 +50,9 @@ struct Preferences {
     /// New shares wait until the owner confirms the recipient's safety code
     /// (docs/account-key-trust.md#safety-code-check).
     require_safety_code: bool,
+    /// Whether conversations show the agents' thinking summaries; null until
+    /// the account chooses, so a browser's earlier local choice can be adopted.
+    show_reasoning_summaries: Option<bool>,
 }
 
 /// A change names only the preferences it sets; the others stay.
@@ -48,6 +61,7 @@ struct Preferences {
 struct PreferencesChange {
     send_shortcut: Option<SendShortcut>,
     require_safety_code: Option<bool>,
+    show_reasoning_summaries: Option<bool>,
 }
 
 /// Whether the owner's new shares wait for the safety-code check (default on).
@@ -79,6 +93,15 @@ fn snapshot(conn: &Connection, user_id: &str) -> Result<Preferences> {
             SendShortcut::CtrlEnter
         },
         require_safety_code: require_safety_code(conn, user_id),
+        show_reasoning_summaries: conn
+            .query_row(
+                "SELECT show_reasoning_summaries FROM relay_account_preferences WHERE user_id=?1",
+                [user_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()?
+            .flatten()
+            .map(|value| value != 0),
     })
 }
 
@@ -118,12 +141,18 @@ async fn save(
         SendShortcut::Enter => "enter",
     });
     let saved = conn.execute(
-        "INSERT INTO relay_account_preferences(user_id,send_shortcut,require_safety_code)
-         VALUES (?1,COALESCE(?2,'ctrlEnter'),?3)
+        "INSERT INTO relay_account_preferences(user_id,send_shortcut,require_safety_code,show_reasoning_summaries)
+         VALUES (?1,COALESCE(?2,'ctrlEnter'),?3,?4)
          ON CONFLICT(user_id) DO UPDATE SET
            send_shortcut=COALESCE(?2,send_shortcut),
-           require_safety_code=COALESCE(?3,require_safety_code)",
-        params![user.id, shortcut, change.require_safety_code],
+           require_safety_code=COALESCE(?3,require_safety_code),
+           show_reasoning_summaries=COALESCE(?4,show_reasoning_summaries)",
+        params![
+            user.id,
+            shortcut,
+            change.require_safety_code,
+            change.show_reasoning_summaries
+        ],
     );
     if saved.is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -203,7 +232,19 @@ mod tests {
         assert_eq!(saved.status(), StatusCode::OK);
         assert_eq!(
             saved.json::<Value>().await.unwrap(),
-            json!({"sendShortcut":"enter","requireSafetyCode":true})
+            json!({"sendShortcut":"enter","requireSafetyCode":true,"showReasoningSummaries":null})
+        );
+        // A later change names one preference; the others stay.
+        let shown = client
+            .patch(&url)
+            .bearer_auth(&owner)
+            .json(&json!({"showReasoningSummaries":true}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            shown.json::<Value>().await.unwrap(),
+            json!({"sendShortcut":"enter","requireSafetyCode":true,"showReasoningSummaries":true})
         );
         let other_session = client
             .get(&url)
@@ -214,7 +255,7 @@ mod tests {
         assert_eq!(other_session.headers()[header::CACHE_CONTROL], "no-store");
         assert_eq!(
             other_session.json::<Value>().await.unwrap(),
-            json!({"sendShortcut":"enter","requireSafetyCode":true})
+            json!({"sendShortcut":"enter","requireSafetyCode":true,"showReasoningSummaries":true})
         );
         assert_eq!(
             client
@@ -226,7 +267,7 @@ mod tests {
                 .json::<Value>()
                 .await
                 .unwrap(),
-            json!({"sendShortcut":"ctrlEnter","requireSafetyCode":true})
+            json!({"sendShortcut":"ctrlEnter","requireSafetyCode":true,"showReasoningSummaries":null})
         );
         server.abort();
         let _ = server.await;
@@ -236,7 +277,7 @@ mod tests {
         let conn = reopened.conn.lock().await;
         assert_eq!(
             serde_json::to_value(snapshot(&conn, "owner").unwrap()).unwrap(),
-            json!({"sendShortcut":"enter","requireSafetyCode":true})
+            json!({"sendShortcut":"enter","requireSafetyCode":true,"showReasoningSummaries":true})
         );
         conn.execute("DELETE FROM relay_users WHERE id='owner'", [])
             .unwrap();

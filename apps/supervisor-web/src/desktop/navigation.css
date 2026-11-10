@@ -8,6 +8,7 @@
 :is([data-desktop-surface], [data-navigation-shell]) .matter-rail > button:has([data-icon=explorer]) { order: 4; }
 :is([data-desktop-surface], [data-navigation-shell]) .matter-rail > button:has([data-icon=terminal]) { order: 5; }
 :is([data-desktop-surface], [data-navigation-shell]) .matter-rail > .matter-rail-bottom { order: 100; }
-/* The global footer has one account entry on every page. Device monitoring is
-   available on Devices cards; the tutorial is in the account menu. */
-:is([data-desktop-surface], [data-navigation-shell]) .matter-rail-bottom :is(.device-monitor-button, .pm-tour-launcher) { display: none; }
+/* The footer has one account entry on every page; the tutorial is in the account
+   menu. A thread page also shows its device's readings above the account entry,
+   where they stay in view with the sidebar closed. */
+:is([data-desktop-surface], [data-navigation-shell]) .matter-rail-bottom .pm-tour-launcher { display: none; }

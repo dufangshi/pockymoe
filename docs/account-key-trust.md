@@ -1355,7 +1355,7 @@ senders).
 | `GET /relay/devices/{id}/owner-account` | Owner or recipient | → `{accountKeyId, accountPublicKey}`; 404 |
 | `GET /relay/shares/{id}/recipient-account`, `GET /relay/grants/{id}/recipient-account` | Owner of the live row | → `{accountKeyId, accountPublicKey}`; 404 `recipient_account_missing` (recipient without a vault) or `not_found` |
 | `POST /relay/shares/{id}/approve`, `POST /relay/grants/{id}/approve` | Owner of the live row | `{safetyCode?}` → `{id, pending: false, verifiedAt}`; 400 `safety_code_required`, 409 `safety_code_mismatch` or `recipient_account_missing` (a code for a recipient without a vault), 404 `not_found` |
-| `GET`/`PATCH /relay/account/preferences` | Signed in | `{sendShortcut, requireSafetyCode}`; a `PATCH` names only what it changes |
+| `GET`/`PATCH /relay/account/preferences` | Signed in | `{sendShortcut, requireSafetyCode, showReasoningSummaries}`; a `PATCH` names only what it changes |
 | `POST /relay/devices/{id}/port-mappings/{mappingId}/open?lease=` | Owner, or a recipient of the thread that created the mapping | `{path}` → `{url}`; 403 `preview_lease_required`; 400 `invalid_lease` (not 43 characters of `[A-Za-z0-9_-]`) |
 | `POST /relay/admin/users/{id}/reset-password` | Relay admin | `{password}` (at least 12 characters, not for admin accounts) → one-time temporary password |
 
