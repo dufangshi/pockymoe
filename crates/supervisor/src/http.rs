@@ -307,6 +307,7 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
             get(context_inspection_settings).put(put_context_inspection_settings),
         )
         .route("/api/threads/{id}/context", get(thread_context_inspection))
+        .route("/api/threads/{id}/context/steps", get(thread_context_steps))
         .route(
             "/api/agent-runtimes/{provider}/subscription-usage",
             get(subscription_usage),
@@ -1144,6 +1145,19 @@ async fn thread_context_inspection(
     state
         .thread_context_inspection(&id, detail, query.refresh.unwrap_or(false))
         .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+/// One record per model request of the thread, with the thread's totals.
+async fn thread_context_steps(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, ApiErr> {
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || state.thread_context_steps(&id))
+        .await
+        .map_err(|error| map_err(error.into()))?
         .map(Json)
         .map_err(map_err)
 }

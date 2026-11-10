@@ -9,7 +9,7 @@ import {
   fetchThreadTurnDetail,
   fetchWorkspaceFileTree,
   fetchLinkedFile,
-  fetchThreadContext,
+  fetchThreadContext, fetchThreadContextSteps,
 } from '../lib/api';
 import type { useWorkbenchReference } from '../pages/useWorkbenchReference';
 import { resolveThreadContextUsage } from '../pages/threadDetailModel';
@@ -33,6 +33,7 @@ export function WorkbenchReferencePane({
   // The pane's own device, and no settings link: it may be another device than the page's.
   const contextInspector = useMemo<ThreadContextInspector | null>(() => threadId && controller.canControl ? {
     load: options => fetchThreadContext(threadId, options, controller.deviceId),
+    loadSteps: () => fetchThreadContextSteps(threadId, controller.deviceId),
   } : null, [threadId, controller.canControl, controller.deviceId]);
   const adapter = useMemo(
     () => ({

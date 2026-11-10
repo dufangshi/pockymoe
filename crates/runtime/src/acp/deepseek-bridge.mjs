@@ -398,6 +398,8 @@ export function createContextReader(ctx) {
         ? (source.changes ?? []).filter(change => change.action !== 'remove').map(change => change.path).filter(Boolean) : [];
       return {
         seq: node.seq, tokens: node.heuristicTokens, system: event?.type === 'system/message',
+        // Who wrote the retained message: user/message, assistant/message, tool/result.
+        type: event?.type ?? null,
         kind: source?.kind ?? null, plugin: source?.plugin ?? null, form: source?.form ?? null,
         name: paths.length ? paths.join(', ') : source?.name ?? source?.sections?.map(section => section.name).join(', ') ?? source?.kind ?? null,
         ...(paths.length === 1 ? { path: paths[0] } : {}),

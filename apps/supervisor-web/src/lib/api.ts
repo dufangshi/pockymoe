@@ -101,6 +101,7 @@ import type {
   ContextInspectionDetailDto,
   ContextInspectionSettingsDto,
   ThreadContextInspectionDto,
+  ThreadContextStepsDto,
 } from '@pockymoe/shared';
 export type { PromptAttachmentUpload } from '@pockymoe/thread-ui';
 import type { PromptAttachmentUpload } from '@pockymoe/thread-ui';
@@ -1923,6 +1924,18 @@ export async function fetchThreadContext(id: string, options: { detail?: Context
     return await deviceRequest<ThreadContextInspectionDto>(deviceId, `api/threads/${encodeURIComponent(id)}/context?${params}`, { cache: 'no-store' });
   } catch (cause) {
     if (cause instanceof ApiError && cause.statusCode === 404) return CONTEXT_INSPECTION_UNSUPPORTED;
+    throw cause;
+  }
+}
+
+/** The thread's record of model requests, for the context trend and statistics;
+    null when the device's Supervisor does not keep one. */
+export async function fetchThreadContextSteps(id: string, deviceId?: string | null) {
+  try {
+    return await deviceRequest<ThreadContextStepsDto>(deviceId, `api/threads/${encodeURIComponent(id)}/context/steps`, { cache: 'no-store' });
+  } catch (cause) {
+    // A Supervisor from before steps were recorded has no such route.
+    if (cause instanceof ApiError && cause.statusCode === 404) return null;
     throw cause;
   }
 }

@@ -92,6 +92,7 @@ import {
   ApiError,
   compactThread,
   fetchThreadContext,
+  fetchThreadContextSteps,
   connectSupervisorEvents,
   connectShellSocket,
   createThreadShell,
@@ -812,6 +813,7 @@ export function ThreadDetailPage() {
   openSettingsSection.current = shellNav?.openSettingsSection;
   const contextInspector = useMemo<ThreadContextInspector | null>(() => relayThreadCanControl && !hostScope ? {
     load: options => fetchThreadContext(id, options, relayRouteDeviceId),
+    loadSteps: () => fetchThreadContextSteps(id, relayRouteDeviceId),
     ...(relayThreadIsOwner ? { openSettings: () => openSettingsSection.current?.('resources') } : {}),
   } : null, [hostScope, id, relayRouteDeviceId, relayThreadCanControl, relayThreadIsOwner]);
   // Terminals are the owner's only; no share or grant gets one (docs/account-key-trust.md#sharing).

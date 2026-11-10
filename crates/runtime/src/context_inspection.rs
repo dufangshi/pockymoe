@@ -115,7 +115,9 @@ pub fn claude_snapshot(raw: &Value, detail: &str) -> Option<Value> {
         let id=v["id"].as_str().map(str::to_owned).unwrap_or_else(|| label.to_lowercase().replace([' ','(',')'],"_"));
         Some(json!({"id":id,"label":label,"kind":kind,"tokens":v["tokens"].as_u64()?,"precision":if detail=="full" {"reported"}else{"estimated"}}))
     }).collect();
+    let mut categories = categories;
     let mut groups = Vec::new();
+    split_claude_messages(raw, &mut categories, &mut groups);
     for (key, id, label) in [
         ("mcpTools", "mcp_tools", "MCP tools"),
         ("memoryFiles", "memory_files", "Memory files"),
@@ -162,6 +164,81 @@ pub fn claude_snapshot(raw: &Value, detail: &str) -> Option<Value> {
     Some(snapshot)
 }
 
+/// Claude reports what its messages consist of beside the one "Messages"
+/// category. The parts replace it when they fit inside it; what they do not
+/// cover stays under "Messages".
+fn split_claude_messages(raw: &Value, categories: &mut Vec<Value>, groups: &mut Vec<Value>) {
+    let breakdown = &raw["messageBreakdown"];
+    let Some(position) = categories
+        .iter()
+        .position(|c| c["id"] == "messages" && c["kind"] == "used")
+    else {
+        return;
+    };
+    let part = |key: &str| breakdown[key].as_u64().unwrap_or(0);
+    let spoken = [
+        ("user_messages", part("userMessageTokens")),
+        ("assistant_messages", part("assistantMessageTokens")),
+        ("tool_calls", part("toolCallTokens")),
+        ("tool_results", part("toolResultTokens")),
+    ];
+    let total = categories[position]["tokens"].as_u64().unwrap_or(0);
+    let covered: u64 = spoken.iter().map(|(_, tokens)| tokens).sum();
+    if covered == 0 || covered > total {
+        return;
+    }
+    // Attachments (reminders, hook output, file snapshots) are counted across
+    // the whole context, including what other categories already hold. Only
+    // what is left of "Messages" after the conversation can be theirs.
+    let attached = part("attachmentTokens") + part("redirectedContextTokens");
+    let injected = attached.min(total - covered);
+    let precision = categories[position]["precision"].clone();
+    let mut replacement: Vec<Value> = spoken
+        .iter()
+        .chain(std::iter::once(&("injected", injected)))
+        .filter(|(_, tokens)| *tokens > 0)
+        .map(|(id, tokens)| json!({"id":id,"kind":"used","tokens":tokens,"precision":precision}))
+        .collect();
+    if total > covered + injected {
+        replacement.push(json!({"id":"messages","kind":"used","tokens":total-covered-injected,"precision":precision}));
+    }
+    categories.splice(position..=position, replacement);
+    let by_tool = |field: &str| -> Vec<Value> {
+        breakdown["toolCallsByType"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| {
+                let tokens = v[field].as_u64().filter(|tokens| *tokens > 0)?;
+                Some(json!({"name":v["name"].as_str()?,"tokens":tokens}))
+            })
+            .collect()
+    };
+    let attachments: Vec<Value> = breakdown["attachmentsByType"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| {
+            let tokens = v["tokens"].as_u64().filter(|tokens| *tokens > 0)?;
+            Some(json!({"name":v["name"].as_str()?,"tokens":tokens}))
+        })
+        .collect();
+    let attachments = if attached <= injected {
+        attachments
+    } else {
+        Vec::new()
+    };
+    for (id, items) in [
+        ("tool_calls", by_tool("callTokens")),
+        ("tool_results", by_tool("resultTokens")),
+        ("injected", attachments),
+    ] {
+        if !items.is_empty() {
+            groups.push(json!({"id":id,"items":items}));
+        }
+    }
+}
+
 /// DSH's occupancy is a provider-anchored projection; composition is a separate
 /// native heuristic. Preserve their signed difference instead of rescaling it.
 pub fn dsh_snapshot(raw: &Value) -> Option<Value> {
@@ -181,6 +258,7 @@ pub fn dsh_snapshot(raw: &Value) -> Option<Value> {
         ("messages", messages),
     ]);
     let mut groups: BTreeMap<&str, Vec<Value>> = BTreeMap::new();
+    let mut counts: BTreeMap<&str, u64> = BTreeMap::new();
     let nodes: Vec<_> = raw["nodes"].as_array().into_iter().flatten().collect();
     let current_system = nodes
         .iter()
@@ -207,7 +285,15 @@ pub fn dsh_snapshot(raw: &Value) -> Option<Value> {
                 {
                     "runtime_context"
                 }
-                _ => continue,
+                // The conversation itself, by who wrote each retained message.
+                // Bridges before this split report no `type`: those stay "messages".
+                kind => match (node["type"].as_str(), kind) {
+                    (Some("user/message"), None | Some("user")) => "user_messages",
+                    (Some("user/message"), Some(_)) => "injected",
+                    (Some("assistant/message"), _) => "assistant_messages",
+                    (Some("tool/result"), _) => "tool_results",
+                    _ => continue,
+                },
             };
             let tokens = node["tokens"].as_u64().unwrap_or(0);
             if tokens == 0 {
@@ -215,6 +301,13 @@ pub fn dsh_snapshot(raw: &Value) -> Option<Value> {
             }
             *totals.entry(id).or_default() += tokens;
             *totals.get_mut("messages").unwrap() -= tokens;
+            if matches!(
+                id,
+                "user_messages" | "injected" | "assistant_messages" | "tool_results"
+            ) {
+                *counts.entry(id).or_default() += 1;
+                continue;
+            }
             let mut item = json!({"name":node["name"].as_str().unwrap_or(id),"tokens":tokens});
             if let Some(path) = node["path"].as_str() {
                 item["path"] = json!(path);
@@ -236,7 +329,16 @@ pub fn dsh_snapshot(raw: &Value) -> Option<Value> {
     }
     let mut categories: Vec<_> = totals
         .into_iter()
-        .map(|(id, tokens)| json!({"id":id,"kind":"used","tokens":tokens,"precision":"estimated"}))
+        // A fully attributed conversation leaves nothing under "messages".
+        .filter(|(id, tokens)| *id != "messages" || *tokens > 0 || counts.is_empty())
+        .map(|(id, tokens)| {
+            let mut category =
+                json!({"id":id,"kind":"used","tokens":tokens,"precision":"estimated"});
+            if let Some(count) = counts.get(id) {
+                category["count"] = json!(count);
+            }
+            category
+        })
         .collect();
     categories.push(json!({"id":"free_space","kind":"free","tokens":size.saturating_sub(used)}));
     let mut snapshot = json!({"provider":"deepseek","model":raw["model"],"source":"dshProjection","precision":"estimated",
@@ -254,6 +356,22 @@ pub fn dsh_snapshot(raw: &Value) -> Option<Value> {
         snapshot["autoCompactThreshold"] = json!((size as f64 * ratio).floor() as u64);
     }
     Some(snapshot)
+}
+
+/// Text a harness wraps in a tag of its own, such as `<environment_context>`
+/// or `<system-reminder>`: a lowercase name with `_` or `-`, closed by `>`.
+fn injected_block(text: &str) -> bool {
+    let Some(rest) = text.trim_start().strip_prefix('<') else {
+        return false;
+    };
+    let Some((name, _)) = rest.split_once('>') else {
+        return false;
+    };
+    name.len() <= 40
+        && name.contains(['_', '-'])
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'-'))
 }
 
 fn tokenizer() -> &'static tiktoken_rs::CoreBPE {
@@ -345,10 +463,21 @@ impl CodexAnalyzer {
         }
         let mut totals: BTreeMap<String, u64> = BTreeMap::new();
         let mut groups: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        // How many request items each conversation category holds.
+        let mut counts: BTreeMap<&'static str, u64> = BTreeMap::new();
         for tool in request["tools"].as_array().into_iter().flatten() {
             self.tool(tool, false, &mut totals, &mut groups);
         }
         for item in request["input"].as_array()? {
+            let mut seen: Vec<&'static str> = Vec::new();
+            let mut add = |totals: &mut BTreeMap<String, u64>, id: &'static str, tokens: u64| {
+                if tokens > 0 {
+                    *totals.entry(id.into()).or_default() += tokens;
+                    if !seen.contains(&id) {
+                        seen.push(id);
+                    }
+                }
+            };
             match item["type"].as_str().unwrap_or("") {
                 "additional_tools" => {
                     for tool in item["tools"].as_array().into_iter().flatten() {
@@ -366,15 +495,20 @@ impl CodexAnalyzer {
                             _ if matches!(item["role"].as_str(), Some("developer" | "system")) => {
                                 "system_prompt"
                             }
-                            _ => "messages",
+                            // What the harness puts in the user's voice: environment
+                            // context, reminders, aborted-turn notes.
+                            Some(t) if item["role"] == "user" && injected_block(t) => "injected",
+                            _ => match item["role"].as_str() {
+                                Some("user") => "user_messages",
+                                Some("assistant") => "assistant_messages",
+                                _ => "messages",
+                            },
                         };
                         let tokens = self.content_tokens(part);
-                        if tokens > 0 {
-                            *totals.entry(cat.into()).or_default() += tokens;
-                        }
+                        add(&mut totals, cat, tokens);
                     }
                 }
-                "reasoning" | "compaction" | "context_compaction" => {
+                kind @ ("reasoning" | "compaction" | "context_compaction") => {
                     // Only visible summaries/content count; content_tokens skips
                     // encrypted_content and raw media recursively.
                     let tokens = item
@@ -386,9 +520,16 @@ impl CodexAnalyzer {
                                 .map(|value| self.content_tokens(value))
                                 .unwrap_or_default(),
                         );
-                    if tokens > 0 {
-                        *totals.entry("messages".into()).or_default() += tokens;
-                    }
+                    // A compaction summary stands in for the history it replaced.
+                    add(
+                        &mut totals,
+                        if kind == "reasoning" {
+                            "reasoning"
+                        } else {
+                            "injected"
+                        },
+                        tokens,
+                    );
                 }
                 "custom_tool_call" | "function_call" => {
                     let tokens = item
@@ -396,26 +537,23 @@ impl CodexAnalyzer {
                         .or_else(|| item.get("arguments"))
                         .map(|value| self.content_tokens(value))
                         .unwrap_or_default();
-                    if tokens > 0 {
-                        *totals.entry("messages".into()).or_default() += tokens;
-                    }
+                    add(&mut totals, "tool_calls", tokens);
                 }
                 "custom_tool_call_output" | "function_call_output" => {
                     let tokens = item
                         .get("output")
                         .map(|value| self.content_tokens(value))
                         .unwrap_or_default();
-                    if tokens > 0 {
-                        *totals.entry("messages".into()).or_default() += tokens;
-                    }
+                    add(&mut totals, "tool_results", tokens);
                 }
                 "agent_message" => {
                     let tokens = self.content_tokens(&item["content"]);
-                    if tokens > 0 {
-                        *totals.entry("messages".into()).or_default() += tokens;
-                    }
+                    add(&mut totals, "assistant_messages", tokens);
                 }
                 _ => {}
+            }
+            for id in seen {
+                *counts.entry(id).or_default() += 1;
             }
         }
         let estimated: u64 = totals
@@ -424,7 +562,16 @@ impl CodexAnalyzer {
             .map(|(_, tokens)| *tokens)
             .sum();
         let used = estimated;
-        let mut categories:Vec<_>=totals.into_iter().map(|(id,tokens)|json!({"kind":if id.ends_with("_deferred"){"deferred"}else{"used"},"id":id,"tokens":tokens,"precision":"estimated"})).collect();
+        let mut categories: Vec<_> = totals
+            .into_iter()
+            .map(|(id, tokens)| {
+                let mut category = json!({"kind":if id.ends_with("_deferred"){"deferred"}else{"used"},"id":id,"tokens":tokens,"precision":"estimated"});
+                if let Some(count) = counts.get(id.as_str()) {
+                    category["count"] = json!(count);
+                }
+                category
+            })
+            .collect();
         categories
             .push(json!({"id":"free_space","kind":"free","tokens":window.saturating_sub(used)}));
         Some(
@@ -716,6 +863,132 @@ mod tests {
         assert_eq!(s["usedTokens"], 100);
         assert_eq!(s["categories"][1]["kind"], "deferred");
         assert_eq!(s["groups"], json!([]));
+    }
+    fn tokens_of(snapshot: &Value, id: &str) -> Option<u64> {
+        snapshot["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == id)
+            .and_then(|c| c["tokens"].as_u64())
+    }
+    #[test]
+    fn the_conversation_is_split_by_who_wrote_each_part() {
+        // Codex: every request item has a role or a type.
+        let mut analyzer = CodexAnalyzer::default();
+        let request = json!({"input":[
+            {"type":"message","role":"developer","content":[{"text":"be careful"}]},
+            {"type":"message","role":"user","content":[{"text":"<environment_context>\ncwd: /repo\n</environment_context>"}]},
+            {"type":"message","role":"user","content":[{"text":"fix the <div> bug please"}]},
+            {"type":"message","role":"user","content":[{"text":"and the other one"}]},
+            {"type":"reasoning","summary":[{"type":"summary_text","text":"thinking about it"}],"encrypted_content":"AAAA"},
+            {"type":"function_call","arguments":"{\"cmd\":\"ls -la\"}"},
+            {"type":"function_call_output","output":"a.txt b.txt c.txt"},
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"done, both fixed"}]},
+            {"type":"compaction","summary":[{"type":"summary_text","text":"earlier work summarized"}]}
+        ]});
+        let s = analyzer.analyze(&request, 100000, "m").unwrap();
+        for id in [
+            "system_prompt",
+            "injected",
+            "user_messages",
+            "reasoning",
+            "tool_calls",
+            "tool_results",
+            "assistant_messages",
+        ] {
+            assert!(
+                tokens_of(&s, id).is_some_and(|tokens| tokens > 0),
+                "{id}: {s}"
+            );
+        }
+        assert!(tokens_of(&s, "messages").is_none());
+        let count = |id: &str| {
+            s["categories"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["id"] == id)
+                .unwrap()["count"]
+                .clone()
+        };
+        assert_eq!(count("user_messages"), 2);
+        // The environment block and the compaction summary.
+        assert_eq!(count("injected"), 2);
+        assert_eq!(count("tool_results"), 1);
+        let used: u64 = s["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["kind"] == "used")
+            .map(|c| c["tokens"].as_u64().unwrap())
+            .sum();
+        assert_eq!(s["usedTokens"], used);
+        assert!(
+            !injected_block("<div>hi</div>")
+                && !injected_block("a < b > c")
+                && injected_block(" <system-reminder>x")
+        );
+
+        // Claude: the parts it reports replace "Messages"; the rest stays there.
+        let claude = claude_snapshot(&json!({"rawMaxTokens":1000,"totalTokens":600,
+            "categories":[{"name":"System prompt","tokens":100},{"name":"Messages","tokens":500}],
+            "messageBreakdown":{"userMessageTokens":40,"assistantMessageTokens":60,"toolCallTokens":100,"toolResultTokens":250,
+                "attachmentTokens":20,"redirectedContextTokens":5,"unattributedTokens":0,
+                "toolCallsByType":[{"name":"Bash","callTokens":70,"resultTokens":200},{"name":"Read","callTokens":30,"resultTokens":50}],
+                "attachmentsByType":[{"name":"file","tokens":20}]}}), "summary").unwrap();
+        assert_eq!(tokens_of(&claude, "user_messages"), Some(40));
+        assert_eq!(tokens_of(&claude, "tool_results"), Some(250));
+        assert_eq!(tokens_of(&claude, "injected"), Some(25));
+        assert_eq!(tokens_of(&claude, "messages"), Some(25));
+        // Attachments counted across the whole context only fill what is left.
+        let wide = claude_snapshot(&json!({"rawMaxTokens":1000,"totalTokens":300,"categories":[{"name":"Messages","tokens":300}],
+            "messageBreakdown":{"userMessageTokens":50,"assistantMessageTokens":50,"attachmentTokens":900,
+                "attachmentsByType":[{"name":"prompt_snapshot","tokens":900}]}}), "summary").unwrap();
+        assert_eq!(tokens_of(&wide, "injected"), Some(200));
+        assert!(tokens_of(&wide, "messages").is_none());
+        assert!(!wide["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["id"] == "injected"));
+        let group = |id: &str| {
+            claude["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|g| g["id"] == id)
+                .unwrap()["items"]
+                .clone()
+        };
+        assert_eq!(
+            group("tool_results"),
+            json!([{"name":"Bash","tokens":200},{"name":"Read","tokens":50}])
+        );
+        // Parts larger than the category they came from are not believed.
+        let odd = claude_snapshot(&json!({"rawMaxTokens":1000,"totalTokens":100,"categories":[{"name":"Messages","tokens":100}],
+            "messageBreakdown":{"userMessageTokens":400}}), "summary").unwrap();
+        assert_eq!(tokens_of(&odd, "messages"), Some(100));
+        assert!(tokens_of(&odd, "user_messages").is_none());
+
+        // DSH: retained nodes carry the event type that wrote them.
+        let dsh = dsh_snapshot(
+            &json!({"pressure":{"projectedTokens":200,"contextWindow":1000},
+            "breakdown":{"systemTokens":10,"toolsTokens":40,"messageTokens":100},"model":"m",
+            "nodes":[{"seq":1,"system":true,"tokens":10,"type":"system/message"},
+                {"seq":2,"type":"user/message","kind":"user","tokens":15},
+                {"seq":3,"type":"user/message","kind":"plugin","plugin":"other","tokens":5},
+                {"seq":4,"type":"assistant/message","tokens":30},
+                {"seq":5,"type":"tool/result","tokens":40},
+                {"seq":6,"type":"assistant/message","tokens":10}],"tools":[]}),
+        )
+        .unwrap();
+        assert_eq!(tokens_of(&dsh, "user_messages"), Some(15));
+        assert_eq!(tokens_of(&dsh, "injected"), Some(5));
+        assert_eq!(tokens_of(&dsh, "assistant_messages"), Some(40));
+        assert_eq!(tokens_of(&dsh, "tool_results"), Some(40));
+        assert!(tokens_of(&dsh, "messages").is_none());
+        assert_eq!(dsh["compositionTokens"], 150);
     }
     #[test]
     fn codex_reuses_content_but_never_treats_transport_delta_as_full_context() {

@@ -46,6 +46,10 @@ struct Tracker {
     split: Split,
     /// The latest per-request usage report, to tell a new one from a repeat.
     report: Option<Report>,
+    /// When the step before was recorded (the turn's start for the first), and
+    /// the model time accumulated by then.
+    step_at: i64,
+    step_llm_ms: i64,
 }
 
 /// A request's output must stream at least this long to be timed: chunks of a
@@ -60,6 +64,13 @@ pub(super) struct Report {
     pub cached: u64,
     pub output: u64,
     pub reasoning: u64,
+}
+
+/// The time a model request took since the step before it: the model's own,
+/// and the tools and waits that came first.
+pub(super) struct StepTiming {
+    pub model_ms: i64,
+    pub tool_ms: i64,
 }
 
 #[derive(Default, Clone, Copy)]
@@ -175,6 +186,8 @@ impl Tracker {
             previous: None,
             split: Split::default(),
             report: None,
+            step_at: at,
+            step_llm_ms: 0,
         }
     }
 
@@ -246,8 +259,10 @@ impl Tracker {
 
     /// `output` is the turn's output so far; `report` the latest response's own
     /// usage, when the harness reports one.
-    fn usage(&mut self, at: i64, output: u64, report: Option<Report>) {
+    /// Returns the step's timing when `report` is a new request's.
+    fn usage(&mut self, at: i64, output: u64, report: Option<Report>) -> Option<StepTiming> {
         self.advance(at);
+        let mut step = None;
         // A new report belongs to the request with output: this one, or the one
         // before while this one has none yet.
         if report.is_some() && report != self.report {
@@ -257,9 +272,16 @@ impl Tracker {
             } else if let Some(previous) = self.previous.as_mut() {
                 previous.report = report;
             }
+            let model_ms = self.llm_ms - self.step_llm_ms;
+            step = Some(StepTiming {
+                model_ms,
+                tool_ms: (self.at - self.step_at - model_ms).max(0),
+            });
+            self.step_at = self.at;
+            self.step_llm_ms = self.llm_ms;
         }
         if output <= self.output {
-            return;
+            return step;
         }
         let elapsed: i64 = self.pending.iter().map(|s| s.end - s.start).sum();
         let delta = output - self.output;
@@ -282,6 +304,7 @@ impl Tracker {
                 }
             }
         }
+        step
     }
 
     fn snapshot(&mut self, at: i64, active: bool) -> Value {
@@ -379,9 +402,12 @@ impl Supervisor {
                 .or_insert_with(|| Tracker::new(at));
             return Ok(());
         }
+        let mut step_extra: (u64, Option<String>) = (0, None);
         let (output, report) = if event.event_type == "runtime.usage.updated" {
-            let row = self.db.with(|conn| Ok(conn.query_row("SELECT json_extract(token_usage_json,'$.total.outputTokens'),json_extract(token_usage_json,'$.last.inputTokens'),json_extract(token_usage_json,'$.last.cachedInputTokens'),json_extract(token_usage_json,'$.last.outputTokens'),json_extract(token_usage_json,'$.last.reasoningOutputTokens') FROM thread_turns WHERE thread_id=?1 AND id=?2", params![event.thread_id,turn], |row| Ok((row.get::<_,Option<u64>>(0)?,row.get::<_,Option<u64>>(1)?,row.get::<_,Option<u64>>(2)?,row.get::<_,Option<u64>>(3)?,row.get::<_,Option<u64>>(4)?))).optional()?))?;
-            let (output, input, cached, last_output, reasoning) = row.unwrap_or_default();
+            let row = self.db.with(|conn| Ok(conn.query_row("SELECT json_extract(token_usage_json,'$.total.outputTokens'),json_extract(token_usage_json,'$.last.inputTokens'),json_extract(token_usage_json,'$.last.cachedInputTokens'),json_extract(token_usage_json,'$.last.outputTokens'),json_extract(token_usage_json,'$.last.reasoningOutputTokens'),json_extract(token_usage_json,'$.last.cacheWriteInputTokens'),model FROM thread_turns WHERE thread_id=?1 AND id=?2", params![event.thread_id,turn], |row| Ok((row.get::<_,Option<u64>>(0)?,row.get::<_,Option<u64>>(1)?,row.get::<_,Option<u64>>(2)?,row.get::<_,Option<u64>>(3)?,row.get::<_,Option<u64>>(4)?,row.get::<_,Option<u64>>(5)?,row.get::<_,Option<String>>(6)?))).optional()?))?;
+            let (output, input, cached, last_output, reasoning, cache_write, model) =
+                row.unwrap_or_default();
+            step_extra = (cache_write.unwrap_or(0), model);
             let report = input.zip(last_output).map(|(input, output)| Report {
                 input,
                 cached: cached.unwrap_or(0),
@@ -392,6 +418,7 @@ impl Supervisor {
         } else {
             (None, None)
         };
+        let mut step = None;
         let speed = {
             let mut cache = self.generation.0.lock().unwrap();
             let Some(tracker) = cache.get_mut(&key) else {
@@ -465,7 +492,7 @@ impl Supervisor {
                 }
                 "runtime.usage.updated" => {
                     if let Some(output) = output {
-                        tracker.usage(at, output, report);
+                        step = tracker.usage(at, output, report);
                     }
                 }
                 "thread.turn.completed" => {
@@ -478,7 +505,81 @@ impl Supervisor {
             }
             tracker.snapshot(at, true)
         };
+        // Each model request of the turn is one step of the thread's context record.
+        if let (Some(timing), Some(report)) = (step, report) {
+            let _ = self.context_steps.record_step(
+                &event.thread_id,
+                &turn,
+                &event.timestamp,
+                step_extra.1.as_deref(),
+                crate::context_steps::StepUsage {
+                    input: report.input,
+                    cached: report.cached,
+                    cache_write: step_extra.0,
+                    output: report.output,
+                    reasoning: report.reasoning,
+                },
+                timing.model_ms,
+                timing.tool_ms,
+            );
+        }
         self.save_generation_speed(&key, speed)
+    }
+
+    /// The thread's context record: one step per model request, and the
+    /// thread's own totals for cache and time statistics.
+    pub fn thread_context_steps(&self, thread_id: &str) -> Result<Value> {
+        self.get_thread(thread_id)?;
+        let (turns, totals) = self.db.with(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT id FROM thread_turns WHERE thread_id=?1 ORDER BY ordinal, started_at",
+            )?;
+            let turns: Vec<String> = statement
+                .query_map([thread_id], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            // Turns copied in by a fork ran in another thread.
+            let totals = conn.query_row(
+                "SELECT COUNT(token_usage_json),
+                    SUM(json_extract(token_usage_json,'$.total.inputTokens')),
+                    SUM(json_extract(token_usage_json,'$.total.cachedInputTokens')),
+                    SUM(json_extract(token_usage_json,'$.total.cacheWriteInputTokens')),
+                    SUM(json_extract(token_usage_json,'$.total.outputTokens')),
+                    SUM(json_extract(token_usage_json,'$.total.reasoningOutputTokens')),
+                    SUM(json_extract(token_usage_json,'$.generationSpeed.llmTimeMs')),
+                    SUM(CASE WHEN completed_at IS NOT NULL AND started_at IS NOT NULL
+                        THEN (julianday(completed_at)-julianday(started_at))*86400000.0 END),
+                    SUM(json_extract(token_usage_json,'$.generationSpeed.outputTimeMs')),
+                    SUM(CASE WHEN json_extract(token_usage_json,'$.generationSpeed.outputTimeMs') > 0
+                        THEN json_extract(token_usage_json,'$.total.outputTokens') END)
+                 FROM thread_turns WHERE thread_id=?1 AND history_copy_of IS NULL",
+                [thread_id],
+                |row| {
+                    let count = |index: usize| row.get::<_, Option<f64>>(index).map(|v| v.unwrap_or(0.0).max(0.0).round() as u64);
+                    Ok(json!({
+                        "usageTurns": count(0)?, "inputTokens": count(1)?, "cachedInputTokens": count(2)?,
+                        "cacheWriteInputTokens": count(3)?, "outputTokens": count(4)?,
+                        "reasoningOutputTokens": count(5)?, "modelTimeMs": count(6)?, "wallTimeMs": count(7)?,
+                        "outputTimeMs": count(8)?, "timedOutputTokens": count(9)?,
+                    }))
+                },
+            )?;
+            Ok((turns, totals))
+        })?;
+        let index: HashMap<&str, usize> = turns
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.as_str(), index + 1))
+            .collect();
+        let mut steps = self.context_steps.list(thread_id);
+        let mut in_turn: HashMap<String, u64> = HashMap::new();
+        for step in &mut steps {
+            let turn = step["turnId"].as_str().unwrap_or("").to_owned();
+            let number = in_turn.entry(turn.clone()).or_default();
+            *number += 1;
+            step["step"] = json!(*number);
+            step["turn"] = json!(index.get(turn.as_str()));
+        }
+        Ok(json!({"steps": steps, "turnCount": turns.len(), "totals": totals}))
     }
 
     pub(super) fn refresh_generation_speeds(&self) -> Result<()> {
@@ -584,6 +685,25 @@ mod tests {
             output,
             reasoning,
         })
+    }
+
+    #[test]
+    fn each_new_request_report_is_a_step_with_its_model_and_tool_time() {
+        let mut t = Tracker::new(0);
+        // First request: 4s of model time, then its report.
+        t.output(1000, true);
+        let first = t.usage(4000, 100, report(1000, 0, 100, 0)).unwrap();
+        assert_eq!((first.model_ms, first.tool_ms), (4000, 0));
+        // The same report again is not another step.
+        assert!(t.usage(4500, 100, report(1000, 0, 100, 0)).is_none());
+        // A tool runs 10s, the model answers for 2s more.
+        t.tool(5000, "tool", true);
+        t.tool(15000, "tool", false);
+        t.output(16000, true);
+        let second = t.usage(17000, 150, report(1200, 1000, 50, 0)).unwrap();
+        assert_eq!((second.model_ms, second.tool_ms), (3000, 10000));
+        // No report, no step.
+        assert!(t.usage(18000, 160, None).is_none());
     }
 
     #[test]

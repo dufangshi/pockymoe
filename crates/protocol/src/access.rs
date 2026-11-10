@@ -321,6 +321,7 @@ pub fn shared_thread_path_allowed(
                 | "/search"
                 | "/summary"
                 | "/context"
+                | "/context/steps"
         ) {
             return true;
         }

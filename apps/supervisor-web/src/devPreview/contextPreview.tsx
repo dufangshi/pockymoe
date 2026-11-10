@@ -7,9 +7,10 @@ import ReactDOM from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import '../index.css';
 import { ContextInspectionSetting } from '../components/HarnessResourceSettings';
-import { fetchThreadContext } from '../lib/api';
+import { fetchThreadContext, fetchThreadContextSteps } from '../lib/api';
 import { THEME_PRESET_KEY, initializeThemePacks } from '../lib/themePacks';
 import { contextPreviewScenarios as scenarios } from './contextFixtures';
+import { contextStepFixtures } from './contextStepFixtures';
 
 /** The real composer, panel, setting and API client against a stubbed Supervisor:
     /context-preview.html?scenario=codex&theme=terminal&mode=dark&lang=zh-CN&open=1
@@ -38,6 +39,12 @@ window.fetch = async (input, init) => {
     if (init?.method === 'PUT') settingEnabled = (JSON.parse(String(init.body)) as { enabled: boolean }).enabled;
     return json({ enabled: settingEnabled });
   }
+  if (url.pathname.endsWith(`api/threads/${THREAD_ID}/context/steps`)) {
+    // steps=codex|claude|deepseek|long picks a record; steps=none is a device without the route.
+    const wanted = query.get('steps') ?? (scenario.model.agent === 'deepseek' ? 'deepseek' : scenario.model.agent === 'claude' ? 'claude' : 'codex');
+    const record = contextStepFixtures[wanted];
+    return record ? json(record) : json({ code: 'not_found', message: 'Not found' }, 404);
+  }
   if (url.pathname.endsWith(`api/threads/${THREAD_ID}/context`)) {
     const detail = url.searchParams.get('detail') === 'full' && scenario.full ? scenario.full : scenario.summary;
     await new Promise(resolve => setTimeout(resolve, 160));
@@ -53,6 +60,7 @@ function Preview() {
   const [draft, setDraft] = useState<{ prompt: string; attachments: PromptAttachmentUpload[] }>({ prompt: '', attachments: [] });
   const inspector = useMemo<ThreadContextInspector>(() => ({
     load: options => fetchThreadContext(THREAD_ID, options),
+    loadSteps: () => fetchThreadContextSteps(THREAD_ID),
     openSettings: () => document.querySelector('[data-testid="context-inspection-setting"]')?.scrollIntoView({ block: 'center' }),
   }), []);
   useEffect(() => {
@@ -66,6 +74,9 @@ function Preview() {
       if (meter.offsetParent === null) return;
       window.clearInterval(timer);
       meter.click();
+      // tab=trend|stats opens that view, for screenshots.
+      const tab = query.get('tab');
+      if (tab) window.setTimeout(() => document.querySelector<HTMLElement>(`.thread-context-tabs [data-value="${tab}"]`)?.click(), 300);
     }, 80);
     return () => window.clearInterval(timer);
   }, []);

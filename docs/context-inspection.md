@@ -8,16 +8,59 @@ process. The setting persists in the Supervisor database.
 
 The context strip sits below the smaller model name and reasoning effort within
 the existing fixed-height model control. Its separate button opens context
-details; the strip uses a single color and the exact occupancy ratio. The context panel shows
-occupancy, category counts, observation time and the available tool, memory and
-skill details. Deferred tool definitions are outside the occupied window and
-are listed separately. Missing provider details are not fabricated as zeroes.
-The model control no longer puts a long context report in its hover title.
-Detail expansion reserves a stable scrollbar gutter, so opening child rows
-does not change content width or wrap paths again. The footer contains only
-Compact context; it remains visible and disabled when no supported action is
-available or the thread is busy. Claude's late `/compact` advertisement is
-resolved from the current session instead of a provider-wide capability cache.
+details; the strip uses a single color and the exact occupancy ratio. The model
+control does not put a long context report in its hover title.
+
+The context panel has three views, chosen by tabs under its title. The tabs
+appear only where the host can load recorded steps.
+
+- **Now** shows occupancy, category counts, observation time and the available
+  tool, memory and skill details. Deferred tool definitions are outside the
+  occupied window and are listed separately. Missing provider details are not
+  fabricated as zeroes. Detail expansion reserves a stable scrollbar gutter, so
+  opening child rows does not change content width or wrap paths again.
+- **Trend** draws one bar per model request, or per turn, stacked by what the
+  context held. **Total** shows the whole context of each request; **Change**
+  shows what each request added or dropped since the one before. A strip under
+  the bars shows how long the model and the tools took. The selected bar's
+  figures are listed under the chart: context size and change, cache hit, output,
+  model time, tool time, and each group with its change. Hovering, tapping or
+  the arrow keys select a bar. A long thread scrolls sideways and opens at its
+  newest request.
+- **Statistics** shows the thread's cache hit rate with what it read, what came
+  from cache, what it wrote to cache and what it produced; the makeup of
+  everything the recorded requests read; and model time against tool and waiting
+  time, with the output speed.
+
+The footer contains only Compact context; it remains visible and disabled when no
+supported action is available or the thread is busy. Claude's late `/compact`
+advertisement is resolved from the current session instead of a provider-wide
+capability cache.
+
+### Categories and groups
+
+A snapshot's used categories split the conversation by who wrote each part where
+the harness allows it: `user_messages`, `assistant_messages`, `reasoning`,
+`tool_calls`, `tool_results` and `injected` (text the harness or Pockymoe put
+into the conversation: tagged blocks, attachments, compaction summaries). What
+cannot be told apart stays in `messages`. A category may carry a `count` of the
+items behind it.
+
+Charts fold the categories into eight groups with one fixed color each: system
+(system prompt, MCP instructions, runtime context, custom agents), tool
+definitions, memory files, skills, user messages, model output (assistant
+messages, reasoning, tool calls, unsplit messages), tool results and injected
+content. The difference between the native total and the category sum is drawn
+in neutral gray and never spread over the groups.
+
+- Codex: the trace analyzer classifies every input item, so all six
+  conversation categories are available.
+- Claude: `messageBreakdown` gives user, assistant, tool-call and tool-result
+  tokens. Its attachment and redirected-context figures overlap other
+  categories, so `injected` is capped to what remains of Messages.
+- DSH: retained nodes are split by their event type into user messages,
+  assistant messages and tool results; instruction, skill and runtime nodes keep
+  their own categories.
 
 ## Collection
 
@@ -25,8 +68,8 @@ Claude uses a thin extension of the installed `claude-agent-acp` adapter and
 reads `getContextUsage()` on its existing Query. It does not create another
 conversation or submit `/context` as a prompt. Summary readings use local
 estimates; full readings can call the harness's token-count API. Opening the
-Claude panel requests full counting automatically; prompt completion obtains a summary in the
-background. The API bounds control requests to twenty seconds. Unsupported
+Claude panel requests full counting automatically; each usage report during a prompt and prompt
+completion obtain a summary in the background. The API bounds control requests to twenty seconds. Unsupported
 adapter layouts retain ordinary ACP behavior and report inspection unavailable.
 The wrapper currently supports the adapter's ACP v1 builder export.
 
@@ -98,7 +141,43 @@ are removed after aggregation, and the owned trace directory is removed when
 its process is released. Request payloads above 16MiB are not parsed. Inspection
 is diagnostic: inability to obtain it does not fail a prompt.
 
+## Steps
+
+The Supervisor records one step for every model request it can tell apart: each
+new per-request usage report inside a turn, for any harness and whether or not
+inspection is enabled. A step holds
+its turn, time, model, the tokens the request read (`inputTokens`, with
+`cachedInputTokens` and `cacheWriteInputTokens` inside it), the tokens it wrote,
+the time until the report arrived (`modelMs`) and the time spent before the
+request started on tools and waiting (`toolMs`). A context snapshot whose total
+agrees with a step, or that arrives before the next step, supplies the step's
+`categories`; a step without one is drawn as an unsplit gray bar.
+
+A composition needs inspection to be enabled. Codex steps take theirs from the
+trace analyzer. Claude is asked for a summary reading after each usage report
+during a turn, so its steps have one too. DSH steps take the bridge's snapshot.
+Other harnesses, and any harness with inspection off, record steps without one.
+
+Steps are diagnostic data. They live in `<database>.context-steps/<thread>.jsonl`
+beside the database, not in it, so an older Supervisor ignores them. A thread
+keeps its newest 1,500 steps, and deleting the thread deletes its file. Requests
+made before this was recorded have no steps, and against a Supervisor too old
+to have the route the Trend and Statistics views say it needs an update; the thread's statistics still come
+from the turns' recorded usage.
+
+The thread totals behind Statistics are summed from the turns' usage, not from
+the steps, so they cover the whole thread. The cumulative makeup covers only
+steps that have a composition, and the panel says how many those are. Because
+every request reads the whole context again, cumulative figures are many times
+the context size.
+
 ## HTTP and events
+
+- `GET /api/threads/{id}/context/steps` returns `steps` (each with its `step`
+  and `turn` numbers), `turnCount` and `totals` (`usageTurns`, `inputTokens`,
+  `cachedInputTokens`, `cacheWriteInputTokens`, `outputTokens`,
+  `reasoningOutputTokens`, `modelTimeMs`, `wallTimeMs`, `outputTimeMs`,
+  `timedOutputTokens`). It is readable wherever the thread's context is.
 
 - `GET /api/context-inspection/settings` returns `{ "enabled": false }`.
 - `PUT /api/context-inspection/settings` accepts `{ "enabled": true }`.
