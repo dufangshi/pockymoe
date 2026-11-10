@@ -284,7 +284,7 @@ body:has(.environment-confirmation-focus) > div:has(> [role='dialog'][aria-label
 @media (max-width: 639px) {
   /* Outranks the shared phone sheet padding: this window pads its own header, body and footer. */
   .environment-window.host-secondary-window[data-slot='dialog-content'] {
-    width: 100%; max-width: 100%; max-height: calc(100dvh - 24px); left: 0; top: auto; bottom: 0; transform: none;
+    width: 100%; max-width: 100%; max-height: calc(var(--sheet-height, 100dvh) - 24px); left: 0; top: auto; bottom: var(--sheet-bottom, 0px); transform: none;
     padding: 0; border-radius: 18px 18px 0 0; border-bottom: 0;
   }
   .environment-window-header { padding: 16px 56px 8px 16px; }

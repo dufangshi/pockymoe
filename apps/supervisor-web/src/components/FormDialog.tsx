@@ -6,6 +6,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@pockymoe/thread-ui';
+import { useSheetViewport } from '../lib/useSheetViewport';
 
 export function FormDialog({
   title,
@@ -34,6 +35,7 @@ export function FormDialog({
   busy?: boolean;
 }) {
   const content = useRef<HTMLDivElement>(null);
+  const sheet = useSheetViewport(secondary);
   return (
     <Dialog
       open
@@ -47,7 +49,8 @@ export function FormDialog({
         onOpenAutoFocus={event => {
           if (focusCancel) { event.preventDefault(); content.current?.querySelector<HTMLButtonElement>('[data-dialog-cancel]')?.focus(); }
         }}
-        className={`host-dialog ${secondary ? 'host-secondary-window' : ''} ${className ?? ''} !z-[130] !max-h-[calc(100dvh-2rem)] !overflow-y-auto !overscroll-contain`}
+        className={`host-dialog ${secondary ? 'host-secondary-window' : ''} ${className ?? ''} !z-[130] !max-h-[calc(var(--sheet-height,100dvh)-2rem)] !overflow-y-auto !overscroll-contain`}
+        {...(sheet ? { style: sheet } : {})}
         overlayClassName={`!z-[129] ${secondary ? 'host-secondary-window-overlay' : ''}`}
         {...(!description ? { 'aria-describedby': undefined } : {})}
         onPointerDownOutside={(event) => {

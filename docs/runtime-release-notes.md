@@ -15,3 +15,7 @@ seeing their keys.
   the Relay or from isolated environments are refused.
 - **Asking without a system prompt**: a completion through a saved connection no
   longer sends an empty system prompt, which some upstreams rejected.
+- **Phone windows above the keyboard** (Web): a window that rises from the bottom
+  on a phone, such as Harness settings opened from the model menu, now fits the
+  part of the screen the keyboard leaves visible, instead of reaching under the
+  keyboard or above the screen.

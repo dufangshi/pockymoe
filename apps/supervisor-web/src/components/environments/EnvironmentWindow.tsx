@@ -4,6 +4,7 @@ import { useI18n } from '@pockymoe/thread-ui/i18n';
 import { environmentText as t } from '../../lib/environmentI18n';
 import './environments.css';
 import { EnvironmentConfirmation } from './EnvironmentConfirmation';
+import { useSheetViewport } from '../../lib/useSheetViewport';
 
 type Slot = ReactNode | ((close: () => void) => ReactNode);
 const render = (slot: Slot, close: () => void) => typeof slot === 'function' ? slot(close) : slot;
@@ -20,6 +21,7 @@ export function EnvironmentWindow({ title, subtitle, tools, children, footer, wi
   const [trigger] = useState(() => document.activeElement instanceof HTMLElement ? document.activeElement : null);
   const [threadTools] = useState(() => trigger?.closest('#matter-thread-tools') ? document.querySelector<HTMLElement>('[aria-controls="matter-thread-tools"]') : null);
   const close = () => { if (!busy) { if (dirty) setDiscard(true); else onClose(); } };
+  const sheet = useSheetViewport();
   useEffect(() => {
     if (!dirty) return;
     const leave = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ''; };
@@ -29,6 +31,7 @@ export function EnvironmentWindow({ title, subtitle, tools, children, footer, wi
   return <>
     <Dialog open onOpenChange={open => { if (!open) close(); }}>
       <DialogContent className={`host-dialog environment-window host-secondary-window${wide ? ' is-wide' : ''}`} overlayClassName="environment-overlay host-secondary-window-overlay"
+        {...(sheet ? { style: sheet } : {})}
         onCloseAutoFocus={event => { event.preventDefault(); const target = trigger?.getClientRects().length ? trigger : threadTools; if (target?.isConnected) target.focus({ preventScroll: true }); }}
         aria-describedby={undefined} onEscapeKeyDown={event => { event.preventDefault(); close(); }}
         onPointerDownOutside={event => { event.preventDefault(); if (!discard) close(); }}>
