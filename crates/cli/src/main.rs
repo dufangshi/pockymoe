@@ -580,6 +580,8 @@ More: pockymoe guide tasks"#
 
 fn main() -> Result<()> {
     legacy_env::adopt();
+    // Before any thread or child exists, so every harness inherits it.
+    pockymoe_runtime::open_files::raise_limit();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?

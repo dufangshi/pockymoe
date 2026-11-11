@@ -145,6 +145,20 @@ away) is not reached.
 The next request that needs the session resumes it as usual, a few seconds
 slower, with fresh MCP servers.
 
+## Open files
+
+Each loaded thread costs the Supervisor a few file descriptors (harness pipes,
+shells, sockets) and each harness opens its own. A shell or service manager
+usually starts a process with a soft limit of 1024 (256 on macOS), which a busy
+device used up: loading a thread then failed with "Too many open files".
+
+At startup `pockymoe` raises its soft open-file limit to 65,536, or to the hard
+limit when that is lower (`open_files::raise_limit`); every harness and shell it
+starts inherits the result. It never lowers a limit and never touches the hard
+limit. If the error still appears, the hard limit is the cap: raise it where the
+Supervisor is started (`LimitNOFILE=` in a systemd unit, `ulimit -Hn` or
+`/etc/security/limits.conf` for a shell). Windows has no such limit.
+
 ## Settings
 
 Settings → Resources shows these under **Memory**; its **Disk** part is described in [storage](storage.md).
