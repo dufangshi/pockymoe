@@ -2986,7 +2986,10 @@ main:has(.product-navigation) { padding-top: 0 !important; }
     /* On the visible part of the page: a keyboard shrinks only the visual viewport (useSheetViewport). */
     left: 0 !important; right: 0; top: auto !important; bottom: var(--sheet-bottom, 0px);
     width: 100%; max-width: none !important; max-height: calc(var(--sheet-height, 100dvh) - 24px) !important;
-    transform: none !important; translate: none !important;
+    /* The dialog centres itself with Tailwind's translate. Clear the variables it reads,
+       not only the property: the production minifier folds `transform: none` and
+       `translate: none` into one `transform`, and the centring offset came back. */
+    --tw-translate-x: 0 !important; --tw-translate-y: 0 !important; transform: none !important;
     border-radius: 18px 18px 0 0; padding: 20px 20px max(20px, env(safe-area-inset-bottom));
     animation: host-secondary-enter 180ms ease-out;
   }
