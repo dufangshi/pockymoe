@@ -102,13 +102,32 @@ pub async fn health(port: u16, host: &str) -> Option<Value> {
         .await
         .ok()
 }
+/// Why a running device is not connected, in the reader's terms. `None` while
+/// it may still be connecting.
+fn offline_reason(health: &Value) -> Option<&'static str> {
+    match health["relayStatus"]["code"].as_str() {
+        Some("unauthorized") => Some(
+            "The relay no longer accepts this device: it was removed on the Devices page, or its token was replaced. Add the device again (or open its page) and run the setup command shown there.",
+        ),
+        Some("device_id_mismatch") => Some(
+            "This computer is bound as a different device than the relay expects. Run the setup command copied from the Devices page; it re-registers this computer.",
+        ),
+        _ => None,
+    }
+}
 async fn online(port: u16, version: &str, config: &Path) -> Result<()> {
-    for _ in 0..120 {
+    for second in 0..120 {
         if let Some(h) = health(port, "127.0.0.1").await {
             if h["status"] == "ok" && h["runningVersion"] == version && h["relayConnected"] == true
             {
                 println!("Device is online and running Pockymoe {version}.");
                 return Ok(());
+            }
+            // A refusal does not change by waiting; give the first attempts time.
+            if second >= 10 && h["runningVersion"] == version {
+                if let Some(reason) = offline_reason(&h) {
+                    bail!("{reason}");
+                }
             }
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -305,6 +324,50 @@ fn apply_setup_binding(saved: &Value, options: &SetupOptions) -> Result<()> {
     }
     Ok(())
 }
+/// Whether the running device reaches the relay, allowing for a reconnect in progress.
+async fn connected(port: u16) -> bool {
+    for _ in 0..10 {
+        match health(port, "127.0.0.1").await {
+            Some(h) if h["relayConnected"] == true => return true,
+            Some(h) if offline_reason(&h).is_some() => return false,
+            _ => tokio::time::sleep(Duration::from_secs(1)).await,
+        }
+    }
+    false
+}
+/// Make this install the device the command belongs to. The database, port and
+/// local login stay; what the device held for its old relay id does not.
+fn replace_registration(
+    file: &Path,
+    saved: &mut Value,
+    options: &SetupOptions,
+    origin: &str,
+    web_origin: Option<&str>,
+) -> Result<()> {
+    let token = options
+        .token
+        .as_deref()
+        .context("Device token is missing")?;
+    crate::owner_trust::reregister(
+        &setup_database_path(saved),
+        options
+            .account_key
+            .as_deref()
+            .zip(options.enroll.as_deref()),
+        web_origin,
+    )?;
+    saved["POCKYMOE_RELAY_AGENT_TOKEN"] = json!(token);
+    if let Some(web_origin) = web_origin {
+        saved["webOrigin"] = json!(web_origin);
+    }
+    write_device_config(file, saved)?;
+    write(
+        &file.with_extension("json.setup.json"),
+        &json!({"identity":identity(origin, options),"configHash":digest(&std::fs::read(file)?)}),
+    )?;
+    println!("This computer was registered as another device before. It now connects as the device this command belongs to. If the old device is still on the Devices page, it stays offline and can be removed there.");
+    Ok(())
+}
 fn save_setup_web_origin(file: &Path, saved: &mut Value, origin: Option<&str>) -> Result<()> {
     let Some(origin) = origin else {
         return Ok(());
@@ -380,9 +443,9 @@ async fn stopped(pid: u32) -> bool {
     false
 }
 
-/// Restart the running local install on a new release or configuration. Its
-/// process can run outside the service when an older update started it.
-async fn restart_local(
+/// Restart a running install on a new release or configuration. Its process
+/// can run outside the service when an older update started it.
+async fn restart_running(
     installed: &releases::Installed,
     file: &Path,
     manager: Option<&str>,
@@ -507,7 +570,7 @@ async fn setup_local_at(
                 .as_u64()
                 .and_then(|pid| u32::try_from(pid).ok())
                 .context("The running Pockymoe did not report its process")?;
-            restart_local(&installed, file, manager.as_deref(), pid).await?;
+            restart_running(&installed, file, manager.as_deref(), pid).await?;
         }
     }
     for _ in 0..120 {
@@ -574,9 +637,24 @@ async fn setup_at(options: SetupOptions, file: &Path) -> Result<()> {
     ensure!(saved.is_object(), "Invalid device configuration");
     let receipt_file = file.with_extension("json.setup.json");
     let receipt = read::<Value>(&receipt_file).unwrap_or(Value::Null);
-    let rebind = options.account_key.is_some()
-        && saved["POCKYMOE_RELAY_AGENT_TOKEN"]
-            .as_str()
+    let saved_token = saved["POCKYMOE_RELAY_AGENT_TOKEN"]
+        .as_str()
+        .map(str::to_owned);
+    // The command belongs to another device than the one this computer is
+    // registered as (same relay and port): the person running it here wants
+    // this computer to be that device. Its data and local login are kept.
+    let replace = match (&options.token, &saved_token) {
+        (Some(wanted), Some(current)) => {
+            wanted != current && matches(&saved, &origin, current, options.port)
+        }
+        _ => false,
+    };
+    // A setup code cannot be compared with the saved token, so with an account
+    // key it only rebinds the saved registration.
+    let rebind = !replace
+        && options.account_key.is_some()
+        && saved_token
+            .as_deref()
             .is_some_and(|token| matches(&saved, &origin, token, options.port));
     let resume = rebind
         || options
@@ -600,23 +678,59 @@ async fn setup_at(options: SetupOptions, file: &Path) -> Result<()> {
     );
     let occupied = TcpListener::bind(("127.0.0.1", options.port)).is_err();
     ensure!(
-        !occupied || resume,
+        !occupied || resume || replace,
         "Port is already in use by another device or service"
     );
     ensure!(
-        !file.exists() || resume,
+        !file.exists() || resume || replace,
         "A different device configuration already exists; it will not be overwritten"
     );
     let version = env!("CARGO_PKG_VERSION");
     if occupied {
         // Authenticate the already-installed Supervisor before modifying its
-        // binding. Fresh relay setup credentials never replace its registration.
+        // binding or registration: the saved login proves it is this install.
         let status = device_api(options.port, &saved, "/api/management/supervisor", false).await?;
-        apply_setup_binding(&saved, &options)?;
-        save_setup_web_origin(file, &mut saved, web_origin.as_deref())?;
+        let running = health(options.port, "127.0.0.1")
+            .await
+            .unwrap_or(Value::Null);
+        if replace {
+            ensure!(
+                running["relayConnected"] != true,
+                "This computer is online as another device. Remove that device on the Devices page first, then run this command again"
+            );
+            replace_registration(file, &mut saved, &options, &origin, web_origin.as_deref())?;
+        } else {
+            apply_setup_binding(&saved, &options)?;
+            save_setup_web_origin(file, &mut saved, web_origin.as_deref())?;
+        }
         if status["runningVersion"] == version {
-            println!("Device is already running Pockymoe {version}.");
-            return Ok(());
+            if !replace {
+                if connected(options.port).await {
+                    println!("Device is already running Pockymoe {version}.");
+                    return Ok(());
+                }
+                let running = health(options.port, "127.0.0.1")
+                    .await
+                    .unwrap_or(Value::Null);
+                if let Some(reason) = offline_reason(&running) {
+                    bail!("{reason}");
+                }
+                ensure!(
+                    running["activeTurnCount"].as_u64().unwrap_or(0) == 0,
+                    "Device is running Pockymoe {version} with work in progress but cannot reach the relay. It was not restarted; run this command again when the work is done. Logs: {}",
+                    service::log_path(file).display()
+                );
+                println!("Device is running but not connected to the relay. Restarting it...");
+            }
+            // Same release: restart so the Supervisor reads its configuration again.
+            let pid = running["processId"]
+                .as_u64()
+                .and_then(|pid| u32::try_from(pid).ok())
+                .context("The running device did not report its process")?;
+            let installed = releases::install(version, Some(&std::env::current_exe()?)).await?;
+            let manager = service::detect();
+            restart_running(&installed, file, manager.as_deref(), pid).await?;
+            return online(options.port, version, file).await;
         }
         let installed = releases::install(version, Some(&std::env::current_exe()?)).await?;
         if status["manager"] != "github-release" {
@@ -645,7 +759,9 @@ async fn setup_at(options: SetupOptions, file: &Path) -> Result<()> {
         ask_terminal,
     )?;
     let installed = releases::install(version, Some(&std::env::current_exe()?)).await?;
-    if !resume {
+    if replace {
+        replace_registration(file, &mut saved, &options, &origin, web_origin.as_deref())?;
+    } else if !resume {
         let token = if let Some(token) = &options.token {
             token.clone()
         } else {
@@ -691,8 +807,10 @@ async fn setup_at(options: SetupOptions, file: &Path) -> Result<()> {
             &json!({"identity":identity(&origin, &options),"configHash":digest(&std::fs::read(&file)?)}),
         )?;
     }
-    apply_setup_binding(&saved, &options)?;
-    save_setup_web_origin(file, &mut saved, web_origin.as_deref())?;
+    if !replace {
+        apply_setup_binding(&saved, &options)?;
+        save_setup_web_origin(file, &mut saved, web_origin.as_deref())?;
+    }
     releases::activate(&installed)?;
     let manager = service::detect();
     service::start(&installed, &file, manager.as_deref())?;
@@ -925,7 +1043,14 @@ mod tests {
                 listener,
                 axum::Router::new()
                     .route("/api/auth/login", axum::routing::post(login))
-                    .route("/api/management/supervisor", axum::routing::get(status)),
+                    .route("/api/management/supervisor", axum::routing::get(status))
+                    // The install is online: setup leaves a connected device running.
+                    .route(
+                        "/healthz",
+                        axum::routing::get(|| async {
+                            axum::Json(json!({"status":"ok","relayConnected":true,"processId":1}))
+                        }),
+                    ),
             )
             .await
             .unwrap();
@@ -1173,6 +1298,123 @@ mod tests {
         options.account_key = None;
         validate_setup_binding(&options).unwrap();
         apply_setup_binding(&json!({}), &options).unwrap();
+    }
+
+    #[test]
+    fn a_command_for_another_device_replaces_the_registration_and_restarts_enrollment() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("device.sqlite");
+        let config = dir.path().join("device.json");
+        let v = crate::owner_trust::tests::vectors();
+        let account = v["account"]["accountPublicKey"].as_str().unwrap();
+        let trust = |sql: &str| -> Option<String> {
+            rusqlite::Connection::open(&db)
+                .unwrap()
+                .query_row(sql, [], |row| row.get(0))
+                .unwrap()
+        };
+        // The computer is bound as the old device and has its relay id pinned.
+        crate::owner_trust::bind_account(
+            &db,
+            account,
+            v["enrollment"]["enrollSecret"].as_str().unwrap(),
+            None,
+        )
+        .unwrap();
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute(
+                "UPDATE device_owner_trust SET relay_device_id='old-device',enroll_secret=NULL",
+                [],
+            )
+            .unwrap();
+        let mut saved = json!({"POCKYMOE_RELAY_SERVER_URL":"wss://relay.test","POCKYMOE_RELAY_AGENT_TOKEN":"old-token","POCKYMOE_RELAY_SUPERVISOR_PORT":"8787","POCKYMOE_DATABASE_PATH":db,"POCKYMOE_ADMIN_PASSWORD":"kept"});
+        write_device_config(&config, &saved).unwrap();
+        let mut options = SetupOptions {
+            relay: "https://relay.test".into(),
+            web_origin: Some("https://web.test".into()),
+            account_key: Some(account.into()),
+            enroll: Some(base64::Engine::encode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                [31; 32],
+            )),
+            token: Some("new-token".into()),
+            code: None,
+            port: 8787,
+            reset_database: false,
+        };
+        replace_registration(
+            &config,
+            &mut saved,
+            &options,
+            "https://relay.test",
+            Some("https://web.test"),
+        )
+        .unwrap();
+        let written = read_device_config(&config).unwrap();
+        assert_eq!(written["POCKYMOE_RELAY_AGENT_TOKEN"], "new-token");
+        assert_eq!(written["POCKYMOE_ADMIN_PASSWORD"], "kept");
+        assert_eq!(written["webOrigin"], "https://web.test");
+        // The old relay id no longer pins the device, the account still does,
+        // and the new enrollment waits for the owner.
+        assert_eq!(
+            trust("SELECT relay_device_id FROM device_owner_trust"),
+            None
+        );
+        assert!(trust("SELECT hex(enroll_secret) FROM device_owner_trust").is_some());
+        let status = crate::owner_trust::binding_status(&db).unwrap();
+        assert_eq!(status["bound"], true);
+        assert_eq!(status["strict"], true);
+
+        // Another account's command, or one without the account key, changes nothing.
+        options.token = Some("third-token".into());
+        options.account_key = Some(
+            v["otherAccount"]["accountPublicKey"]
+                .as_str()
+                .unwrap()
+                .into(),
+        );
+        assert!(replace_registration(
+            &config,
+            &mut saved.clone(),
+            &options,
+            "https://relay.test",
+            None
+        )
+        .is_err());
+        options.account_key = None;
+        options.enroll = None;
+        assert!(replace_registration(
+            &config,
+            &mut saved.clone(),
+            &options,
+            "https://relay.test",
+            None
+        )
+        .is_err());
+        assert_eq!(
+            read_device_config(&config).unwrap()["POCKYMOE_RELAY_AGENT_TOKEN"],
+            "new-token"
+        );
+        assert_eq!(
+            crate::owner_trust::binding_status(&db).unwrap()["bound"],
+            true
+        );
+    }
+
+    #[test]
+    fn a_refused_or_mismatched_device_says_what_to_do() {
+        assert!(
+            offline_reason(&json!({"relayStatus":{"code":"unauthorized"}}))
+                .unwrap()
+                .contains("removed")
+        );
+        assert!(
+            offline_reason(&json!({"relayStatus":{"code":"device_id_mismatch"}}))
+                .unwrap()
+                .contains("re-registers")
+        );
+        assert!(offline_reason(&json!({"relayStatus":null})).is_none());
     }
 
     #[test]

@@ -352,9 +352,22 @@ the Supervisor before binding this database").
 A bound device refuses a relay greeting that assigns it a different device ID. It
 retries with exponential backoff (1 second, doubling up to 5 minutes) and reports
 `"relayStatus": {"code": "device_id_mismatch", "retryAt": <ms>}` on its local
-`/healthz` (`relayStatus` is `null` otherwise). Restore the original relay
-registration, or reset the binding before attaching the device to another relay
-device.
+`/healthz` (`relayStatus` is `null` otherwise). The relay cannot move a bound
+device to another ID; the person at the computer can, by running the setup
+command of the device it should be. That command carries the account key, and
+setup re-registers the computer in one transaction (`owner_trust::reregister`):
+the pinned key must be the command's key, then the certificate, enrollment
+secret, browser registrations and their leases, grants, peer registrations,
+browser-created port mappings and the pinned relay device ID are deleted and the
+command's enrollment secret is stored for the same key. A computer bound to
+another key, or a command without an account key, changes nothing. Setup
+refuses while the computer is still online as its old device
+([running a setup command again](device-setup.md#running-a-setup-command-again)).
+
+A device whose token the relay refuses (401 or 403 on the tunnel: the device was
+removed, or its token replaced) keeps retrying and reports
+`"relayStatus": {"code": "unauthorized", "retryAt": null}` until it connects
+again.
 
 ### Protect all devices
 
@@ -434,11 +447,23 @@ endpoint; it is a feature hint, never a security decision.
 
 ### Enrollment
 
-Enrollment completes when the reader asks for it: the device's protection chip
-on the devices page offers **Finish protection** while the device is online and
-an enrollment from this browser is pending. Nothing runs it in the background: a
-background loop that needed the account key interrupted work with password
-prompts, so it was removed. Finishing may ask for the password once.
+Enrollment completes by itself only while the account key is already unlocked:
+every 5 seconds, a visible page with an open unlock window looks at this
+browser's pending local enrollments and finishes those whose device is connected
+(`lib/quietEnrollment.ts`). It never opens the password prompt. An earlier
+background loop did, several times an hour, and was removed; this one stops
+existing the moment the window closes. The usual case is a new device: its setup
+command was copied with the password, and it connects within the 10 minutes.
+
+Outside the window the reader finishes it: **Finish protection** asks for the
+password once. Until then a bound device refuses every request (it has no
+certificate), so the step is offered wherever the reader meets the device: its
+card on the devices page, its row's protection chip, the Add device window, and
+the device's own page in place of the load error. A device is listed for this
+only when it answered as bound without a certificate this account accepts; a
+pending bind command that was not run yet, or a setup command copied again for
+a device that already shows its certificate, blocks nothing and is not listed.
+Remote protection keeps its own flow.
 
 1. The browser fetches the device's key descriptor. If the descriptor already
    carries a certificate that verifies for this account, device and identity, and
@@ -477,11 +502,15 @@ matching answer on `/help/devices`.
 | **Waiting for bind** | Not listed in the vault, and this browser holds a pending local-command enrollment for the device. Offers **Show local bind command**. |
 | **Waiting for device**, **Update needed**, **Updating**, **Protecting** | Remote protection is queued for an offline device, needs a runtime update (**Update and protect**), is updating, or is binding and certifying. |
 | **Bound to another account**, **Update failed**, **Protection failed** | Remote protection stopped: the device reports another account key, the update did not enable binding, or the attempt failed. Offers **Retry** or **Update and protect**. |
-| **Needs repair** | The vault lists the device, but this page has no verified owner connection to it: the device is offline, presents no valid certificate, or presents a certificate for an identity other than the one the vault records. Also shown for a device removed from the account. The connection never falls back to relay trust. Offers **Repair device binding**. |
+| **Needs repair** | The vault lists the device and the device answered on this page, but presented no valid certificate, or one for an identity other than the one the vault records. Also shown for a device removed from the account. The connection never falls back to relay trust. Offers **Repair device binding**. |
 | **Identity changed** | Enrollment found an identity key other than the one the vault records; see [repair](#identity-changes-and-repair). |
 
-No label is shown while the protection state is unknown, for example while a
-device that is not in the vault is offline.
+No label is shown while the protection state is unknown: while a device is
+offline or was not contacted on this page yet, whether or not the vault lists
+it. An offline device of the vault is neither **Protected** (nothing proved it
+here) nor **Needs repair** (nothing is wrong with it); a pending enrollment for
+it shows **Waiting for bind**. A device that already shows its certificate stays
+**Protected** when its setup command is copied again.
 
 The device's key descriptor (`GET …/transport/key`) carries the device's own
 `certificate` (or `null`) and an unsigned hint `trust: {bound, strict,
@@ -610,7 +639,10 @@ revoked device is refused as a peer by the account's other devices and by owner
 browsers ("This device was removed from the account."). **Remove device** then
 deletes the relay registration, so the device can no longer connect, and the
 browser forgets its stored certificate; the device keeps its local binding until
-`pockymoe bind --reset`.
+`pockymoe bind --reset` or until a new device's setup command is run on that
+computer. A registration the relay no longer has (removed in another browser)
+counts as removed. The device leaves the devices page at once in the browser
+that removed it, and within two list refreshes (about a minute) in others.
 
 Removing one of your browsers cuts it off from your own bound devices through the
 relay frame. On devices that other accounts share with you, it takes effect when
@@ -1330,7 +1362,7 @@ senders).
 | `DELETE /api/transport/grants/{grantId}` | Owner | → `{}` |
 | `POST /api/port-mappings/{id}/lease` | Owner | → `{leaseId, expiresAt}`; 404 `mapping_not_found`, 403 `owner_required` |
 | `POST /api/peer/transport/certificate` | Peer | Caller's device certificate → `{}` |
-| `GET /healthz` | None | Includes `relayStatus`: `null` or `{code: "device_id_mismatch", retryAt}` |
+| `GET /healthz` | None | Includes `relayStatus`: `null`, `{code: "device_id_mismatch", retryAt}` or `{code: "unauthorized", retryAt: null}` |
 
 ### Relay endpoints
 

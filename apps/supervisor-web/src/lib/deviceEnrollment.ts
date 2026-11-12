@@ -11,6 +11,7 @@ import {
   type UnlockedAccount,
   type Revocation,
 } from './accountVault';
+import { isAccountUnlocked } from './accountVaultState';
 import { accountStore } from './accountStore';
 import { sharingTrustStore } from './sharingTrustStore';
 import { deviceTrustRequest } from './deviceTrust';
@@ -177,15 +178,20 @@ export class EnrollmentIdentityChangeError
     super(translate('devices.confirmIdentityReplacement'));
   }
 }
+/**
+ * `quiet` finishes only while the account is already unlocked and never opens
+ * the password prompt; it returns false when it would have to ask.
+ */
 export function completeDeviceEnrollment(
   pending: PendingEnrollment,
   online: boolean,
   confirmedReplacement?: EnrollmentIdentityReplacement,
+  options?: { quiet?: boolean },
 ): Promise<boolean> {
   if (!online) return Promise.resolve(false);
   const running = active.get(pending.deviceId);
   if (running) return running;
-  const task = complete(pending, confirmedReplacement);
+  const task = complete(pending, confirmedReplacement, options?.quiet ?? false);
   active.set(pending.deviceId, task);
   void task.then(
     () => active.delete(pending.deviceId),
@@ -196,7 +202,12 @@ export function completeDeviceEnrollment(
 async function complete(
   pending: PendingEnrollment,
   confirmedReplacement?: EnrollmentIdentityReplacement,
+  quiet = false,
 ) {
+  // Checked right before each use of the account key: `requireUnlock` returns
+  // without a prompt only while the window is open.
+  const mayUnlock = () => !quiet || isAccountUnlocked();
+  if (!mayUnlock()) return false;
   if (Date.now() - pending.createdAt >= ENROLLMENT_LIFETIME_MS) {
     await deletePendingEnrollment(pending.deviceId, pending);
     return false;
@@ -291,6 +302,7 @@ async function complete(
     if (!(await pendingIsCurrent(pending))) return false;
     // Authenticate the enrollment before offering any identity replacement.
     await confirmReplacement();
+    if (!mayUnlock()) return false;
     unlocked = await requireUnlock('certify-device');
     if (!(await pendingIsCurrent(pending))) return false;
     if (
@@ -331,6 +343,7 @@ async function complete(
     certificate = installed.certificate;
   }
   if (!(await pendingIsCurrent(pending))) return false;
+  if (!unlocked && !mayUnlock()) return false;
   unlocked ??= await requireUnlock('certify-device');
   if (
     unlocked.accountKeyId !== account.accountKeyId ||

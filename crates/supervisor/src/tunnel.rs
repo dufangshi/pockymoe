@@ -107,10 +107,23 @@ pub async fn run_relay_tunnel(state: Arc<Supervisor>) -> Result<()> {
                 // connection attempts back off; the runtime remains alive.
                 continue;
             }
-            Ok(Err(_)) => {
+            Ok(Err(error)) => {
                 // Do not log the websocket error verbatim: some implementations
                 // include the credential-bearing URL in connection errors.
-                tracing::warn!("relay tunnel connect failed");
+                let refused = matches!(
+                    &error,
+                    tokio_tungstenite::tungstenite::Error::Http(response)
+                        if matches!(response.status().as_u16(), 401 | 403)
+                );
+                if refused {
+                    // The device was removed at the relay, or its token replaced.
+                    tracing::warn!("relay refused this device's token");
+                    if let Err(error) = crate::owner_trust::relay_refused(&state) {
+                        tracing::warn!(%error, "could not persist the relay's refusal");
+                    }
+                } else {
+                    tracing::warn!("relay tunnel connect failed");
+                }
             }
             Err(_) => {
                 tracing::warn!("relay tunnel connection attempt timed out");

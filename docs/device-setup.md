@@ -11,8 +11,33 @@ version, and starts the device; see
 [native installation and releases](github-runtime.md) for the details,
 migration of older npm installations and updates. Existing online Supervisors
 update through their management API. No shell profile is changed. The existing
-database, credentials and transport identity are preserved, and a different
-device configuration is never overwritten.
+database, credentials and transport identity are preserved.
+
+The Add device window follows the command after it is shown: **Waiting for the
+device to connect…**, then **Connected and protected.** with **Open device**
+(see [binding](#binding-to-your-account-key) for the step in between).
+
+### Running a setup command again
+
+Setup can be run again on an installed computer; what it does depends on the
+command and on the device's state.
+
+| Command | The device | Result |
+| --- | --- | --- |
+| Same device | Not running | Starts it and waits until it is online. |
+| Same device | Running and connected | Leaves it running ("Device is already running"). |
+| Same device | Running, not connected, no work in progress | Restarts it and waits until it is online. With work in progress it is not restarted and setup says so. |
+| Same device | Refused by the relay | Stops with the reason: the device was removed on the Devices page or its token was replaced. Copy the command again from the device's page, or add the device again. |
+| Another device of the same relay (same port) | Not running, or running but not connected | Registers this computer as that device: the saved token is replaced, the database, port and local login stay, and the device restarts. Everything issued for the old device ID is dropped (see [binding](#binding-to-your-account-key)). |
+| Another device of the same relay | Online as the saved device | Refused: remove the saved device on the Devices page first. A working device is never taken over by a pasted command. |
+| Another relay, or another port | Any | Refused: "A different device configuration already exists; it will not be overwritten". |
+
+Removing a device on the Devices page and adding a new one for the same computer
+is therefore two steps: remove, then run the new device's command there. The
+computer keeps its threads and workspaces.
+
+A device the relay refuses reports `unauthorized` in `relayStatus` of `/healthz`
+and in `pockymoe bind --status`, like `device_id_mismatch` below.
 
 Before downloading anything, setup checks a database left at
 `~/.remote-codex/relay-supervisor.sqlite` by an earlier installation. A Remote
@@ -63,15 +88,27 @@ PowerShell) and a one-time enrollment secret in the `POCKYMOE_ENROLL_SECRET`
 environment variable, never as an argument; setup binds the device before
 starting it, and the Supervisor does not inherit the secret. The Web refuses to
 build a command from a malformed device token. When the device first connects,
-the device's protection chip on the Devices page offers **Finish protection** in the
-browser that copied the command; pressing it completes the enrollment (it may ask
-for the password once), and the device then shows **Protected**. Nothing finishes it
-in the background ([enrollment](account-key-trust.md#enrollment)). That browser
+the browser that copied the command finishes the enrollment by itself, as long as
+the account key is still unlocked (10 minutes from the password), and the device
+shows **Protected**. After that window the device is connected but refuses work
+until the reader presses **Finish protection**, which asks for the password once.
+The step is offered where the reader meets the device: on its card on the Devices
+page, on its row's protection chip, in the Add device window and on the device's
+own page in place of a bare load error
+([enrollment](account-key-trust.md#enrollment)). That browser
 keeps the enrollment for 7 days; after that, copy the setup command again and rerun
 it on the device. On an
-installed device, rerunning a setup command binds the existing installation and
-keeps its registration, provided the Web origin saved at installation matches
-the command's.
+installed device, rerunning the same device's setup command binds the existing
+installation and keeps its registration, provided the Web origin saved at
+installation matches the command's.
+
+A command for another device registers the computer as that device (see
+[running a setup command again](#running-a-setup-command-again)). The device ID
+is part of what the account certified, so the old certificate, grants, browser
+registrations and browser-created port mappings are removed and enrollment starts
+again for the new ID, in one transaction. The account must be the same: a
+computer bound to another account key refuses the command until `pockymoe bind
+--reset`, and a bound computer refuses a command without an account key.
 
 Devices installed without the binding flags show **Not protected**.
 **Protect all devices** on the Devices page binds them from the browser
@@ -94,11 +131,12 @@ device identity fingerprint and the bound account fingerprint, and `pockymoe bin
 removes the binding and every browser registration, grant and browser-created
 port mapping, restoring relay trust; removed browsers stay removed if the device
 is bound to the same key again. Use it before binding to a new account key after
-**Start over**, or before attaching the device to a different relay device; until
-then a bound device that the relay greets with a different device ID retries with
-backoff and reports `device_id_mismatch` in `/healthz` and `pockymoe bind
---status`. **Remove device** in the Web deletes the device's relay registration
-but leaves its local binding in place.
+**Start over**. A bound device that the relay greets with a different device ID
+(its configuration was edited by hand) retries with backoff and reports
+`device_id_mismatch` in `/healthz` and `pockymoe bind --status`; running the
+setup command of the device it should be fixes that. **Remove device** in the
+Web deletes the device's relay registration but leaves its local binding in
+place; the next setup command run on that computer replaces both.
 
 A device whose identity file or certificate was lost shows **Certificate
 missing**. **Repair device binding** gives a new bind command; after it runs, the

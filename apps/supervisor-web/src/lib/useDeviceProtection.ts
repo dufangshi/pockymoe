@@ -33,6 +33,18 @@ export function useDeviceProtection(
           r.kind === 'device' &&
           r.subjectId === deviceId,
       );
+      // Nothing was learned from the device on this page: it is offline, or was
+      // not contacted yet. A device the account certified is not "missing its
+      // certificate" for being offline, and it is not shown as Protected without
+      // proof either: it has no label until it connects and shows its
+      // certificate, which reports through `status`.
+      const unheard = status?.deviceId !== deviceId;
+      const waiting = pending.some(
+        (p) =>
+          p.deviceId === deviceId &&
+          p.accountKeyId === account?.accountKeyId &&
+          p.userId === account?.userId,
+      );
       const next =
         revoked ||
         (status?.state === 'identity-changed' && status.certificateVerified)
@@ -44,13 +56,17 @@ export function useDeviceProtection(
               status.role === 'owner' &&
               status.accountKeyId === account.accountKeyId
             ? 'protected'
-            : await deviceProtectionState(
-                deviceId,
-                null,
-                pending,
-                bound,
-                account,
-              );
+            : unheard && account && waiting
+              ? 'pending'
+              : unheard && account && bound.includes(deviceId)
+                ? 'unknown'
+                : await deviceProtectionState(
+                    deviceId,
+                    null,
+                    pending,
+                    bound,
+                    account,
+                  );
       if (active)
         setState(
           next === 'unknown' &&

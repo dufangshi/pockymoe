@@ -197,4 +197,6 @@
 .pd-page > .devices-page-tabs button[aria-selected="true"] { background: var(--theme-hover); color: var(--theme-fg); }
 .pd-page-header { min-height: 44px; height: auto; flex-wrap: wrap; padding-bottom: 10px; }
 /* An isolated device: a small lock after its name, as on the phone's device rows. */
+.pd-page .pd-protect-badge { border: 0; display: inline-flex; flex: none; gap: 3px; align-items: center; min-height: 20px; font-size: 10px; font-weight: 600; color: var(--status-warning-fg); background: color-mix(in oklch, var(--status-warning-fg) 12%, transparent); border-radius: 4px; padding: 0 5px; white-space: nowrap; cursor: pointer; }
+@media (hover: hover) { .pd-page .pd-protect-badge:hover:not(:disabled) { background: color-mix(in oklch, var(--status-warning-fg) 20%, transparent); } }
 .pd-page .pd-isolated { display: inline-flex; flex: none; align-items: center; color: var(--theme-fg-muted); }

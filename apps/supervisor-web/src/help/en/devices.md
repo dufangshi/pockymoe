@@ -26,6 +26,8 @@ A local bind command was created, but the device has not run it yet.
 
 If you cannot reach the device, choose **Use one-click protection instead**.
 
+A device you just added with its setup command shows this label too. It finishes by itself while your password is still fresh (10 minutes). After that the device is connected but cannot be used yet: choose **Finish protection** on its card, in this label or on the device's page, and enter your password once.
+
 ## Waiting for device {#waiting-for-device}
 
 Protection is queued, but the device is offline. It continues on its own when the device comes back online while this browser is open. The queue is kept for 7 days.
@@ -65,7 +67,9 @@ To fix it:
 
 The device is bound to your account but did not show a valid device certificate. This happens after its data was restored, or when the certificate was lost or removed.
 
-Choose **Repair device binding** and run the repair command it shows on the device. Until then the device stays disconnected instead of falling back to trusting the relay.
+Choose **Repair device binding** and run the repair command it shows on the device. Copying the setup command again from the device's menu and running it on the device repairs it as well. Until then the device stays disconnected instead of falling back to trusting the relay.
+
+An offline device shows no protection label: the label appears when it connects.
 
 ## Identity changed {#identity-changed}
 

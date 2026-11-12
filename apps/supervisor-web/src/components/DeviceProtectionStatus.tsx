@@ -25,6 +25,10 @@ export function protectionView(
   protection: DeviceProtectionState,
 ): StatusView | null {
   if (protection === 'certificate-missing') return view('needsRepair', 'error', 'needs-repair');
+  // A setup command copied again for a device that is already verified: there
+  // is nothing to wait for, whether or not the command gets run.
+  if (protection === 'protected' && progress?.phase === 'local-command-pending')
+    return view('protected', 'ok', 'protected');
   switch (progress?.phase) {
     case 'queued': return view('waitingDevice', 'info', 'waiting-for-device');
     case 'update-required': return view('updateNeeded', 'warn', 'update-needed');

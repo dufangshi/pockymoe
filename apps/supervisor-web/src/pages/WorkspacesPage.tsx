@@ -5,12 +5,14 @@ import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { DeviceEncryptionStatus } from '../components/DeviceEncryptionStatus';
+import { DeviceProtectionPrompt } from '../components/DeviceSetupProgress';
 import { TourLauncherButton } from '../components/onboarding/TourProvider';
 import { useAppShellNav } from '../components/AppShellNavContext';
 import { ProductHeader } from '../components/ProductHeader';
 import {
   useEffect,
   useMemo,
+  useCallback,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -100,11 +102,12 @@ export function WorkspacesPage() {
   const [workspaces, setWorkspaces] = useState<WorkspaceDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const reloadAfterProtection = useCallback(() => { setError(null); setLoadAttempt((attempt) => attempt + 1); }, []);
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigDto | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   // Why the list or an action failed, as a mark after its control (`at`):
   // 'load', 'rename', `favorite:<id>`, `isolation:<id>`.
-  const [error, setError] = useState<{ at: string; message: string } | null>(null);
+  const [error, setError] = useState<{ at: string; message: string; code?: string | undefined } | null>(null);
   const [deviceName, setDeviceName] = useState<{ deviceId: string | null; name: string; owned: boolean; connected?: boolean | undefined } | null>(null);
   useEffect(() => {
     let active = true;
@@ -168,7 +171,7 @@ export function WorkspacesPage() {
         setWorkspaces(workspaceResult.value);
         setError(null);
       } else {
-        setError({ at: 'load', message: errorText(workspaceResult.reason, translate("files.unableToLoadWorkspaces")) });
+        setError({ at: 'load', message: errorText(workspaceResult.reason, translate("files.unableToLoadWorkspaces")), code: (workspaceResult.reason as { code?: string } | null)?.code });
       }
       if (runtimeResult.status === 'fulfilled') {
         setRuntimeConfig(runtimeResult.value);
@@ -338,6 +341,14 @@ export function WorkspacesPage() {
       {deviceName?.deviceId === deviceId && deviceName.connected === false ? <p className="flex items-center gap-2 text-sm text-[var(--theme-fg-muted)]">{translate('desktopDevices.offline')}<ErrorMark kind="unavailable" message={translate('devices.deviceIsolationOffline')} /></p> : null}
       {!desktopLayout && supervisorDetails}
 
+      {/* A device whose protection is unfinished blocks every request: say the step that unblocks it. */}
+      {!loading && error?.at === 'load' && relayDeviceId ? (
+        <DeviceProtectionPrompt
+          deviceId={relayDeviceId}
+          missingCertificate={error.code === 'accountCertificateMissing'}
+          onFinished={reloadAfterProtection}
+        />
+      ) : null}
       {/* The list could not load: a short label, the reason behind a mark, and a visible Retry. */}
       {!loading && error?.at === 'load' ? (
         <div className="flex min-h-11 flex-wrap items-center gap-3 text-sm">

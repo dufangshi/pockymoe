@@ -918,7 +918,10 @@ async fn run() -> Result<()> {
                     println!("Web origin (installation hint): {origin}");
                 }
                 if result["relayStatus"]["code"] == "device_id_mismatch" {
-                    println!("Relay assigned a different device id. Reconnecting with backoff; restore the original relay registration or explicitly reset binding.");
+                    println!("Relay assigned a different device id. Run the setup command copied from the Devices page to register this computer as that device, or restore the original relay registration.");
+                }
+                if result["relayStatus"]["code"] == "unauthorized" {
+                    println!("The relay refused this device's token: the device was removed there or its token was replaced. Run the setup command copied from the Devices page.");
                 }
                 if let Some(id) = result["accountKeyId"].as_str() {
                     println!(

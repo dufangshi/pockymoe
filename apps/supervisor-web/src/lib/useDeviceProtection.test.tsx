@@ -138,6 +138,23 @@ describe('device protection display', () => {
     );
     await waitFor(() => expect(result.current).toBe('certificate-missing'));
   });
+  it('gives an offline device of the vault no label instead of Needs repair', async () => {
+    vi.mocked(boundDevices).mockResolvedValue(['d']);
+    // Nothing heard from the device on this page.
+    const offline = renderHook(() => useDeviceProtection('d', undefined));
+    await waitFor(() => expect(boundDevices).toHaveBeenCalled());
+    expect(offline.result.current).toBe('unknown');
+    // A setup command copied for it is waiting to be run.
+    vi.mocked(listPendingEnrollments).mockResolvedValue([
+      { deviceId: 'd', userId: account.userId, accountKeyId: account.accountKeyId, createdAt: Date.now(), enrollSecret: 's' },
+    ]);
+    const waiting = renderHook(() => useDeviceProtection('d', undefined));
+    await waitFor(() => expect(waiting.result.current).toBe('pending'));
+    // It answered without a certificate: that is the device that needs repair.
+    vi.mocked(listPendingEnrollments).mockResolvedValue([]);
+    const broken = renderHook(() => useDeviceProtection('d', { deviceId: 'd', state: 'identity-changed' }));
+    await waitFor(() => expect(broken.result.current).toBe('certificate-missing'));
+  });
   it('shows pending enrollment and refreshes when its record changes', async () => {
     vi.mocked(listPendingEnrollments).mockResolvedValue([
       {

@@ -4,6 +4,7 @@ import { OrphanDeviceGrants } from '../components/SignedShareDetails';
 import { requireUnlock } from '../lib/accountVault';
 import { removeDeviceFromAccount } from '../lib/deviceRemoval';
 import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
+import { DeviceSetupProgress } from './DeviceSetupProgress';
 import {
   relaySupervisorCommand,
   validateDeviceSetupToken,
@@ -209,7 +210,9 @@ function sanitizeGrantMetadata(
 
 export type DeviceManagementAction = 'add' | 'share' | 'isolate' | 'remove';
 /** One capability implementation for the Web, desktop dialogs and device access section. */
-export function DeviceManagement({ deviceId, action, embedded = false, sharingOnly = false, dialogsOnly = false, onClose }: { sharingOnly?: boolean; dialogsOnly?: boolean; onClose?: (() => void) | undefined; deviceId?: string | undefined; action?: DeviceManagementAction | undefined; embedded?: boolean }) {
+export function DeviceManagement({ deviceId, action, embedded = false, sharingOnly = false, dialogsOnly = false, onClose, onRemoved }: { sharingOnly?: boolean; dialogsOnly?: boolean; onClose?: (() => void) | undefined; deviceId?: string | undefined; action?: DeviceManagementAction | undefined; embedded?: boolean;
+  /** The device left the account: removed here, or found already removed. */
+  onRemoved?: ((deviceId: string) => void) | undefined }) {
   const { locale: i18nLocale } = useI18n();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -552,6 +555,7 @@ export function DeviceManagement({ deviceId, action, embedded = false, sharingOn
         } : current);
       }
       setDeletingDevice(null); if (action === 'remove') onClose?.();
+      onRemoved?.(device.id);
       window.requestAnimationFrame(() => {
         window.requestAnimationFrame(() => {
           if (document.activeElement === document.body) {
@@ -895,7 +899,7 @@ export function DeviceManagement({ deviceId, action, embedded = false, sharingOn
             />
           ) : null}
 
-          {createdDevice && createdBinding ? <DeviceTokenPanel result={createdDevice} binding={createdBinding} /> : null}
+          {createdDevice && createdBinding ? <DeviceTokenPanel result={createdDevice} binding={createdBinding} onOpen={onClose} /> : null}
 
           {action !== 'add' && <div className="mt-4 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)]">
             <div className="hidden grid-cols-[minmax(14rem,1fr)_minmax(14rem,0.8fr)_auto] gap-5 border-b border-[var(--theme-border)] px-3 py-2 text-xs font-medium text-[var(--theme-fg-muted)] md:grid">
@@ -1078,7 +1082,15 @@ export function DeviceManagement({ deviceId, action, embedded = false, sharingOn
       />
     </div>
   );
-  if (action && action !== 'add' && (!portal || !portal.devices.length)) return <FormDialog className="device-management-dialog" title={translate('desktopDevices.deviceDetails')} onClose={() => onClose?.()}>{loading ? <div role="status" className="product-skeleton h-24" aria-label={translate('devices.loadingDevices')} /> : <ErrorMark message={error?.message ?? translate('desktopDevices.deviceMissing')} onRetry={() => { void load(); }} />}</FormDialog>;
+  if (action && action !== 'add' && (!portal || !portal.devices.length)) {
+    // The list loaded and the account does not have this device: it was removed
+    // elsewhere. Say so and let it leave the page, instead of an error to retry.
+    const gone = Boolean(portal && deviceId && !loading && !error);
+    const close = () => { if (gone && deviceId) onRemoved?.(deviceId); onClose?.(); };
+    return <FormDialog className="device-management-dialog" title={translate('desktopDevices.deviceDetails')} onClose={close}>{loading ? <div role="status" className="product-skeleton h-24" aria-label={translate('devices.loadingDevices')} />
+      : gone ? <div className="grid gap-4"><p className="text-sm text-[var(--theme-fg)]">{translate('devices.alreadyRemoved')}</p><div className="flex justify-end"><button className="relay-button-primary min-h-11 px-4 py-2" onClick={close} type="button">{translate('workbench.close')}</button></div></div>
+      : <ErrorMark message={error?.message ?? translate('desktopDevices.deviceMissing')} onRetry={() => { void load(); }} />}</FormDialog>;
+  }
   return action === 'add' && onClose ? <FormDialog className="device-management-dialog" title={translate('devices.addDevice')} busy={Boolean(busy)} onClose={closeManagement.requestClose}>{content}{closeAdd.confirmation}{closeManagement.confirmation}</FormDialog> : <>{content}{closeAdd.confirmation}</>;
 }
 
@@ -2026,9 +2038,10 @@ export function DeviceIsolationDialog({
   );
 }
 
-function DeviceTokenPanel({ result, binding }: {
+function DeviceTokenPanel({ result, binding, onOpen }: {
   result: RelayCreateDeviceResultDto;
   binding: DeviceBindingFlags;
+  onOpen?: (() => void) | undefined;
 }) {
   const { locale: i18nLocale } = useI18n();
   const [platform, setPlatform] = useState<SupervisorPlatform>('unix');
@@ -2074,6 +2087,7 @@ function DeviceTokenPanel({ result, binding }: {
           value={command}
         />
       </div>
+      <DeviceSetupProgress deviceId={result.device.id} {...(onOpen ? { onOpen } : {})} />
     </section>
   );
 }
