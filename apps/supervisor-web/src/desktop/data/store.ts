@@ -147,10 +147,13 @@ export class DesktopIndexStore {
     const old = new Map(this.state.devices.map(device => [device.id, device]));
     const devices = portal.devices.filter(device => device.ownerUserId === this.accountId).map(({ id, name, connected, lastHeartbeatAt }) => ({ ...old.get(id), id, name, connected, lastHeartbeatAt, missingFromPortal: false }));
     const present = new Set(devices.map(device => device.id));
-    // A successful portal poll can still omit a lease during reconnect. Keep
-    // cached membership until the same 60s grace used for failed device reads.
-    for (const device of old.values()) if (!present.has(device.id)) devices.push({ ...device, connected: false, missingFromPortal: true });
+    // The account no longer lists a device: it was removed, here or in another
+    // browser. One poll may still be a list read during a reconnect, so the
+    // device stays (offline) until the next poll confirms it; then it goes with
+    // its workspaces and threads, however long it had been offline.
+    for (const device of old.values()) if (!present.has(device.id) && !device.missingFromPortal) devices.push({ ...device, connected: false, missingFromPortal: true });
     const ids = new Set(devices.map(device => device.id));
+    for (const id of old.keys()) if (!ids.has(id)) this.releaseDevice(id);
     this.publish({ devices: mergeRows(this.state.devices, devices, row => row.id),
       workspaces: this.state.workspaces.filter(row => ids.has(row.deviceId)), threads: this.state.threads.filter(row => ids.has(row.deviceId)) });
     for (const [id, { socket }] of this.sockets) if (!this.online(id)) { this.sockets.delete(id); socket.close(); }
@@ -160,6 +163,8 @@ export class DesktopIndexStore {
         this.connect(device.id);
         if (!old.has(device.id) || !old.get(device.id)?.connected) void this.refreshDevice(device.id);
       }
+      // The relay answers 401 for a device the account does not list.
+      if (device.missingFromPortal) continue;
       // Same presence protocol as useDevicePresence; a portal lease alone does
       // not prove a device responds. Offline entries keep their cached summaries.
       const controller = new AbortController(); this.controllers.add(controller);
@@ -174,6 +179,21 @@ export class DesktopIndexStore {
     }
     if (this.mapVisible) this.refreshVisibleActivity();
   }
+  /** Stops what the store keeps running for a device that left the account. */
+  private releaseDevice(deviceId: string) {
+    clearTimeout(this.unavailableTimers.get(deviceId)); this.unavailableTimers.delete(deviceId);
+    const entry = this.sockets.get(deviceId); this.sockets.delete(deviceId); entry?.socket.close();
+  }
+  /** The reader removed this device from the account: it leaves every list now,
+      not at the next poll. */
+  forgetDevice = (deviceId: string) => {
+    if (!this.state.devices.some(row => row.id === deviceId)) return;
+    this.releaseDevice(deviceId);
+    const { [deviceId]: _activity, ...activity } = this.state.activity;
+    const { [deviceId]: _extras, ...extras } = this.state.extras;
+    this.publish({ devices: this.state.devices.filter(row => row.id !== deviceId), threads: this.state.threads.filter(row => row.deviceId !== deviceId),
+      workspaces: this.state.workspaces.filter(row => row.deviceId !== deviceId), activity, extras });
+  };
   private withSignal<T>(read: (signal: AbortSignal) => Promise<T>): Promise<T> {
     const controller = new AbortController(); this.controllers.add(controller);
     const timeout = setTimeout(() => controller.abort(), 15_000);

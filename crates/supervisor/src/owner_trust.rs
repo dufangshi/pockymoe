@@ -201,6 +201,14 @@ pub(crate) fn relay_status(state: &Supervisor) -> Value {
         .and_then(|v| serde_json::from_str(&v).ok())
         .unwrap_or(Value::Null)
 }
+/// The relay refused this device's token: the device was removed there, or its
+/// token was replaced. Setup and `healthz` read this to say so.
+pub(crate) fn relay_refused(state: &Supervisor) -> Result<()> {
+    state.db.set_kv(
+        "relayTrustStatus",
+        &json!({"code":"unauthorized","retryAt":null}).to_string(),
+    )
+}
 pub(crate) fn mismatch_retry(state: &Supervisor, delay: std::time::Duration) -> Result<()> {
     state.db.set_kv(
         "relayTrustStatus",
@@ -721,7 +729,19 @@ fn bind_on_connection(
     only_unbound: bool,
 ) -> Result<Value> {
     let tx = Transaction::new_unchecked(c, TransactionBehavior::Immediate)?;
-    let pin = pinned_in(&tx)?;
+    let result = bind_in(&tx, database, account, enroll, web_origin, only_unbound)?;
+    tx.commit()?;
+    Ok(result)
+}
+fn bind_in(
+    tx: &Connection,
+    database: &Path,
+    account: &str,
+    enroll: &str,
+    web_origin: Option<&str>,
+    only_unbound: bool,
+) -> Result<Value> {
+    let pin = pinned_in(tx)?;
     if only_unbound && pin.is_some() {
         return reject(409, "already_bound");
     }
@@ -735,7 +755,7 @@ fn bind_on_connection(
         );
     }
     let device = if only_unbound {
-        Some(device_id(&tx)?)
+        Some(device_id(tx)?)
     } else {
         None
     };
@@ -744,7 +764,7 @@ fn bind_on_connection(
         account_key_id: id.clone(),
         account_public_key: account.into(),
     };
-    let pending = if certificate_matches(&tx, &pin, &identity)? {
+    let pending = if certificate_matches(tx, &pin, &identity)? {
         None
     } else {
         // A certificate for an identity that was lost/replaced must not be
@@ -753,8 +773,7 @@ fn bind_on_connection(
         Some(B64.decode(enroll)?)
     };
     tx.execute("UPDATE device_owner_trust SET account_key_id=?1,account_public_key=?2,enroll_secret=?3,bound_at=COALESCE(bound_at,?4),web_origin=COALESCE(?5,web_origin),strict=1 WHERE singleton=1",params![id,account,pending,now(),origin])?;
-    pockymoe_runtime::publications::delete_keyless_publications(&tx)?;
-    tx.commit()?;
+    pockymoe_runtime::publications::delete_keyless_publications(tx)?;
     if only_unbound {
         Ok(json!({"bound":true,"accountKeyId":id,"deviceId":device}))
     } else {
@@ -803,6 +822,11 @@ pub fn binding_status(database: &Path) -> Result<Value> {
 pub fn reset_account_trust(database: &Path) -> Result<()> {
     let c = local_connection(database)?;
     let tx = Transaction::new_unchecked(&c, TransactionBehavior::Immediate)?;
+    reset_in(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+fn reset_in(tx: &Connection) -> Result<()> {
     let saved: Option<String> = tx
         .query_row(
             "SELECT value FROM kv WHERE key='devicePortMappings'",
@@ -826,6 +850,42 @@ pub fn reset_account_trust(database: &Path) -> Result<()> {
         )?;
     }
     tx.execute_batch("DELETE FROM preview_leases WHERE browser_id IS NOT NULL; DELETE FROM browser_registrations; DELETE FROM device_certificates; DELETE FROM device_grants; DELETE FROM peer_certificates; DELETE FROM owner_port_mappings; DELETE FROM kv WHERE key='relayTrustStatus'; UPDATE device_owner_trust SET account_key_id=NULL,account_public_key=NULL,enroll_secret=NULL,bound_at=NULL,web_origin=NULL,strict=0 WHERE singleton=1;")?;
+    Ok(())
+}
+
+/// The person at this computer registers it as another relay device (a setup
+/// command for a different device). Everything issued for the old device id
+/// goes: its certificate, grants, peers and the pinned id itself. The account
+/// stays the same one, and enrollment starts again for the new id.
+pub fn reregister(
+    database: &Path,
+    binding: Option<(&str, &str)>,
+    web_origin: Option<&str>,
+) -> Result<()> {
+    if let Some((account, enroll)) = binding {
+        validate_binding(account, enroll)?;
+    }
+    let origin = web_origin.map(validate_web_origin).transpose()?;
+    let c = local_connection(database)?;
+    let tx = Transaction::new_unchecked(&c, TransactionBehavior::Immediate)?;
+    match (pinned_in(&tx)?, binding) {
+        (Some(pin), Some((account, _))) => ensure!(
+            pin.account_public_key == account,
+            "This computer is bound to another account key; run pockymoe bind --reset first"
+        ),
+        (Some(_), None) => anyhow::bail!(
+            "This computer is bound to an account. Copy the setup command from that account's Devices page; it carries the account key"
+        ),
+        (None, _) => {}
+    }
+    reset_in(&tx)?;
+    tx.execute(
+        "UPDATE device_owner_trust SET relay_device_id=NULL WHERE singleton=1",
+        [],
+    )?;
+    if let Some((account, enroll)) = binding {
+        bind_in(&tx, database, account, enroll, origin.as_deref(), false)?;
+    }
     tx.commit()?;
     Ok(())
 }

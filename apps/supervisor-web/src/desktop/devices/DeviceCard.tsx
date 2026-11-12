@@ -6,6 +6,7 @@ import { ArrowRight, ArrowUpRight, ArrowUpCircle, EllipsisVertical, Folder, List
 import { useI18n } from '@pockymoe/thread-ui/i18n';
 import { ErrorMark, StatusMark, type MapDeviceMenuItem, useLongPress, useMenuKeyboard } from '@pockymoe/thread-ui';
 import { DeviceMonitor } from '../../components/DeviceMonitor';
+import { FinishProtectionButton } from '../../components/DeviceSetupProgress';
 import { fetchAgentIsolation } from '../../lib/api';
 import { DeviceStateMark } from '../../pages/relayAdmin/ui';
 import type { DesktopDevice } from '../data/types';
@@ -27,8 +28,11 @@ export interface DeviceCardProps {
   menuItems: MapDeviceMenuItem[];
   /** Changes when the device's settings may have changed, to read its isolation again. */
   isolationRevision?: number;
+  /** This browser started the device's protection and it is not finished: the
+      device is online but refuses work until the reader finishes it. */
+  protectionPending?: boolean;
 }
-export function DeviceCard({ device, metric, today, history, counts, cacheLabel, partial, loading, skeleton, onUpdate, menuItems, isolationRevision = 0 }: DeviceCardProps) {
+export function DeviceCard({ device, metric, today, history, counts, cacheLabel, partial, loading, skeleton, onUpdate, menuItems, isolationRevision = 0, protectionPending = false }: DeviceCardProps) {
   const { t } = useI18n();
   // Isolation is the device's own setting, read from it while it is online; a
   // device shared with you (owner only) or an older one shows no mark.
@@ -81,6 +85,7 @@ export function DeviceCard({ device, metric, today, history, counts, cacheLabel,
       <DeviceStateMark showLabel={false} state={!device.connected ? 'offline' : unstable ? 'unstable' : 'online'} label={!device.connected ? t('desktopDevices.offline') : unstable ? t('desktopDevices.unstable') : t('desktopDevices.online')} />
       <Link to={`/desktop/devices/${encodeURIComponent(device.id)}`} className="pd-device-title" title={`${device.name} · Pockymoe ${metric?.version ?? '—'}`}><strong>{device.name}</strong></Link>
       {isolated ? <span className="pd-isolated" role="img" aria-label={t('devices.deviceIsolated')} title={t('devices.deviceIsolationDescription')}><Lock size={11} data-icon="isolated" aria-hidden /></span> : null}
+      {protectionPending && device.connected ? <FinishProtectionButton compact deviceId={device.id} /> : null}
       <span className="pd-presence">{device.connected && metric?.latencyMs != null ? <small>{metric.latencyMs}ms</small> : null}</span>
       {update ? <button className="pd-update-badge" disabled={!device.connected} onClick={onUpdate} aria-label={t('desktopDevices.updateAvailable', { version: metric?.latestVersion })} title={t('desktopDevices.updateAvailable', { version: metric?.latestVersion })}>{metric?.version}<ArrowUpRight size={10} aria-hidden /></button> : null}
       <Link className="pd-icon-button pd-workspaces-arrow" to={`/devices/${encodeURIComponent(device.id)}/workspaces`} aria-label={t('desktopDevices.openDeviceWorkspaces', { device: device.name })} title={t('desktopDevices.openDeviceWorkspaces', { device: device.name })}><ArrowRight size={14} aria-hidden /></Link>

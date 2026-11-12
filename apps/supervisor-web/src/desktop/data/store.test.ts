@@ -6,7 +6,7 @@ import { plainSummary, summarizeThread, unread } from './types';
 import { buildActivityItems, buildActivitySnapshot } from './activity';
 vi.mock('../../lib/api', () => ({ connectSupervisorEvents: vi.fn(), deviceRequest: vi.fn(), fetchRelayPortal: vi.fn(), request: vi.fn() }));
 const thread = (id: string, patch: Partial<ThreadDto> = {}): ThreadDto => ({ id, workspaceId: 'w', title: id, provider: 'codex', model: 'gpt', status: 'idle', isPinned: false, createdAt: '2026-10-01T00:00:00Z', updatedAt: '2026-10-30T00:00:00Z', lastTurnStartedAt: null, lastTurnCompletedAt: null, activeTurnId: null, summaryText: null, lastError: null, ...patch } as ThreadDto);
-function setup() {
+function setup(listed: { ids: string[] } = { ids: ['a', 'b'] }) {
   const sockets: WebSocket[] = [];
   const get = vi.fn(async (_device: string, path: string) => {
     if (path === 'api/workspaces') return [{ id: 'w', label: 'Project', createdAt: '', lastOpenedAt: null, isFavorite: false, hostId: 'h', absPath: '/project' } satisfies WorkspaceDto];
@@ -16,7 +16,7 @@ function setup() {
     return {};
   });
   const io = {
-    portal: async () => ({ devices: ['a', 'b'].map(id => ({ id, ownerUserId: 'account', name: id, connected: true, lastHeartbeatAt: null })) }) as RelayPortalSummaryDto,
+    portal: async () => ({ devices: listed.ids.map(id => ({ id, ownerUserId: 'account', name: id, connected: true, lastHeartbeatAt: null })) }) as RelayPortalSummaryDto,
     get, presence: async () => ({ connected: true }), socket: () => { const socket = Object.assign(new EventTarget(), { close: vi.fn(), readyState: WebSocket.CONNECTING }) as unknown as WebSocket; sockets.push(socket); return socket; },
   } as unknown as DesktopDataAdapter;
   return { store: new DesktopIndexStore('account', io), get, sockets };
@@ -46,6 +46,30 @@ describe('desktop cached index', () => {
     const previous = store.getSnapshot().threads[0]; get.mockClear(); await store.refreshDevice('a');
     expect(store.getSnapshot().threads.find(row => row.key === 'a:same')).toBe(previous);
     expect(get.mock.calls.filter(([, path]) => path.startsWith('api/threads/'))).toHaveLength(0);
+    store.stop();
+  });
+  it('drops a device the account no longer lists, with its threads, on the second poll', async () => {
+    const listed = { ids: ['a', 'b'] };
+    const { store } = setup(listed); await store.refresh();
+    listed.ids = ['a']; await store.refresh();
+    // One poll may be a list read during a reconnect: offline, still there.
+    expect(store.getSnapshot().devices.find(row => row.id === 'b')).toMatchObject({ connected: false, missingFromPortal: true });
+    await store.refresh();
+    expect(store.getSnapshot().devices.map(row => row.id)).toEqual(['a']);
+    expect(store.getSnapshot().threads.map(row => row.key)).toEqual(['a:same']);
+    expect(store.getSnapshot().workspaces.map(row => row.deviceId)).toEqual(['a']);
+    // Listed again (a transient omission): it comes back as a normal device.
+    listed.ids = ['a', 'b']; await store.refresh();
+    expect(store.getSnapshot().devices.find(row => row.id === 'b')).toMatchObject({ connected: true, missingFromPortal: false });
+    store.stop();
+  });
+  it('forgets a device the reader removed at once', async () => {
+    const { store, sockets } = setup(); await store.refresh();
+    store.forgetDevice('b');
+    expect(store.getSnapshot().devices.map(row => row.id)).toEqual(['a']);
+    expect(store.getSnapshot().threads.map(row => row.key)).toEqual(['a:same']);
+    expect(store.getSnapshot().workspaces.map(row => row.deviceId)).toEqual(['a']);
+    expect(sockets.filter(socket => vi.mocked(socket.close).mock.calls.length > 0)).toHaveLength(1);
     store.stop();
   });
   it('drops high-volume events and updates only the addressed row', async () => {

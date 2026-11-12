@@ -2869,12 +2869,22 @@ async fn delete_device(
         return unauthorized();
     };
     let conn = state.store.conn.lock().await;
-    let deleted = conn
-        .execute(
-            "DELETE FROM relay_devices WHERE id=?1 AND owner_user_id=?2",
-            params![device_id, user.id],
-        )
-        .unwrap_or(0);
+    // A failed delete is not "not found": the device would stay listed while
+    // the page said it was gone.
+    let deleted = match conn.execute(
+        "DELETE FROM relay_devices WHERE id=?1 AND owner_user_id=?2",
+        params![device_id, user.id],
+    ) {
+        Ok(deleted) => deleted,
+        Err(error) => {
+            tracing::error!(%error, "could not delete a device");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new("internal", "Failed to remove device")),
+            )
+                .into_response();
+        }
+    };
     if deleted == 0 {
         return (
             StatusCode::NOT_FOUND,

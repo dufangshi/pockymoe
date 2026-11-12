@@ -324,8 +324,15 @@ export class Fixture {
     // Nothing finishes enrollment in the background: the reader asks for it on
     // the device row, which may ask for the password once.
     await page.bringToFront();
-    await row.locator('.device-status-chip').click();
-    await page.getByRole('button', { name: 'Finish protection', exact: true }).click();
+    // While the account key is still unlocked from showing the command, the
+    // page finishes protection by itself; otherwise the reader presses the button.
+    const protectedChip = row.getByRole('button', { name: 'Protected', exact: true });
+    const finish = page.getByRole('button', { name: 'Finish protection', exact: true });
+    if (!await protectedChip.isVisible()) {
+      await row.locator('.device-status-chip').click();
+      await expect(finish.or(protectedChip)).toBeVisible({ timeout: 20_000 });
+      if (await finish.isVisible()) await finish.click().catch(() => {});
+    }
     const finishing = page.getByRole('dialog', { name: UNLOCK_DIALOG });
     const failed = row.getByRole('button', { name: /^(Protection failed|Bound to another account|Update failed|Needs repair)$/ });
     await expect.poll(async () => await finishing.isVisible() || await row.getByRole('button', { name: 'Protected', exact: true }).isVisible() || await failed.isVisible(), { timeout: 20_000 }).toBe(true);

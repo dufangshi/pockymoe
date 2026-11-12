@@ -264,6 +264,14 @@ describe('pending enrollment lifecycle', () => {
     expect(binding.accountPublicKey).toBe(account.accountPublicKey);
     expect(requireUnlock).toHaveBeenCalledWith('bind-device');
   });
+  it('never asks for the password in quiet mode: a locked account leaves the enrollment pending', async () => {
+    // The unlock window is closed (nothing unlocked it in this test).
+    expect(await completeDeviceEnrollment(pending, true, undefined, { quiet: true })).toBe(false);
+    expect(requireUnlock).not.toHaveBeenCalled();
+    expect(inspectEnrollmentDevice).not.toHaveBeenCalled();
+    expect(deviceTrustRequest).not.toHaveBeenCalled();
+    expect((await listPendingEnrollments(account)).map((p) => p.deviceId)).toEqual([deviceId]);
+  });
   it('creates a fresh repair enrollment instead of reusing a possibly consumed command secret', async () => {
     data.set(deviceId, {
       ...pending,

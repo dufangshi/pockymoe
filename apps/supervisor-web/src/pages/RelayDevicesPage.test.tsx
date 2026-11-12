@@ -33,6 +33,8 @@ vi.mock('../lib/relayOrigin', () => ({ relayOrigin: () => 'https://relay.test' }
 vi.mock('../lib/useDevicePresence', () => ({ useDevicePresence: (portal: unknown) => portal }));
 vi.mock('../lib/useDeviceProtection', () => ({ useDeviceProtection: vi.fn(() => 'not-protected'), protectionLabel: () => 'devices.notProtected' }));
 vi.mock('../components/DeviceBindingPanel', () => ({ DeviceBindingPanel: () => null }));
+// The line under a new device's command has its own test (DeviceSetupProgress.test.tsx).
+vi.mock('../components/DeviceSetupProgress', () => ({ DeviceSetupProgress: () => null }));
 vi.mock('../lib/remoteDeviceProtection', () => ({
   canSwitchLocalEnrollmentToRemote: vi.fn(async () => false), switchLocalEnrollmentToRemote: vi.fn(),
   protectDevices: vi.fn(), deviceProtectionProgress: vi.fn(), updateAndProtectDevice: vi.fn(),

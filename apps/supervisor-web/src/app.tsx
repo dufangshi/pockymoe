@@ -92,6 +92,7 @@ import { builtinFrontendPlugins } from './plugins/builtin-plugin-modules';
 import { ConnectionPicker } from './components/ConnectionPicker';
 import { useComposerPreferences } from './lib/useComposerPreferences';
 import { useReasoningSummaries } from './lib/useReasoningSummaries';
+import { startQuietEnrollment } from './lib/quietEnrollment';
 import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/themePacks';
 
 const DesktopWindowFrame = lazy(() => import('./desktop/DesktopWindowFrame'));
@@ -651,6 +652,12 @@ function RelayGate({ children }: { children: React.ReactNode }) {
   return <AccountSessionGate>{children}</AccountSessionGate>;
 }
 
+/** A new device's protection finishes by itself while the account is unlocked. */
+function QuietEnrollment() {
+  useEffect(() => (relayModeActive() ? startQuietEnrollment() : undefined), []);
+  return null;
+}
+
 function SupervisorAccessGate({ children }: { children: React.ReactNode }) {
   const { locale: i18nLocale } = useI18n();
   const content = <RoutePluginProvider>{children}</RoutePluginProvider>;
@@ -804,6 +811,7 @@ export function App() {
         <WorkspaceDocumentNavigationGuard>
         <DocumentTitleUpdater />
         <AccountUnlockPrompt />
+        <QuietEnrollment />
         <SharePendingRedirect />
           <Routes>
             <Route path="/shared" element={<SharedInvitePage />} />
