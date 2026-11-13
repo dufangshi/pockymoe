@@ -57,6 +57,7 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 - [Native subagents](native-subagents.md)
 - [Chat diagrams](mermaid-diagrams.md)
 - [Message shortcuts](account-composer-shortcuts.md)
+- [The prompt editor and keyboards](prompt-editor.md): what may touch the prompt while a keyboard edits it, and how to record a keyboard's events
 - [ACP slash commands, forks and Grok usage](acp-slash-fork-and-usage.md)
 
 **Harnesses**
