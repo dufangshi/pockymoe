@@ -145,6 +145,20 @@ away) is not reached.
 The next request that needs the session resumes it as usual, a few seconds
 slower, with fresh MCP servers.
 
+## Worker processes
+
+On Linux every Host command, Git read, terminal and harness runs under a
+guardian, `pockymoe environment-worker host-run <id>` (or `host-shell`), which
+reaps its descendants and signs a receipt when they are gone
+(`execution/host_process.rs`). A guardian ends with its command, or when the
+Supervisor stops it. It always leaves through `std::process::exit`: it reads its
+launch frame from stdin on a blocking thread, and returning from `main` would
+wait for that read for as long as the Supervisor holds the pipe. Before 0.13.61
+a stopped guardian did exactly that, and stayed, idle and childless, until the
+Supervisor itself exited; `crates/cli/tests/worker_exit.rs` holds the pipe open
+and checks that it is gone. Guardians left by an older version exit when the
+Supervisor restarts.
+
 ## Open files
 
 Each loaded thread costs the Supervisor a few file descriptors (harness pipes,

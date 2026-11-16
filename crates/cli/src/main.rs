@@ -682,7 +682,16 @@ async fn run() -> Result<()> {
             )?
         ),
         Commands::EnvironmentWorker { mode, args } => {
-            pockymoe_runtime::execution::worker::run(&mode, &args).await?
+            // Exit here, never by returning. A worker reads its launch frame
+            // from stdin on a blocking thread, and dropping the runtime waits
+            // for that read: a worker that was stopped (SIGTERM) or cancelled
+            // then stayed alive, idle, for as long as its parent kept the pipe
+            // open. Thousands of them piled up under a busy Supervisor.
+            let result = pockymoe_runtime::execution::worker::run(&mode, &args).await;
+            if let Err(error) = &result {
+                eprintln!("Error: {error:#}");
+            }
+            std::process::exit(if result.is_ok() { 0 } else { 1 });
         }
 
         Commands::Attach(options) => attach::run(options, cli.connection).await?,
