@@ -36,9 +36,35 @@ export function QuickLook({ threadKey, onClose, onOpen }: { threadKey: string; o
       const left = rect.right + width + 12 < innerWidth ? rect.right + 12 : rect.left - width - 12 >= 12 ? rect.left - width - 12 : Math.max(12, Math.min(rect.right - width - 12, innerWidth - width - 12));
       const top = Math.max(12, Math.min(rect.top, innerHeight - height - 12));
       setPosition(old => old.left === left && old.top === top ? old : { left, top });
-      frame = requestAnimationFrame(follow);
     };
-    frame = requestAnimationFrame(follow); return () => cancelAnimationFrame(frame);
+    const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(follow); };
+    const map = document.querySelector('.desktop-map-scene .thread-map');
+    const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule);
+    if (map) resize?.observe(map);
+    if (dialog.current) resize?.observe(dialog.current);
+    // Map layout changes move the anchor without necessarily resizing it.
+    const geometryChanged = () => {
+      schedule();
+      // A map FLIP animation changes the visual bounds without resizing the
+      // tile. Reposition again at its finite end, without an idle frame loop.
+      for (const animation of map?.getAnimations?.({ subtree: true }) ?? []) {
+        if (animation.effect?.getTiming().iterations !== Infinity) void animation.finished.then(schedule, () => undefined);
+      }
+    };
+    const mutations = new MutationObserver(geometryChanged);
+    if (map) mutations.observe(map, { subtree: true, childList: true, attributes: true, attributeFilter: ['style', 'class'] });
+    window.addEventListener('resize', schedule);
+    window.addEventListener('scroll', schedule, true);
+    window.visualViewport?.addEventListener('resize', schedule);
+    window.visualViewport?.addEventListener('scroll', schedule);
+    schedule();
+    return () => {
+      cancelAnimationFrame(frame); resize?.disconnect(); mutations.disconnect();
+      window.removeEventListener('resize', schedule);
+      window.removeEventListener('scroll', schedule, true);
+      window.visualViewport?.removeEventListener('resize', schedule);
+      window.visualViewport?.removeEventListener('scroll', schedule);
+    };
   }, [threadKey, onClose]);
   if (!thread) return null;
   const state = thread.requests.length ? 'waiting' : workbenchThreadStatus(thread, thread.lastViewedAt ?? thread.firstIndexedCompletedAt);

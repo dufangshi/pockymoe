@@ -12,6 +12,13 @@ it may redraw status marks, icons and small controls, but every status stays
 recognizable by shape alone, menus, windows and copy behave the same, and text
 stays aligned on the shared baseline in the pack's fonts.
 
+Perpetual indicators share the host's single 400ms document beat: at most three
+discrete changes per second, without easing or transitions. Packs draw states;
+they must not add infinite status keyframes, independent timers or per-frame
+loops. Only running and agents-running thread marks move. Reduced motion is
+fully static. Request/loading-only exceptions are listed in UI principles §6
+and enforced by `statusAnimation.test.ts` across the Web, shared UI and packs.
+
 **The relay admin console is the one exception: it always shows Classic.** It is
 an operations tool shared by whoever runs the relay, so it keeps one fixed look
 that its charts, tables and status marks were drawn for, instead of following a
@@ -166,6 +173,14 @@ bar instead. Touch-only devices keep the platform's overlay indicator.
 **Document attributes.** `<html>` carries `data-theme-preset` (the pack id or
 `classic`), `data-theme-features` (the pack's flags, space separated) and
 `data-theme-effective` (`light` or `dark`).
+The shared clock adds `data-status-beat="0…7"` while visible animated indicators
+are mounted. Each step lasts 400ms; 0/1/4/5 are on and 2/3/6/7 are off for
+800ms blinking or breathing. Rotating rings turn 45° per step. Use attribute
+selectors to redraw these states, never an inherited root custom property.
+Keep the map's 1.5px inset ring (full/45% live colour) and avatar's 2px ring
+with a 4.5px, 28% halo (on/off); all packs follow the same phase. Scope changes
+to `@media (prefers-reduced-motion: no-preference)` so absence of the clock is
+the static accessible appearance.
 
 **Neutral hooks** that Classic ignores:
 

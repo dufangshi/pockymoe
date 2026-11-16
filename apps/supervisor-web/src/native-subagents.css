@@ -345,7 +345,7 @@
 .native-agents-history-toggle svg { flex: none; transition: transform 140ms ease; }
 .native-agents-history-toggle svg.is-expanded { transform: rotate(90deg); }
 .native-agents-running-count { display: inline-flex; align-items: center; gap: 4px; color: #20bc87; font-size: 11px; font-variant-numeric: tabular-nums; }
-.native-agents-running-count svg { animation: native-agent-running 1.4s linear infinite; }
+.native-agents-running-count svg { animation: none; }
 /* In the thread tools menu the row already says how many run: a small spinner closes the row. */
 .thread-ui-shell .matter-thread-tools-panels .native-agents-running-count { order: 2; margin-left: auto; font-size: 0; gap: 0; }
 .thread-ui-shell .matter-thread-tools-panels .native-agents-running-count svg { width: 12px; height: 12px; }
@@ -364,5 +364,5 @@
 }
 .thread-ui-shell .matter-workbench .matter-phone-sheet-host .native-agents-running-count svg { display: none; }
 .native-agents-heading > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-@keyframes native-agent-running { to { transform: rotate(360deg); } }
+
 @media (prefers-reduced-motion: reduce) { .native-agents-running-count svg { animation: none; } .native-agents-history-toggle svg { transition: none; } }

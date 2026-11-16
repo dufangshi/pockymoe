@@ -230,12 +230,9 @@
 :theme .thread-ui-shell .thread-graph-worked-summary .thread-execution-step-count { color: var(--theme-fg-muted); font-size: 12.5px; font-weight: 400; }
 /* While the agent works, its avatar breathes a mustard ring. */
 :theme .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar {
-  animation: tx-avatar-working 1.8s ease-in-out infinite;
+  animation: none;
 }
-@keyframes tx-avatar-working {
-  0%, 100% { box-shadow: 0 0 0 2px var(--theme-bg, var(--app-bg)), 0 0 0 3.5px var(--plum-stitch); }
-  50% { box-shadow: 0 0 0 2px var(--theme-bg, var(--app-bg)), 0 0 0 5px color-mix(in srgb, var(--theme-accent-solid) 55%, transparent); }
-}
+
 
 /* Usage chips: model and effort on a mustard felt chip, the price as a stitched tag. */
 :theme .thread-ui-shell .thread-turn-usage { gap: 4px 8px; font-size: 11px; color: var(--theme-fg-muted); }
@@ -306,9 +303,9 @@
   width: 22px;
   height: 22px;
   box-shadow: 0 0 0 1.5px var(--plum-stitch);
-  animation: tx-avatar-bob 1.6s ease-in-out infinite;
+  animation: none;
 }
-@keyframes tx-avatar-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2px); } }
+
 :theme .thread-ui-shell .thread-graph-turn-footer .thread-progress-indicator {
   min-height: 24px;
   padding: 0 10px 0 4px;
@@ -829,4 +826,12 @@
 @media (max-width: 639px) {
   :theme .thread-ui-shell.thread-ui-shell .thread-execution-timeline :is(.is-compact-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle, .thread-history-direct-action) { min-height: 28px; }
   :theme .thread-ui-shell.thread-ui-shell .thread-execution-timeline .is-plain-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle { min-height: 32px; }
+}
+
+/* Working avatars keep their outline; the outer halo follows the shared beat.
+   The small avatar no longer bobs independently of the running mark. */
+:theme .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar { box-shadow: 0 0 0 2px var(--theme-bg), 0 0 0 3.5px var(--plum-stitch); transition: none; }
+@media (prefers-reduced-motion: no-preference) {
+  :theme[data-status-beat] .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar { box-shadow: 0 0 0 2px var(--theme-bg), 0 0 0 5px color-mix(in srgb, var(--theme-accent-solid) 28%, transparent); }
+  :theme:is([data-status-beat='2'], [data-status-beat='3'], [data-status-beat='6'], [data-status-beat='7']) .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar { box-shadow: 0 0 0 2px var(--theme-bg), 0 0 0 3.5px var(--plum-stitch); }
 }

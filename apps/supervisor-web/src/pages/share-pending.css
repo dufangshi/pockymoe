@@ -14,8 +14,8 @@
 .share-pending-send { gap: 6px; min-height: 40px; font-size: 13px; }
 .share-pending-explain, .share-pending-note { margin: 0; font-size: 14px; line-height: 1.55; color: var(--theme-fg); overflow-wrap: anywhere; }
 .share-pending-status { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; color: var(--theme-fg-muted); }
-.share-pending-pulse { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--status-warning-fg); animation: share-pending-pulse 1.6s ease-in-out infinite; }
-@keyframes share-pending-pulse { 0%, 100% { opacity: .35; transform: scale(.85); } 50% { opacity: 1; transform: scale(1); } }
+.share-pending-pulse { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--status-warning-fg); animation: none; }
+
 @media (prefers-reduced-motion: reduce) { .share-pending-pulse { animation: none; } }
 .share-pending-link { font-weight: 600; color: var(--theme-accent-strong, var(--theme-accent)); text-decoration: underline; text-underline-offset: 2px; }
 @media (max-width: 639px) {

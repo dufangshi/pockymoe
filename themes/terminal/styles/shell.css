@@ -74,15 +74,15 @@
 :theme .matter-status-dot[data-status='running'] {
   width: 6px; height: 11px; border: 0; border-radius: 0;
   background: var(--theme-accent-solid);
-  animation: terminal-shell-blink 1.1s steps(1) infinite;
+  animation: none;
 }
 :theme .matter-status-dot[data-status='agents-running'] {
   width: 7px; height: 11px; border-width: 1.5px; background: none;
-  animation: matter-agents-running 1.8s ease-in-out infinite;
+  animation: none;
 }
 :theme .matter-status-dot[data-status='interrupted'] { width: 9px; height: 3px; border: 0; background: #c08a3e; }
 :theme .matter-status-dot[data-status='unread'] { box-shadow: none; }
-@keyframes terminal-shell-blink { 50% { opacity: 0.15; } }
+
 
 /* Tab strip: square tabs, the current one inverse. */
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row {
@@ -156,3 +156,9 @@
 /* Readability overflow and the focused workspace list keep terminal geometry. */
 :theme :is(.thread-map-overflow, .thread-map-readable-list, .thread-map-list-row, .thread-map-list-group, .thread-map-list-older, .thread-map-attention-menu, .thread-map-attention-menu [role='menuitem']) { border-radius: 0; }
 :theme .thread-map-attention[data-responsive] .thread-map-attention-more { border-radius: 0; }
+
+/* The shared beat drives the terminal cursor, not a compositor blink. */
+:theme .matter-status-dot[data-status='running'] { transform: none !important; }
+@media (prefers-reduced-motion: no-preference) {
+  :theme:is([data-status-beat='2'], [data-status-beat='3'], [data-status-beat='6'], [data-status-beat='7']) .matter-status-dot[data-status='running'] { opacity: 0; }
+}
