@@ -28,6 +28,7 @@ export function QuickLook({ threadKey, onClose, onOpen }: { threadKey: string; o
   }, [store, deviceId, threadId]);
   useEffect(() => {
     let frame = 0;
+    let disposed = false;
     const follow = () => {
       const anchor = document.querySelector<HTMLElement>(`[data-map-id="thread:${CSS.escape(threadKey)}"]`);
       const rect = anchor?.getBoundingClientRect();
@@ -37,7 +38,7 @@ export function QuickLook({ threadKey, onClose, onOpen }: { threadKey: string; o
       const top = Math.max(12, Math.min(rect.top, innerHeight - height - 12));
       setPosition(old => old.left === left && old.top === top ? old : { left, top });
     };
-    const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(follow); };
+    const schedule = () => { if (disposed) return; cancelAnimationFrame(frame); frame = requestAnimationFrame(follow); };
     const map = document.querySelector('.desktop-map-scene .thread-map');
     const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule);
     if (map) resize?.observe(map);
@@ -59,6 +60,7 @@ export function QuickLook({ threadKey, onClose, onOpen }: { threadKey: string; o
     window.visualViewport?.addEventListener('scroll', schedule);
     schedule();
     return () => {
+      disposed = true;
       cancelAnimationFrame(frame); resize?.disconnect(); mutations.disconnect();
       window.removeEventListener('resize', schedule);
       window.removeEventListener('scroll', schedule, true);
