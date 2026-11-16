@@ -160,5 +160,5 @@
 /* The shared beat drives the terminal cursor, not a compositor blink. */
 :theme .matter-status-dot[data-status='running'] { transform: none !important; }
 @media (prefers-reduced-motion: no-preference) {
-  :theme:is([data-status-beat='2'], [data-status-beat='3'], [data-status-beat='6'], [data-status-beat='7']) .matter-status-dot[data-status='running'] { opacity: 0; }
+  :theme .matter-status-dot[data-status='running']:is([data-beat='2'], [data-beat='3'], [data-beat='6'], [data-beat='7']) { opacity: 0; }
 }

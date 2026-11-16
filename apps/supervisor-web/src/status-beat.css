@@ -2,21 +2,21 @@
 /* Host-only indicators use the shared clock; see shared styles/status-beat.css. */
 :root :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark, .pm-res-job-bar.is-indeterminate > span) { animation: none; transition: none; }
 @media (prefers-reduced-motion: no-preference) {
-  :root:is([data-status-beat='2'], [data-status-beat='3'], [data-status-beat='6'], [data-status-beat='7']) .native-agents-running-count svg { opacity: .45; }
-  :root[data-status-beat='0'] :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark) { transform: rotate(0deg); }
-  :root[data-status-beat='0'] .pm-res-job-bar.is-indeterminate > span { transform: translateX(-100.000%); }
-  :root[data-status-beat='1'] :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark) { transform: rotate(45deg); }
-  :root[data-status-beat='1'] .pm-res-job-bar.is-indeterminate > span { transform: translateX(-42.857%); }
-  :root[data-status-beat='2'] :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark) { transform: rotate(90deg); }
-  :root[data-status-beat='2'] .pm-res-job-bar.is-indeterminate > span { transform: translateX(14.286%); }
-  :root[data-status-beat='3'] :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark) { transform: rotate(135deg); }
-  :root[data-status-beat='3'] .pm-res-job-bar.is-indeterminate > span { transform: translateX(71.429%); }
-  :root[data-status-beat='4'] :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark) { transform: rotate(180deg); }
-  :root[data-status-beat='4'] .pm-res-job-bar.is-indeterminate > span { transform: translateX(128.571%); }
-  :root[data-status-beat='5'] :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark) { transform: rotate(225deg); }
-  :root[data-status-beat='5'] .pm-res-job-bar.is-indeterminate > span { transform: translateX(185.714%); }
-  :root[data-status-beat='6'] :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark) { transform: rotate(270deg); }
-  :root[data-status-beat='6'] .pm-res-job-bar.is-indeterminate > span { transform: translateX(242.857%); }
-  :root[data-status-beat='7'] :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark) { transform: rotate(315deg); }
-  :root[data-status-beat='7'] .pm-res-job-bar.is-indeterminate > span { transform: translateX(300.000%); }
+  :root .native-agents-running-count svg:is([data-beat='2'], [data-beat='3'], [data-beat='6'], [data-beat='7']) { opacity: .45; }
+  :root :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark)[data-beat='0'] { transform: rotate(0deg); }
+  :root .pm-res-job-bar.is-indeterminate > span[data-beat='0'] { transform: translateX(-100.000%); }
+  :root :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark)[data-beat='1'] { transform: rotate(45deg); }
+  :root .pm-res-job-bar.is-indeterminate > span[data-beat='1'] { transform: translateX(-42.857%); }
+  :root :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark)[data-beat='2'] { transform: rotate(90deg); }
+  :root .pm-res-job-bar.is-indeterminate > span[data-beat='2'] { transform: translateX(14.286%); }
+  :root :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark)[data-beat='3'] { transform: rotate(135deg); }
+  :root .pm-res-job-bar.is-indeterminate > span[data-beat='3'] { transform: translateX(71.429%); }
+  :root :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark)[data-beat='4'] { transform: rotate(180deg); }
+  :root .pm-res-job-bar.is-indeterminate > span[data-beat='4'] { transform: translateX(128.571%); }
+  :root :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark)[data-beat='5'] { transform: rotate(225deg); }
+  :root .pm-res-job-bar.is-indeterminate > span[data-beat='5'] { transform: translateX(185.714%); }
+  :root :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark)[data-beat='6'] { transform: rotate(270deg); }
+  :root .pm-res-job-bar.is-indeterminate > span[data-beat='6'] { transform: translateX(242.857%); }
+  :root :is(.env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark)[data-beat='7'] { transform: rotate(315deg); }
+  :root .pm-res-job-bar.is-indeterminate > span[data-beat='7'] { transform: translateX(300.000%); }
 }

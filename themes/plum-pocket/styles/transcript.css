@@ -832,6 +832,6 @@
    The small avatar no longer bobs independently of the running mark. */
 :theme .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar { box-shadow: 0 0 0 2px var(--theme-bg), 0 0 0 3.5px var(--plum-stitch); transition: none; }
 @media (prefers-reduced-motion: no-preference) {
-  :theme[data-status-beat] .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar { box-shadow: 0 0 0 2px var(--theme-bg), 0 0 0 5px color-mix(in srgb, var(--theme-accent-solid) 28%, transparent); }
-  :theme:is([data-status-beat='2'], [data-status-beat='3'], [data-status-beat='6'], [data-status-beat='7']) .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar { box-shadow: 0 0 0 2px var(--theme-bg), 0 0 0 3.5px var(--plum-stitch); }
+  :theme .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar[data-beat] { box-shadow: 0 0 0 2px var(--theme-bg), 0 0 0 5px color-mix(in srgb, var(--theme-accent-solid) 28%, transparent); }
+  :theme .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar:is([data-beat='2'], [data-beat='3'], [data-beat='6'], [data-beat='7']) { box-shadow: 0 0 0 2px var(--theme-bg), 0 0 0 3.5px var(--plum-stitch); }
 }
