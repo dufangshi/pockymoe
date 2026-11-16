@@ -2469,13 +2469,18 @@ input:not(:where(.settings-workspace, .host-dialog, .plugin-settings-dialog) *) 
 
 
 .thread-connection-pending {
-  animation: none;
+  background-color: rgb(68 64 60 / 0.94);
+  border-color: rgb(87 83 78 / 0.96);
+  color: rgb(229 231 235);
 }
 
 
 
 .thread-live-connection-reconnecting {
-  animation: none;
+  background-color: rgb(16 185 129 / 0.18);
+  border-color: rgb(110 231 183 / 0.34);
+  color: rgb(236 253 245);
+  box-shadow: 0 0 0 0 rgb(16 185 129 / 0.04);
 }
 
 .thread-scroll-container {
