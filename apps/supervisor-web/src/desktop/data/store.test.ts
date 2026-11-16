@@ -23,6 +23,22 @@ function setup(listed: { ids: string[] } = { ids: ['a', 'b'] }) {
 }
 afterEach(() => vi.useRealTimers());
 describe('desktop cached index', () => {
+  it('has a map deadline only while the map renders, leaving protocol timers alive', async () => {
+    vi.useFakeTimers();
+    const { store } = setup(); store.start();
+    try {
+      await vi.advanceTimersByTimeAsync(200);
+      const protocolTimers = vi.getTimerCount();
+      store.setMapVisible(true); await vi.advanceTimersByTimeAsync(200);
+      expect(vi.getTimerCount()).toBe(protocolTimers + 1);
+      document.documentElement.dataset.pockymoeRendering = 'paused'; window.dispatchEvent(new Event('pockymoe-rendering-change'));
+      expect(vi.getTimerCount()).toBe(protocolTimers);
+      delete document.documentElement.dataset.pockymoeRendering; window.dispatchEvent(new Event('pockymoe-rendering-change'));
+      expect(vi.getTimerCount()).toBe(protocolTimers + 1);
+      store.setMapVisible(false); await vi.advanceTimersByTimeAsync(200);
+      expect(vi.getTimerCount()).toBe(protocolTimers);
+    } finally { store.stop(); delete document.documentElement.dataset.pockymoeRendering; }
+  });
   it('keeps native summaries plain, bounded and free of recognizable credentials', () => {
     expect(plainSummary('<b>Done</b>\nnext line')).toBe('Done');
     expect(plainSummary('Bearer ' + 'x'.repeat(32))).toBe('Bearer [redacted]');

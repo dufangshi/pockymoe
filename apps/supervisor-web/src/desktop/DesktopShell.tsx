@@ -6,7 +6,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { AppShellNavContext, useAppShellNav } from '../components/AppShellNavContext';
 import { appPathname, appUrl } from '../lib/webBase';
 import { threadHref } from '../lib/relayRoutes';
-import { useDesktopSelector, useDesktopStore } from './data';
+import { useDesktopStore } from './data';
 import { ActivitySection } from './ActivitySection';
 import { ClientUpdateButton } from './ClientUpdateButton';
 import { DesktopSurfaceContext, hasWorkspaceContext, type NavigationActions } from './context';
@@ -17,7 +17,7 @@ import './desktop.css';
 
 export function DesktopShell({ children, capabilities }: { children: ReactNode; capabilities: DesktopCapabilities }) {
   const { locale } = useI18n();
-  const index = useDesktopSelector(index => index); const store = useDesktopStore();
+  const store = useDesktopStore();
   const location = useLocation(); const navigate = useNavigate(); const shell = useAppShellNav();
   const host = window.pockymoeHost!;
   const [paintedPath, setPaintedPath] = useState(location.pathname);

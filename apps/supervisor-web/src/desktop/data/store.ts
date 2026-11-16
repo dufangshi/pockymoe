@@ -1,6 +1,7 @@
 import type { DeviceMetricsDto, RelayPortalSummaryDto, ThreadActivityResponseDto, ThreadDetailDto, ThreadDto, ThreadEventEnvelope, WorkspaceDto } from '@pockymoe/shared';
 import { connectSupervisorEvents, deviceRequest, fetchRelayPortal, request } from '../../lib/api';
 import { SupervisorHeartbeat } from '../../lib/supervisorHeartbeat';
+import { documentRenders } from '../../lib/renderingLifecycle';
 import { clearIndex, readIndex, writeIndex } from './cache';
 import { mergeRows } from './merge';
 import { entityKey, plainSummary, summarizeRequest, summarizeThread, type DesktopExtra, type DesktopIndex, type DesktopThread } from './types';
@@ -49,6 +50,8 @@ export class DesktopIndexStore {
   private generation = 0;
   private stopped = false;
   private mapVisible = false;
+  private started = false;
+  private mapTimer: ReturnType<typeof setTimeout> | undefined;
   constructor(readonly accountId: string, private io: DesktopDataAdapter = adapter) {
     this.state = { accountId, devices: [], workspaces: [], threads: [], activity: {}, extras: {}, hydrated: false, refreshing: false, error: null, pulseKeys: [], syncedDeviceIds: [], recentThreadKeys: [] };
   }
@@ -57,6 +60,7 @@ export class DesktopIndexStore {
   private publish(patch: Partial<DesktopIndex>) {
     if (this.stopped || Object.entries(patch).every(([key, value]) => this.state[key as keyof DesktopIndex] === value)) return;
     this.state = { ...this.state, ...patch }; this.listeners.forEach(listener => listener());
+    if (patch.devices) this.syncMapClock();
     clearTimeout(this.persistTimer);
     this.persistTimer = setTimeout(() => { const snapshot = this.state; this.persistence = this.persistence.then(() => writeIndex(snapshot)); }, 150);
   }
@@ -69,19 +73,15 @@ export class DesktopIndexStore {
     else this.state = { ...this.state, hydrated: true };
   }
   start() {
+    if (this.started) return;
+    this.started = true;
     this.stopped = false; void this.refresh(false);
     this.timers.push(setInterval(() => { if (visible()) void this.refreshPortal().catch(() => undefined); }, 30_000));
     this.timers.push(setInterval(() => {
       if (!visible()) return;
       this.state.devices.filter(device => device.connected).forEach(device => { void this.refreshDevice(device.id); });
     }, 60_000));
-    this.timers.push(setInterval(() => {
-      if (!visible() || !this.mapVisible) return;
-      for (const device of this.state.devices.filter(device => device.connected)) {
-        if (Date.now() - (this.lastActivity.get(device.id) ?? 0) >= 60_000) void this.refreshActivity(device.id);
-        if (Date.now() - (this.lastExtra.get(device.id) ?? 0) >= 15_000) void this.refreshExtras(device.id);
-      }
-    }, 5000));
+    this.syncMapClock();
     this.timers.push(setInterval(() => {
       if (!visible()) return;
       for (const { socket, heartbeat } of this.sockets.values()) if (socket.readyState === WebSocket.OPEN) {
@@ -90,9 +90,11 @@ export class DesktopIndexStore {
       }
     }, 2000));
     document.addEventListener('visibilitychange', this.visibilityChanged);
+    window.addEventListener('pockymoe-rendering-change', this.mapRenderingChanged);
     window.addEventListener('pockymoe-account-logout', this.logout);
   }
   stop() {
+    this.started = false; clearTimeout(this.mapTimer); this.mapTimer = undefined;
     this.stopped = true; this.generation++;
     this.timers.forEach(clearInterval); this.timers = [];
     this.retries.forEach(clearTimeout); this.retries.clear();
@@ -104,6 +106,7 @@ export class DesktopIndexStore {
     this.sockets.forEach(({ socket }) => socket.close()); this.sockets.clear();
     this.controllers.forEach(controller => controller.abort()); this.controllers.clear();
     document.removeEventListener('visibilitychange', this.visibilityChanged);
+    window.removeEventListener('pockymoe-rendering-change', this.mapRenderingChanged);
     window.removeEventListener('pockymoe-account-logout', this.logout);
   }
   logout = () => {
@@ -112,6 +115,7 @@ export class DesktopIndexStore {
     void this.persistence.then(() => clearIndex(this.accountId));
   };
   private visibilityChanged = () => {
+    this.mapRenderingChanged();
     if (!visible()) return;
     this.sockets.forEach(({ heartbeat }) => heartbeat.probe(Date.now()));
     void this.refresh(false);
@@ -121,10 +125,29 @@ export class DesktopIndexStore {
   setMapVisible = (value: boolean) => {
     if (this.mapVisible === value) return;
     this.mapVisible = value;
-    if (value && visible()) this.refreshVisibleActivity();
+    if (value && documentRenders()) this.refreshVisibleActivity();
     if (!value) { this.publish({ pulseKeys: [] }); this.activityTimers.forEach(clearTimeout); this.activityTimers.clear(); }
+    this.syncMapClock();
   };
+  private mapRenders() { return this.mapVisible && documentRenders(); }
+  private mapRenderingChanged = () => {
+    if (!this.mapRenders()) {
+      this.activityTimers.forEach(clearTimeout); this.activityTimers.clear(); clearTimeout(this.pulseTimer);
+      if (this.state.pulseKeys.length) this.publish({ pulseKeys: [] });
+    } else this.refreshVisibleActivity();
+    this.syncMapClock();
+  };
+  /** Tile readings have 15/60s deadlines; no five-second scan while offscreen. */
+  private syncMapClock() {
+    clearTimeout(this.mapTimer); this.mapTimer = undefined;
+    if (!this.started || this.stopped || !this.mapRenders()) return;
+    const devices = this.state.devices.filter(device => device.connected);
+    if (!devices.length) return;
+    const next = Math.min(...devices.flatMap(device => [(this.lastActivity.get(device.id) ?? 0) + 60_000, (this.lastExtra.get(device.id) ?? 0) + 15_000]));
+    this.mapTimer = setTimeout(() => { this.mapTimer = undefined; this.refreshVisibleActivity(); this.syncMapClock(); }, Math.max(1000, next - Date.now()));
+  }
   private refreshVisibleActivity() {
+    if (!this.mapRenders()) return;
     for (const device of this.state.devices.filter(device => device.connected)) {
       if (this.dirtyActivity.has(device.id) || Date.now() - (this.lastActivity.get(device.id) ?? 0) >= 60_000) void this.refreshActivity(device.id);
       if (Date.now() - (this.lastExtra.get(device.id) ?? 0) >= 15_000) void this.refreshExtras(device.id);
@@ -155,7 +178,8 @@ export class DesktopIndexStore {
     const ids = new Set(devices.map(device => device.id));
     for (const id of old.keys()) if (!ids.has(id)) this.releaseDevice(id);
     this.publish({ devices: mergeRows(this.state.devices, devices, row => row.id),
-      workspaces: this.state.workspaces.filter(row => ids.has(row.deviceId)), threads: this.state.threads.filter(row => ids.has(row.deviceId)) });
+      workspaces: this.state.workspaces.every(row => ids.has(row.deviceId)) ? this.state.workspaces : this.state.workspaces.filter(row => ids.has(row.deviceId)),
+      threads: this.state.threads.every(row => ids.has(row.deviceId)) ? this.state.threads : this.state.threads.filter(row => ids.has(row.deviceId)) });
     for (const [id, { socket }] of this.sockets) if (!this.online(id)) { this.sockets.delete(id); socket.close(); }
     for (const device of devices) {
       if (!device.connected) this.markUnavailable(device.id);
@@ -257,8 +281,9 @@ export class DesktopIndexStore {
     if (!this.stopped && generation === this.generation && !(this.state.syncedDeviceIds ?? []).includes(deviceId)) this.publish({ syncedDeviceIds: [...(this.state.syncedDeviceIds ?? []), deviceId].sort() });
   });
   refreshActivity = (deviceId: string, allowOffMap = false): Promise<void> => this.single(`activity:${deviceId}`, async () => {
-    if ((!this.mapVisible && !allowOffMap) || !visible() || !this.online(deviceId) || this.stopped) return;
+    if ((!this.mapVisible && !allowOffMap) || !visible() || !documentRenders() || !this.online(deviceId) || this.stopped) return;
     const generation = this.generation; this.lastActivity.set(deviceId, Date.now()); this.dirtyActivity.delete(deviceId);
+    this.syncMapClock();
     this.extra(deviceId, { syncing: true });
     try {
       const activity = await this.withSignal(signal => this.io.get<ThreadActivityResponseDto>(deviceId, 'api/thread-activity?hours=24', { signal, cache: 'no-store' }));
@@ -273,8 +298,9 @@ export class DesktopIndexStore {
     finally { if (generation === this.generation) this.extra(deviceId, { syncing: false }); }
   });
   refreshExtras = (deviceId: string): Promise<void> => this.single(`extras:${deviceId}`, async () => {
-    if (!this.mapVisible || !visible() || !this.online(deviceId) || this.stopped) return;
+    if (!this.mapRenders() || !visible() || !this.online(deviceId) || this.stopped) return;
     const generation = this.generation; const started = performance.now(); this.lastExtra.set(deviceId, Date.now());
+    this.syncMapClock();
     await Promise.allSettled([
       this.withSignal(signal => this.io.get<DeviceMetricsDto>(deviceId, 'api/device/metrics', { signal, cache: 'no-store' })).then(metrics => { if (generation === this.generation && !this.stopped) this.extra(deviceId, { metrics, latencyMs: Math.round(performance.now() - started) }); }),
       ...(Date.now() - (this.lastRuntime.get(deviceId) ?? 0) < 60_000 ? [] : [this.io.get<{ runningVersion?: string; latestVersion?: string }>(deviceId, 'api/management/supervisor', { cache: 'no-store' }).then(runtime => {
@@ -372,12 +398,12 @@ export class DesktopIndexStore {
       this.dirtyActivity.add(deviceId);
       this.scheduleDetail(deviceId, event.threadId);
       clearTimeout(this.activityTimers.get(deviceId));
-      if (this.mapVisible && visible()) this.activityTimers.set(deviceId, setTimeout(() => { this.activityTimers.delete(deviceId); void this.refreshActivity(deviceId); }, 2000));
+      if (this.mapRenders() && visible()) this.activityTimers.set(deviceId, setTimeout(() => { this.activityTimers.delete(deviceId); void this.refreshActivity(deviceId); }, 2000));
     }
-    if (this.mapVisible && visible() && ['thread.request.created', 'thread.turn.completed', 'thread.turn.failed'].includes(event.type)) {
+    if (this.mapRenders() && visible() && ['thread.request.created', 'thread.turn.completed', 'thread.turn.failed'].includes(event.type)) {
       if (this.state.pulseKeys.includes(key)) {
         this.publish({ pulseKeys: this.state.pulseKeys.filter(value => value !== key) });
-        requestAnimationFrame(() => { if (!this.stopped && this.mapVisible && visible()) this.publish({ pulseKeys: [...new Set([...this.state.pulseKeys, key])] }); });
+        requestAnimationFrame(() => { if (!this.stopped && this.mapRenders() && visible()) this.publish({ pulseKeys: [...new Set([...this.state.pulseKeys, key])] }); });
       } else this.publish({ pulseKeys: [...this.state.pulseKeys, key] });
       clearTimeout(this.pulseTimer); this.pulseTimer = setTimeout(() => this.publish({ pulseKeys: [] }), 1000);
     }

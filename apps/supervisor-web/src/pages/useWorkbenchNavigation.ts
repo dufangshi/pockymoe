@@ -4,7 +4,7 @@ import { useBrowserStateKey } from '../lib/browserStateScope';
 import { narrationQuery } from '../lib/transcriptPreferences';
 import { useHostScope } from '../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ThreadDetailDto, ThreadDto, WorkspaceDto } from '@pockymoe/shared';
 import type {
   WorkbenchNotification,
@@ -14,6 +14,8 @@ import { ApiError, isInvisibleThreadError, relayModeActive, request } from '../l
 import { threadHref } from '../lib/relayRoutes';
 import { isTourDevice, tourStateKey } from '../lib/tourSandbox/tourDevice';
 import { threadThemeAgentKey } from '@pockymoe/thread-ui';
+import { documentRenders, subscribeWhenRendering } from '../lib/renderingLifecycle';
+import { useRenderedState } from '../lib/useRenderedState';
 
 /** The avatar key a theme shows for a thread's harness. */
 function threadAgentField(thread: { provider?: string | null; agentId?: string | null }): { agent?: string } {
@@ -150,20 +152,20 @@ export function useWorkbenchNavigation(
   // in this browser scope (favorites, read marks, statuses) until it refreshes.
   const cacheKey = `${relay ? 'relay' : 'local'}:${storageKey}`;
   const cached = lastNavigation.get(cacheKey);
-  const [snapshot, setSnapshot] = useState<NavigationSnapshot>(() => cached?.snapshot ?? {
+  const [snapshot, setSnapshot] = useRenderedState<NavigationSnapshot>(() => cached?.snapshot ?? {
     threads: [],
     notifications: [],
-  });
-  const [statuses, setStatuses] = useState<Record<string, ThreadActivity>>(() => cached?.statuses ?? {});
-  const [families, setFamilies] = useState<Record<string, ThreadDto[]>>(() => cached?.families ?? {});
+  }, enabled, false);
+  const [statuses, setStatuses] = useRenderedState<Record<string, ThreadActivity>>(() => cached?.statuses ?? {}, enabled, false);
+  const [families, setFamilies] = useRenderedState<Record<string, ThreadDto[]>>(() => cached?.families ?? {}, enabled, false);
   useEffect(() => { lastNavigation.set(cacheKey, { snapshot, statuses, families }); }, [cacheKey, snapshot, statuses, families]);
   // Every thread listed by the devices navigation read, for the running sheet:
   // running threads count wherever they are, opened before or not.
-  const [deviceLists, setDeviceLists] = useState<Record<string, ThreadDto[]>>({});
+  const [deviceLists, setDeviceLists] = useRenderedState<Record<string, ThreadDto[]>>({}, enabled, false);
   // Owned devices come from the shell's single live index. Shared grants keep
   // their scoped fallback reads; they are deliberately absent from that index.
-  useEffect(() => {
-    if (!sharedIndex) return;
+  useLayoutEffect(() => {
+    if (!sharedIndex || !enabled) return;
     let lastThreads: unknown, lastDevices: unknown;
     let owned = new Set<string>();
     const sync = () => {
@@ -180,11 +182,11 @@ export function useWorkbenchNavigation(
       for (const thread of index.threads) (groups[`${thread.deviceId}:${thread.rootThreadId ?? thread.id}`] ??= []).push(thread);
       setFamilies(previous => ({ ...keepShared(previous), ...groups }));
     };
-    sync(); return sharedIndex.subscribe(sync);
-  }, [sharedIndex]);
+    sync(); return subscribeWhenRendering(sharedIndex.subscribe, sync, true);
+  }, [sharedIndex, enabled]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [navigationReady, setNavigationReady] = useState(false);
+  const [navigationReady, setNavigationReady] = useRenderedState(false, enabled, false);
   const [readAt, setReadAt] = useState(Date.now());
   const [notificationDetails, setNotificationDetails] = useState<Record<string, { title: string; summary: string; status: 'unread' | 'failed' | 'interrupted' }>>({});
   const [notificationsOpened, setNotificationsOpened] = useState(0);
@@ -212,7 +214,7 @@ export function useWorkbenchNavigation(
     const controller = new AbortController();
     const unreachable = unreachableRef.current;
     async function refresh() {
-      if (inFlight || document.visibilityState === 'hidden') return;
+      if (inFlight || !documentRenders()) return;
       inFlight = true;
       const startedAtRevision = revision.current;
       try {
@@ -353,11 +355,14 @@ export function useWorkbenchNavigation(
         inFlight = false;
       }
     }
-    void refresh();
     // Local shortcuts stay in this browser; notifications belong to the owner.
-    const interval = window.setInterval(() => void refresh(), relay ? RELAY_NAVIGATION_REFRESH_MS : 5000);
+    const stopPolling = subscribeWhenRendering(() => {
+      void refresh();
+      const interval = window.setInterval(() => void refresh(), relay ? RELAY_NAVIGATION_REFRESH_MS : 5000);
+      return () => clearInterval(interval);
+    }, () => {});
     const onVisible = () => {
-      if (document.visibilityState === 'visible') void refresh();
+      if (documentRenders()) void refresh();
     };
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('storage', onVisible);
@@ -365,7 +370,7 @@ export function useWorkbenchNavigation(
     return () => {
       alive = false;
       controller.abort();
-      clearInterval(interval);
+      stopPolling();
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('storage', onVisible);
       window.removeEventListener(NOTIFICATION_CHANGE, onVisible);

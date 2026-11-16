@@ -1,7 +1,7 @@
 import { RelayUserMenu } from '../components/RelayUserMenu';
 import { relayModeActive } from '../lib/api';
 import { formatNumber, translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import { Plus, Settings } from 'lucide-react';
 import { ErrorMark, MatterWorkbench, ThreadMap, type MapDeviceExtras, type MapScope, type ThreadMapDevice } from '@pockymoe/thread-ui';
 import { useNavigate } from 'react-router-dom';
@@ -21,9 +21,15 @@ import { deviceActions } from './devices/deviceActions';
 import DevicesPage from './devices';
 import { deviceCounts } from './devices/model';
 
+// Keep the map's view state while another route owns the screen. Catch up with
+// the latest props on return, without committing an invisible tile tree.
+const RetainedMap = memo(function RetainedMap({ active: _active, ...props }: ComponentProps<typeof ThreadMap> & { active: boolean }) {
+  return <ThreadMap {...props} />;
+}, (_previous, next) => !next.active);
+
 export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen }: { visible: boolean; mapVisible: boolean; revealKey: string | null; onOpen(key: string, newWindow?: boolean): void }) {
   const { locale } = useI18n();
-  const index = useDesktopSelector(index => index); const store = useDesktopStore();
+  const index = useDesktopSelector(index => index, Object.is, visible); const store = useDesktopStore();
   const shell = useAppShellNav(); const navigate = useNavigate();
   const [scope, setScope] = useState<MapScope>('all'); const [filter, setFilter] = useState('');
   const [quickLook, setQuickLook] = useState<string | null>(null);
@@ -85,7 +91,7 @@ export function DesktopMapPage({ visible, mapVisible, revealKey, onOpen }: { vis
       search: <ConversationSearch threadId={firstThreads[0]?.id ?? ''} workspaceId={firstThreads[0]?.workspaceId ?? ''} deviceLabel={first?.name ?? translate('desktopShell.devices')} deviceId={first?.id} initialScope="device" allowGlobal turns={[]} open={searchOpen} onOpen={() => setSearchOpen(true)} onClose={() => setSearchOpen(false)} onSelect={(_turns, turnId, itemId, query) => { if (firstThreads[0]) { setSearchOpen(false); navigate(`${threadHref(firstThreads[0].id, first?.id)}?${new URLSearchParams({ turnId, itemId, query })}`); } }} onNavigate={(match, query) => { setSearchOpen(false); navigate(`${threadHref(match.threadId, first?.id)}?${new URLSearchParams({ query, ...(match.turnId ? { turnId: match.turnId } : {}), ...(match.itemId ? { itemId: match.itemId } : {}) })}`); }} />,
       renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={navigation.currentKey} onFavorite={navigation.onToggleThreadFavorite} onRenamed={navigation.onThreadRenamed} onRemoved={navigation.onThreadRemoved} onNavigate={navigate} />,
     })} settings={relayModeActive() ? <RelayUserMenu rail /> : <button aria-label={translate('desktopShell.settings')} onClick={shell?.openSettings}><Settings data-icon="settings" /></button>} newThread={<button aria-label={translate('desktopShell.newThread')} onClick={() => first && navigate(`/devices/${encodeURIComponent(first.id)}/threads/new`)}><Plus data-icon="new-thread" /></button>} actions={null} threadMenu={null} connection={<span className="desktop-online-count">{translate('desktopShell.onlineCount', { count: formatNumber(index.devices.filter(device => device.connected).length) })}</span>} explorer={null} revealExplorer={0}>
-      <div className="desktop-map-persistent" hidden={!mapVisible} inert={!mapVisible}><ThreadMap devices={devices} presentation="page" stableLayout scope={scope} onScopeChange={setScope} filterText={filter} onFilterChange={setFilter} deviceExtras={extras} revealKey={revealKey} pulseKeys={index.pulseKeys} onQuickLook={setQuickLook} onOpen={thread => onOpen(thread.key)} onNavigate={href => navigate(appPathname(href))} onRetry={id => { void store.refreshDevice(id); }} actions={index.error ? <ErrorMark message={index.error} onRetry={() => { void store.refresh(); }} /> : undefined} /></div>
+      <div className="desktop-map-persistent" hidden={!mapVisible} inert={!mapVisible}><RetainedMap active={mapVisible} devices={devices} presentation="page" stableLayout scope={scope} onScopeChange={setScope} filterText={filter} onFilterChange={setFilter} deviceExtras={extras} revealKey={revealKey} pulseKeys={index.pulseKeys} onQuickLook={setQuickLook} onOpen={thread => onOpen(thread.key)} onNavigate={href => navigate(appPathname(href))} onRetry={id => { void store.refreshDevice(id); }} actions={index.error ? <ErrorMark message={index.error} onRetry={() => { void store.refresh(); }} /> : undefined} /></div>
       {visible && !mapVisible ? <div className="desktop-map-route"><DevicesPage onRevealDevice={revealDevice} /></div> : null}
       {quickLook && mapVisible ? <QuickLook threadKey={quickLook} onClose={() => setQuickLook(null)} onOpen={(key, newWindow) => { setQuickLook(null); onOpen(key, newWindow); }} /> : null}
     </MatterWorkbench>

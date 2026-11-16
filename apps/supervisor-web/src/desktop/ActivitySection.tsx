@@ -46,7 +46,7 @@ export function ActivityFamily({ root, item, members, favorites, onOpen, menu }:
 export function ActivitySection({ navigation, onOpen }: { navigation: NavigationActions; onOpen(key: string): void }) {
   useI18n();
   const store = useDesktopStore();
-  const index = useDesktopSelector(index => index);
+  const index = useDesktopSelector(index => index, (a, b) => a.devices === b.devices && a.workspaces === b.workspaces && a.threads === b.threads);
   const previous = useRef<readonly ActivityItem[]>([]);
   const items = useMemo(() => { previous.current = mergeRows(previous.current, buildActivityItems(index), row => row.key); return previous.current; }, [index]);
   const latest = useRef(navigation); latest.current = navigation;

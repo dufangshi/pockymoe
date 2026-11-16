@@ -180,6 +180,7 @@ import { useThreadListPolling } from './useThreadListPolling';
 import { useEventDrivenRefresh } from '../lib/useEventDrivenRefresh';
 import { useAttachmentUploads } from '../lib/threadUploads';
 import { useThreadView } from '../lib/threadView';
+import { useRenderedState } from '../lib/useRenderedState';
 import { announceHarnessRuntimeEvent } from '../lib/harnessRuntimeEvents';
 import { useThreadWorkspaceAdapter } from './useThreadWorkspaceAdapter';
 import { ThreadCreateForm } from './thread-create/ThreadCreateForm';
@@ -566,7 +567,7 @@ export function ThreadDetailPage() {
   const [backendManagementSchema, setBackendManagementSchema] =
     useState<AgentBackendManagementSchemaDto | null>(null);
   const [liveOutput, setLiveOutput] = useState('');
-  const [backendProgress, setBackendProgress] = useState<{ threadId: string; turnId: string; receivedAt: string } | null>(null);
+  const [backendProgress, setBackendProgress] = useRenderedState<{ threadId: string; turnId: string; receivedAt: string } | null>(null, routeActive);
   const [livePlan, setLivePlan] = useState<{
     turnId: string;
     explanation: string | null;

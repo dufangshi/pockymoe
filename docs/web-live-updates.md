@@ -16,7 +16,7 @@ idle, while a turn runs and while hidden, and fails when a change exceeds them.
 | Thread list (`/api/threads?includeAgentThreads=true`) | Other threads' `thread.turn.*` and `thread.updated` events, at most every 2 s; a reconnect | 60 s (10 s while the socket is down) |
 | Capability snapshot (`/api/threads/<id>/capabilities`) | Current-thread turn, `thread.updated`, `thread.harness.ready` and collaboration events; 1.5 s and 6 s after the thread connects while the page is open, because ACP agents announce commands after a session opens; a reconnect | 60 s |
 | `/healthz` | Every 2 s, only while the socket is not open | none |
-| Device metrics (`/api/device/metrics`) | Opening the monitor dialog | 15 s for the topbar meter, 2 s while the dialog is open |
+| Device metrics (`/api/device/metrics`) | Opening the monitor dialog | 15 s for the topbar meter, 5 s while the dialog is open |
 | Harness processes (`/api/device/processes`) | Expanding the monitor's memory row; `thread.runtime.loaded` / `thread.runtime.released` events | 3 s while the row is expanded |
 | Thread Git context, status, diff and commits | Opening the Git panel; the thread's `updatedAt` changes; returning to the visible tab; manual refresh. Reads run only while the panel and tab are visible | none |
 
@@ -32,6 +32,12 @@ A device it cannot reach (offline, timing out, or refusing this browser) is
 skipped for 30 s, doubling to 10 min, and its threads show as unknown meanwhile.
 A closed split does not keep polling its reference thread, and subscription usage
 is not polled while the tab is hidden.
+
+Account-index UI subscribers coalesce bursts into the next visible frame. A
+retained route unsubscribes while offscreen, and hidden pages or the desktop
+rendering gate freeze their rendered snapshots. Reveal reads the latest state
+before painting. Activity/notification owners still receive each ordered store
+update synchronously.
 
 Thread renames and deletions made elsewhere emit no event; they appear on the
 list fallback or on return to the tab. A rename in this browser updates locally.
