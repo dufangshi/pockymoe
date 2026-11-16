@@ -1,3 +1,4 @@
+import { Profiler } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { DeviceMetricsDto, HarnessProcessesDto, LoadedThreadDto } from '@pockymoe/shared';
@@ -70,9 +71,88 @@ beforeEach(() => {
   vi.mocked(request).mockReset().mockResolvedValue(metrics);
   vi.mocked(fetchHarnessProcesses).mockReset().mockResolvedValue(processes());
   vi.mocked(releaseThread).mockReset().mockResolvedValue({ threadId: 'x', released: true, alsoReleased: [] });
+  Object.defineProperty(document, 'hidden', { configurable: true, value: false });
 });
 afterEach(() => {
+  delete (document as unknown as { hidden?: boolean }).hidden;
+  delete document.documentElement.dataset.pockymoeRendering;
   vi.useRealTimers();
+});
+
+function visibility(hidden: boolean) {
+  act(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: hidden });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+}
+
+it('refreshes readings every five seconds without an independent one-second commit', async () => {
+  const committed = vi.fn();
+  render(<Profiler id="monitor" onRender={committed}><DeviceMonitor /></Profiler>);
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  expect(request).toHaveBeenCalledTimes(1);
+  committed.mockClear();
+  await act(() => vi.advanceTimersByTimeAsync(4_900));
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(committed).not.toHaveBeenCalled();
+  await act(() => vi.advanceTimersByTimeAsync(100));
+  expect(request).toHaveBeenCalledTimes(2);
+  fireEvent.click(screen.getByRole('button', { name: 'Device monitor' }));
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  const opened = vi.mocked(request).mock.calls.length;
+  await act(() => vi.advanceTimersByTimeAsync(4_900));
+  expect(request).toHaveBeenCalledTimes(opened);
+  await act(() => vi.advanceTimersByTimeAsync(100));
+  expect(request).toHaveBeenCalledTimes(opened + 1);
+});
+
+it('has no monitor timers or commits while hidden, then refreshes on visibility', async () => {
+  fireEvent.click(await openMonitor());
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  visibility(true);
+  const readings = vi.mocked(request).mock.calls.length;
+  const breakdowns = vi.mocked(fetchHarnessProcesses).mock.calls.length;
+  expect(vi.getTimerCount()).toBe(0);
+  act(() => announceHarnessRuntimeEvent({ type: 'thread.runtime.released', threadId: 'x', timestamp: '', payload: {} } as never));
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(request).toHaveBeenCalledTimes(readings);
+  expect(fetchHarnessProcesses).toHaveBeenCalledTimes(breakdowns);
+  expect(vi.getTimerCount()).toBe(0);
+  visibility(false);
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  expect(request).toHaveBeenCalledTimes(readings + 1);
+  expect(fetchHarnessProcesses).toHaveBeenCalledTimes(breakdowns + 1);
+});
+
+it('cancels in-flight metrics and their timeout when hidden', async () => {
+  vi.mocked(request).mockImplementation(() => new Promise(() => {}));
+  const { unmount } = render(<DeviceMonitor />);
+  const signal = vi.mocked(request).mock.calls[0]![1]!.signal!;
+  expect(signal.aborted).toBe(false);
+  visibility(true);
+  expect(signal.aborted).toBe(true);
+  expect(vi.getTimerCount()).toBe(0);
+  unmount();
+});
+
+it('stops for the desktop rendering gate while browser visibility stays active', async () => {
+  render(<DeviceMonitor />);
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  act(() => {
+    document.documentElement.dataset.pockymoeRendering = 'paused';
+    window.dispatchEvent(new Event('pockymoe-rendering-change'));
+  });
+  const reads = vi.mocked(request).mock.calls.length;
+  expect(document.hidden).toBe(false);
+  expect(vi.getTimerCount()).toBe(0);
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(request).toHaveBeenCalledTimes(reads);
+  act(() => {
+    delete document.documentElement.dataset.pockymoeRendering;
+    window.dispatchEvent(new Event('pockymoe-rendering-change'));
+  });
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  expect(request).toHaveBeenCalledTimes(reads + 1);
 });
 
 async function openMonitor(nav?: Partial<AppShellNavContextValue>) {
