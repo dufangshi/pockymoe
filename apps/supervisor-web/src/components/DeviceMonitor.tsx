@@ -24,7 +24,8 @@ const SENSOR_SETUP = 'https://github.com/dufangshi/pockymoe/blob/main/docs/devic
 /** Samples kept for the CPU charts: about 2.5 minutes while the dialog polls. */
 const HISTORY = 30;
 /** Readings and their freshness share one clock, only while visible. */
-const POLL_MS = 5_000;
+const OPEN_POLL_MS = 5_000;
+const CLOSED_POLL_MS = 15_000;
 /** A sample older than about two intervals is shown as stale. */
 const staleAfterSeconds = (open: boolean) => (open ? 15 : 35);
 type CpuSample = { at: string; total: number | null; cores: Array<number | null> };
@@ -269,7 +270,7 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
         clearTimeout(deadline);
         busy = false;
         if (!disposed) setNow(Date.now());
-        if (!disposed && !stopped && !document.hidden && navigator.onLine) timer = setTimeout(poll, POLL_MS);
+        if (!disposed && !stopped && !document.hidden && navigator.onLine) timer = setTimeout(poll, open ? OPEN_POLL_MS : CLOSED_POLL_MS);
       }
     };
     retryMetrics.current = () => void poll();
@@ -289,7 +290,7 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
       window.removeEventListener('offline', wake);
       retryMetrics.current = () => {};
     };
-  }, [deviceId, forbidden, visible]);
+  }, [deviceId, forbidden, visible, open]);
   if (forbidden) return null;
   const age = data
     ? Math.max(0, Math.floor((now - Date.parse(data.sampledAt)) / 1000))

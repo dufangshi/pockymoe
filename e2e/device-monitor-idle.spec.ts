@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { hardware } from './desktop/fixtures';
 
-test('monitor reads at five-second cadence and preserves every theme at desktop and phone widths', async ({ page }, info) => {
+test('monitor keeps its closed reading budget and preserves every theme at desktop and phone widths', async ({ page }, info) => {
   let reads = 0;
   await page.route('**/api/device/metrics', async route => {
     reads++;
@@ -18,7 +18,7 @@ test('monitor reads at five-second cadence and preserves every theme at desktop 
         await expect(monitor).toBeVisible();
         await expect(monitor.locator('[aria-label^="CPU:"]')).toHaveText('32%');
         const before = reads;
-        await page.clock.runFor(4999);
+        await page.clock.runFor(14999);
         expect(reads).toBe(before);
         await page.clock.runFor(1);
         await expect.poll(() => reads).toBe(before + 1);
@@ -26,6 +26,11 @@ test('monitor reads at five-second cadence and preserves every theme at desktop 
         const dialog = page.getByRole('dialog', { name: 'Device monitor', exact: true });
         await expect(dialog).toBeVisible();
         await expect(dialog.getByRole('meter', { name: 'CPU utilization' })).toHaveAttribute('aria-valuenow', '32');
+        await expect.poll(() => reads).toBe(before + 2);
+        await page.clock.runFor(4999);
+        expect(reads).toBe(before + 2);
+        await page.clock.runFor(1);
+        await expect.poll(() => reads).toBe(before + 3);
         const bounds = await dialog.boundingBox();
         expect(bounds!.x).toBeGreaterThanOrEqual(0);
         expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
