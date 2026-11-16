@@ -12,7 +12,7 @@ import {
   RefreshCw,
   X,
 } from 'lucide-react';
-import { ErrorMark, TokenUsageCost } from '@pockymoe/thread-ui';
+import { ErrorMark, TokenUsageCost, useVisibleClock } from '@pockymoe/thread-ui';
 import type {
   NativeSubagentDetailDto,
   NativeSubagentDto,
@@ -73,6 +73,12 @@ function runtimeLabel(agent: NativeSubagentDto, now: number) {
     : total >= 60
       ? translate('chat.workedForMinutes', { minutes: Math.floor(total / 60), seconds: total % 60 })
       : translate('chat.workedForSeconds', { seconds: total });
+}
+
+function AgentRuntime({ agent }: { agent: NativeSubagentDto }) {
+  const [element, setElement] = useState<HTMLSpanElement | null>(null);
+  const now = useVisibleClock(agent.status === 'running', 1000, element);
+  return <span ref={setElement} className="native-agents-runtime"><Clock3 size={12} aria-hidden="true" />{runtimeLabel(agent, now)}</span>;
 }
 
 function SubagentActivityRow({ item, endpoint, lazy }: { item: ThreadHistoryItemDto; endpoint: string; lazy: boolean }) {
@@ -171,7 +177,7 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
   const [error, setError] = useState<string | null>(null);
   const [earlierError, setEarlierError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
-  const [now, setNow] = useState(Date.now);
+  const now = useVisibleClock(open, 60_000);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const earlierRequest = useRef<AbortController | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -316,12 +322,6 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
     refresh,
   ]);
 
-  useEffect(() => {
-    if (!open) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [open]);
   useEffect(() => () => { earlierRequest.current?.abort(); setLoadingEarlier(false); }, [threadId, selected, open]);
   useEffect(() => {
     if (!open) return;
@@ -414,7 +414,7 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
         <ChevronRight size={14} aria-hidden="true" />
       </button>
       <div className="native-agents-row-summary">
-        <span className="native-agents-runtime"><Clock3 size={12} aria-hidden="true" />{runtimeLabel(agent, now)}</span>
+        <AgentRuntime agent={agent} />
         {agent.tokenUsage || agent.priceEstimate
           ? <TokenUsageCost usage={agent.tokenUsage?.total ?? null} price={agent.priceEstimate} tooltipZIndex={110} />
           : <span className="native-agents-cost-missing" title={translate('workbench.subagentCostUnknown')}>—</span>}
@@ -537,7 +537,7 @@ function NativeSubagentsControl({ detail }: { detail: ThreadDetailDto }) {
                 agent && (
                   <>
                     <div className="native-agents-overview">
-                      <span className="native-agents-runtime"><Clock3 size={12} aria-hidden="true" />{runtimeLabel(agent, now)}</span>
+                      <AgentRuntime agent={agent} />
                       <span
                         className="native-agents-status"
                         data-status={agent.status}

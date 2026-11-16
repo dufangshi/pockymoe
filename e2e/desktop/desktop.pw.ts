@@ -95,6 +95,38 @@ async function setup(page: Page, count = 12, pack = 'classic', dark = false, loc
   return { state, send: (deviceId: string, event: unknown) => sockets.get(deviceId)!.send(JSON.stringify(event)) };
 }
 
+test('elapsed clocks share one visible timer and catch up after the desktop gate or offscreen rows', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.clock.install();
+  await page.addInitScript(() => {
+    const active = new Set<number>();
+    const start = window.setInterval.bind(window), stop = window.clearInterval.bind(window);
+    window.setInterval = ((callback: TimerHandler, ms?: number, ...args: unknown[]) => {
+      const id = start(callback, ms, ...args); if (ms === 1000) active.add(id); return id;
+    }) as typeof window.setInterval;
+    window.clearInterval = id => { active.delete(id!); stop(id); };
+    Object.assign(window, { elapsedIntervals: active });
+  });
+  await setup(page, 150, 'classic', false, 'en');
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  const intervals = () => page.evaluate(() => (window as unknown as { elapsedIntervals: Set<number> }).elapsedIntervals.size);
+  await expect.poll(intervals).toBe(1);
+  const clock = page.locator('.desktop-map-scene [data-activity-key="device-0:t-3"] .desktop-activity-time');
+  await expect(clock).toBeVisible();
+  const before = await clock.textContent();
+  await page.evaluate(() => { document.documentElement.dataset.pockymoeRendering = 'paused'; window.dispatchEvent(new Event('pockymoe-rendering-change')); });
+  await expect.poll(intervals).toBe(0);
+  await page.clock.runFor(10_000);
+  await expect(clock).toHaveText(before!);
+  await page.evaluate(() => { delete document.documentElement.dataset.pockymoeRendering; window.dispatchEvent(new Event('pockymoe-rendering-change')); });
+  await expect(clock).not.toHaveText(before!);
+  await expect.poll(intervals).toBe(1);
+  await page.locator('.desktop-map-scene .desktop-activity').evaluate(element => { (element as HTMLElement).style.display = 'none'; });
+  await expect.poll(intervals).toBe(0);
+  await page.locator('.desktop-map-scene .desktop-activity').evaluate(element => { (element as HTMLElement).style.display = ''; });
+  await expect.poll(intervals).toBe(1);
+});
+
 test('warm index, live tile/sidebar updates, approval and revealInMap', async ({ page }) => {
   const backend = await setup(page);
   await expect(page.locator('[data-map-id="thread:device-0:t-0"]')).toHaveAttribute('data-waiting', 'true');
@@ -233,5 +265,7 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
     await page.keyboard.press('Enter');
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
     await activity.locator('[data-activity-group="running"]').screenshot({ path: `${evidence}/activity-family-${pack}-${dark ? 'dark' : 'light'}-expanded.png`, animations: 'disabled' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: `${evidence}/activity-family-${pack}-${dark ? 'dark' : 'light'}-phone.png` });
   });
 }

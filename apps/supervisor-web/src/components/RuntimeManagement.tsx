@@ -2,7 +2,7 @@ import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Download, RefreshCw, RotateCw } from 'lucide-react';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { ErrorMark, useVisibleClock } from '@pockymoe/thread-ui';
 import { ApiError, relayModeActive, request } from '../lib/api';
 import { relayDeviceIdFromPath } from '../lib/relayRoutes';
 import { FormDialog } from './FormDialog';
@@ -192,11 +192,8 @@ function DeviceRuntimeManagement({
   const [busy, setBusy] = useState(false);
   const [reconnectSince, setReconnectSince] = useState<number | null>(null);
   const [ownerDenied, setOwnerDenied] = useState(false);
-  const [clock, setClock] = useState(Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setClock(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  const [clockElement, setClockElement] = useState<HTMLElement | null>(null);
+  const clock = useVisibleClock(view !== 'harnesses' || reconnectSince !== null, 1000, clockElement);
   const [confirm, setConfirm] = useState<{
     id?: string;
     action?: 'restart';
@@ -543,7 +540,7 @@ function DeviceRuntimeManagement({
       ? null
       : `${Math.floor(seconds / 86400)}d ${Math.floor(seconds / 3600) % 24}h ${Math.floor(seconds / 60) % 60}m ${seconds % 60}s`;
   return (
-    <section className="py-1" aria-label={translate("devices.runtimeManagement")}>
+    <section ref={setClockElement} className="py-1" aria-label={translate("devices.runtimeManagement")}>
       {view !== 'harnesses' && (
         <>
           <div className="flex flex-wrap items-center justify-between gap-3">

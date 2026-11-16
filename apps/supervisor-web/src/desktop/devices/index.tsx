@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { CheckCircle2, Monitor, RefreshCw, Timer } from 'lucide-react';
 import { useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
-import { ConfirmDialog, ErrorMark, Select } from '@pockymoe/thread-ui';
+import { ConfirmDialog, ErrorMark, Select, useVisibleClock } from '@pockymoe/thread-ui';
 import { ApiError, request } from '../../lib/api';
 import { FormDialog } from '../../components/FormDialog';
 import { RenameDialog } from '../../components/RenameDialog';
@@ -40,7 +40,8 @@ export default function DevicesPage({ onRevealDevice }: DevicesPageProps) {
   const completion = index.threads.filter(thread => !selected || thread.deviceId === selected).map(t => t.lastTurnCompletedAt ?? '').sort().at(-1) ?? '';
   const stats = useDeviceStats(index.accountId, targets, range, completion, id => store.refreshActivity(id, true), origin);
   const { metrics, timeZone } = stats;
-  const [now, setNow] = useState(() => new Date());
+  const nowMs = useVisibleClock(true, 60_000);
+  const now = useMemo(() => new Date(nowMs), [nowMs]);
   const [mode, setMode] = useState<'tokens' | 'cost'>('tokens');
   const [renaming, setRenaming] = useState<string | null>(null);
   const [discarding, setDiscarding] = useState(false);
@@ -83,7 +84,6 @@ export default function DevicesPage({ onRevealDevice }: DevicesPageProps) {
   const cached = scoped.filter(d => !d.connected || metrics[d.id]?.unavailable || (metrics[d.id]?.partial && saved(d.id, range)));
   const tokenUnknown = scoped.some(d => !saved(d.id, range));
   const usageSources = scoped.map(device => ({ deviceId: device.id, name: device.name, summary: origin ? (() => { const value = metrics[device.id]?.originSummaries?.[origin]?.[range]; return range === 'today' && value?.daily[0]?.date !== dateKey(now, timeZone) ? undefined : value; })() : saved(device.id, range), activity: index.activity[device.id] }));
-  useEffect(() => { const timer = setInterval(() => setNow(new Date()), 60_000); return () => clearInterval(timer); }, []);
   useEffect(() => {
     const action = params.get('action');
     if (!current || !['rename', 'update'].includes(action ?? '')) return;

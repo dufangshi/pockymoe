@@ -86,13 +86,13 @@ function visibility(hidden: boolean) {
   });
 }
 
-it('refreshes readings every five seconds without an independent one-second commit', async () => {
+it('keeps closed reads at fifteen seconds and open reads at five without a one-second clock', async () => {
   const committed = vi.fn();
   render(<Profiler id="monitor" onRender={committed}><DeviceMonitor /></Profiler>);
   await act(() => vi.advanceTimersByTimeAsync(0));
   expect(request).toHaveBeenCalledTimes(1);
   committed.mockClear();
-  await act(() => vi.advanceTimersByTimeAsync(4_900));
+  await act(() => vi.advanceTimersByTimeAsync(14_900));
   expect(request).toHaveBeenCalledTimes(1);
   expect(committed).not.toHaveBeenCalled();
   await act(() => vi.advanceTimersByTimeAsync(100));

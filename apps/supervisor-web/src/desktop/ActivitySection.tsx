@@ -1,7 +1,7 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { memo, useCallback, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import { StatusMark, type WorkbenchThread } from '@pockymoe/thread-ui';
+import { StatusMark, useVisibleClock, type WorkbenchThread } from '@pockymoe/thread-ui';
 import { RecentThreadMenu } from '../components/RecentThreadMenu';
 import { workbenchThreadStatus } from '../pages/useWorkbenchNavigation';
 import type { ActivityItem } from './host';
@@ -10,13 +10,12 @@ import { buildActivityItems } from './data/activity';
 import { threadHref } from '../lib/relayRoutes';
 import { appUrl } from '../lib/webBase';
 import type { NavigationActions } from './context';
-import { useEffect } from 'react';
 import { formatRunTime } from './duration';
 
 function RunningTime({ since }: { since: string }) {
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
-  return <span className="desktop-activity-time">{formatRunTime(now - Date.parse(since))}</span>;
+  const [element, setElement] = useState<HTMLSpanElement | null>(null);
+  const now = useVisibleClock(true, 1000, element);
+  return <span ref={setElement} className="desktop-activity-time">{formatRunTime(now - Date.parse(since))}</span>;
 }
 const ActivityRow = memo(function ActivityRow({ item, favorite, onOpen, menu }: { item: ActivityItem; favorite: boolean; onOpen(key: string): void; menu(key: string, favorite: boolean): React.ReactNode }) {
   useI18n();

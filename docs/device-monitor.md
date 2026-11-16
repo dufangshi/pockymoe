@@ -59,8 +59,9 @@ use one decimal in GiB (compact `G`); the tooltip spells out the unit. Missing
 or stale readings show a dash. Mobile pairs stay together at their content width;
 the narrow desktop rail stacks the same readings with slightly larger type.
 
-The compact readout and open monitor refresh every five seconds, including sample
-age and stale-state checks, without a separate per-second clock. Hidden pages stop
+The compact readout refreshes every fifteen seconds; opening the monitor uses a
+five-second cadence. Sample age and stale-state checks share those reads without
+a separate per-second clock. Hidden pages stop
 their monitoring timers and abort outstanding reads; visibility restores an
 immediate sample. The expanded harness breakdown keeps its three-second cadence
 and runtime-event refresh only while the monitor is visible.
