@@ -5,6 +5,7 @@ import { ArrowLeftRight, Ban, ChevronDown, ChevronRight, Container, Cpu, Gpu, In
 import type { DeviceMetricsDto, HarnessProcessDto, HarnessProcessesDto, LoadedThreadDto, TemperatureReadingDto } from '@pockymoe/shared';
 import { ApiError, fetchHarnessProcesses, releaseThread, request } from '../lib/api';
 import { onHarnessRuntimeChange } from '../lib/harnessRuntimeEvents';
+import { useDocumentVisible } from '../lib/useDocumentVisible';
 import { useAppShellNav } from './AppShellNavContext';
 import { ConfirmDialog } from './ConfirmDialog';
 import { FormDialog } from './FormDialog';
@@ -20,11 +21,10 @@ const load = (value: number | null | undefined) =>
   value == null ? undefined : ({ '--load': clampLoad(value) } as CSSProperties);
 const gib = (bytes: number) => `${(bytes / 2 ** 30).toFixed(1)} GiB`;
 const SENSOR_SETUP = 'https://github.com/dufangshi/pockymoe/blob/main/docs/device-monitor.md#linux-sensor-access';
-/** Samples kept for the CPU charts: about a minute while the dialog polls. */
+/** Samples kept for the CPU charts: about 2.5 minutes while the dialog polls. */
 const HISTORY = 30;
-/** The open dialog samples every 2 s; the topbar meter every 15 s. */
-const OPEN_POLL_MS = 2_000;
-const CLOSED_POLL_MS = 15_000;
+/** Readings and their freshness share one clock, only while visible. */
+const POLL_MS = 5_000;
 /** A sample older than about two intervals is shown as stale. */
 const staleAfterSeconds = (open: boolean) => (open ? 15 : 35);
 type CpuSample = { at: string; total: number | null; cores: Array<number | null> };
@@ -127,6 +127,7 @@ function Sensors({ reading }: { reading: TemperatureReadingDto | undefined }) {
 
 export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
   const { locale: i18nLocale } = useI18n();
+  const visible = useDocumentVisible();
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<DeviceMetricsDto | null>(null);
   // Failed polls keep the last sample (shown as stale); a reason is offered
@@ -152,12 +153,13 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
   const refreshProcesses = useRef<() => void>(() => {});
   const processesShown = open && memoryOpen && !processesUnsupported;
   useEffect(() => {
-    if (!processesShown) return;
+    if (!processesShown || !visible) return;
     let disposed = false;
     let busy = false;
     let again = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | null = null;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       if (disposed) return;
       if (busy) {
@@ -165,13 +167,10 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
         return;
       }
       clearTimeout(timer);
-      if (document.hidden) {
-        timer = setTimeout(poll, PROCESS_POLL_MS);
-        return;
-      }
+      if (document.hidden) return;
       busy = true;
       controller = new AbortController();
-      const timeout = setTimeout(() => controller?.abort(), 10_000);
+      deadline = setTimeout(() => controller?.abort(), 10_000);
       try {
         const sample = deviceId === undefined ? await fetchHarnessProcesses(controller.signal)
           : await request<HarnessProcessesDto>('api/device/processes', { cache: 'no-store', signal: controller.signal }, { deviceId });
@@ -187,7 +186,7 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
           } else setProcessesError(cause instanceof Error ? cause.message : String(cause));
         }
       } finally {
-        clearTimeout(timeout);
+        clearTimeout(deadline);
         busy = false;
         if (!disposed) {
           if (again) {
@@ -203,11 +202,12 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
     return () => {
       disposed = true;
       clearTimeout(timer);
+      clearTimeout(deadline);
       controller?.abort();
       stopListening();
       refreshProcesses.current = () => {};
     };
-  }, [deviceId, processesShown]);
+  }, [deviceId, processesShown, visible]);
   const endThread = async (thread: LoadedThreadDto, interrupt: boolean) => {
     setEnding(thread.threadId);
     setEndError(null);
@@ -225,22 +225,23 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
     }
   };
   useEffect(() => {
+    if (!visible || forbidden) return;
     let disposed = false;
     let busy = false;
     let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     let controller: AbortController | null = null;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       if (disposed || busy || stopped) return;
       clearTimeout(timer);
       if (document.hidden || !navigator.onLine) {
         if (!navigator.onLine) setError({ message: translate("devices.deviceMonitoringIsOffline"), kind: 'error' });
-        timer = setTimeout(poll, 5000);
         return;
       }
       busy = true;
       controller = new AbortController();
-      const timeout = setTimeout(() => controller?.abort(), 10_000);
+      deadline = setTimeout(() => controller?.abort(), 10_000);
       try {
         const sample = await request<DeviceMetricsDto>('api/device/metrics', {
           signal: controller.signal,
@@ -265,31 +266,30 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
             setError({ message: translate("devices.deviceMetricsUnavailableShowingTheLastSample"), kind: 'error' });
         }
       } finally {
-        clearTimeout(timeout);
+        clearTimeout(deadline);
         busy = false;
-        if (!disposed && !stopped) timer = setTimeout(poll, open ? OPEN_POLL_MS : CLOSED_POLL_MS);
+        if (!disposed) setNow(Date.now());
+        if (!disposed && !stopped && !document.hidden && navigator.onLine) timer = setTimeout(poll, POLL_MS);
       }
     };
     retryMetrics.current = () => void poll();
     void poll();
     const wake = () => {
+      clearTimeout(timer);
       if (!document.hidden) void poll();
     };
-    document.addEventListener('visibilitychange', wake);
     window.addEventListener('online', wake);
     window.addEventListener('offline', wake);
-    const clock = setInterval(() => setNow(Date.now()), 1000);
     return () => {
       disposed = true;
       clearTimeout(timer);
-      clearInterval(clock);
+      clearTimeout(deadline);
       controller?.abort();
-      document.removeEventListener('visibilitychange', wake);
       window.removeEventListener('online', wake);
       window.removeEventListener('offline', wake);
       retryMetrics.current = () => {};
     };
-  }, [deviceId, open]);
+  }, [deviceId, forbidden, visible]);
   if (forbidden) return null;
   const age = data
     ? Math.max(0, Math.floor((now - Date.parse(data.sampledAt)) / 1000))
