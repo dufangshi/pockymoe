@@ -173,10 +173,17 @@ bar instead. Touch-only devices keep the platform's overlay indicator.
 **Document attributes.** `<html>` carries `data-theme-preset` (the pack id or
 `classic`), `data-theme-features` (the pack's flags, space separated) and
 `data-theme-effective` (`light` or `dark`).
-The shared clock adds `data-status-beat="0…7"` while visible animated indicators
-are mounted. Each step lasts 400ms; 0/1/4/5 are on and 2/3/6/7 are off for
+
+**Indicator attributes.** The shared clock adds `data-beat="0…7"` to each
+matching indicator while the document is visible and reduced motion is off.
+The root and shared ancestors never receive beat attributes. Each step lasts
+400ms; 0/1/4/5 are on and 2/3/6/7 are off for
 800ms blinking or breathing. Rotating rings turn 45° per step. Use attribute
-selectors to redraw these states, never an inherited root custom property.
+selectors on the indicator itself (or its children/pseudo-elements) to redraw
+these states, never a root/ancestor beat selector or inherited root custom property.
+The clock retains indicator membership from coalesced, incremental DOM/status
+changes; ticks only write to that set. Unmounted or inactive indicators lose the
+attribute.
 Keep the map's 1.5px inset ring (full/45% live colour) and avatar's 2px ring
 with a 4.5px, 28% halo (on/off); all packs follow the same phase. Scope changes
 to `@media (prefers-reduced-motion: no-preference)` so absence of the clock is
