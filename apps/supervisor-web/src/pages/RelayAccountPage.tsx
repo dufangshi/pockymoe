@@ -113,15 +113,15 @@ export function RelayAccountSettingsPanel({
       >
         <span className="sr-only">{translate("auth.loadingAccount")}</span>
         <div
-          className="h-4 w-28 animate-pulse rounded bg-[var(--theme-muted)]"
+          className="h-4 w-28 request-pulse rounded bg-[var(--theme-muted)]"
           aria-hidden="true"
         />
         <div
-          className="h-11 w-full max-w-md animate-pulse rounded-lg bg-[var(--theme-muted)]"
+          className="h-11 w-full max-w-md request-pulse rounded-lg bg-[var(--theme-muted)]"
           aria-hidden="true"
         />
         <div
-          className="h-11 w-full max-w-md animate-pulse rounded-lg bg-[var(--theme-muted)]"
+          className="h-11 w-full max-w-md request-pulse rounded-lg bg-[var(--theme-muted)]"
           aria-hidden="true"
         />
       </div>

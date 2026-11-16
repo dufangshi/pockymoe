@@ -87,7 +87,7 @@ export function FinishProtectionButton({ deviceId, compact = false, onFinished }
         onClick={finish}
         type="button"
       >
-        {busy ? <LoaderCircle aria-hidden className="animate-spin" size={compact ? 10 : 14} /> : <ShieldAlert aria-hidden size={compact ? 10 : 14} />}
+        {busy ? <LoaderCircle aria-hidden className="static-status-arc" size={compact ? 10 : 14} /> : <ShieldAlert aria-hidden size={compact ? 10 : 14} />}
         {translate('devices.finishProtection')}
       </button>
       {failed ? <ErrorMark message={translate('devices.finishProtectionFailed')} /> : null}
@@ -129,10 +129,10 @@ export function DeviceSetupProgress({ deviceId, onOpen }: { deviceId: string; on
   }, [connected, pending]);
   const row = 'mt-3 flex min-h-11 flex-wrap items-center gap-2 text-sm';
   if (!connected) {
-    return <p className={`${row} text-[var(--theme-fg-muted)]`} role="status"><LoaderCircle aria-hidden className="animate-spin" size={14} />{translate('devices.setupWaiting')}</p>;
+    return <p className={`${row} text-[var(--theme-fg-muted)]`} role="status"><LoaderCircle aria-hidden className="static-status-arc" size={14} />{translate('devices.setupWaiting')}</p>;
   }
   if (pending && !waited) {
-    return <p className={`${row} text-[var(--theme-fg-muted)]`} role="status"><LoaderCircle aria-hidden className="animate-spin" size={14} />{translate('devices.setupFinishing')}</p>;
+    return <p className={`${row} text-[var(--theme-fg-muted)]`} role="status"><LoaderCircle aria-hidden className="static-status-arc" size={14} />{translate('devices.setupFinishing')}</p>;
   }
   if (pending) {
     return <div className={`${row} text-[var(--theme-fg)]`} role="status"><span>{translate('devices.setupNeedsFinish')}</span><FinishProtectionButton deviceId={deviceId} /></div>;

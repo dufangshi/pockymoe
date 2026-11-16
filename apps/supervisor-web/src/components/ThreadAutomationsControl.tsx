@@ -764,7 +764,7 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
             >
               <RefreshCw
                 size={15}
-                className={refreshing ? 'animate-spin' : ''}
+                className={refreshing ? 'request-spin' : ''}
               />
             </button>
             {refreshError && <ErrorMark message={refreshError} onRetry={() => refreshRef.current()} />}
@@ -838,7 +838,7 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
             )}
             {loading ? (
               <div className="automation-empty" role="status">
-                <RefreshCw size={20} className="animate-spin" />
+                <RefreshCw size={20} className="request-spin" />
                 <p>{t('automation.loading')}</p>
               </div>
             ) : (

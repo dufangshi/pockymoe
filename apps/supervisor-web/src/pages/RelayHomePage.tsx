@@ -103,7 +103,7 @@ export function RelayHomePage() {
               <RefreshCw aria-hidden="true" className="h-4 w-4" />
               {translate("auth.retry")}</button>
           ) : loading ? (
-            <div className="mt-6 h-11 w-36 animate-pulse rounded-lg bg-[var(--theme-muted)]" aria-hidden="true" />
+            <div className="mt-6 h-11 w-36 request-pulse rounded-lg bg-[var(--theme-muted)]" aria-hidden="true" />
           ) : (
             <Link
               className="relay-button-primary mt-6 inline-flex h-11 items-center gap-2 px-4"

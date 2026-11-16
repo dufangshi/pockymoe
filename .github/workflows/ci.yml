@@ -164,9 +164,16 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Typecheck and test Web
         run: |
+          node scripts/check-built-status.mjs --shared-only
           pnpm --dir ./pockymoe-thread-ui --filter @pockymoe/thread-ui build
           pnpm --filter @pockymoe/supervisor-web typecheck
           pnpm --filter @pockymoe/supervisor-web test
+      - name: Verify built status indicators in production Web
+        run: |
+          POCKYMOE_STATUS_AUDIT=1 pnpm --filter @pockymoe/supervisor-web build
+          node scripts/check-built-status.mjs
+          pnpm exec playwright install --with-deps chromium
+          pnpm exec playwright test --config e2e/built-status.config.ts e2e/built-status.spec.ts --project=desktop-chromium
 
   npm:
     name: npm launcher and updater unit tests

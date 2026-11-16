@@ -43,7 +43,7 @@ export function ClientUpdateButton({ host, enabled }: { host: PockymoeHost | nul
   const download = releasePage(state.releaseUrl);
   return <div className="desktop-client-update" data-update-status={state.status}>
     <button type="button" className="desktop-client-update-button" aria-label={label} title={label} aria-busy={busy} disabled={busy || retryDisabled} onClick={install}>
-      <span className="desktop-client-update-circle">{busy ? <Loader2 aria-hidden="true" size={16} className="composer-send-spinner animate-spin" /> : <ArrowUp aria-hidden="true" size={16} />}</span>
+      <span className="desktop-client-update-circle">{busy ? <Loader2 aria-hidden="true" size={16} className="composer-send-spinner static-status-arc" /> : <ArrowUp aria-hidden="true" size={16} />}</span>
     </button>
     {state.status === 'error' ? <span className="desktop-client-update-failure"><ErrorMark className="desktop-client-update-error" message={state.error || translate('desktopShell.updateFailed')} onRetry={install} retryDisabled={retryDisabled} secondaryAction={download && host?.shell?.openExternal ? { label: translate('desktopShell.downloadUpdate'), onClick: () => host.shell.openExternal(download) } : undefined} /></span> : null}
   </div>;

@@ -46,7 +46,7 @@ function DeviceEnvironmentSettings({ deviceId }: { deviceId: string | null }) {
         <SectionHeading title={t('connections')} count={snapshot.connections.length}>
           {saved && <span role="status" className="env-ok">{t('saved')}</span>}
           {error && <ErrorMark message={error} onRetry={() => void refresh()} kind={error === t('unsupported') || error === t('forbidden') ? 'unavailable' : 'error'} />}
-          <button type="button" className="env-icon-button" aria-label={t('refresh')} title={t('refresh')} disabled={loading} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className={loading ? 'animate-spin' : undefined} /></button>
+          <button type="button" className="env-icon-button" aria-label={t('refresh')} title={t('refresh')} disabled={loading} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className={loading ? 'request-spin' : undefined} /></button>
           <button type="button" className="env-button" onClick={() => setEditing('new')}><Plus aria-hidden="true" />{t('addConnection')}</button>
         </SectionHeading>
         {!snapshot.connections.length ? <p className="env-empty">{t('noConnections')}</p>

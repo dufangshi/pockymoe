@@ -148,6 +148,3 @@
 }
 
 :theme .thread-ui-shell .tlog-spinner { transform: none !important; }
-@media (prefers-reduced-motion: no-preference) {
-  :theme .thread-ui-shell .tlog-spinner:is([data-beat='2'], [data-beat='3'], [data-beat='6'], [data-beat='7']) { opacity: 0; }
-}

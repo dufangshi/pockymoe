@@ -12,7 +12,7 @@ The shared UI repository has no required check; `thread-ui.sha` is checked here.
 | --- | --- |
 | Rust, Cargo configuration, migrations | Linux formatting and `cargo check --workspace --locked` |
 | Protocol crate, shared package, Cargo manifests/lockfile | Protocol wire tests and Rust/TS thread discriminant contract tests |
-| Supervisor Web, shared/plugin packages, `thread-ui.sha` | Web typecheck and Vitest; build the external thread UI dependency required by Web |
+| Supervisor Web, shared/plugin packages, `thread-ui.sha` | Web typecheck and Vitest; build the external thread UI dependency, inspect delivered status styles and run the focused production Chromium check |
 | Native bootstrap, legacy npm launcher or Node scripts | Native SH/legacy launcher, updater, and historical publishing-script unit tests; no product installation or release build |
 | Treer integration packaging | Bundled setup freshness, shell syntax and offline Python installer/configuration tests |
 | GitHub Actions workflows | actionlint; ShellCheck warnings/errors (not style or informational suggestions) |
@@ -39,6 +39,14 @@ Shared UI validation consumes the exact full SHA in `thread-ui.sha` and verifies
 it belongs to the published shared UI main history, matching deployment. Relevant local regression
 tests remain part of implementing changes; passing compilation is not a substitute
 for a test of a changed behavior.
+
+The Web job checks the tracked shared UI `dist` before rebuilding it, then builds
+production Web with an audit-only HTML entry. `scripts/check-built-status.mjs`
+requires the static running rings, lit badge and request-only animation rules in
+both delivered bundles and rejects the removed status clock. A focused Chromium
+Playwright check consumes the production fixture, without shared source CSS or a
+Supervisor, and checks computed styles, reduced motion, and no animations or timer
+activity with 30 running thread marks.
 
 ## Full validation: explicit request only
 

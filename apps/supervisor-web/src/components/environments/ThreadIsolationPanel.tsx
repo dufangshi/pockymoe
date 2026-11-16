@@ -155,7 +155,7 @@ export function ThreadIsolationPanel({ thread, deviceId, canManage }: Props) {
         <SectionHeading id="env-where" title={t('current')}>
           {(snapshotError || bindingError) && <ErrorMark message={snapshotError || bindingError || ''} onRetry={() => { reload(); refreshRequests(); }} />}
           <button type="button" className="env-icon-button" aria-label={t('refresh')} title={t('refresh')} disabled={refreshing || busy}
-            onClick={() => { reload(); refreshRequests(); }}><RefreshCw aria-hidden="true" className={refreshing ? 'animate-spin' : undefined} /></button>
+            onClick={() => { reload(); refreshRequests(); }}><RefreshCw aria-hidden="true" className={refreshing ? 'request-spin' : undefined} /></button>
         </SectionHeading>
         {refreshing && !binding && <p role="status" className="env-empty">{t('loading')}</p>}
         {binding && <div className="env-group">

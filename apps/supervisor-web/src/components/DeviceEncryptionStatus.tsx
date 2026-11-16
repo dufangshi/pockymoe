@@ -123,7 +123,7 @@ export function DeviceEncryptionStatus({
     return (
       <span className="inline-flex h-8 w-8 items-center justify-center text-[var(--theme-fg-muted)]" role="status"
         aria-label={translate('auth.checkingDeviceEncryption')} title={translate('auth.checkingDeviceEncryption')}>
-        <LoaderCircle size={14} className="animate-spin opacity-60" aria-hidden="true" />
+        <LoaderCircle size={14} className="static-status-arc opacity-60" aria-hidden="true" />
       </span>
     );
   }
@@ -183,7 +183,7 @@ export function DeviceEncryptionStatus({
         {connection ? (
           <>
             {(connection.busy && !connection.loaded) || connection.state === 'reconnecting' ? (
-              <LoaderCircle size={19} className="animate-spin" />
+              <LoaderCircle size={19} className="static-status-arc" />
             ) : connection.state === 'offline' ? (
               <WifiOff size={19} />
             ) : encrypted && connection.loaded && connection.state === 'connected' ? (
