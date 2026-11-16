@@ -127,7 +127,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
         </div>}
         <div className="thread-git-actions">
           {error ? <ErrorMark message={errorMessage} detail={error instanceof Error ? error.message : undefined} kind={unavailable ? 'unavailable' : 'error'} onRetry={refresh} /> : null}
-          <button type="button" className="thread-git-icon" onClick={refresh} disabled={loading} aria-label={translate('workbench.gitRefresh')} title={translate('workbench.gitRefresh')}><RefreshCw aria-hidden="true" className={loading ? 'animate-spin' : ''} /></button>
+          <button type="button" className="thread-git-icon" onClick={refresh} disabled={loading} aria-label={translate('workbench.gitRefresh')} title={translate('workbench.gitRefresh')}><RefreshCw aria-hidden="true" className={loading ? 'request-spin' : ''} /></button>
         </div>
       </div>
       {workingCopy && <section className="thread-git-context" aria-label={translate('workbench.gitWorkingCopy')}>

@@ -76,7 +76,7 @@ export function DeviceProtectionBadge({ device, protection }: {
         ref={trigger}
         type="button"
       >
-        <Icon aria-hidden="true" className={Icon === LoaderCircle ? 'animate-spin' : undefined} size={14} />
+        <Icon aria-hidden="true" className={Icon === LoaderCircle ? 'static-status-arc' : undefined} size={14} />
         {status.key === 'protected' ? null : <span>{label}</span>}
       </button>
       <AnchoredPopover anchor={trigger} label={label} onClose={() => setOpen(false)} open={open}>

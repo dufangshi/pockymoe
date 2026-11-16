@@ -156,9 +156,3 @@
 /* Readability overflow and the focused workspace list keep terminal geometry. */
 :theme :is(.thread-map-overflow, .thread-map-readable-list, .thread-map-list-row, .thread-map-list-group, .thread-map-list-older, .thread-map-attention-menu, .thread-map-attention-menu [role='menuitem']) { border-radius: 0; }
 :theme .thread-map-attention[data-responsive] .thread-map-attention-more { border-radius: 0; }
-
-/* The shared beat drives the terminal cursor, not a compositor blink. */
-:theme .matter-status-dot[data-status='running'] { transform: none !important; }
-@media (prefers-reduced-motion: no-preference) {
-  :theme .matter-status-dot[data-status='running']:is([data-beat='2'], [data-beat='3'], [data-beat='6'], [data-beat='7']) { opacity: 0; }
-}

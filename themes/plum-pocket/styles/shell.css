@@ -402,7 +402,7 @@
 :theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) > .matter-thread-avatar + .matter-status-dot:is([data-status='failed'], [data-status='error']) { background-color: var(--plum-status-failed); }
 :theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) > .matter-thread-avatar + .matter-status-dot[data-status='unread'] { background-color: var(--plum-status-unread); }
 :theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item) > .matter-thread-avatar + .matter-status-dot[data-status='interrupted'] { --plum-badge: 10px; border-radius: 3px; background-color: var(--plum-status-interrupted); }
-/* A running mascot wears a soft breathing halo. */
+/* A running mascot wears a steady halo. */
 :theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item):has(> .matter-status-dot[data-status='running']) > .matter-thread-avatar {
   box-shadow: 0 0 0 2px var(--plum-status-running), 0 0 0 4.5px color-mix(in srgb, var(--plum-status-running) 22%, transparent);
   animation: none;
@@ -1026,9 +1026,6 @@
 /* Readability overflow is a quiet pocket, with the same names and controls. */
 :theme :is(.thread-map-overflow, .thread-map-readable-list, .thread-map-attention-menu) { border-radius: 12px; }
 
-/* Same 2px ring and 800ms halo states as the other packs. */
+/* The full running ring and faint halo stay lit. */
 :theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item):has(> .matter-status-dot[data-status='running']) > .matter-thread-avatar { --tab-ring: var(--plum-status-running); box-shadow: 0 0 0 2px var(--tab-ring); transition: none; }
-@media (prefers-reduced-motion: no-preference) {
-  :root:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item):has(> .matter-status-dot[data-status='running']) > .matter-thread-avatar { box-shadow: 0 0 0 2px var(--tab-ring), 0 0 0 4.5px color-mix(in srgb, var(--tab-ring) 28%, transparent); }
-  :root:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item):has(> .matter-status-dot[data-status='running']) > .matter-thread-avatar:is([data-beat='2'], [data-beat='3'], [data-beat='6'], [data-beat='7']) { box-shadow: 0 0 0 2px var(--tab-ring); }
-}
+:root:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item):has(> .matter-status-dot[data-status='running']) > .matter-thread-avatar { box-shadow: 0 0 0 2px var(--tab-ring), 0 0 0 4.5px color-mix(in srgb, var(--tab-ring) 28%, transparent); }

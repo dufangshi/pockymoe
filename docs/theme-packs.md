@@ -12,12 +12,13 @@ it may redraw status marks, icons and small controls, but every status stays
 recognizable by shape alone, menus, windows and copy behave the same, and text
 stays aligned on the shared baseline in the pack's fonts.
 
-Perpetual indicators share the host's single 400ms document beat: at most three
-discrete changes per second, without easing or transitions. Packs draw states;
-they must not add infinite status keyframes, independent timers or per-frame
-loops. Only running and agents-running thread marks move. Reduced motion is
-fully static. Request/loading-only exceptions are listed in UI principles §6
-and enforced by `statusAnimation.test.ts` across the Web, shared UI and packs.
+Status indicators are static in every motion preference. Packs preserve the
+open running arc (Terminal uses its solid cursor block), the agents-running ring
+and centre dot, and each other state's distinct shape. They add no status
+animations, transitions, timers, observers or per-frame loops. Only bounded,
+short request/loading indicators use the explicit `request-spin` and
+`request-pulse` classes; these honour reduced motion. The allowed animations and
+request uses are enforced by `statusAnimation.test.ts`.
 
 **The relay admin console is the one exception: it always shows Classic.** It is
 an operations tool shared by whoever runs the relay, so it keeps one fixed look
@@ -174,20 +175,12 @@ bar instead. Touch-only devices keep the platform's overlay indicator.
 `classic`), `data-theme-features` (the pack's flags, space separated) and
 `data-theme-effective` (`light` or `dark`).
 
-**Indicator attributes.** The shared clock adds `data-beat="0…7"` to each
-matching indicator while the document is visible and reduced motion is off.
-The root and shared ancestors never receive beat attributes. Each step lasts
-400ms; 0/1/4/5 are on and 2/3/6/7 are off for
-800ms blinking or breathing. Rotating rings turn 45° per step. Use attribute
-selectors on the indicator itself (or its children/pseudo-elements) to redraw
-these states, never a root/ancestor beat selector or inherited root custom property.
-The clock retains indicator membership from coalesced, incremental DOM/status
-changes; ticks only write to that set. Unmounted or inactive indicators lose the
-attribute.
-Keep the map's 1.5px inset ring (full/45% live colour) and avatar's 2px ring
-with a 4.5px, 28% halo (on/off); all packs follow the same phase. Scope changes
-to `@media (prefers-reduced-motion: no-preference)` so absence of the clock is
-the static accessible appearance.
+**Status styling.** Use the semantic status attributes already on the indicator.
+Keep running map tiles and sections at a full-colour 1.5px inset ring in
+`--thread-map-live`, and running avatar tabs at a 2px ring plus a steady 4.5px,
+28% halo. Keep the running agent badge green, live dots filled, and active
+transcript text plain rather than gradient-clipped. Status styling is identical
+with reduced motion; only short request animations need a reduced-motion rule.
 
 **Neutral hooks** that Classic ignores:
 

@@ -228,7 +228,7 @@
 :theme .thread-ui-shell .thread-graph-worked-summary > button svg { width: 13px; height: 13px; }
 :theme .thread-ui-shell .thread-graph-worked-label { font-size: 12.5px; font-weight: 500; }
 :theme .thread-ui-shell .thread-graph-worked-summary .thread-execution-step-count { color: var(--theme-fg-muted); font-size: 12.5px; font-weight: 400; }
-/* While the agent works, its avatar breathes a mustard ring. */
+/* While the agent works, its avatar wears a steady mustard ring. */
 :theme .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar {
   animation: none;
 }
@@ -526,21 +526,11 @@
 :theme .thread-ui-shell .thread-graph-history-delta-badge.is-remove { color: var(--tx-fail); }
 :theme .thread-ui-shell :is(.thread-graph-relative-time, .matter-step-time, .thread-graph-history-group-time) { color: var(--theme-fg-muted); font-size: 10.5px; }
 
-/* Running batches keep Classic's sheen, in plum. */
+/* Running batches use plain active text. */
 :theme .thread-ui-shell .is-compact-group.is-running-batch > .thread-graph-history-group-card > button > .thread-graph-history-group-summary > span {
-  background-image: linear-gradient(105deg, var(--theme-fg-muted) 35%, var(--theme-accent-strong) 50%, var(--theme-fg-muted) 65%);
-  background-size: 250% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--theme-accent-strong);
 }
-@media (prefers-reduced-motion: reduce) {
-  :theme .thread-ui-shell .is-compact-group.is-running-batch > .thread-graph-history-group-card > button > .thread-graph-history-group-summary > span {
-    background: none;
-    color: var(--theme-fg-muted);
-  }
-}
-:theme .thread-ui-shell .thread-graph-history-group-summary .animate-pulse { background-color: var(--theme-accent-solid); }
+:theme .thread-ui-shell .thread-graph-history-group-summary .thread-live-progress-dot { background-color: var(--theme-accent-solid); }
 
 /* Plan, context and generic events. */
 :theme .thread-ui-shell .thread-graph-history-event-title { font-family: var(--plum-display); font-weight: 600; }
@@ -828,10 +818,6 @@
   :theme .thread-ui-shell.thread-ui-shell .thread-execution-timeline .is-plain-group > .thread-graph-history-group-card > .thread-graph-history-group-toggle { min-height: 32px; }
 }
 
-/* Working avatars keep their outline; the outer halo follows the shared beat.
-   The small avatar no longer bobs independently of the running mark. */
-:theme .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar { box-shadow: 0 0 0 2px var(--theme-bg), 0 0 0 3.5px var(--plum-stitch); transition: none; }
-@media (prefers-reduced-motion: no-preference) {
-  :theme .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar[data-beat] { box-shadow: 0 0 0 2px var(--theme-bg), 0 0 0 5px color-mix(in srgb, var(--theme-accent-solid) 28%, transparent); }
-  :theme .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar:is([data-beat='2'], [data-beat='3'], [data-beat='6'], [data-beat='7']) { box-shadow: 0 0 0 2px var(--theme-bg), 0 0 0 3.5px var(--plum-stitch); }
-}
+
+/* A static working avatar keeps its active halo; small avatars do not bob. */
+:theme .thread-ui-shell .thread-graph-turn[data-turn-active='true'] .thread-transcript-agent .matter-thread-avatar { box-shadow: 0 0 0 2px var(--theme-bg), 0 0 0 5px color-mix(in srgb, var(--theme-accent-solid) 28%, transparent); transition: none; }

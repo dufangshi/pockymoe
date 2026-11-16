@@ -204,6 +204,10 @@ export default defineConfig(({ mode }) => {
     build: {
       chunkSizeWarningLimit: 550,
       rollupOptions: {
+        ...(process.env.POCKYMOE_STATUS_AUDIT === '1' ? { input: {
+          app: path.resolve(__dirname, 'index.html'),
+          status: path.resolve(__dirname, 'e2e/fixtures/built-status.html'),
+        } } : {}),
         output: {
           // The shared UI is left to the default chunking so its lazy imports
           // (Monaco editor and diff, workspace panel, graph view, xterm, mermaid)

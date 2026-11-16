@@ -125,7 +125,7 @@ export function ConnectionModelField({
         >
           <RefreshCw
             size={14}
-            className={state === 'loading' ? 'animate-spin' : undefined}
+            className={state === 'loading' ? 'request-spin' : undefined}
           />
           <span className="hidden sm:inline">
             {translate(
