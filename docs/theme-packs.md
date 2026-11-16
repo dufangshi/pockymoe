@@ -20,6 +20,9 @@ short request/loading indicators use the explicit `request-spin` and
 `request-pulse` classes; these honour reduced motion. The allowed animations and
 request uses are enforced by `statusAnimation.test.ts`.
 
+The terminal cursor is steady even when terminal output requests a blink.
+Mermaid embeds static edge styling in its SVG, including expanded images.
+
 **The relay admin console is the one exception: it always shows Classic.** It is
 an operations tool shared by whoever runs the relay, so it keeps one fixed look
 that its charts, tables and status marks were drawn for, instead of following a

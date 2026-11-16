@@ -23,6 +23,7 @@ function check(label, dir) {
     '.matter-group-toggle.is-badge[data-running]>svg{color:var(--matter-agents-glow,#20bc87)',
     '.request-spin{animation:request-spin',
     '.request-pulse{animation:request-pulse',
+    '.edge-animation-slow,.edge-animation-fast{animation:none!important;stroke-dashoffset:0!important;}',
   ]) assert.ok(built.includes(fragment), `${label}: built status rule missing: ${fragment}`);
   for (const removed of ['data-beat', 'installStatusBeat', 'STATUS_BEAT_MS']) {
     assert.ok(!built.includes(removed), `${label}: removed status clock remains: ${removed}`);

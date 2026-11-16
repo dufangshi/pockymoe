@@ -46,7 +46,11 @@ requires the static running rings, lit badge and request-only animation rules in
 both delivered bundles and rejects the removed status clock. A focused Chromium
 Playwright check consumes the production fixture, without shared source CSS or a
 Supervisor, and checks computed styles, reduced motion, and no animations or timer
-activity with 30 running thread marks.
+activity with 30 running thread marks. It also mounts the real terminal, Mermaid
+transcript from the built package, including cursor-blink control sequences
+and standalone SVG. Third-party
+keyframe definitions can remain in delivered assets; the check requires their
+rendered consumers to stay static.
 
 ## Full validation: explicit request only
 

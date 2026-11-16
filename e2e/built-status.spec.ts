@@ -77,3 +77,43 @@ test('thirty running threads keep no animation, status timer or beat attributes'
     expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
   }
 });
+
+
+test('terminal cursors and Mermaid edges stay static in the production bundle', async ({ page }) => {
+  await page.goto('/e2e/fixtures/built-status.html?libraries=terminal&mode=dark');
+  const input = page.locator('.xterm-helper-textarea');
+  await expect(input).toBeAttached();
+  await input.focus();
+  await input.pressSequentially('echo steady');
+  await expect.poll(() => page.evaluate(() => (window as unknown as { vendorInput: string }).vendorInput)).toContain('echo steady');
+  // Programs can enable cursor blink after construction. Exercise DECSET 12 and
+  // blinking block/underline/bar requests through the real shell adapter.
+  for (const style of [1, 3, 5]) {
+    await page.evaluate(style => (window as unknown as { vendorWrite(data: string): void }).vendorWrite(`\x1b[?12h\x1b[${style} q`), style);
+    await expect.poll(() => page.evaluate(() => document.getAnimations().length)).toBe(0);
+    await expect(page.locator('.xterm-cursor')).toBeVisible();
+  }
+  await page.locator('#vendor-blur').click();
+  expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
+
+  await page.goto('/e2e/fixtures/built-status.html?libraries=mermaid&mode=dark');
+  await expect(page.locator('.thread-graph-mermaid')).toHaveAttribute('data-state', 'ready');
+  const edge = page.locator('.thread-graph-mermaid-canvas .edge-animation-fast');
+  await expect(page.locator('.thread-graph-mermaid-canvas > svg')).toBeVisible();
+  await expect(edge).toBeAttached();
+  await expect(edge).toHaveCSS('animation-name', 'none');
+  await expect(edge).toHaveCSS('stroke-dashoffset', '0px');
+  const svg = await page.locator('.thread-graph-mermaid-canvas > svg').evaluate(el => el.outerHTML);
+  const expanded = await page.context().newPage();
+  try {
+    await expanded.goto(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
+    await expect(expanded.locator('.edge-animation-fast')).toHaveCSS('animation-name', 'none');
+    expect(await expanded.evaluate(() => document.getAnimations().length)).toBe(0);
+  } finally { await expanded.close(); }
+
+  await page.goto('/e2e/fixtures/built-status.html?libraries=mermaid-custom&mode=dark');
+  await expect(page.locator('.thread-graph-mermaid')).toHaveAttribute('data-state', 'ready');
+  await expect(page.locator('.thread-graph-mermaid-canvas .moving').first()).toHaveCSS('animation-name', 'none');
+  expect(await page.evaluate(() => document.getAnimations().length)).toBe(0);
+
+});

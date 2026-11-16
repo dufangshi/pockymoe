@@ -12,6 +12,7 @@ import '../../src/components/environments/environments.css';
 import '../../src/components/ResourceSettings.css';
 import '../../src/pages/share-pending.css';
 import { BuiltLifecycle } from './built-lifecycle';
+import { BuiltLibraries } from './built-libraries';
 
 void (async () => {
 const params = new URLSearchParams(location.search);
@@ -21,7 +22,7 @@ document.documentElement.dataset.themeEffective = mode;
 document.documentElement.style.colorScheme = mode;
 const row = (id: string, label: string, content: React.ReactNode) => params.has('empty') ? null : <section className="audit-row" data-audit={id}><small>{label}</small><div>{content}</div></section>;
 const tab = (status: string) => <div className="matter-thread-group" data-avatar={theme === 'classic' ? undefined : ''}><a className="matter-group-tab"><span className="matter-thread-avatar" data-agent="codex" /><StatusMark status={status} /><span>{status}</span></a></div>;
-createRoot(document.getElementById('root')!).render(<I18nProvider><div className="thread-ui-shell" data-theme-effective={mode} data-theme-mode={mode}>{params.has('lifecycle') ? <BuiltLifecycle /> : <div className="audit-grid matter-workbench">
+createRoot(document.getElementById('root')!).render(<I18nProvider><div className="thread-ui-shell" data-theme-effective={mode} data-theme-mode={mode}>{params.has('libraries') ? <BuiltLibraries /> : params.has('lifecycle') ? <BuiltLifecycle /> : <div className="audit-grid matter-workbench">
   {params.has('idle') && <aside className="fixture-sidebar">{Array.from({ length: params.get('empty') === '1' ? 0 : 30 }, (_, i) => <div className="matter-thread-row" key={i}><StatusMark status="running" /><span>Thread {i}</span></div>)}</aside>}
   <h1>{theme} · {mode} · built bundle</h1>
   {row('status', 'Sidebar states', <aside className="matter-sidebar audit-sidebar">{['running', 'agents-running', 'waiting', 'unread', 'idle', 'interrupted', 'failed', 'unknown'].map(s => <label className="matter-thread-row" key={s}><StatusMark status={s} />{s}</label>)}</aside>)}
