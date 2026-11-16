@@ -461,6 +461,10 @@ function TourStepOverlay({
 
   useEffect(() => {
     let frame = 0;
+    let observed: Element | null = null;
+    const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(tick); };
+    const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule);
+    resize?.observe(document.body);
     const tick = () => {
       const found = pageMismatch ? null : findTarget(step);
       if (found?.variant && !scrolled.current) {
@@ -475,10 +479,26 @@ function TourStepOverlay({
           ? current
           : found,
       );
-      frame = requestAnimationFrame(tick);
+      if (observed !== (found?.element ?? null)) {
+        if (observed) resize?.unobserve(observed);
+        observed = found?.element ?? null;
+        if (observed) resize?.observe(observed);
+      }
     };
     tick();
-    return () => cancelAnimationFrame(frame);
+    const mutations = new MutationObserver(schedule);
+    mutations.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'aria-expanded'] });
+    window.addEventListener('resize', schedule);
+    window.addEventListener('scroll', schedule, true);
+    window.visualViewport?.addEventListener('resize', schedule);
+    window.visualViewport?.addEventListener('scroll', schedule);
+    return () => {
+      cancelAnimationFrame(frame); resize?.disconnect(); mutations.disconnect();
+      window.removeEventListener('resize', schedule);
+      window.removeEventListener('scroll', schedule, true);
+      window.visualViewport?.removeEventListener('resize', schedule);
+      window.visualViewport?.removeEventListener('scroll', schedule);
+    };
   }, [pageMismatch, step]);
 
   const ready = Boolean(tracked?.variant);

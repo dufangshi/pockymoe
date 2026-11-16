@@ -95,10 +95,10 @@
   height: auto;
   border: 0;
   border-radius: 0;
-  animation: terminal-blink 1s steps(1) infinite;
+  animation: none;
 }
 :theme .thread-ui-shell .tlog-spinner::before { content: '▌'; color: var(--theme-accent-solid); }
-@keyframes terminal-blink { 50% { opacity: 0; } }
+
 :theme .thread-ui-shell :is(.tlog-command, .tlog-output, .tlog-diff) {
   border-radius: 0;
   border-color: var(--term-line);
@@ -145,4 +145,9 @@
 
 @media (max-width: 639px) {
   :theme .thread-ui-shell { --term-gutter: 2.4ch; }
+}
+
+:theme .thread-ui-shell .tlog-spinner { transform: none !important; }
+@media (prefers-reduced-motion: no-preference) {
+  :theme:is([data-status-beat='2'], [data-status-beat='3'], [data-status-beat='6'], [data-status-beat='7']) .thread-ui-shell .tlog-spinner { opacity: 0; }
 }

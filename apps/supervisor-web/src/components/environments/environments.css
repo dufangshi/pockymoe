@@ -83,7 +83,7 @@ ul.env-list > li + li { border-top: 1px solid var(--theme-border); }
 .env-state[data-state='stopped'] .env-state-mark { border: 1.5px solid var(--theme-fg-muted); }
 .env-state:is([data-state='creating'], [data-state='starting'], [data-state='stopping']) .env-state-mark {
   width: 10px; height: 10px; border: 1.5px solid color-mix(in oklch, var(--theme-accent-solid) 30%, transparent); border-top-color: var(--theme-accent-solid);
-  animation: env-spin 900ms linear infinite;
+  animation: none;
 }
 .env-state[data-state='error'] { color: var(--status-danger-fg); }
 .env-state[data-state='error'] .env-state-mark { width: 8px; height: 8px; border-radius: 1px; background: var(--status-danger-fg); transform: rotate(45deg); }
@@ -91,7 +91,7 @@ ul.env-list > li + li { border-top: 1px solid var(--theme-border); }
 .env-state[data-state='interrupted'] .env-state-mark { border-radius: 2px; background: var(--status-warning-fg); }
 .env-state:is([data-state='destroyed'], [data-state='unknown']) { color: var(--theme-fg-muted); }
 .env-state:is([data-state='destroyed'], [data-state='unknown']) .env-state-mark { border: 1.5px dashed var(--theme-fg-muted); opacity: .8; }
-@keyframes env-spin { to { transform: rotate(360deg); } }
+
 @media (prefers-reduced-motion: reduce) { .env-state-mark { animation-duration: 2.4s !important; } }
 
 /* Rows: a status, a title with one meta line, and actions at the end. */
