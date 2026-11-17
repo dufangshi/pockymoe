@@ -1256,14 +1256,30 @@ impl AcpRuntime {
                 {
                     // codex-acp's legacy setter refetches model/list before
                     // validating. Its config setter only uses its session snapshot.
-                    process
+                    // That setter takes `model[effort]` ("Unsupported format of
+                    // modelId" otherwise), and only refreshes the inventory: a
+                    // refusal leaves the config setter below to decide.
+                    let effort = live
+                        .reasoning_effort
+                        .clone()
+                        .or_else(|| config_value(&live.config_options, "reasoning_effort"))
+                        .unwrap_or_else(|| "medium".into());
+                    let model_id = if value.contains('[') {
+                        value.clone()
+                    } else {
+                        format!("{value}[{effort}]")
+                    };
+                    if let Err(error) = process
                         .request(
                             "session/set_model",
                             json!({
-                                "sessionId": live.session_id, "modelId": value
+                                "sessionId": live.session_id, "modelId": model_id
                             }),
                         )
-                        .await?;
+                        .await
+                    {
+                        tracing::warn!(%error, "codex-acp model inventory refresh failed");
+                    }
                 }
                 let isolated_claude_model = live.isolated_claude.is_some() && config_id == "model";
                 if isolated_claude_model {
@@ -5310,6 +5326,17 @@ fn apply_config_option_caps(caps: &mut AgentProviderCapabilitiesDto, options: &V
     }) {
         caps.controls.performance_mode = true;
     }
+}
+
+/// The current value of a session config option, by id.
+fn config_value(options: &Value, id: &str) -> Option<String> {
+    options
+        .as_array()?
+        .iter()
+        .find(|option| option["id"] == id)?
+        .get("currentValue")?
+        .as_str()
+        .map(str::to_string)
 }
 
 fn merge_active_subagents(
