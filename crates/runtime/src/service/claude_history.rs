@@ -1,6 +1,7 @@
 //! Read-only recovery for scheduled Claude turns that never reach the idle ACP stream.
 //! Do not submit prompts, pump the SDK scheduler, or manufacture completion while it runs.
 use super::*;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::time::{Duration, Instant, SystemTime};
 
 #[derive(Default)]
@@ -12,7 +13,7 @@ impl HistoryCache {
 }
 struct CacheEntry {
     checked: Instant,
-    stamp: Option<(PathBuf, u64, SystemTime)>,
+    reader: Arc<Mutex<ScheduledReader>>,
 }
 
 struct ScheduledTurn {
@@ -37,6 +38,217 @@ struct PendingScheduledTurn {
     last_usage: Option<crate::usage::Tokens>,
 }
 
+// Only explicit scheduled origins qualify. Keep attribution across polls, including
+// tool results and terminal thinking records that precede the final text.
+#[derive(Default)]
+struct ScheduledReader {
+    path: PathBuf,
+    session: String,
+    since: String,
+    stamp: Option<(u64, SystemTime)>,
+    identity: Option<FileIdentity>,
+    offset: u64,
+    partial: Vec<u8>,
+    current: Option<PendingScheduledTurn>,
+    // Clear only after the import transaction commits (or has no work).
+    turns: Vec<ScheduledTurn>,
+    #[cfg(test)]
+    bytes_read: u64,
+}
+
+#[derive(PartialEq, Eq)]
+struct FileIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(not(unix))]
+    created: Option<SystemTime>,
+}
+impl FileIdentity {
+    fn new(meta: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Self {
+                device: meta.dev(),
+                inode: meta.ino(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {
+                created: meta.created().ok(),
+            }
+        }
+    }
+}
+
+impl ScheduledReader {
+    fn poll(
+        &mut self,
+        path: PathBuf,
+        thread: &str,
+        session: &str,
+        since: &str,
+    ) -> std::io::Result<()> {
+        let mut file = std::fs::File::open(&path)?;
+        let meta = file.metadata()?;
+        let stamp = (meta.len(), meta.modified()?);
+        let identity = FileIdentity::new(&meta);
+        if self.path != path
+            || self.session != session
+            || self.since != since
+            || self.identity.as_ref() != Some(&identity)
+            || meta.len() < self.offset
+            || (self
+                .stamp
+                .is_some_and(|old| old.0 == stamp.0 && old != stamp))
+        {
+            *self = Self {
+                path,
+                session: session.into(),
+                since: since.into(),
+                identity: Some(identity),
+                ..Self::default()
+            };
+        }
+        if self.stamp == Some(stamp) {
+            return Ok(());
+        }
+        file.seek(SeekFrom::Start(self.offset))?;
+        // Bound this read to the observed length: a busy writer cannot keep the
+        // import worker chasing an ever-growing tail.
+        let mut reader = BufReader::new(file.take(meta.len() - self.offset));
+        loop {
+            let count = reader.read_until(b'\n', &mut self.partial)?;
+            self.offset += count as u64;
+            #[cfg(test)]
+            {
+                self.bytes_read += count as u64;
+            }
+            if count == 0 {
+                break;
+            }
+            let complete = self.partial.ends_with(b"\n");
+            if let Ok(value) = serde_json::from_slice::<Value>(&self.partial) {
+                self.record(value, thread, session, since);
+                self.partial.clear();
+            } else if complete {
+                // Match the old reader's treatment of malformed complete lines.
+                self.partial.clear();
+            }
+        }
+        self.stamp = Some(stamp);
+        Ok(())
+    }
+
+    fn record(&mut self, value: Value, thread: &str, session: &str, since: &str) {
+        let current = &mut self.current;
+        let turns = &mut self.turns;
+        for value in std::iter::once(value) {
+            if value["sessionId"] != session || value["isSidechain"] == true {
+                continue;
+            }
+            let at = value["timestamp"].as_str().unwrap_or("");
+            let kind = value["type"].as_str().unwrap_or("");
+            let content = &value["message"]["content"];
+            if kind == "user" && value["turnOrigin"] == "scheduled" && at >= since {
+                let Some(uuid) = value["uuid"].as_str().filter(|v| !v.is_empty()) else {
+                    continue;
+                };
+                let prompt = text_content(content);
+                let id = format!("{thread}:scheduled:{uuid}");
+                *current = Some(PendingScheduledTurn {
+                    mapper: crate::acp::TurnMapper::new(id.clone()),
+                    id,
+                    prompt,
+                    started: at.into(),
+                    model: None,
+                    usage: HashMap::new(),
+                    last_usage: None,
+                });
+                continue;
+            }
+            let Some(pending) = current.as_mut() else {
+                continue;
+            };
+            if kind == "assistant" {
+                if let Some(model) = value["message"]["model"].as_str().filter(|v| !v.is_empty()) {
+                    pending.model = Some(model.into());
+                }
+                if let (Some(message), Some(usage)) = (
+                    value["message"]["id"].as_str().filter(|v| !v.is_empty()),
+                    crate::usage::Tokens::parse(&value["message"]["usage"]),
+                ) {
+                    pending.usage.insert(message.into(), json!({"messageId":message,"model":value["message"]["model"],"parent":true,"observedAt":at,"total":usage,"last":usage}));
+                    pending.last_usage = Some(usage);
+                }
+            }
+            let blocks = content
+                .as_array()
+                .cloned()
+                .unwrap_or_else(|| vec![json!({"type":"text","text":content})]);
+            let mut final_text = false;
+            for block in blocks {
+                let update = match (kind, block["type"].as_str().unwrap_or("")) {
+                    ("assistant", "text") => {
+                        final_text |= block["text"]
+                            .as_str()
+                            .is_some_and(|text| !text.trim().is_empty());
+                        json!({"sessionUpdate":"agent_message_chunk","messageId":value["message"]["id"],"content":block})
+                    }
+                    ("assistant", "thinking") => {
+                        json!({"sessionUpdate":"agent_thought_chunk","messageId":value["message"]["id"],"content":{"type":"text","text":block["thinking"]}})
+                    }
+                    ("assistant", "tool_use") => {
+                        json!({"sessionUpdate":"tool_call","toolCallId":block["id"],"title":block["name"],"kind":if block["name"]=="Bash" {"execute"} else {"other"},"status":"pending","rawInput":block["input"]})
+                    }
+                    ("user", "tool_result") => {
+                        json!({"sessionUpdate":"tool_call_update","toolCallId":block["tool_use_id"],"status":if block["is_error"]==true {"failed"} else {"completed"},"rawOutput":block["content"]})
+                    }
+                    // A new ordinary prompt ends attribution even without a prior terminal.
+                    ("user", "text") => {
+                        *current = None;
+                        break;
+                    }
+                    _ => continue,
+                };
+                pending
+                    .mapper
+                    .apply(&json!({"update":update,"createdAt":at}));
+            }
+            if final_text
+                && matches!(
+                    value["message"]["stop_reason"].as_str(),
+                    Some("end_turn" | "stop_sequence" | "max_tokens")
+                )
+            {
+                if let Some(pending) = current.take() {
+                    let usage = pending.last_usage.map(|last| {
+                    let total = pending
+                        .usage
+                        .values().filter_map(|r|crate::usage::Tokens::parse(&r["total"]))
+                        .fold(crate::usage::Tokens::default(), |sum, usage| sum.add(&usage));
+                    json!({"total":total,"last":last,"cumulative":false,"requests":pending.usage.into_values().collect::<Vec<_>>(),"source":"claudeScheduledImport"})
+                });
+                    turns.push(ScheduledTurn {
+                        id: pending.id,
+                        prompt: pending.prompt,
+                        started: pending.started,
+                        completed: at.into(),
+                        items: pending.mapper.finish(false),
+                        model: pending.model,
+                        usage,
+                    });
+                }
+            }
+        }
+    }
+}
+
+// Frozen whole-file implementation: differential oracle for the incremental reader.
+#[cfg(test)]
 // Only explicit scheduled origins qualify. Ordinary user/steer/tool-result
 // echoes, subagent logs and replayed history must not become duplicate turns.
 fn scheduled_turns(raw: &str, thread: &str, session: &str, since: &str) -> Vec<ScheduledTurn> {
@@ -231,24 +443,24 @@ impl Supervisor {
                 .and_modify(|entry| entry.checked = Instant::now())
                 .or_insert(CacheEntry {
                     checked: Instant::now(),
-                    stamp: None,
+                    reader: Arc::new(Mutex::new(ScheduledReader::default())),
                 });
         }
         let home = self.local_session_homes.claude_home.join("projects");
         let name = format!("{session}.jsonl");
-        let old = self
+        let reader = self
             .claude_history
             .0
             .lock()
             .unwrap()
             .get(id)
-            .and_then(|entry| entry.stamp.clone());
+            .map(|entry| entry.reader.clone());
+        let Some(reader) = reader else { return Ok(()) };
         let thread_id = id.to_owned();
         let since = thread.created_at.clone();
-        let (stamp, turns) = tokio::task::spawn_blocking(move || {
-            let path = old
-                .as_ref()
-                .map(|stamp| stamp.0.clone())
+        let mut reader = reader.lock_owned().await;
+        reader = tokio::task::spawn_blocking(move || {
+            let path = Some(reader.path.clone())
                 .filter(|path| {
                     path.is_file() && path.file_name().is_some_and(|file| file == name.as_str())
                 })
@@ -259,21 +471,20 @@ impl Supervisor {
                         .filter_map(|e| e.ok())
                         .find(|e| e.file_type().is_file() && e.file_name() == name.as_str())
                         .map(|e| e.into_path())
-                })?;
-            let metadata = std::fs::metadata(&path).ok()?;
-            let stamp = (path.clone(), metadata.len(), metadata.modified().ok()?);
-            if old.as_ref() == Some(&stamp) {
-                return Some((stamp, Vec::new()));
+                });
+            if let Some(path) = path {
+                if let Err(error) = reader.poll(path, &thread_id, &session, &since) {
+                    // Retry from scratch after I/O failure; never checkpoint a
+                    // partially consumed line or lose a completed import.
+                    *reader = ScheduledReader::default();
+                    tracing::debug!(%error, "Claude scheduled history file read deferred");
+                }
             }
-            let raw = std::fs::read_to_string(path).ok()?;
-            Some((stamp, scheduled_turns(&raw, &thread_id, &session, &since)))
+            reader
         })
-        .await?
-        .unwrap_or_else(|| ((PathBuf::new(), 0, SystemTime::UNIX_EPOCH), Vec::new()));
+        .await?;
+        let turns = &reader.turns;
         if turns.is_empty() {
-            if let Some(entry) = self.claude_history.0.lock().unwrap().get_mut(id) {
-                entry.stamp = Some(stamp);
-            }
             return Ok(());
         }
         // File I/O must not block admission of unrelated turns. Recheck ownership
@@ -288,7 +499,7 @@ impl Supervisor {
         let imported = self.db.with(|conn| {
             let tx = conn.unchecked_transaction()?;
             let mut imported = 0;
-            for turn in &turns {
+            for turn in turns {
                 // A timer missed by an older runtime may precede ordinary turns
                 // that were already saved. Insert at its native chronological
                 // position rather than displaying it as the newest user turn.
@@ -316,9 +527,8 @@ impl Supervisor {
             tx.commit()?;
             Ok(imported)
         })?;
-        if let Some(entry) = self.claude_history.0.lock().unwrap().get_mut(id) {
-            entry.stamp = Some(stamp);
-        }
+        reader.turns.clear();
+        drop(reader);
         drop(live);
         if ran > 0 {
             // A scheduled turn is activity, though no Pockymoe prompt started it.
@@ -367,6 +577,192 @@ mod tests {
             .map(Value::to_string)
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn snapshots(turns: &[ScheduledTurn]) -> Value {
+        Value::Array(
+            turns
+                .iter()
+                .map(|turn| {
+                    let mut usage = turn.usage.clone();
+                    if let Some(requests) =
+                        usage.as_mut().and_then(|u| u["requests"].as_array_mut())
+                    {
+                        requests.sort_by_key(|r| r["messageId"].as_str().unwrap().to_owned());
+                    }
+                    let mut items = serde_json::to_value(&turn.items).unwrap();
+                    for item in items.as_array_mut().unwrap() {
+                        // TurnMapper supplies wall-clock item creation timestamps on
+                        // each replay; compare all stable fields and native turn times.
+                        item.as_object_mut().unwrap().remove("createdAt");
+                    }
+                    json!({"id":turn.id,"prompt":turn.prompt,"started":turn.started,
+                "completed":turn.completed,"items":items,"model":turn.model,"usage":usage})
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn incremental_reader_reads_only_the_append_after_a_large_prefix() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut file = std::fs::File::create(&path).unwrap();
+        let row =
+            json!({"sessionId":"session","type":"user","message":{"content":"x".repeat(1024)}})
+                .to_string()
+                + "\n";
+        for _ in 0..8192 {
+            file.write_all(row.as_bytes()).unwrap();
+        }
+        file.flush().unwrap();
+        let mut reader = ScheduledReader::default();
+        reader
+            .poll(path.clone(), "thread", "session", "2026")
+            .unwrap();
+        let initial = reader.bytes_read;
+        let appended = records(true);
+        file.write_all(appended.as_bytes()).unwrap();
+        file.flush().unwrap();
+        reader
+            .poll(path.clone(), "thread", "session", "2026")
+            .unwrap();
+        assert_eq!(reader.bytes_read - initial, appended.len() as u64);
+        assert_eq!(reader.turns.len(), 1);
+        reader.turns.clear();
+        reader.poll(path, "thread", "session", "2026").unwrap();
+        assert!(reader.turns.is_empty());
+        assert_eq!(reader.bytes_read, initial + appended.len() as u64);
+        eprintln!(
+            "JSONL read bytes: initial={initial}, append={}, unchanged=0",
+            appended.len()
+        );
+    }
+
+    #[test]
+    fn incremental_reader_matches_whole_file_across_turns_partial_lines_and_rotation() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut reader = ScheduledReader::default();
+        let first = records(true);
+        let second = records(true).replace("timer-1", "timer-2");
+        let third = records(true).replace("timer-1", "timer-3");
+        let raw = format!("{first}\n{second}\n{third}\n{{\"truncated\":");
+        // Split inside a turn, JSON record, and UTF-8 codepoint as well as at EOF.
+        let raw = raw.replace("Timer check", "Timer 检查");
+        let unicode = raw.find('检').unwrap() + 1;
+        let cuts = [
+            unicode,
+            first.len() / 2,
+            first.len() + 8,
+            raw.len() - 2,
+            raw.len(),
+        ];
+        let mut cuts = cuts.to_vec();
+        cuts.sort_unstable();
+        let mut offset = 0;
+        let mut file = std::fs::File::create(&path).unwrap();
+        for end in cuts {
+            file.write_all(&raw.as_bytes()[offset..end]).unwrap();
+            file.flush().unwrap();
+            reader
+                .poll(path.clone(), "thread", "session", "2026")
+                .unwrap();
+            // The old read_to_string cannot decode a split UTF-8 character;
+            // its next successful read must still produce identical results.
+            if let Ok(prefix) = std::str::from_utf8(&raw.as_bytes()[..end]) {
+                assert_eq!(
+                    snapshots(&reader.turns),
+                    snapshots(&scheduled_turns(prefix, "thread", "session", "2026"))
+                );
+            }
+            assert_eq!(reader.bytes_read, end as u64, "never reread the prefix");
+            offset = end;
+        }
+        assert_eq!(reader.turns.len(), 3);
+        assert_eq!(reader.partial, b"{\"truncated\":");
+        // Complete the invalid EOF line, then append a fourth turn.
+        let tail = format!("true}}\n{}", records(true).replace("timer-1", "timer-4"));
+        file.write_all(tail.as_bytes()).unwrap();
+        file.flush().unwrap();
+        reader
+            .poll(path.clone(), "thread", "session", "2026")
+            .unwrap();
+        assert_eq!(
+            snapshots(&reader.turns),
+            snapshots(&scheduled_turns(
+                &(raw.clone() + &tail),
+                "thread",
+                "session",
+                "2026"
+            ))
+        );
+        let bytes = reader.bytes_read;
+        reader
+            .poll(path.clone(), "thread", "session", "2026")
+            .unwrap();
+        assert_eq!(reader.bytes_read, bytes, "unchanged file reads no bytes");
+        drop(file);
+
+        // Shrink on the same inode, then replace with a larger file: length
+        // alone is insufficient to recognize the latter.
+        for (replace, content) in [
+            (false, first.clone()),
+            (true, format!("{second}\n{third}\n")),
+        ] {
+            if replace {
+                let replacement = dir.path().join("replacement");
+                std::fs::write(&replacement, &content).unwrap();
+                std::fs::remove_file(&path).unwrap();
+                std::fs::rename(replacement, &path).unwrap();
+            } else {
+                std::fs::write(&path, &content).unwrap();
+            }
+            reader
+                .poll(path.clone(), "thread", "session", "2026")
+                .unwrap();
+            assert_eq!(
+                snapshots(&reader.turns),
+                snapshots(&scheduled_turns(&content, "thread", "session", "2026"))
+            );
+            assert_eq!(reader.bytes_read, content.len() as u64);
+        }
+    }
+
+    #[test]
+    fn incremental_reader_keeps_pending_attribution_after_completed_turns_are_acknowledged() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let first = records(true);
+        let pending = records(false).replace("timer-1", "timer-2");
+        std::fs::write(&path, format!("{first}\n{pending}\n")).unwrap();
+        let mut reader = ScheduledReader::default();
+        reader
+            .poll(path.clone(), "thread", "session", "2026")
+            .unwrap();
+        assert_eq!(reader.turns.len(), 1);
+        reader.turns.clear(); // successful transaction
+        let full = records(true).replace("timer-1", "timer-2");
+        let tail = full
+            .strip_prefix(&pending)
+            .unwrap()
+            .trim_start_matches('\n');
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(tail.as_bytes())
+            .unwrap();
+        let before = reader.bytes_read;
+        reader.poll(path, "thread", "session", "2026").unwrap();
+        assert_eq!(reader.bytes_read - before, tail.len() as u64);
+        assert_eq!(
+            snapshots(&reader.turns),
+            snapshots(&scheduled_turns(&full, "thread", "session", "2026"))
+        );
     }
 
     #[test]
@@ -546,6 +942,31 @@ mod tests {
         // The idle page need not issue another read: the observer must persist
         // the completed timer and notify it through the existing Web event.
         let mut events = supervisor.bus.subscribe();
+        supervisor
+            .claude_history
+            .0
+            .lock()
+            .unwrap()
+            .get_mut(&thread.id)
+            .unwrap()
+            .checked = Instant::now() - Duration::from_secs(6);
+        // A failed transaction must retain the completed result even though
+        // the file offset has reached EOF. Retrying an unchanged file imports it.
+        supervisor.db.with(|conn| {
+            conn.execute_batch("CREATE TRIGGER reject_scheduled BEFORE INSERT ON thread_turns BEGIN SELECT RAISE(ABORT, 'injected import failure'); END;")?;
+            Ok(())
+        }).unwrap();
+        assert!(supervisor
+            .sync_claude_scheduled_history(&thread.id)
+            .await
+            .is_err());
+        supervisor
+            .db
+            .with(|conn| {
+                conn.execute_batch("DROP TRIGGER reject_scheduled")?;
+                Ok(())
+            })
+            .unwrap();
         supervisor
             .claude_history
             .0
