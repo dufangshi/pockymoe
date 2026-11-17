@@ -1,3 +1,5 @@
+pub(crate) mod maintenance;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
@@ -281,6 +283,11 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    Migration {
+        version: 24,
+        name: "sqlite_maintenance",
+        apply: maintenance::migrate,
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them
@@ -522,6 +529,9 @@ impl Database {
             "
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=FULL;
+            PRAGMA journal_size_limit=67108864;
+            PRAGMA wal_autocheckpoint=1000;
+            PRAGMA cache_size=-32768;
             PRAGMA foreign_keys=ON;
             ",
         )?;

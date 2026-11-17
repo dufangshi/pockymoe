@@ -105,8 +105,22 @@ With every option on, a 3-day cleanup of a later copy rewrote 63,788 items in
 
 ## Reclaiming disk space
 
-SQLite keeps removed data as free pages that new data reuses; the file does not
-shrink by itself. **Reclaim** runs `VACUUM` and a WAL checkpoint after a
+SQLite reuses free pages between compactions. An hourly maintenance pass (first
+eligible three minutes after startup and after input deduplication) compacts only
+when at least 64 MiB and 20% of pages are free, no turns are running or recovering,
+no prompts or automation actions are queued or running, no managed commands are
+running, and no thread has changed for 30 minutes. It runs at most
+once per seven days. Turn admission and other storage jobs are excluded while the
+idle check and compaction run. Database requests can wait during this idle window.
+
+This uses guarded occasional `VACUUM`, rather than incremental auto-vacuum:
+enabling incremental auto-vacuum on an existing database itself needs a full
+rewrite. Startup does neither. SQLite commits compaction atomically; an interrupted
+attempt is rolled back and retried at a later eligible idle pass. The success
+marker is written only after completion. No database file is replaced externally.
+If a device stays busy, compaction waits; free pages remain available for reuse.
+
+**Reclaim** runs `VACUUM` and a WAL checkpoint after a
 confirmation. Every database use waits meanwhile: on the measured device it took
 about 7 seconds and the file went from 647 MB to 460 MB after a 7-day cleanup.
 
@@ -127,3 +141,33 @@ They follow the device owner like the resource settings; grant holders get
 `grant_denied`, and a Treer Agent UI tunnel does not offer them. Types:
 [`crates/protocol/src/storage.rs`](../crates/protocol/src/storage.rs) and
 `packages/shared/src/storage.ts`.
+
+## Database maintenance and receipt retention
+
+The shared connection uses a 32 MiB page cache, `synchronous=FULL`, and a
+64 MiB `journal_size_limit`. Normal commits automatically checkpoint at 1,000 WAL
+pages. Cleanup temporarily disables that automatic checkpoint and uses passive
+checkpoints on a separate connection once per second, restoring the original
+setting afterwards. Maintenance also runs a passive checkpoint; compaction uses
+`TRUNCATE`. The size limit trims the WAL when it is recycled after a checkpoint;
+it is not a hard limit on uncheckpointed data. A large transaction or a reader
+pinning an older snapshot can temporarily exceed it.
+
+The maintenance pass drops the redundant history unique index only after checking
+that an equivalent table UNIQUE constraint exists. Older schemas with only the
+explicit index keep it. This deferred migration and its completion marker commit
+together, outside startup.
+
+Retry receipts (`prompt-receipt:*`, `cli:request:*`), submission-to-turn bindings
+(`cli:submission:*`), and finished-turn process markers (`turn-process:*`) are kept
+for at least 30 days after their last write. Inbox messages (`cli:inbox:*`) expire
+only after acknowledgement is also at least 30 days old; unread mail is retained.
+Active/recovering turns and pending prompts protect their associated records.
+Clients must not rely on a request ID deduplicating a retry beyond this window.
+Legacy records receive a full 30-day grace period when first observed.
+
+Age tracking is transactional with writes. Maintenance walks keys in batches of
+at most 128, with a 10 ms work target and 15 ms pauses between commits; one SQLite
+operation and disk sync can exceed that target. A durable cursor resumes the scan
+after restart. These metadata retention rules run independently of the optional
+history-output cleanup settings and never delete transcript items.
