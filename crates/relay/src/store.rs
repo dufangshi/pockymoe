@@ -5,6 +5,7 @@ use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) struct RelayStore {
+    pub(super) heartbeats: Mutex<HashMap<String, heartbeat::Snapshots>>,
     /// The one writing connection. Tunnels, heartbeats, sign-ins and every
     /// change take it, so nothing slow may hold it.
     pub(crate) conn: Arc<StoreLock>,
@@ -607,6 +608,7 @@ impl RelayStore {
         crate::metrics::ensure_schema(&conn)?;
         let read = open_reader(&path).map(Mutex::new);
         Ok(Self {
+            heartbeats: Default::default(),
             conn: Arc::new(StoreLock::new(conn)),
             read,
             session_secret,

@@ -67,13 +67,45 @@ pub(super) fn replace(conn: &Connection, device: &str, rows: &Value) -> Result<(
             );
         }
     }
+    let desired: std::collections::BTreeMap<_, _> = rows
+        .iter()
+        .map(|row| {
+            (
+                row["id"].as_str().unwrap(),
+                (row["parentThreadId"].as_str(), row["workspaceId"].as_str()),
+            )
+        })
+        .collect();
+    anyhow::ensure!(desired.len() == rows.len(), "duplicate thread id");
     let tx = conn.unchecked_transaction()?;
-    tx.execute(
-        "DELETE FROM relay_thread_lineage WHERE device_id=?1",
-        [device],
-    )?;
-    for row in rows {
-        tx.execute("INSERT INTO relay_thread_lineage(device_id,thread_id,parent_thread_id,workspace_id) VALUES(?1,?2,?3,?4)",params![device,row["id"].as_str(),row["parentThreadId"].as_str(),row["workspaceId"].as_str()])?;
+    let previous = {
+        let mut stmt = tx.prepare_cached("SELECT thread_id,parent_thread_id,workspace_id FROM relay_thread_lineage WHERE device_id=?1")?;
+        let rows = stmt
+            .query_map([device], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    (
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ),
+                ))
+            })?
+            .collect::<rusqlite::Result<std::collections::BTreeMap<_, _>>>()?;
+        rows
+    };
+    for id in previous
+        .keys()
+        .filter(|id| !desired.contains_key(id.as_str()))
+    {
+        tx.prepare_cached("DELETE FROM relay_thread_lineage WHERE device_id=?1 AND thread_id=?2")?
+            .execute(params![device, id])?;
+    }
+    for (id, (parent, workspace)) in desired {
+        if previous.get(id).map(|(p, w)| (p.as_deref(), w.as_deref())) == Some((parent, workspace))
+        {
+            continue;
+        }
+        tx.prepare_cached("INSERT INTO relay_thread_lineage(device_id,thread_id,parent_thread_id,workspace_id) VALUES(?1,?2,?3,?4) ON CONFLICT(device_id,thread_id) DO UPDATE SET parent_thread_id=excluded.parent_thread_id,workspace_id=excluded.workspace_id")?.execute(params![device,id,parent,workspace])?;
     }
     let agents = rows
         .iter()
@@ -88,7 +120,7 @@ pub(super) fn replace(conn: &Connection, device: &str, rows: &Value) -> Result<(
         tx.execute(
         "INSERT INTO relay_device_lineage_counts(device_id,threads,agents,workspaces)
          SELECT ?1,?2,?3,?4 WHERE EXISTS(SELECT 1 FROM relay_devices WHERE id=?1)
-         ON CONFLICT(device_id) DO UPDATE SET threads=excluded.threads,agents=excluded.agents,workspaces=excluded.workspaces",
+         ON CONFLICT(device_id) DO UPDATE SET threads=excluded.threads,agents=excluded.agents,workspaces=excluded.workspaces WHERE threads<>excluded.threads OR agents<>excluded.agents OR workspaces<>excluded.workspaces",
         params![device, rows.len() as i64, agents as i64, workspaces as i64],
     )?;
     }
@@ -121,6 +153,31 @@ pub(super) fn workspaces(conn: &Connection, device: &str, thread: &str) -> Vec<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lineage_writes_only_added_changed_and_removed_rows() {
+        let c = Connection::open_in_memory().unwrap();
+        ensure_schema(&c).unwrap();
+        let a = Uuid::new_v4().to_string();
+        let b = Uuid::new_v4().to_string();
+        let d = Uuid::new_v4().to_string();
+        replace(&c, "device", &json!([{"id":a},{"id":b},{"id":d}])).unwrap();
+        let before = c.total_changes();
+        replace(&c, "device", &json!([{"id":a},{"id":b,"parentThreadId":a}])).unwrap();
+        assert_eq!(
+            c.total_changes() - before,
+            2,
+            "one update, one delete; retained root is untouched"
+        );
+        let before = c.total_changes();
+        replace(&c, "device", &json!([{"id":b,"parentThreadId":a},{"id":a}])).unwrap();
+        assert_eq!(
+            c.total_changes(),
+            before,
+            "order does not affect lineage rows"
+        );
+        assert!(replace(&c, "device", &json!([{"id":a},{"id":a}])).is_err());
+    }
+
     #[test]
     fn lineage_is_device_scoped_directional_and_replaced_atomically() {
         let conn = Connection::open_in_memory().unwrap();

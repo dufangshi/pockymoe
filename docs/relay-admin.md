@@ -154,9 +154,17 @@ checks every endpoint against a 400 ms budget in release mode.
 ## Recorded statistics
 
 Code: `crates/relay/src/metrics.rs`. Counters live in memory; a sampler writes
-them once a minute in one transaction, so a heartbeat or a forwarded request
-never writes to SQLite by itself. The tables are created when missing and never
-change existing ones.
+them once a minute in one transaction; heartbeats and forwarded requests do not
+write statistics themselves. A heartbeat with unchanged activity, upstream and
+lineage snapshots takes no SQLite lock or write transaction. Successful snapshots
+are compared in memory per device, including across tunnel reconnects. A cold
+cache (relay restart, or eviction of an inactive device under cache pressure)
+persists the first snapshot. Changed snapshots are validated and committed before
+the cache advances; invalid snapshots remain retryable. Lineage adds, updates and
+removes only differing rows. The Live Activity delivery worker renews online
+activity timestamps every 12 hours so the existing one-day expiry remains valid;
+this maintenance runs independently of heartbeats. The statistics tables are
+created when missing and never change existing ones.
 
 | Table | What it holds | Kept |
 | --- | --- | --- |

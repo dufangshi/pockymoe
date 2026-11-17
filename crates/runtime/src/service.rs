@@ -368,6 +368,7 @@ pub struct Supervisor {
     steer_locks: Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
     pub(crate) local_session_homes: LocalSessionHomes,
     usage_history: crate::usage_history::UsageHistoryCache,
+    pub(crate) pricing_cache: crate::pricing::PricingCache,
     generation: generation::GenerationCache,
     /// Per-request context records of each thread (`context_steps`).
     pub context_steps: crate::context_steps::ContextSteps,
@@ -499,6 +500,7 @@ impl Supervisor {
             steer_locks: Mutex::new(HashMap::new()),
             local_session_homes: LocalSessionHomes::from_env(),
             usage_history: Default::default(),
+            pricing_cache: Default::default(),
             generation: Default::default(),
             claude_history: Default::default(),
             claude_reply_phases: Default::default(),

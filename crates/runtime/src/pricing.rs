@@ -6,6 +6,86 @@ use serde_json::{json, Value};
 
 pub(crate) use pockymoe_protocol::pricing::match_model;
 
+#[derive(Default)]
+pub(crate) struct PricingCache {
+    catalog: std::sync::Mutex<Option<Option<std::sync::Arc<Value>>>>,
+    usage: std::sync::Mutex<ModelNames>,
+}
+
+#[derive(Default)]
+struct ModelNames {
+    initialized: bool,
+    turns: std::collections::BTreeMap<String, (String, std::collections::BTreeSet<String>)>,
+    #[cfg(test)]
+    parsed: usize,
+}
+
+impl ModelNames {
+    fn observe(&mut self, c: &rusqlite::Connection, thread: Option<&str>) -> Result<Vec<String>> {
+        if !self.initialized {
+            // Temporary triggers cover every SQL writer (including imports and deletes)
+            // without a migration or a second durable copy of usage data.
+            c.execute_batch("CREATE TEMP TABLE pricing_dirty_turns(id TEXT PRIMARY KEY);
+                CREATE TEMP TRIGGER pricing_turn_insert AFTER INSERT ON main.thread_turns BEGIN INSERT OR IGNORE INTO pricing_dirty_turns VALUES(new.id); END;
+                CREATE TEMP TRIGGER pricing_turn_update AFTER UPDATE OF model,pricing_model_key,token_usage_json,thread_id ON main.thread_turns
+                WHEN old.model IS NOT new.model OR old.pricing_model_key IS NOT new.pricing_model_key OR old.token_usage_json IS NOT new.token_usage_json OR old.thread_id IS NOT new.thread_id
+                BEGIN INSERT OR IGNORE INTO pricing_dirty_turns VALUES(new.id); END;
+                CREATE TEMP TRIGGER pricing_turn_delete AFTER DELETE ON main.thread_turns BEGIN INSERT OR IGNORE INTO pricing_dirty_turns VALUES(old.id); END;
+                INSERT INTO pricing_dirty_turns SELECT id FROM thread_turns;")?;
+            self.initialized = true;
+        }
+        let mut stmt = c.prepare_cached("SELECT d.id,t.thread_id,t.model,t.pricing_model_key,t.token_usage_json FROM pricing_dirty_turns d LEFT JOIN thread_turns t ON t.id=d.id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, owner, model, key, usage) = row?;
+            let (Some(owner), Some(usage)) = (owner, usage) else {
+                self.turns.remove(&id);
+                continue;
+            };
+            let mut names = std::collections::BTreeSet::new();
+            for name in [model, key].into_iter().flatten() {
+                names.insert(crate::usage::model_name(&name));
+            }
+            #[cfg(test)]
+            {
+                self.parsed += 1;
+            }
+            if let Ok(usage) = serde_json::from_str::<Value>(&usage) {
+                for request in usage["requests"].as_array().into_iter().flatten() {
+                    if let Some(name) = request["model"].as_str() {
+                        names.insert(crate::usage::model_name(name));
+                    }
+                }
+            }
+            names.retain(|n| {
+                !n.is_empty()
+                    && n.len() <= 160
+                    && !n.chars().any(char::is_control)
+                    && n != "<synthetic>"
+            });
+            self.turns.insert(id, (owner, names));
+        }
+        c.execute("DELETE FROM pricing_dirty_turns", [])?;
+        Ok(self
+            .turns
+            .values()
+            .filter(|(owner, _)| thread.is_none_or(|t| t == owner))
+            .flat_map(|(_, names)| names.iter().cloned())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .take(10000)
+            .collect())
+    }
+}
+
 fn enrich_model_options_with_catalog(models: &mut [ModelOptionDto], catalog: &Value) {
     for model in models {
         let raw = pockymoe_protocol::pricing::model_id(&model.model);
@@ -88,7 +168,8 @@ impl Supervisor {
     pub fn model_pricing(&self) -> Value {
         let synced = self.cached_relay_model_pricing();
         let mut config = synced
-            .clone()
+            .as_deref()
+            .cloned()
             .unwrap_or_else(|| crate::usage::pricing().clone());
         if synced.is_none() {
             pockymoe_protocol::pricing::apply_overrides(
@@ -166,39 +247,31 @@ impl Supervisor {
         )
     }
 
-    fn cached_relay_model_pricing(&self) -> Option<Value> {
-        (self.config.mode == pockymoe_protocol::Mode::Relay)
-            .then(|| {
-                self.db
-                    .get_kv(&self.pricing_cache_key())
-                    .ok()
+    fn cached_relay_model_pricing(&self) -> Option<std::sync::Arc<Value>> {
+        let mut cache = self.pricing_cache.catalog.lock().unwrap();
+        cache
+            .get_or_insert_with(|| {
+                (self.config.mode == pockymoe_protocol::Mode::Relay)
+                    .then(|| {
+                        self.db
+                            .get_kv(&self.pricing_cache_key())
+                            .ok()
+                            .flatten()
+                            .and_then(|s| serde_json::from_str(&s).ok())
+                            .map(std::sync::Arc::new)
+                    })
                     .flatten()
-                    .and_then(|s| serde_json::from_str(&s).ok())
             })
-            .flatten()
+            .clone()
     }
 
-    /// Gather historical model names at connect, or only one changed thread.
+    /// Report model names from changed turns only; reconnects reuse parsed names.
     /// No token counts, prompts or credentials enter the synchronization frame.
     pub fn model_pricing_sync(&self, observe: bool, thread: Option<&str>) -> Result<Value> {
         let mut frame = json!({"type":"pricing.sync", "version":self.cached_relay_model_pricing().and_then(|v|v["version"].as_str().map(str::to_owned))});
         if observe {
-            let models = self.db.with(|c| {
-                let mut names=std::collections::BTreeSet::new();
-                let mut stmt=c.prepare("SELECT model,pricing_model_key,token_usage_json FROM thread_turns WHERE (?1 IS NULL OR thread_id=?1) AND token_usage_json IS NOT NULL")?;
-                let rows=stmt.query_map([thread],|r|Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,String>(2)?)))?;
-                for row in rows {
-                    let (model,key,usage)=row?;
-                    for name in [model,key].into_iter().flatten() { names.insert(crate::usage::model_name(&name)); }
-                    if let Ok(usage)=serde_json::from_str::<Value>(&usage) {
-                        for request in usage["requests"].as_array().into_iter().flatten() {
-                            if let Some(name)=request["model"].as_str() {names.insert(crate::usage::model_name(name));}
-                        }
-                    }
-                }
-                names.retain(|n|!n.is_empty() && n.len()<=160 && !n.chars().any(char::is_control) && n!="<synthetic>");
-                Ok(names.into_iter().take(10000).collect::<Vec<_>>())
-            })?;
+            let mut cache = self.pricing_cache.usage.lock().unwrap();
+            let models = self.db.with(|c| cache.observe(c, thread))?;
             frame["models"] = json!(models);
         }
         Ok(frame)
@@ -209,14 +282,19 @@ impl Supervisor {
             catalog["models"].is_object() && catalog["version"].is_string(),
             "Invalid price snapshot"
         );
-        if self
-            .cached_relay_model_pricing()
+        self.cached_relay_model_pricing();
+        let mut cache = self.pricing_cache.catalog.lock().unwrap();
+        if cache
+            .as_ref()
+            .and_then(Option::as_ref)
             .is_some_and(|old| old["version"] == catalog["version"])
         {
             return Ok(false);
         }
         self.db
             .set_kv(&self.pricing_cache_key(), &catalog.to_string())?;
+        *cache = Some(Some(std::sync::Arc::new(catalog.clone())));
+        drop(cache);
         // Existing readers already refresh summaries on thread.updated. Pricing
         // changes are infrequent; no transcript or usage record is rewritten.
         let threads = self.db.with(|c| {
@@ -241,6 +319,54 @@ impl Supervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_names_reparse_only_changed_turns_and_track_deletes() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE thread_turns(id TEXT PRIMARY KEY,thread_id TEXT,model TEXT,pricing_model_key TEXT,token_usage_json TEXT);
+            INSERT INTO thread_turns VALUES ('a','thread-a','model-a',NULL,'{\"requests\":[{\"model\":\"request-a\"}]}');").unwrap();
+        let mut cache = ModelNames::default();
+        assert_eq!(
+            cache.observe(&c, None).unwrap(),
+            vec!["model-a", "request-a"]
+        );
+        assert_eq!(cache.parsed, 1);
+        for _ in 0..100 {
+            cache.observe(&c, None).unwrap();
+        }
+        assert_eq!(cache.parsed, 1, "reconnect must not parse unchanged usage");
+        c.execute(
+            "INSERT INTO thread_turns VALUES ('b','thread-b','model-b',NULL,'{}')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            cache.observe(&c, Some("thread-b")).unwrap(),
+            vec!["model-b"]
+        );
+        assert_eq!(cache.parsed, 2, "turn end must only parse the new turn");
+        c.execute(
+            "UPDATE thread_turns SET token_usage_json=token_usage_json",
+            [],
+        )
+        .unwrap();
+        cache.observe(&c, None).unwrap();
+        assert_eq!(cache.parsed, 2);
+        c.execute("UPDATE thread_turns SET model='new-model' WHERE id='a'", [])
+            .unwrap();
+        assert_eq!(
+            cache.observe(&c, Some("thread-a")).unwrap(),
+            vec!["new-model", "request-a"]
+        );
+        assert_eq!(cache.parsed, 3);
+        c.execute("DELETE FROM thread_turns WHERE id='a'", [])
+            .unwrap();
+        assert_eq!(cache.observe(&c, None).unwrap(), vec!["model-b"]);
+        assert_eq!(cache.parsed, 3);
+        c.execute("UPDATE thread_turns SET token_usage_json=NULL", [])
+            .unwrap();
+        assert!(cache.observe(&c, None).unwrap().is_empty());
+    }
 
     #[test]
     fn dsh_presentation_preserves_channel_and_wire_id_without_inventing_native_controls() {
