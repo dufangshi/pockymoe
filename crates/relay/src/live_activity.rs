@@ -192,6 +192,7 @@ fn swift_date(date: chrono::DateTime<chrono::Utc>) -> f64 {
 }
 
 pub(super) async fn deliver_batch(state: &AppState, http: &reqwest::Client) -> Result<()> {
+    state.store.renew_activity().await?;
     let now = chrono::Utc::now().timestamp_millis();
     let jobs = {
         let conn = state.store.conn.lock().await;
