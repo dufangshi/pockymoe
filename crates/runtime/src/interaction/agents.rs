@@ -442,15 +442,7 @@ impl Supervisor {
             };
             // A passive question is invisible to the harness, but it is exactly the
             // moment a waiting parent must act, so surface it as blocking.
-            let mut stmt = c.prepare(
-                "SELECT json_extract(q.value,'$.id'), COALESCE(json_extract(q.value,'$.subject'),''), json_extract(q.value,'$.threadId')
-                 FROM kv q WHERE q.key GLOB 'cli:inbox:*'
-                   AND json_extract(q.value,'$.fromThreadId')=?1
-                   AND json_extract(q.value,'$.kind')='question'
-                   AND json_extract(q.value,'$.acknowledgedAt') IS NULL
-                   AND NOT EXISTS (SELECT 1 FROM kv r WHERE r.key GLOB 'cli:inbox:' || ?1 || ':*'
-                                     AND json_extract(r.value,'$.inReplyTo')=json_extract(q.value,'$.id'))",
-            )?;
+            let mut stmt = c.prepare(super::inbox::OPEN_QUESTIONS)?;
             let questions = stmt
                 .query_map([id], |r| {
                     Ok(format!(

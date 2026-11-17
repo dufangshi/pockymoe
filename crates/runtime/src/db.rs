@@ -273,6 +273,14 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
         name: "working_copies",
         apply: crate::worktrees::migrate,
     },
+    Migration {
+        version: 23,
+        name: "mailbox_indexes",
+        apply: |conn| {
+            conn.execute_batch(include_str!("interaction/mailbox_indexes.sql"))?;
+            Ok(())
+        },
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them

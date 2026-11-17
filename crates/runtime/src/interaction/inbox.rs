@@ -4,6 +4,62 @@ use pockymoe_protocol::now_rfc3339;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
+// Explicit partial indexes keep periodic work independent of acknowledged history,
+// even when SQLite would otherwise prefer the generic kv key index.
+pub(crate) const REMINDER_CANDIDATES: &str = "SELECT DISTINCT json_extract(value,'$.threadId')
+    FROM kv INDEXED BY mailbox_open_idx
+    WHERE key GLOB 'cli:inbox:*' AND json_extract(value,'$.acknowledgedAt') IS NULL
+      AND json_extract(value,'$.readAt') IS NULL
+      AND json_extract(value,'$.remindedAt') IS NULL
+      AND json_extract(value,'$.supersededBy') IS NULL
+      AND julianday(json_extract(value,'$.remindAfter')) <= julianday(?1)";
+
+pub(super) const OPEN_QUESTIONS: &str = "SELECT json_extract(q.value,'$.id'),
+    COALESCE(json_extract(q.value,'$.subject'),''), json_extract(q.value,'$.threadId')
+    FROM kv q INDEXED BY mailbox_open_idx
+    WHERE q.key GLOB 'cli:inbox:*' AND json_extract(q.value,'$.acknowledgedAt') IS NULL
+      AND json_extract(q.value,'$.fromThreadId')=?1
+      AND json_extract(q.value,'$.kind')='question'
+      AND NOT EXISTS (SELECT 1 FROM kv r INDEXED BY mailbox_reply_idx
+          WHERE r.key GLOB 'cli:inbox:*'
+            AND json_extract(r.value,'$.threadId')=?1
+            AND json_extract(r.value,'$.inReplyTo') IS NOT NULL
+            AND json_extract(r.value,'$.inReplyTo')=json_extract(q.value,'$.id'))";
+
+/// Keep handled mail for 30 days for read/--all. Preserve replies that still
+/// resolve an unacknowledged question, or deleting them could re-block a wake.
+/// Run at the first reminder tick and then hourly, using a durable cooldown.
+pub(crate) fn cleanup_acknowledged(conn: &Connection, now: &str) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    let cooling: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM kv WHERE key='cli:mailbox-cleanup'
+         AND julianday(value)+1.0/24.0 > julianday(?1))",
+        [now],
+        |r| r.get(0),
+    )?;
+    if cooling {
+        return Ok(());
+    }
+    tx.execute(
+        "DELETE FROM kv INDEXED BY mailbox_ack_age_idx
+         WHERE key GLOB 'cli:inbox:*' AND json_extract(value,'$.acknowledgedAt') IS NOT NULL
+           AND julianday(json_extract(value,'$.acknowledgedAt')) < julianday(?1)-30
+           AND NOT EXISTS (SELECT 1 FROM kv q INDEXED BY mailbox_open_idx
+               WHERE q.key GLOB 'cli:inbox:*' AND json_extract(q.value,'$.acknowledgedAt') IS NULL
+                 AND json_extract(q.value,'$.kind')='question'
+                 AND json_extract(q.value,'$.fromThreadId')=json_extract(kv.value,'$.threadId')
+                 AND json_extract(q.value,'$.id')=json_extract(kv.value,'$.inReplyTo'))",
+        [now],
+    )?;
+    tx.execute(
+        "INSERT INTO kv(key,value) VALUES('cli:mailbox-cleanup',?1)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [now],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 fn prefix(thread: &str) -> String {
     format!("cli:inbox:{thread}:")
 }
@@ -335,5 +391,125 @@ impl Supervisor {
             tx.commit()?;
             Ok(json!({"threadId":thread,"acknowledged":ids}))
         })
+    }
+}
+
+#[cfg(test)]
+mod mailbox_tests {
+    use super::*;
+    use rusqlite::StatementStatus;
+    use std::time::Instant;
+
+    fn database() -> (tempfile::TempDir, crate::Database) {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::Database::open(&dir.path().join("mail.sqlite")).unwrap();
+        (dir, db)
+    }
+
+    fn insert(conn: &Connection, id: &str, fields: Value) {
+        let mut mail = json!({"id":id,"threadId":"receiver","fromThreadId":"sender",
+            "kind":"status","acknowledgedAt":null,"readAt":null,"remindedAt":null,
+            "supersededBy":null,"remindAfter":"2026-01-01T00:10:00Z","text":"x".repeat(1100)});
+        mail.as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        conn.execute(
+            "INSERT INTO kv(key,value) VALUES(?1,?2)",
+            params![
+                key(mail["threadId"].as_str().unwrap(), id),
+                mail.to_string()
+            ],
+        )
+        .unwrap();
+    }
+
+    fn scan(conn: &Connection, sql: &str, parameter: &str) -> (usize, i32, std::time::Duration) {
+        let mut stmt = conn.prepare(sql).unwrap();
+        let start = Instant::now();
+        let count = stmt.query_map([parameter], |_| Ok(())).unwrap().count();
+        (
+            count,
+            stmt.get_status(StatementStatus::VmStep),
+            start.elapsed(),
+        )
+    }
+
+    #[test]
+    fn mailbox_scans_skip_acknowledged_history() {
+        let (_dir, db) = database();
+        db.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            for n in 0..5000 {
+                insert(&tx, &format!("old-{n}"), json!({"acknowledgedAt":"2026-01-02T00:00:00Z"}));
+            }
+            insert(&tx, "question", json!({"kind":"question"}));
+            insert(&tx, "answered", json!({"kind":"question"}));
+            // An acknowledged reply must still resolve a pending question.
+            insert(&tx, "reply", json!({"threadId":"sender","inReplyTo":"answered",
+                "acknowledgedAt":"2026-01-02T00:00:00Z"}));
+            tx.commit()?;
+            let old_reminder = "SELECT DISTINCT json_extract(value,'$.threadId') FROM kv
+                WHERE key GLOB 'cli:inbox:*' AND json_extract(value,'$.readAt') IS NULL
+                AND json_extract(value,'$.remindedAt') IS NULL
+                AND json_extract(value,'$.acknowledgedAt') IS NULL
+                AND json_extract(value,'$.supersededBy') IS NULL
+                AND julianday(json_extract(value,'$.remindAfter')) <= julianday(?1)";
+            let old_questions = "SELECT json_extract(q.value,'$.id'), COALESCE(json_extract(q.value,'$.subject'),''), json_extract(q.value,'$.threadId')
+                FROM kv q WHERE q.key GLOB 'cli:inbox:*'
+                AND json_extract(q.value,'$.fromThreadId')=?1 AND json_extract(q.value,'$.kind')='question'
+                AND json_extract(q.value,'$.acknowledgedAt') IS NULL
+                AND NOT EXISTS (SELECT 1 FROM kv r WHERE r.key GLOB 'cli:inbox:' || ?1 || ':*'
+                AND json_extract(r.value,'$.inReplyTo')=json_extract(q.value,'$.id'))";
+            // Reproduce the pre-index scans too, so the benchmark compares the
+            // same temp database and output without planner help from new indexes.
+            conn.execute_batch("DROP INDEX mailbox_open_idx; DROP INDEX mailbox_reply_idx; DROP INDEX mailbox_ack_age_idx;")?;
+            let before_reminder = scan(conn, old_reminder, "2026-01-03T00:00:00Z");
+            let before_questions = scan(conn, old_questions, "sender");
+            conn.execute_batch(include_str!("mailbox_indexes.sql"))?;
+            let after_reminder = scan(conn, REMINDER_CANDIDATES, "2026-01-03T00:00:00Z");
+            let after_questions = scan(conn, OPEN_QUESTIONS, "sender");
+            eprintln!("5001 acknowledged / 2 open messages; (rows, VM steps, elapsed):\nreminder before={before_reminder:?}, after={after_reminder:?}\nquestions before={before_questions:?}, after={after_questions:?}");
+            assert_eq!(before_reminder.0, after_reminder.0);
+            assert_eq!(before_questions.0, 1);
+            assert_eq!(after_questions.0, 1);
+            assert!(after_reminder.1 < 200, "{after_reminder:?}");
+            assert!(after_questions.1 < 200, "{after_questions:?}");
+            assert!(before_reminder.1 > after_reminder.1 * 100);
+            assert!(before_questions.1 > after_questions.1 * 100);
+            // Index maintenance follows acknowledgement immediately.
+            conn.execute("UPDATE kv SET value=json_set(value,'$.acknowledgedAt','2026-01-03T00:00:00Z') WHERE key=?1", [key("receiver", "question")])?;
+            assert_eq!(scan(conn, OPEN_QUESTIONS, "sender").0, 0);
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn mailbox_retention_preserves_recent_unhandled_and_needed_replies() {
+        let (_dir, db) = database();
+        db.with(|conn| {
+            insert(conn, "expired", json!({"acknowledgedAt":"2026-01-01T00:00:00Z"}));
+            insert(conn, "boundary", json!({"acknowledgedAt":"2026-01-02T00:00:00Z"}));
+            insert(conn, "recent", json!({"acknowledgedAt":"2026-01-31T00:00:00Z"}));
+            insert(conn, "unhandled", json!({"readAt":"2026-01-01T00:00:00Z","supersededBy":"new"}));
+            insert(conn, "question", json!({"kind":"question"}));
+            insert(conn, "reply", json!({"threadId":"sender","inReplyTo":"question","acknowledgedAt":"2026-01-01T00:00:00Z"}));
+            // Non-mail KV records need not contain JSON.
+            conn.execute("INSERT INTO kv(key,value) VALUES('other','not json')", [])?;
+            cleanup_acknowledged(conn, "2026-02-01T00:00:00Z")?;
+            assert!(get(conn, "receiver", "expired").is_err());
+            for id in ["boundary", "recent", "unhandled", "question"] {
+                assert!(get(conn, "receiver", id).is_ok(), "lost {id}");
+            }
+            assert!(get(conn, "sender", "reply").is_ok());
+            assert_eq!(scan(conn, OPEN_QUESTIONS, "sender").0, 0);
+            conn.execute("UPDATE kv SET value=json_set(value,'$.acknowledgedAt','2026-02-01T00:00:00Z') WHERE key=?1", [key("receiver", "question")])?;
+            cleanup_acknowledged(conn, "2026-02-01T00:30:00Z")?;
+            assert!(get(conn, "sender", "reply").is_ok(), "hourly cooldown");
+            cleanup_acknowledged(conn, "2026-02-01T01:00:00Z")?;
+            assert!(get(conn, "sender", "reply").is_err());
+            assert!(get(conn, "receiver", "boundary").is_err());
+            assert!(get(conn, "receiver", "question").is_ok());
+            Ok(())
+        }).unwrap();
     }
 }
