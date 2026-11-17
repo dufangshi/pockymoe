@@ -62,6 +62,10 @@ mod completion_tests;
 mod compact_tests;
 
 #[cfg(test)]
+#[path = "model_probe_tests.rs"]
+mod model_probe_tests;
+
+#[cfg(test)]
 #[path = "effort_tests.rs"]
 mod effort_tests;
 
@@ -611,8 +615,13 @@ impl AcpRuntime {
         }
         let codex_bridge = if def.id == "codex" && !isolated {
             Some(Arc::new(
-                super::codex_bridge::CodexBridge::new(&def.base_command, &mut extra_env, &policy)
-                    .await?,
+                super::codex_bridge::CodexBridge::new(
+                    &def.base_command,
+                    &mut extra_env,
+                    &policy,
+                    self.upstreams.as_ref().map(|u| u.directory()),
+                )
+                .await?,
             ))
         } else {
             None
@@ -1243,6 +1252,19 @@ impl AcpRuntime {
     ) -> Result<()> {
         match op {
             SessionSettingOp::SetConfig { config_id, value } => {
+                if live.adapter_id == "codex" && config_id == "model" && live.codex_bridge.is_some()
+                {
+                    // codex-acp's legacy setter refetches model/list before
+                    // validating. Its config setter only uses its session snapshot.
+                    process
+                        .request(
+                            "session/set_model",
+                            json!({
+                                "sessionId": live.session_id, "modelId": value
+                            }),
+                        )
+                        .await?;
+                }
                 let isolated_claude_model = live.isolated_claude.is_some() && config_id == "model";
                 if isolated_claude_model {
                     isolated_claude::require_model(&live.config_options, &value)?;

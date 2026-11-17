@@ -171,7 +171,7 @@ async fn native_codex_fork_writer_handoff() {
     let source_id = started["thread"]["id"].as_str().unwrap();
     source.request("thread/inject_items", json!({"threadId":source_id,"items":[{"type":"message","role":"user","content":[{"type":"input_text","text":"fork regression seed"}]}]})).await.unwrap();
     let policy = ProductSessionPolicy::default();
-    let bridge = super::super::codex_bridge::CodexBridge::new(&command, &mut vec![], &policy)
+    let bridge = super::super::codex_bridge::CodexBridge::new(&command, &mut vec![], &policy, None)
         .await
         .unwrap();
     let (child, _, _) = AcpProcess::spawn(&format!("{command} app-server"), cwd, &[])
