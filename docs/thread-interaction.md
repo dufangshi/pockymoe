@@ -224,7 +224,7 @@ A Docker end-to-end check lives in [e2e/thread-interaction](../e2e/thread-intera
 
 This section supersedes the earlier default-delivery examples above. Ordinary `thread send` defaults to `--delivery inbox`; the create command's initial prompt defaults to `queue`. Explicit `queue` submits execution and explicit `steer` requires a running capable backend. Steering failures after durable acceptance return a held receipt; held input is excluded from background draining.
 
-`inbox` / `inbox list` returns bounded unread previews; `inbox read ID` expands one message; `inbox ack ID...` marks handled messages while retaining history. `--thread ID` selects a mailbox. Listing and reading never trigger turns or mark messages processed. `status` includes `unreadMessageCount`. Mail uses namespaced records in the existing KV store, with no schema migration or new tables.
+`inbox` / `inbox list` returns bounded unread previews; `inbox read ID` expands one message; `inbox ack ID...` marks handled messages while retaining history for 30 days after acknowledgement. `--thread ID` selects a mailbox. Listing and reading never trigger turns or mark messages processed. `status` includes `unreadMessageCount`. Mail uses namespaced records in the existing KV store, with partial indexes for unacknowledged mail and indexed reply lookups.
 
 Since 0.12.48, completion subscriptions on executable messages always deliver to the passive inbox; `--notify-delivery queue` is rejected before acceptance. Still-pending legacy subscriptions also deliver to inbox, never waking or queuing the caller. Already-enqueued input is preserved. Parents actively inspect inbox/status/transcript at checkpoints. Passive mail rejects completion subscriptions because there is no corresponding receiving turn.
 
@@ -250,6 +250,15 @@ Marking the batch reminded and enqueueing the continuation are one transaction;
 restarts cannot duplicate it. Further batches are spaced at least 10 minutes
 apart. The reminder never acknowledges mail or reopens a closed thread.
 Historical messages without `remindAfter` are not enrolled retroactively.
+
+Hourly maintenance removes mail acknowledged more than 30 days ago, keeping
+recent handled mail available to `inbox read` and `inbox list --all` for review.
+Unacknowledged mail is never expired. Older acknowledged replies are also kept
+while they resolve an unacknowledged question, so cleanup cannot turn an answered
+question back into a blocker. Once that question is acknowledged or deleted,
+its expired replies become eligible at the next cleanup. Reminder and wake scans
+use indexes to avoid reading and parsing acknowledged history; replies are exact
+indexed lookups, including replies already acknowledged.
 
 `inbox read` and inline messages returned by `inbox wait` record `readAt` and
 cancel their reminder eligibility. Listing bounded previews does not. Reading
