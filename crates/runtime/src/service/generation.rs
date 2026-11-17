@@ -29,7 +29,9 @@ pub(super) struct SavedUsage {
     usage: Value,
     model: Option<String>,
     effort: Option<String>,
-    written: std::time::Instant,
+    /// `None`: the next timing goes to the record (a usage report just
+    /// rewrote it, and its timing belongs with it).
+    written: Option<std::time::Instant>,
 }
 
 /// How often a running turn's timing is written. The record holds every model
@@ -51,17 +53,13 @@ impl GenerationCache {
         if !self.0.lock().unwrap().contains_key(&key) {
             return;
         }
-        let mut saved = self.1.lock().unwrap();
-        let written = saved
-            .get(&key)
-            .map_or_else(std::time::Instant::now, |entry| entry.written);
-        saved.insert(
+        self.1.lock().unwrap().insert(
             key,
             SavedUsage {
                 usage: usage.clone(),
                 model,
                 effort,
-                written,
+                written: None,
             },
         );
     }
@@ -659,10 +657,11 @@ impl Supervisor {
         // record itself is rewritten only now and then, and at the end.
         if speed["active"] == true {
             let mut saved = self.generation.1.lock().unwrap();
-            if let Some(entry) = saved
-                .get_mut(key)
-                .filter(|entry| entry.written.elapsed() < SPEED_WRITE_INTERVAL)
-            {
+            if let Some(entry) = saved.get_mut(key).filter(|entry| {
+                entry
+                    .written
+                    .is_some_and(|at| at.elapsed() < SPEED_WRITE_INTERVAL)
+            }) {
                 let known = &entry.usage["generationSpeed"];
                 if known["active"] == false
                     || known["updatedAt"].as_str().and_then(millis)
@@ -697,7 +696,7 @@ impl Supervisor {
             usage["generationSpeed"] = speed;
             conn.execute("UPDATE thread_turns SET token_usage_json=?1 WHERE thread_id=?2 AND id=?3", params![usage.to_string(),key.0,key.1])?;
             if usage["generationSpeed"]["active"] == true && self.generation.0.lock().unwrap().contains_key(key) {
-                self.generation.1.lock().unwrap().insert(key.clone(), SavedUsage { usage: usage.clone(), model: model.clone(), effort: effort.clone(), written: std::time::Instant::now() });
+                self.generation.1.lock().unwrap().insert(key.clone(), SavedUsage { usage: usage.clone(), model: model.clone(), effort: effort.clone(), written: Some(std::time::Instant::now()) });
             }
             Ok(Some(json!({"turnId":key.1,"model":model,"reasoningEffort":effort,"tokenUsage":crate::usage::public_usage(&usage),"priceEstimate":usage["priceEstimate"]})))
         })?;
