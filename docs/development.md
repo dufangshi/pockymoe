@@ -30,6 +30,13 @@ pnpm --filter @pockymoe/supervisor-web exec vite --host localhost --port 5173
 
 Open `http://localhost:5173`. Local mode has no login.
 
+On Linux GNU, the native command limits glibc to two malloc arenas before
+starting Tokio workers, reducing memory retained after concurrent JSON work.
+An explicit `MALLOC_ARENA_MAX` environment variable takes precedence; set it
+before launching the command to tune the memory/concurrency tradeoff. macOS,
+Windows and non-GNU builds retain their system allocator defaults. This does
+not change the environment or allocator settings of harness subprocesses.
+
 A local relay and a device connected to it:
 
 ```bash
