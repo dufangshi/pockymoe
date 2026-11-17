@@ -116,8 +116,7 @@ pub fn private_write(path: &Path, data: &[u8]) -> Result<()> {
     use std::io::Write;
     tmp.write_all(data)?;
     tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
+    write_engine::replace(tmp, path)
 }
 fn save(dir: &Path, store: &Store) -> Result<()> {
     private_write(

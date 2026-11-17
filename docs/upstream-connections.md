@@ -211,6 +211,13 @@ its `auth.json` credentials are supported. A configured credential helper is not
 executed just to populate this list. Local checks cannot establish whether an
 opaque refresh token has been revoked by the provider.
 
+A native file is written to a staged copy and renamed over the original, after
+checking that nobody changed it meanwhile. A file mounted on its own into a
+container (`-v ~/.codex/config.toml:/home/node/.codex/config.toml`) cannot be
+renamed over (EBUSY, "Device or resource busy"); it is then rewritten in place
+(`upstreams/write_engine.rs`). Such a file is the host's file: applying an
+upstream in the container changes the host's harness too.
+
 ## Account directory and explicit synchronization
 
 Devices publish only `{id, name, protocol, revision}` over their authenticated
