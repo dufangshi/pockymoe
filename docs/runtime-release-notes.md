@@ -1,9 +1,11 @@
-Fixes a process leak that could use up a device's memory.
+Codex usage now includes the sub-agents a turn starts.
 
-- **Leaked worker processes**: every command, Git read or agent that Pockymoe
-  stopped (rather than let finish) left one idle `environment-worker host-run`
-  process behind, and they were never cleaned up. A busy device collected
-  thousands of them, tens of gigabytes in total. A stopped worker now exits at
-  once.
-- **Updating clears the old ones**: the update restarts Pockymoe, and the
-  processes already left behind exit with it. Nothing has to be killed by hand.
+- **Codex turns that delegate were under-counted.** A Codex sub-agent runs as
+  its own session, and its tokens never reached the turn's total: a turn showed
+  only the main agent's share. With the `ultra` effort, which delegates by
+  itself, most of the work was missing from tokens and cost. A turn now counts
+  every model request of the main agent and of the sub-agents it starts, at any
+  depth, each priced with its own model.
+- Turn totals, the cost tooltip, device statistics and model usage all follow.
+  Codex turns also report their number of model requests.
+- Turns recorded before this version keep their old totals.

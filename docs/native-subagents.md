@@ -48,6 +48,8 @@ Codex inherited parent messages and cumulative usage are excluded using the
 child's own metadata/start time and usage baseline. If the first cumulative
 snapshot lacks a baseline, its last-call usage avoids charging inherited totals.
 Subsequent snapshots use cumulative deltas, including counter-reset handling.
+The parent turn's total includes these sub-agents
+([prices and usage](model-pricing-and-subscription-usage.md)).
 Claude usage snapshots are deduplicated by message ID rather than summed each
 time the same message is persisted. Existing pricing handles cache usage and
 Codex fast/priority tier. Amounts are API price estimates, not provider invoices.

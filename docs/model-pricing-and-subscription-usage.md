@@ -59,6 +59,22 @@ observation times. These request snapshots persist for historical repricing;
 child activity does not change the parent model or context-occupancy display.
 Older turns without these snapshots retain their previously recorded totals.
 
+Codex turn totals include native sub-agents as well, at any depth. A sub-agent
+is its own Codex session with its own token counter, and none of its requests
+reach the parent session's counter or the adapter's reports, so a turn that
+delegates (the `ultra` effort delegates by itself) used to show the parent's
+share only. The runtime tails the parent's rollout and the rollout of every
+sub-agent the turn starts (`SubAgentActivity` records name them), and stores one
+snapshot per model request: its tokens, model and time. A sub-agent's first
+request is taken from its own figures, because a fork can begin with the
+parent's counter; a repeated count (Codex writes one when only rate limits
+change) adds nothing. The turn's total and price are the sum of these requests,
+each priced with its own model. The context meter still follows the parent's
+latest request. Limits: a sub-agent started in an earlier turn is not counted in
+a later one, requests a sub-agent makes after its parent's turn has ended are
+not counted, and turns recorded before 0.13.62 or imported from session history
+keep the parent-only total.
+
 ## Bundled fallback rates
 
 The catalog is `config/codex-model-pricing.json`, with source links and verification
