@@ -11,7 +11,7 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 - [Local mode](local-mode.md): one computer and its network, without a relay
 - [Device setup, harnesses and upstreams](device-setup.md)
 - [Shared upstream connections](upstream-connections.md): save, apply, and encrypted device synchronization
-- [Native installation and GitHub runtime releases](github-runtime.md)
+- [Native installation and GitHub runtime releases](github-runtime.md): install, update, and cleanup of old releases
 - [Treer integration](treer-integration.md): hub, attach, pinned installation and launch profiles
 
 **Development**
@@ -67,7 +67,7 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 - [Model and reasoning effort](model-settings.md): effort levels per model, changes during a turn, the models a turn shows
 - [Prompt attachments](prompt-attachments.md): the 1 GiB limit, chunked uploads, where the bytes are and when they are cleaned up
 - [Storage](storage.md): disk use of the Supervisor database, history cleanup (command output, command text, diffs) and reclaiming space
-- [Managed ACP adapters](managed-acp-adapters.md)
+- [Managed ACP adapters](managed-acp-adapters.md): installs, and cleanup of old installations
 - [DeepSeek Harness bridge](dsh-adapter.md)
 - Claude: [background waits and wakes](claude-background-wake.md), [scheduled-turn history](claude-scheduled-history.md)
 

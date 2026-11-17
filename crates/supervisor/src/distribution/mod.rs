@@ -1,4 +1,5 @@
 //! Native, user-owned runtime distribution. GitHub releases are authoritative.
+mod cleanup;
 mod releases;
 mod service;
 mod setup;
@@ -38,6 +39,7 @@ pub fn installed_web_dist() -> Option<PathBuf> {
         .map(|installed| installed.web_dist)
         .filter(|dist| dist.join("index.html").is_file())
 }
+pub(crate) use cleanup::spawn as spawn_disk_cleanup;
 pub(crate) use update::{complete_host_managed_startup, host_managed_pending};
 pub use update::{maintenance_cli, run_worker, updater};
 

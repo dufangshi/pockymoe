@@ -119,6 +119,18 @@ fn service_path(manager: &str, config: &Path) -> PathBuf {
         home().join(".config/systemd/user").join(id.systemd)
     }
 }
+/// Every service definition setup can write (relay and local, systemd and
+/// launchd), whether or not it exists.
+pub fn definition_files() -> Vec<PathBuf> {
+    let configs = [
+        Path::new("relay-supervisor.json"),
+        Path::new(LOCAL_CONFIG_FILE),
+    ];
+    ["systemd-user", "launchd"]
+        .iter()
+        .flat_map(|manager| configs.iter().map(|config| service_path(manager, config)))
+        .collect()
+}
 pub fn install(manager: &str, installed: &Installed, config: &Path) -> Result<()> {
     let file = service_path(manager, config);
     private_dir(file.parent().unwrap())?;

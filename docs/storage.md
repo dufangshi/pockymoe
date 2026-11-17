@@ -5,6 +5,10 @@ Settings → Resources has two parts: **Memory** holds the harness release rules
 device's Supervisor database holds and cleans up old command output, command
 text and file-change diffs.
 
+Files outside the database (old native releases, update staging directories,
+the retired npm launcher's binaries, old ACP adapter installations and their npm
+cache) are cleaned automatically; see [disk cleanup](github-runtime.md#disk-cleanup).
+
 ## What takes the space
 
 Thread history lives in `thread_history_items`, one JSON item per transcript

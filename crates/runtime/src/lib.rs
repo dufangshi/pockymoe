@@ -7,6 +7,7 @@ pub mod context_inspection;
 pub mod context_steps;
 pub mod db;
 pub mod device_metrics;
+pub mod disk_cleanup;
 pub mod environment;
 pub mod execution;
 pub mod fake;
