@@ -58,7 +58,6 @@ import { LoginPage } from './pages/LoginPage';
 import { RelayAccountPage } from './pages/RelayAccountPage';
 import { SharePendingPage } from './pages/SharePendingPage';
 import { onSharePending, SHARE_PENDING_PATH, sharePendingHref } from './lib/sharePending';
-import { RelayAdminPage } from './pages/RelayAdminPage';
 import { DevicesEntryRoute } from './pages/DevicesEntryRoute';
 import { RelayGuidePage } from './pages/RelayGuidePage';
 import { HelpPage } from './pages/HelpPage';
@@ -95,6 +94,8 @@ import { useReasoningSummaries } from './lib/useReasoningSummaries';
 import { startQuietEnrollment } from './lib/quietEnrollment';
 import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/themePacks';
 
+// The relay admin console is for the relay's administrator only.
+const RelayAdminPage = lazy(() => import('./pages/RelayAdminPage').then(module => ({ default: module.RelayAdminPage })));
 const DesktopWindowFrame = lazy(() => import('./desktop/DesktopWindowFrame'));
 const DesktopEntry = lazy(() => import('./desktop/DesktopEntry'));
 const DesktopDevicesRoute = lazy(() => import('./desktop/DevicesRoute'));
@@ -821,7 +822,7 @@ export function App() {
             <Route path="/help" element={<HelpPage />} />
             <Route path="/help/:topic" element={<HelpPage />} />
             <Route path="/relay-portal" element={<RelayPortalPage />} />
-            <Route path="/relay-admin" element={<RelayAdminPage />} />
+            <Route path="/relay-admin" element={<Suspense fallback={null}><RelayAdminPage /></Suspense>} />
             <Route
               path="/*"
               element={

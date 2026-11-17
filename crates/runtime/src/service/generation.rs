@@ -18,7 +18,54 @@ use super::*;
 use std::collections::VecDeque;
 
 #[derive(Default)]
-pub(super) struct GenerationCache(std::sync::Mutex<HashMap<(String, String), Tracker>>);
+pub(super) struct GenerationCache(
+    std::sync::Mutex<HashMap<(String, String), Tracker>>,
+    std::sync::Mutex<HashMap<(String, String), SavedUsage>>,
+);
+
+/// A running turn's usage as last written, so the timing shown while it runs
+/// can follow the clock without reading and rewriting the whole record.
+pub(super) struct SavedUsage {
+    usage: Value,
+    model: Option<String>,
+    effort: Option<String>,
+    written: std::time::Instant,
+}
+
+/// How often a running turn's timing is written. The record holds every model
+/// request of the turn and reaches hundreds of kilobytes; writing it on every
+/// tool event and every two seconds was most of what a long turn wrote to disk.
+/// The final timing is always written when the turn's tracking ends.
+const SPEED_WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(20);
+
+impl GenerationCache {
+    /// The usage record of a turn was just written with this content.
+    pub(super) fn remember(
+        &self,
+        key: (String, String),
+        usage: &Value,
+        model: Option<String>,
+        effort: Option<String>,
+    ) {
+        // Only for turns being timed; nothing else reads it back.
+        if !self.0.lock().unwrap().contains_key(&key) {
+            return;
+        }
+        let mut saved = self.1.lock().unwrap();
+        let written = saved
+            .get(&key)
+            .map_or_else(std::time::Instant::now, |entry| entry.written);
+        saved.insert(
+            key,
+            SavedUsage {
+                usage: usage.clone(),
+                model,
+                effort,
+                written,
+            },
+        );
+    }
+}
 
 #[derive(Clone)]
 struct Span {
@@ -592,6 +639,15 @@ impl Supervisor {
             .iter_mut()
             .map(|(key, tracker)| (key.clone(), tracker.snapshot(now, true)))
             .collect();
+        // A turn whose tracking ended has no use for its remembered record.
+        {
+            let live = self.generation.0.lock().unwrap();
+            self.generation
+                .1
+                .lock()
+                .unwrap()
+                .retain(|key, _| live.contains_key(key));
+        }
         for (key, speed) in snapshots {
             self.save_generation_speed(&key, speed)?;
         }
@@ -599,6 +655,36 @@ impl Supervisor {
     }
 
     fn save_generation_speed(&self, key: &(String, String), speed: Value) -> Result<()> {
+        // While the turn runs, the timing goes to viewers from memory; the
+        // record itself is rewritten only now and then, and at the end.
+        if speed["active"] == true {
+            let mut saved = self.generation.1.lock().unwrap();
+            if let Some(entry) = saved
+                .get_mut(key)
+                .filter(|entry| entry.written.elapsed() < SPEED_WRITE_INTERVAL)
+            {
+                let known = &entry.usage["generationSpeed"];
+                if known["active"] == false
+                    || known["updatedAt"].as_str().and_then(millis)
+                        > speed["updatedAt"].as_str().and_then(millis)
+                    || known["outputTokens"].as_u64() > speed["outputTokens"].as_u64()
+                {
+                    return Ok(());
+                }
+                entry.usage["generationSpeed"] = speed;
+                let payload = json!({"turnId":key.1,"model":entry.model,"reasoningEffort":entry.effort,"tokenUsage":crate::usage::public_usage(&entry.usage),"priceEstimate":entry.usage["priceEstimate"]});
+                drop(saved);
+                self.bus.emit(pockymoe_protocol::ThreadEventEnvelope {
+                    event_type: pockymoe_protocol::ThreadEventType::ThreadTurnTokenUpdated,
+                    thread_id: key.0.clone(),
+                    timestamp: now_rfc3339(),
+                    payload,
+                });
+                return Ok(());
+            }
+        } else {
+            self.generation.1.lock().unwrap().remove(key);
+        }
         let payload = self.db.with(|conn| {
             let row = conn.query_row("SELECT token_usage_json,model,reasoning_effort FROM thread_turns WHERE thread_id=?1 AND id=?2", params![key.0,key.1], |r| Ok((r.get::<_,Option<String>>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,Option<String>>(2)?))).optional()?;
             let Some((Some(raw),model,effort)) = row else { return Ok(None); };
@@ -610,6 +696,9 @@ impl Supervisor {
                 || usage["generationSpeed"]["outputTokens"].as_u64() > speed["outputTokens"].as_u64() { return Ok(None); }
             usage["generationSpeed"] = speed;
             conn.execute("UPDATE thread_turns SET token_usage_json=?1 WHERE thread_id=?2 AND id=?3", params![usage.to_string(),key.0,key.1])?;
+            if usage["generationSpeed"]["active"] == true && self.generation.0.lock().unwrap().contains_key(key) {
+                self.generation.1.lock().unwrap().insert(key.clone(), SavedUsage { usage: usage.clone(), model: model.clone(), effort: effort.clone(), written: std::time::Instant::now() });
+            }
             Ok(Some(json!({"turnId":key.1,"model":model,"reasoningEffort":effort,"tokenUsage":crate::usage::public_usage(&usage),"priceEstimate":usage["priceEstimate"]})))
         })?;
         if let Some(payload) = payload {

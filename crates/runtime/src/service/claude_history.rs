@@ -183,6 +183,19 @@ impl Supervisor {
 
     /// Recover finished native scheduler turns before UI/CLI history reads.
     pub async fn sync_claude_scheduled_history(&self, id: &str) -> Result<()> {
+        // The observer calls this every two seconds for every thread ever
+        // opened. Decide from memory whether it is this thread's turn before
+        // reading anything: the checks below read the database.
+        if self
+            .claude_history
+            .0
+            .lock()
+            .unwrap()
+            .get(id)
+            .is_some_and(|entry| entry.checked.elapsed() < Duration::from_secs(5))
+        {
+            return Ok(());
+        }
         if self.environments.for_thread(id)?.is_some() {
             return Ok(());
         }
