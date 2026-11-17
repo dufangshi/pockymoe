@@ -151,6 +151,22 @@ pnpm --filter @pockymoe/shared test
 The shared unit-test entry point invokes the same Rust contract test, requiring
 Cargo and avoiding a duplicated fixture. The Rust test includes the TS source
 at compile time and compares all four known-value sets, including duplicates.
+## Streamed output is gathered
+
+A model streams tens of small pieces a second. Each `thread.output.delta` is
+saved before it is sent (the whole item, synced to disk), so the bus gathers the
+pieces of one item for 80 ms and delivers them as one event with the joined
+`delta` and the latest `sequence` (`actor.rs`, `STREAM_WINDOW`). The first piece
+of an item goes at once. Repeated `thread.item.started` snapshots of an item that
+is still in progress are gathered the same way, keeping the newest. Any other
+event of the thread first lets out what is held, so order is kept, and a timer
+covers a stream that pauses. A client therefore sees at most about twelve
+events a second per item, each consistent with what a snapshot read returns.
+
+`runtime.usage.updated` is saved with its per-request list (`requests`) and
+broadcast without it; viewers read a turn's totals from
+`thread.turn.token.updated`.
+
 Wire tests check known/unknown string round trips and flattened payload
 preservation. These checks cover discriminants; they do not validate arbitrary
 payload shapes or the separate shared copy in the external thread UI repo.

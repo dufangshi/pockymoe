@@ -37,6 +37,7 @@ pub use capabilities::NegotiatedCaps;
 pub use catalog::{
     augment_path, builtin_agents, classify_availability, command_available, parse_command_models,
 };
+pub use dependencies::cleanup_installations as cleanup_adapter_installations;
 pub use modes::{parse_available_modes, ProductSessionPolicy};
 pub use runtime::AcpRuntime;
 

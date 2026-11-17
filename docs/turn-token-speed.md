@@ -97,3 +97,13 @@ pnpm exec playwright test e2e/token-speed.spec.ts --project=desktop-chromium
 The scenario uses exactly `gpt-6.1-sol`, checks the live footer during a real tool
 wait, verifies all price categories and completed speed, and reloads at desktop
 and phone widths. It never touches an active device Supervisor or relay.
+
+## Writes while a turn runs
+
+The timing lives inside the turn's usage record, which also holds every model
+request of the turn and can reach hundreds of kilobytes. While the turn runs the
+timing is kept in memory and sent to viewers from there
+(`thread.turn.token.updated`, on tool events and every two seconds); the record
+itself is rewritten at most every 20 seconds, on each usage report, and once
+more with the final timing when the turn's tracking ends. A Supervisor that
+stops in between loses at most that interval of timing, never usage.

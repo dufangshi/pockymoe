@@ -106,3 +106,38 @@ async fn check_historical_repricing(wire_model: &str) {
     let empty: Value = moved.model_pricing_sync(false, None).unwrap();
     assert!(empty["version"].is_null());
 }
+
+#[test]
+fn heartbeat_price_version_uses_memory_after_catalog_load_and_replacement() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = RuntimeConfig::from_env().unwrap();
+    config.mode = Mode::Relay;
+    config.database_url = dir.path().join("pricing.sqlite");
+    config.workspace_root = dir.path().join("workspaces");
+    let state = Supervisor::new(
+        config.clone(),
+        Database::open(&config.database_url).unwrap(),
+        vec![],
+    );
+    assert!(state.model_pricing_sync(false, None).unwrap()["version"].is_null());
+    state
+        .accept_relay_model_pricing(&json!({"version":"one","models":{}}))
+        .unwrap();
+    state
+        .accept_relay_model_pricing(&json!({"version":"two","models":{}}))
+        .unwrap();
+    // Removing the backing table proves heartbeats do not query the stored blob.
+    state
+        .db
+        .with(|c| {
+            c.execute_batch("DROP TABLE kv")?;
+            Ok(())
+        })
+        .unwrap();
+    for _ in 0..100 {
+        assert_eq!(
+            state.model_pricing_sync(false, None).unwrap()["version"],
+            "two"
+        );
+    }
+}

@@ -16,6 +16,9 @@ import { useThreadView } from '../lib/threadView';
 import { createClientRequestId, prependTurns } from './threadDetailModel';
 import { useScopedState } from './useScopedState';
 
+/** Events that arrive many times a second while a thread writes its answer. */
+const isStreamEvent = (type: string) => type === 'thread.output.delta' || type === 'thread.item.started' || type === 'thread.turn.token.updated' || type === 'runtime.usage.updated' || type === 'thread.context.updated';
+
 /** A second conversation controller: subscribes to its own device, never auto-resumes,
  * acknowledges reads, mounts device management, or changes the host route. */
 /** `displayed`: the split shows this conversation, so a controllable one counts as viewed. */
@@ -39,7 +42,7 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
   const isCurrent = () => requestOwner.current === owner;
   const detailRef = useRef(detail);
   detailRef.current = detail;
-  const refreshRef = useRef<() => void>(() => {});
+  const refreshRef = useRef<(streaming?: boolean) => void>(() => {});
   const [revision, setRevision] = useState(0);
   const relay = device !== 'local' && relayModeActive();
   const canControl = !relay || (accessReady && (access?.kind === 'owner' || access?.threadAccess === 'control'));
@@ -89,20 +92,29 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
         }
       } finally { pending = false; }
     }
-    refreshRef.current = () => {
-      if (!timer) timer = setTimeout(() => { timer = undefined; void refresh(); }, 100);
+    // The pane shows a summary it re-reads. A turn starting or ending is read
+    // at once; while the thread streams, a read every second and a half follows
+    // it closely enough without re-reading it back to back for the whole turn.
+    let due = 0;
+    refreshRef.current = (streaming = false) => {
+      const at = Date.now() + (streaming ? 1500 : 100);
+      if (timer && due <= at) return;
+      clearTimeout(timer);
+      due = at;
+      timer = setTimeout(() => { timer = undefined; void refresh(); }, at - Date.now());
     };
     void refresh();
+    // Events drive the pane; this only covers a socket that silently stopped.
     const interval = setInterval(() => {
       if (document.visibilityState !== 'hidden') void refresh();
-    }, 3000);
+    }, 30_000);
     return () => {
       alive = false; clearInterval(interval); clearTimeout(timer);
       refreshRef.current = () => {};
     };
   }, [threadId, owner, revision, mergeDetail, setError, device, hostScope, setUnavailable]);
   const onEvent = useCallback((event: ThreadEventEnvelope) => {
-    if (device === hostDevice && event.threadId === threadId) refreshRef.current();
+    if (device === hostDevice && event.threadId === threadId) refreshRef.current(isStreamEvent(event.type));
   }, [threadId, device, hostDevice]);
   // A reference on the host device is reported on the host page's socket.
   const viewSocketRef = useRef<WebSocket | null>(null);
@@ -110,7 +122,7 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
   useEffect(() => {
     if (!threadId || device === hostDevice) return;
     const socket = connectSupervisorEvents(event => {
-      if (event.threadId === threadId) refreshRef.current();
+      if (event.threadId === threadId) refreshRef.current(isStreamEvent(event.type));
     }, { deviceId: device === 'local' ? null : device, threadId });
     viewSocketRef.current = socket;
     socket.addEventListener('open', () => threadView.socketOpened());

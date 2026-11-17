@@ -1,11 +1,11 @@
 //! Delayed, one-shot reminders for untouched passive mail. Mail stays in the
 //! inbox; the reminder goes through the normal durable continuation queue.
 use super::*;
-use crate::interaction::enqueue;
+use crate::interaction::{enqueue, inbox};
 use pockymoe_protocol::ThreadEventEnvelope;
 use std::sync::atomic::Ordering;
 
-const UNSEEN: &str = "key GLOB ?1
+const UNSEEN: &str = "key GLOB 'cli:inbox:*' AND key GLOB ?1
     AND json_extract(value,'$.acknowledgedAt') IS NULL
     AND json_extract(value,'$.supersededBy') IS NULL
     AND json_extract(value,'$.readAt') IS NULL
@@ -17,19 +17,13 @@ impl Supervisor {
         if self.update_draining.load(Ordering::SeqCst) {
             return Ok(());
         }
+        self.db
+            .with(|conn| inbox::cleanup_acknowledged(conn, now))?;
         // Serialize with turn admission: an idle snapshot alone is insufficient
         // while a new prompt is acquiring its live owner.
         let live = self.live.lock().await;
         let candidates = self.db.with(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT DISTINCT json_extract(value,'$.threadId') FROM kv
-                 WHERE key GLOB 'cli:inbox:*'
-                   AND json_extract(value,'$.readAt') IS NULL
-                   AND json_extract(value,'$.remindedAt') IS NULL
-                   AND json_extract(value,'$.acknowledgedAt') IS NULL
-                   AND json_extract(value,'$.supersededBy') IS NULL
-                   AND julianday(json_extract(value,'$.remindAfter')) <= julianday(?1)",
-            )?;
+            let mut stmt = conn.prepare(inbox::REMINDER_CANDIDATES)?;
             let ids = stmt
                 .query_map([now], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -63,7 +57,7 @@ impl Supervisor {
                 if cooling { return Ok(false); }
                 let mailbox = format!("cli:inbox:{thread}:*");
                 let mut stmt = tx.prepare(&format!(
-                    "SELECT value FROM kv WHERE {UNSEEN} ORDER BY json_extract(value,'$.createdAt')"
+                    "SELECT value FROM kv INDEXED BY mailbox_open_idx WHERE {UNSEEN} ORDER BY json_extract(value,'$.createdAt')"
                 ))?;
                 let mail = stmt.query_map([&mailbox], |r| r.get::<_, String>(0))?
                     .map(|raw| Ok(serde_json::from_str::<Value>(&raw?)?))
@@ -72,7 +66,7 @@ impl Supervisor {
                 // Recheck after acquiring the transaction in case the receiver
                 // read/acknowledged the overdue item while candidates were found.
                 let due: bool = tx.query_row(&format!(
-                    "SELECT EXISTS(SELECT 1 FROM kv WHERE {UNSEEN} AND julianday(json_extract(value,'$.remindAfter')) <= julianday(?2))"
+                    "SELECT EXISTS(SELECT 1 FROM kv INDEXED BY mailbox_open_idx WHERE {UNSEEN} AND julianday(json_extract(value,'$.remindAfter')) <= julianday(?2))"
                 ), params![mailbox, now], |r| r.get(0))?;
                 if !due { return Ok(false); }
                 let summaries = mail.iter().take(5).map(|m| format!("- {}: {}",
@@ -85,7 +79,7 @@ impl Supervisor {
                 let pending = Uuid::new_v4().to_string();
                 enqueue(&tx, &pending, &thread, &prompt, None, now)?;
                 tx.execute(&format!(
-                    "UPDATE kv SET value=json_set(value,'$.remindedAt',?2) WHERE {UNSEEN}"
+                    "UPDATE kv INDEXED BY mailbox_open_idx SET value=json_set(value,'$.remindedAt',?2) WHERE {UNSEEN}"
                 ), params![mailbox, now])?;
                 tx.execute("INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                     params![cooldown, now])?;

@@ -1,3 +1,5 @@
+pub(crate) mod maintenance;
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
@@ -273,6 +275,19 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
         name: "working_copies",
         apply: crate::worktrees::migrate,
     },
+    Migration {
+        version: 23,
+        name: "mailbox_indexes",
+        apply: |conn| {
+            conn.execute_batch(include_str!("interaction/mailbox_indexes.sql"))?;
+            Ok(())
+        },
+    },
+    Migration {
+        version: 24,
+        name: "sqlite_maintenance",
+        apply: maintenance::migrate,
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them
@@ -514,6 +529,9 @@ impl Database {
             "
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=FULL;
+            PRAGMA journal_size_limit=67108864;
+            PRAGMA wal_autocheckpoint=1000;
+            PRAGMA cache_size=-32768;
             PRAGMA foreign_keys=ON;
             ",
         )?;
@@ -1132,6 +1150,10 @@ fn create_runtime_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS thread_turns_thread_ordinal_idx
           ON thread_turns(thread_id, ordinal);
+        -- Whether a turn is running in a thread is asked on nearly every request;
+        -- without this it walks every turn row of the thread.
+        CREATE INDEX IF NOT EXISTS thread_turns_in_progress_idx
+          ON thread_turns(thread_id, ordinal) WHERE status='inProgress';
         CREATE TABLE IF NOT EXISTS thread_history_items (
           id TEXT PRIMARY KEY,
           thread_id TEXT NOT NULL,

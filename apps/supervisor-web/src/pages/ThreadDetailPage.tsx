@@ -3675,11 +3675,17 @@ export function ThreadDetailPage() {
     !hostScope && relayThreadCanControl && backendCapabilities?.branching.forkAt
       && detail && detail.thread.status !== 'running',
   );
+  // A stable function: the timeline passes it to every turn row, and a new one
+  // on each streamed piece made every loaded turn render again.
+  const renderTurnNotification = useCallback(
+    (turnId: string) => <TurnNotification key={`${relayRouteDeviceId}:${id}:${turnId}`} deviceId={relayRouteDeviceId} threadId={id!} turnId={turnId} />,
+    [id, relayRouteDeviceId],
+  );
   const timelineProps = useMemo<Partial<ThreadTimelineProps>>(
     () => ({
       livePlan,
       liveItems,
-      renderTurnNotification: (turnId: string) => <TurnNotification key={`${relayRouteDeviceId}:${id}:${turnId}`} deviceId={relayRouteDeviceId} threadId={id!} turnId={turnId} />,
+      renderTurnNotification,
       backendProgress: backendProgress?.threadId === id ? backendProgress : null,
       backgroundAgentCount: detail?.activeSubagents?.filter((agent) => agent.isBackground && agent.status === 'running').length ?? 0,
       respondingRequestId,

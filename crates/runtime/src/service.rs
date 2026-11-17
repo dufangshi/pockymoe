@@ -368,6 +368,7 @@ pub struct Supervisor {
     steer_locks: Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
     pub(crate) local_session_homes: LocalSessionHomes,
     usage_history: crate::usage_history::UsageHistoryCache,
+    pub(crate) pricing_cache: crate::pricing::PricingCache,
     generation: generation::GenerationCache,
     /// Per-request context records of each thread (`context_steps`).
     pub context_steps: crate::context_steps::ContextSteps,
@@ -499,6 +500,7 @@ impl Supervisor {
             steer_locks: Mutex::new(HashMap::new()),
             local_session_homes: LocalSessionHomes::from_env(),
             usage_history: Default::default(),
+            pricing_cache: Default::default(),
             generation: Default::default(),
             claude_history: Default::default(),
             claude_reply_phases: Default::default(),
@@ -598,7 +600,20 @@ impl Supervisor {
                     }
                     Ok(())
                 }
-                "runtime.usage.updated" => supervisor.persist_usage_event(event),
+                "runtime.usage.updated" => {
+                    let saved = supervisor.persist_usage_event(event);
+                    // The per-request list is for the record. Viewers get the
+                    // turn's totals in `thread.turn.token.updated`; sending
+                    // them hundreds of kilobytes on every report helped no one.
+                    if let Some(usage) = event
+                        .payload
+                        .get_mut("usage")
+                        .and_then(Value::as_object_mut)
+                    {
+                        usage.remove("requests");
+                    }
+                    saved
+                }
                 "thread.context.delivered" => match event.payload["providerSessionId"].as_str() {
                     Some(session) => supervisor
                         .db
@@ -925,6 +940,7 @@ impl Supervisor {
             if sqlite_table_exists(conn,"thread_turn_metadata")? {
                 conn.execute("UPDATE thread_turn_metadata SET token_usage_json=?1 WHERE thread_id=?2 AND turn_id=?3",params![stored,event.thread_id,turn_id])?;
             }
+            self.generation.remember((event.thread_id.clone(), turn_id.to_string()), &usage, model.clone(), effort.clone());
             Ok(Some(json!({"turnId":turn_id,"model":model,"reasoningEffort":effort,"tokenUsage":crate::usage::public_usage(&usage),"priceEstimate":price})))
         })?;
         if let Some(payload) = payload {
@@ -1593,33 +1609,30 @@ impl Supervisor {
         include_agent_threads: bool,
     ) -> Result<Vec<ThreadDto>> {
         let mut rows = self.db.with(|conn| {
-            let mut sql = String::from(
-                "SELECT t.id, t.workspace_id, t.provider, t.agent_id, t.provider_session_id, t.source, t.title, t.model,
-                        t.reasoning_effort, t.fast_mode, t.collaboration_mode, t.approval_mode, t.sandbox_mode, t.status,
-                        t.summary_text, t.last_error, t.created_at, t.updated_at, t.last_turn_started_at, t.last_turn_completed_at,
-                        t.is_pinned, t.context_usage_json, t.parent_thread_id, t.root_thread_id, t.lineage_depth,
-                        (SELECT COUNT(*) FROM threads d WHERE d.root_thread_id = t.id),
-                        t.agent_name, t.agent_role, t.worktree_path, t.closed_at
-                 FROM threads t",
-            );
+            let mut sql = String::from(THREAD_SELECT);
             if workspace_id.is_some() {
                 sql.push_str(" WHERE t.workspace_id=?1");
             }
             if !include_agent_threads {
-                sql.push_str(if workspace_id.is_some() { " AND" } else { " WHERE" });
+                sql.push_str(if workspace_id.is_some() {
+                    " AND"
+                } else {
+                    " WHERE"
+                });
                 sql.push_str(" t.parent_thread_id IS NULL");
             }
             sql.push_str(" ORDER BY t.updated_at DESC");
             let mut stmt = conn.prepare(&sql)?;
-            let map_row = |row: &rusqlite::Row| -> rusqlite::Result<ThreadDto> {
-                Ok(thread_from_row(row))
-            };
+            let map_row =
+                |row: &rusqlite::Row| -> rusqlite::Result<ThreadDto> { Ok(thread_from_row(row)) };
             let rows: Vec<ThreadDto> = if let Some(ws) = workspace_id {
                 stmt.query_map(params![ws], map_row)?
                     .filter_map(|r| r.ok())
                     .collect()
             } else {
-                stmt.query_map([], map_row)?.filter_map(|r| r.ok()).collect()
+                stmt.query_map([], map_row)?
+                    .filter_map(|r| r.ok())
+                    .collect()
             };
             Ok(rows)
         })?;
@@ -1630,11 +1643,29 @@ impl Supervisor {
     }
 
     pub fn get_thread(&self, id: &str) -> Result<ThreadDto> {
-        let mut thread = self
-            .list_threads(None, true)?
-            .into_iter()
-            .find(|t| t.id == id)
-            .ok_or_else(|| anyhow!("thread not found"))?;
+        // One row, not the whole table: this is called on nearly every request
+        // and by every periodic observer. A thread host decides visibility and
+        // counts descendants over its own listing, so that case keeps the list.
+        let mut thread = if self.thread_host.get().is_some() {
+            self.list_threads(None, true)?
+                .into_iter()
+                .find(|t| t.id == id)
+        } else {
+            let mut row = self.db.with(|conn| {
+                Ok(conn
+                    .query_row(
+                        &format!("{THREAD_SELECT} WHERE t.id=?1"),
+                        params![id],
+                        |row| Ok(thread_from_row(row)),
+                    )
+                    .optional()?)
+            })?;
+            if let Some(thread) = &mut row {
+                self.apply_loaded_flag(thread);
+            }
+            row
+        }
+        .ok_or_else(|| anyhow!("thread not found"))?;
         if thread.context_usage.is_none() || thread.source == "local_codex_import" {
             let historical_context = self.db.with(|conn| {
                 let raw: Option<String> = conn.query_row(
@@ -5060,3 +5091,12 @@ mod fork_reply_tests {
 
 #[cfg(test)]
 mod accounting_tests;
+
+/// The columns `thread_from_row` reads, in its order.
+const THREAD_SELECT: &str = "SELECT t.id, t.workspace_id, t.provider, t.agent_id, t.provider_session_id, t.source, t.title, t.model,
+                        t.reasoning_effort, t.fast_mode, t.collaboration_mode, t.approval_mode, t.sandbox_mode, t.status,
+                        t.summary_text, t.last_error, t.created_at, t.updated_at, t.last_turn_started_at, t.last_turn_completed_at,
+                        t.is_pinned, t.context_usage_json, t.parent_thread_id, t.root_thread_id, t.lineage_depth,
+                        (SELECT COUNT(*) FROM threads d WHERE d.root_thread_id = t.id),
+                        t.agent_name, t.agent_role, t.worktree_path, t.closed_at
+                 FROM threads t";

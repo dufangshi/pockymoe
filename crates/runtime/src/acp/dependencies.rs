@@ -1,8 +1,29 @@
 //! User-owned adapter installations. Never alter the user's npm prefix or PATH.
 use super::catalog::{command_available, AcpAgentDef};
 use anyhow::{anyhow, bail, Context, Result};
-use std::{path::PathBuf, sync::OnceLock, time::Duration};
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+    time::{Duration, SystemTime},
+};
 use tokio::sync::Mutex;
+
+use crate::disk_cleanup::{self, LiveProcesses};
+
+/// Managed adapters, each with a `<id>.active.json` record.
+const MANAGED: [&str; 2] = ["codex", "claude"];
+/// An installation younger than this may still be written by an install in
+/// another Supervisor sharing this home (an install times out after 300 s).
+const INSTALL_GRACE: Duration = Duration::from_secs(60 * 60);
+/// Per-install npm cache inside the staged prefix, removed once it succeeds.
+const STAGE_CACHE: &str = ".npm-cache";
+
+/// Serializes installs and cleanup within this Supervisor.
+fn install_lock() -> &'static Mutex<()> {
+    static INSTALL: OnceLock<Mutex<()>> = OnceLock::new();
+    INSTALL.get_or_init(|| Mutex::new(()))
+}
 
 pub fn prefix() -> PathBuf {
     crate::config::home_dir().join(".local/share/remote-codex/adapters")
@@ -59,9 +80,9 @@ pub fn managed_bin_dirs() -> Vec<PathBuf> {
         .collect()
 }
 fn install_args(id: &str) -> Result<Vec<String>> {
-    args_for(id, &prefix())
+    args_for(id, &prefix(), &prefix().join("cache"))
 }
-fn args_for(id: &str, target: &std::path::Path) -> Result<Vec<String>> {
+fn args_for(id: &str, target: &Path, cache: &Path) -> Result<Vec<String>> {
     let package = package(id).ok_or_else(|| anyhow!("No managed adapter for {id}"))?;
     Ok(vec![
         "npm".into(),
@@ -70,7 +91,7 @@ fn args_for(id: &str, target: &std::path::Path) -> Result<Vec<String>> {
         "--prefix".into(),
         target.to_string_lossy().into_owned(),
         "--cache".into(),
-        prefix().join("cache").to_string_lossy().into_owned(),
+        cache.to_string_lossy().into_owned(),
         format!("{package}@latest"),
         "--registry=https://registry.npmjs.org".into(),
         "--fetch-retries=3".into(),
@@ -88,8 +109,7 @@ pub async fn ensure(def: &AcpAgentDef, update: bool) -> Result<()> {
     if !command_available(&def.base_command) {
         bail!("Install the base agent first: {}", def.base_command);
     }
-    static INSTALL: OnceLock<Mutex<()>> = OnceLock::new();
-    let _guard = INSTALL.get_or_init(|| Mutex::new(())).lock().await;
+    let _guard = install_lock().lock().await;
     if !update && command_available(&def.server_command) {
         return Ok(());
     }
@@ -133,7 +153,9 @@ async fn install(def: &AcpAgentDef) -> Result<()> {
     let stage = tempfile::Builder::new()
         .prefix(&format!("{}-", def.id))
         .tempdir_in(&root)?;
-    let args = args_for(&def.id, stage.path())?;
+    // A private cache per install: the shared one only grew (each install of
+    // `@latest` fetched new tarballs) and was not read again.
+    let args = args_for(&def.id, stage.path(), &stage.path().join(STAGE_CACHE))?;
     let parsed = super::rpc::parse_spawn_command(&shell_words::join(&args))?;
     let mut command = tokio::process::Command::new(parsed.program);
     crate::child_process::hide_tokio(&mut command);
@@ -168,6 +190,9 @@ async fn install(def: &AcpAgentDef) -> Result<()> {
         .filter(|path| path.starts_with(stage.path()))
         .context("Installation completed but the staged ACP adapter is not executable")?;
     ensure_staged_target(&executable, stage.path())?;
+    if let Err(error) = std::fs::remove_dir_all(stage.path().join(STAGE_CACHE)) {
+        tracing::debug!(%error, "staged npm cache not removed");
+    }
     let directory = stage.keep();
     let record = prefix().join(format!("{}.active.json", def.id));
     let next = record.with_extension(format!("{}.next", uuid::Uuid::new_v4()));
@@ -185,8 +210,118 @@ async fn install(def: &AcpAgentDef) -> Result<()> {
     if activated.is_err() {
         let _ = std::fs::remove_file(next);
         let _ = std::fs::remove_dir_all(&directory);
+        return activated;
     }
-    activated
+    // The caller holds the install lock, so no install of ours races this.
+    let _ = tokio::task::spawn_blocking(|| {
+        cleanup_blocking(
+            &prefix(),
+            LiveProcesses::collect().as_ref(),
+            SystemTime::now(),
+        )
+    })
+    .await;
+    Ok(())
+}
+
+/// Remove adapter installations that no `*.active.json` names and no running
+/// process uses, and the shared npm cache older runtimes filled. Runs after
+/// each install and from the Supervisor's periodic disk cleanup.
+pub async fn cleanup_installations() {
+    let _guard = install_lock().lock().await;
+    let _ = tokio::task::spawn_blocking(|| {
+        cleanup_blocking(
+            &prefix(),
+            LiveProcesses::collect().as_ref(),
+            SystemTime::now(),
+        )
+    })
+    .await;
+}
+
+/// Installation directory names that `*.active.json` records point at, or
+/// `None` when a record exists but cannot be read (then nothing is removed).
+fn active_installations(prefix: &Path) -> Option<BTreeSet<String>> {
+    let root = prefix.join("installations");
+    let canonical_root = std::fs::canonicalize(&root).ok();
+    let mut active = BTreeSet::new();
+    for id in MANAGED {
+        let bytes = match std::fs::read(prefix.join(format!("{id}.active.json"))) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        };
+        let directory: PathBuf = serde_json::from_slice(&bytes).ok()?;
+        let Some(parent) = directory.parent() else {
+            continue;
+        };
+        // A record outside installations never enters PATH (managed_bin_dirs).
+        let inside = parent == root
+            || canonical_root.as_deref().is_some_and(|canonical| {
+                std::fs::canonicalize(parent).is_ok_and(|parent| parent == canonical)
+            });
+        if let (true, Some(name)) = (inside, directory.file_name()) {
+            active.insert(name.to_string_lossy().into_owned());
+        }
+    }
+    Some(active)
+}
+
+/// Which installation directories may go: not active, not in use, not a
+/// trash directory, and old enough that no other install still writes them.
+fn installation_removals(
+    entries: &[(String, bool)],
+    active: &BTreeSet<String>,
+    in_use: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    entries
+        .iter()
+        .filter(|(name, stale)| {
+            *stale && !name.starts_with('.') && !active.contains(name) && !in_use(name)
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+fn cleanup_blocking(prefix: &Path, live: Option<&LiveProcesses>, now: SystemTime) {
+    let Some(live) = live else {
+        tracing::debug!("process table unreadable; adapter installations kept");
+        return;
+    };
+    let root = prefix.join("installations");
+    disk_cleanup::sweep_trash(&root);
+    disk_cleanup::sweep_trash(prefix);
+    match active_installations(prefix) {
+        Some(active) => {
+            let entries: Vec<(String, bool)> = disk_cleanup::child_dirs(&root)
+                .into_iter()
+                .filter_map(|path| {
+                    let name = path.file_name()?.to_string_lossy().into_owned();
+                    Some((name, disk_cleanup::older_than(&path, INSTALL_GRACE, now)))
+                })
+                .collect();
+            let remove: Vec<PathBuf> =
+                installation_removals(&entries, &active, |name| live.uses(&root.join(name)))
+                    .into_iter()
+                    .map(|name| root.join(name))
+                    .collect();
+            disk_cleanup::remove_all(&root, &remove, "ACP adapter installation");
+        }
+        None => tracing::warn!("unreadable adapter activation record; installations kept"),
+    }
+    // Older runtimes shared one npm cache across installs, and the manual
+    // install command still uses it. A running npm names it in its arguments
+    // and writes `_logs` when it starts.
+    let cache = prefix.join("cache");
+    let quiet = ["", "_cacache", "_cacache/tmp", "_logs"]
+        .iter()
+        .all(|part| {
+            let path = cache.join(part);
+            !path.exists() || disk_cleanup::older_than(&path, INSTALL_GRACE, now)
+        });
+    if cache.is_dir() && quiet && !live.uses(&cache) {
+        disk_cleanup::remove_all(prefix, &[cache], "shared npm cache");
+    }
 }
 fn ensure_staged_target(executable: &std::path::Path, stage: &std::path::Path) -> Result<()> {
     let resolved = std::fs::canonicalize(executable).context("Resolve staged ACP adapter")?;
@@ -203,16 +338,85 @@ mod tests {
     use super::*;
     #[test]
     fn adapter_installs_use_a_fresh_prefix_and_network_retries() {
-        let args = args_for("codex", std::path::Path::new("/fresh/install")).unwrap();
+        let args = args_for(
+            "codex",
+            Path::new("/fresh/install"),
+            Path::new("/fresh/install/.npm-cache"),
+        )
+        .unwrap();
         assert_eq!(
             args[args.iter().position(|a| a == "--prefix").unwrap() + 1],
             "/fresh/install"
+        );
+        assert_eq!(
+            args[args.iter().position(|a| a == "--cache").unwrap() + 1],
+            "/fresh/install/.npm-cache"
         );
         assert!(args.iter().any(|a| a == "--fetch-retries=3"));
         assert!(args
             .iter()
             .any(|a| a == "@agentclientprotocol/codex-acp@latest"));
-        assert!(args_for("unknown", std::path::Path::new("/tmp")).is_err());
+        assert!(args_for("unknown", Path::new("/tmp"), Path::new("/tmp/c")).is_err());
+    }
+    #[test]
+    fn only_inactive_unused_settled_installations_are_selected() {
+        let entries = [
+            ("claude-new".to_string(), true),
+            ("claude-old".to_string(), true),
+            ("codex-busy".to_string(), true),
+            ("codex-fresh".to_string(), false),
+            (".trash-x".to_string(), true),
+        ];
+        let active = BTreeSet::from(["claude-new".to_string()]);
+        assert_eq!(
+            installation_removals(&entries, &active, |name| name == "codex-busy"),
+            ["claude-old"]
+        );
+    }
+    #[test]
+    fn cleanup_keeps_active_and_live_installations_and_stops_on_unreadable_records() {
+        let prefix = tempfile::tempdir().unwrap();
+        let root = prefix.path().join("installations");
+        for name in ["claude-new", "claude-old", "codex-live", "codex-old"] {
+            std::fs::create_dir_all(root.join(name).join("bin")).unwrap();
+        }
+        std::fs::create_dir_all(prefix.path().join("cache/_cacache")).unwrap();
+        let record = |id: &str, directory: &Path| {
+            std::fs::write(
+                prefix.path().join(format!("{id}.active.json")),
+                serde_json::to_vec(directory).unwrap(),
+            )
+            .unwrap()
+        };
+        record("claude", &root.join("claude-new"));
+        // Outside installations: never on PATH, so it protects nothing.
+        record("codex", &prefix.path().join("elsewhere"));
+        let live = LiveProcesses::from_texts([format!(
+            "{}/bin/codex-acp",
+            root.join("codex-live").display()
+        )]);
+        let count = || disk_cleanup::child_dirs(&root).len();
+        // Everything is younger than the grace period.
+        cleanup_blocking(prefix.path(), Some(&live), SystemTime::now());
+        assert_eq!(count(), 4);
+        assert!(prefix.path().join("cache").is_dir());
+        let later = SystemTime::now() + INSTALL_GRACE * 2;
+        // No process table: nothing can be proven unused.
+        cleanup_blocking(prefix.path(), None, later);
+        assert_eq!(count(), 4);
+        std::fs::write(prefix.path().join("claude.active.json"), b"{broken").unwrap();
+        cleanup_blocking(prefix.path(), Some(&live), later);
+        assert_eq!(count(), 4);
+
+        record("claude", &root.join("claude-new"));
+        cleanup_blocking(prefix.path(), Some(&live), later);
+        let mut left: Vec<_> = disk_cleanup::child_dirs(&root)
+            .into_iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["claude-new", "codex-live"]);
+        assert!(!prefix.path().join("cache").exists());
     }
     #[test]
     fn incomplete_or_external_staged_adapter_never_activates() {

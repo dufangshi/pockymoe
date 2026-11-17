@@ -19,7 +19,13 @@ Devices synchronize through their authenticated Relay tunnel on connection,
 price-change notifications and heartbeats. Snapshots persist locally and remain
 usable offline, scoped to the configured Relay and device credential. Shared
 viewers use the device owner's reference prices. Token usage and conversation
-content are never uploaded for this synchronization.
+content are never uploaded for this synchronization. The parsed local catalog and
+its version are cached in memory; accepting a new version updates both the durable
+snapshot and the cache. Heartbeats read the cached version without reading or
+parsing the catalog again. Historical model names are cached per turn. SQLite
+connection-local change markers cover inserted, edited and deleted turns, so
+reconnects reuse parsed names and turn completion parses only changed usage
+records. These temporary markers and caches are rebuilt after a restart.
 
 A used model without prices is remembered in the owner's account and shown as
 awaiting a price, never as a free model. Matching ignores case, spaces and

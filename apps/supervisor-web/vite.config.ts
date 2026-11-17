@@ -120,6 +120,33 @@ export default defineConfig(({ mode }) => {
           },
         },
       },
+      {
+        // The entry decides what to open and then imports the app. Without
+        // these hints the browser learns about the app's chunks (megabytes)
+        // only after it has downloaded and run the entry: two round trips in
+        // a row on a cold load. They are fetched, not run, until imported.
+        name: 'preload-app-chunks',
+        apply: 'build',
+        transformIndexHtml: {
+          order: 'post',
+          handler(html, context) {
+            type Chunk = { type: string; name?: string; fileName: string; imports?: string[]; facadeModuleId?: string | null; viteMetadata?: { importedCss?: Set<string> } };
+            const chunks = (Object.values(context.bundle ?? {}) as Chunk[]).filter(item => item.type === 'chunk');
+            const app = chunks.find(chunk => chunk.name === 'renderApp' || chunk.facadeModuleId?.replace(/\\/g, '/').endsWith('/src/renderApp.tsx'));
+            if (!app) return html;
+            const files = [app.fileName, ...(app.imports ?? [])].filter(file => !html.includes(file));
+            const css = [...(app.viteMetadata?.importedCss ?? [])];
+            // The same prefix as the entry's own tag: absolute on the static
+            // site, relative to <base> in a release.
+            const prefix = /<script[^>]*\ssrc="([^"]*?)assets\//.exec(html)?.[1] ?? './';
+            const links = [
+              ...files.map(file => `<link rel="modulepreload" crossorigin href="${prefix}${file}">`),
+              ...css.map(file => `<link rel="preload" as="style" crossorigin href="${prefix}${file}">`),
+            ].join('\n    ');
+            return html.replace('</head>', `  ${links}\n  </head>`);
+          },
+        },
+      },
       ...(staticWeb ? [staticHosting(
         env.VITE_POCKYMOE_RELAY_ORIGIN ?? process.env.VITE_POCKYMOE_RELAY_ORIGIN ?? '',
         process.env.POCKYMOE_WEB_DOMAIN ?? '',

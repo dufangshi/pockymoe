@@ -405,7 +405,7 @@ function AutomationCard({
     };
     retryRuns.current = () => void update();
     void update();
-    const timer = window.setInterval(() => void update(), 3000);
+    const timer = window.setInterval(() => { if (document.visibilityState !== 'hidden') void update(); }, 3000);
     return () => {
       controller.abort();
       retryRuns.current = () => {};
@@ -662,7 +662,7 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
     };
     refreshRef.current = () => void update(true);
     void update();
-    const timer = window.setInterval(() => void update(), 3000);
+    const timer = window.setInterval(() => { if (document.visibilityState !== 'hidden') void update(); }, 3000);
     const visible = () => void update();
     document.addEventListener('visibilitychange', visible);
     return () => {

@@ -7,7 +7,9 @@ import { entityKey, plainSummary, summarizeRequest, summarizeThread, type Deskto
 
 const accepted = new Set(['thread.updated', 'thread.turn.started', 'thread.turn.completed', 'thread.turn.failed', 'thread.request.created', 'thread.request.resolved']);
 export const isIndexEvent = (type: string) => accepted.has(type);
-const visible = () => document.visibilityState !== 'hidden';
+// The desktop client keeps a window closed to the tray "visible" to the page
+// (it turns background throttling off) and marks it paused instead.
+const visible = () => document.visibilityState !== 'hidden' && document.documentElement.dataset.pockymoeRendering !== 'paused';
 export interface DesktopDataAdapter {
   portal(): Promise<RelayPortalSummaryDto>;
   get<T>(deviceId: string, path: string, init?: RequestInit): Promise<T>;
@@ -90,6 +92,7 @@ export class DesktopIndexStore {
       }
     }, 2000));
     document.addEventListener('visibilitychange', this.visibilityChanged);
+    window.addEventListener('pockymoe-rendering-change', this.visibilityChanged);
     window.addEventListener('pockymoe-account-logout', this.logout);
   }
   stop() {
@@ -104,6 +107,7 @@ export class DesktopIndexStore {
     this.sockets.forEach(({ socket }) => socket.close()); this.sockets.clear();
     this.controllers.forEach(controller => controller.abort()); this.controllers.clear();
     document.removeEventListener('visibilitychange', this.visibilityChanged);
+    window.removeEventListener('pockymoe-rendering-change', this.visibilityChanged);
     window.removeEventListener('pockymoe-account-logout', this.logout);
   }
   logout = () => {

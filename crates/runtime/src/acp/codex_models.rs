@@ -12,9 +12,14 @@ pub(super) struct ModelCatalogBridge {
     pending: HashMap<String, String>,
     current_model: Option<String>,
     catalog: Vec<Value>,
+    upstream: Vec<crate::upstreams::DiscoveredModel>,
 }
 
 impl ModelCatalogBridge {
+    pub fn set_upstream(&mut self, models: Vec<crate::upstreams::DiscoveredModel>) {
+        self.upstream = models;
+    }
+
     pub fn observe_request(&mut self, message: &Value) {
         let Some(method) = message["method"].as_str() else {
             return;
@@ -86,11 +91,55 @@ impl ModelCatalogBridge {
             model["supportedReasoningEfforts"] = efforts.clone();
             model["defaultReasoningEffort"] = json!(default);
         }
-        if let Some(model) = self
-            .current_model
-            .as_deref()
-            .filter(|id| last_page && !self.catalog.iter().any(|model| model["id"] == *id))
-        {
+        if last_page {
+            for model in &self.upstream {
+                if self.catalog.iter().any(|entry| entry["id"] == model.id) {
+                    continue;
+                }
+                let declared = model.reasoning.as_ref();
+                let mut supported = declared
+                    .map(|cap| {
+                        cap.efforts
+                            .iter()
+                            .map(|effort| {
+                                json!({
+                                    "reasoningEffort": effort.reasoning_effort,
+                                    "description": effort.description
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_else(|| efforts.as_array().unwrap().clone());
+                // ACP represents models as model[effort], so a declared lack
+                // of reasoning needs its explicit `none` value to be selectable.
+                if supported.is_empty() {
+                    supported.push(json!({"reasoningEffort":"none", "description":"None"}));
+                }
+                let preferred = declared
+                    .and_then(|cap| cap.default.as_deref())
+                    .unwrap_or(&default);
+                let selected = supported
+                    .iter()
+                    .find(|entry| entry["reasoningEffort"] == preferred)
+                    .unwrap_or(&supported[0])["reasoningEffort"]
+                    .clone();
+                data.push(json!({
+                    "id": model.id, "model": model.id, "displayName": model.name,
+                    "description": "", "hidden": false, "isDefault": false,
+                    "supportedReasoningEfforts": supported,
+                    "defaultReasoningEffort": selected,
+                    "inputModalities": ["text"], "supportsPersonality": false
+                }));
+            }
+        }
+        if let Some(model) = self.current_model.as_deref().filter(|id| {
+            last_page
+                && !self
+                    .catalog
+                    .iter()
+                    .chain(data.iter())
+                    .any(|model| model["id"] == *id)
+        }) {
             data.push(json!({
                 "id": model, "model": model, "displayName": model,
                 "description": "", "hidden": false, "isDefault": false,
@@ -167,4 +216,69 @@ pub(super) fn project_session(response: &Value) -> Option<HarnessProjection> {
 fn split_model_id(value: &str) -> Option<(&str, &str)> {
     let (model, effort) = value.strip_suffix(']')?.rsplit_once('[')?;
     (!model.is_empty() && !effort.is_empty()).then_some((model, effort))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::upstreams::DiscoveredModel;
+
+    fn page(bridge: &mut ModelCatalogBridge, cursor: Value, data: Value, next: Value) -> Value {
+        bridge.observe_request(&json!({"id":1,"method":"model/list","params":{"cursor":cursor}}));
+        let mut response = json!({"id":1,"result":{"data":data,"nextCursor":next}});
+        bridge.observe_response(&mut response);
+        response["result"]["data"].clone()
+    }
+
+    #[test]
+    fn upstream_models_reach_acp_on_last_page_without_duplicates() {
+        let mut bridge = ModelCatalogBridge::default();
+        bridge.set_upstream(serde_json::from_value(json!([
+            {"id":"gpt-6.2-sol","name":"New model","reasoning":{"efforts":[{"reasoningEffort":"high","description":"High"}],"default":"high"}},
+            {"id":"existing","name":"Must not override native metadata"}
+        ])).unwrap());
+        bridge.current_model = Some("gpt-6.2-sol".into());
+        let first = page(
+            &mut bridge,
+            Value::Null,
+            json!([{"id":"existing"}]),
+            json!("next"),
+        );
+        assert_eq!(first.as_array().unwrap().len(), 1);
+        let last = page(&mut bridge, json!("next"), json!([]), Value::Null);
+        assert_eq!(last.as_array().unwrap().len(), 1);
+        assert_eq!(last[0]["id"], "gpt-6.2-sol");
+        assert_eq!(last[0]["defaultReasoningEffort"], "high");
+        assert_eq!(
+            last[0]["supportedReasoningEfforts"][0]["reasoningEffort"],
+            "high"
+        );
+    }
+
+    #[test]
+    fn refreshed_upstream_replaces_old_ids_and_preserves_no_reasoning() {
+        let mut bridge = ModelCatalogBridge::default();
+        bridge.set_upstream(vec![DiscoveredModel {
+            id: "removed".into(),
+            ..Default::default()
+        }]);
+        assert_eq!(
+            page(&mut bridge, Value::Null, json!([]), Value::Null)[0]["id"],
+            "removed"
+        );
+        bridge.set_upstream(
+            serde_json::from_value(json!([
+                {"id":"new","name":"New","reasoning":{"efforts":[],"default":null}}
+            ]))
+            .unwrap(),
+        );
+        let refreshed = page(&mut bridge, Value::Null, json!([]), Value::Null);
+        assert_eq!(refreshed.as_array().unwrap().len(), 1);
+        assert_eq!(refreshed[0]["id"], "new");
+        assert_eq!(refreshed[0]["defaultReasoningEffort"], "none");
+        assert_eq!(
+            refreshed[0]["supportedReasoningEfforts"],
+            json!([{"reasoningEffort":"none","description":"None"}])
+        );
+    }
 }

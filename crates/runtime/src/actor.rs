@@ -113,6 +113,47 @@ pub struct EventBus {
     tx: broadcast::Sender<ThreadEventEnvelope>,
     persister: Arc<RwLock<Option<Arc<EventPersister>>>>,
     scope: Option<Arc<EventScope>>,
+    stream: Arc<std::sync::Mutex<StreamCoalescer>>,
+}
+
+/// How long streamed output of one item is gathered before it is saved and
+/// sent as one event. A model streams tens of small pieces a second, and each
+/// event is a database write (the whole item, synced to disk, under the one
+/// database lock) and a frame to every socket; at this window it is about
+/// twelve a second, which reads as continuous.
+const STREAM_WINDOW: std::time::Duration = std::time::Duration::from_millis(80);
+
+/// (thread, turn, item, kind of event).
+type StreamKey = (String, String, String, &'static str);
+
+#[derive(Default)]
+struct StreamCoalescer {
+    /// Events held back, in arrival order.
+    pending: Vec<(StreamKey, ThreadEventEnvelope)>,
+    /// When each item's stream last went out.
+    sent: std::collections::HashMap<StreamKey, std::time::Instant>,
+}
+
+/// The item a streaming event belongs to, when the event may be merged with
+/// the next one of its kind: an output delta (the pieces are joined), or a
+/// repeated snapshot of an item still in progress (the newest replaces it).
+fn stream_key(event: &ThreadEventEnvelope) -> Option<StreamKey> {
+    let turn = event.payload.get("turnId")?.as_str()?;
+    let (item, kind) = match event.event_type.as_str() {
+        "thread.output.delta" => (event.payload.get("itemId")?.as_str()?, "delta"),
+        "thread.item.started" => {
+            let item = event.payload.get("item")?;
+            if matches!(
+                item.get("status").and_then(serde_json::Value::as_str),
+                Some("completed" | "failed" | "interrupted")
+            ) {
+                return None;
+            }
+            (item.get("id")?.as_str()?, "item")
+        }
+        _ => return None,
+    };
+    Some((event.thread_id.clone(), turn.into(), item.into(), kind))
 }
 
 struct EventScope {
@@ -130,6 +171,7 @@ impl EventBus {
             tx,
             persister: Arc::new(RwLock::new(None)),
             scope: None,
+            stream: Default::default(),
         }
     }
 
@@ -172,6 +214,94 @@ impl EventBus {
                 return;
             }
         }
+        // Streamed pieces of one item are gathered for a moment; everything else
+        // first lets out what the thread still holds, so order is kept.
+        let ready = match stream_key(&event) {
+            Some(key) => self.gather(key, event),
+            None => {
+                let mut held = self.take_pending(|key| key.0 == event.thread_id);
+                held.push(event);
+                held
+            }
+        };
+        for event in ready {
+            self.deliver(event);
+        }
+    }
+
+    /// Returns what may go out now. The first piece of an item goes at once;
+    /// pieces that follow within the window are merged and leave together when
+    /// it ends (a timer covers a stream that pauses).
+    fn gather(&self, key: StreamKey, event: ThreadEventEnvelope) -> Vec<ThreadEventEnvelope> {
+        let mut stream = self.stream.lock().unwrap();
+        let now = std::time::Instant::now();
+        if let Some((_, held)) = stream.pending.iter_mut().find(|(held, _)| *held == key) {
+            if key.3 == "delta" {
+                let more = event.payload["delta"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                let mut joined = held.payload["delta"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                joined.push_str(&more);
+                held.payload["delta"] = serde_json::Value::String(joined);
+                if let Some(sequence) = event.payload.get("sequence") {
+                    held.payload["sequence"] = sequence.clone();
+                }
+                held.timestamp = event.timestamp;
+            } else {
+                *held = event;
+            }
+            return Vec::new();
+        }
+        let recent = stream
+            .sent
+            .get(&key)
+            .is_some_and(|sent| now.duration_since(*sent) < STREAM_WINDOW);
+        // Outside a runtime nothing could let a held event out later.
+        let Some(runtime) = recent
+            .then(|| tokio::runtime::Handle::try_current().ok())
+            .flatten()
+        else {
+            if stream.sent.len() > 512 {
+                stream.sent.retain(|_, sent| {
+                    now.duration_since(*sent) < std::time::Duration::from_secs(10)
+                });
+            }
+            stream.sent.insert(key, now);
+            return vec![event];
+        };
+        stream.pending.push((key.clone(), event));
+        drop(stream);
+        let bus = self.clone();
+        runtime.spawn(async move {
+            tokio::time::sleep(STREAM_WINDOW).await;
+            for event in bus.take_pending(|held| *held == key) {
+                bus.deliver(event);
+            }
+        });
+        Vec::new()
+    }
+
+    fn take_pending(&self, matches: impl Fn(&StreamKey) -> bool) -> Vec<ThreadEventEnvelope> {
+        let mut stream = self.stream.lock().unwrap();
+        if stream.pending.is_empty() {
+            return Vec::new();
+        }
+        let now = std::time::Instant::now();
+        let (out, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut stream.pending)
+            .into_iter()
+            .partition(|(key, _)| matches(key));
+        stream.pending = kept;
+        for (key, _) in &out {
+            stream.sent.insert(key.clone(), now);
+        }
+        out.into_iter().map(|(_, event)| event).collect()
+    }
+
+    fn deliver(&self, mut event: ThreadEventEnvelope) {
         // Persistence must finish before a websocket can expose the update. The
         // callback may emit a derived event (token usage), so release the lock first.
         let persister = self.persister.read().unwrap().clone();
@@ -551,5 +681,110 @@ mod reliability_tests {
         wrong.payload["turnId"] = json!("other");
         bus.for_turn("thread", "turn").emit(wrong);
         assert!(rx.try_recv().is_err());
+    }
+
+    fn delta(item: &str, text: &str, sequence: i64) -> ThreadEventEnvelope {
+        ThreadEventEnvelope {
+            event_type: "thread.output.delta".into(),
+            thread_id: "thread".into(),
+            timestamp: "now".into(),
+            payload: json!({"turnId":"turn","itemId":item,"delta":text,"sequence":sequence}),
+        }
+    }
+    fn snapshot(item: &str, text: &str, status: &str) -> ThreadEventEnvelope {
+        ThreadEventEnvelope {
+            event_type: "thread.item.started".into(),
+            thread_id: "thread".into(),
+            timestamp: "now".into(),
+            payload: json!({"turnId":"turn","item":{"id":item,"text":text,"status":status}}),
+        }
+    }
+    fn drain(rx: &mut broadcast::Receiver<ThreadEventEnvelope>) -> Vec<ThreadEventEnvelope> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_streamed_pieces_is_saved_and_sent_as_few_events_with_nothing_lost() {
+        let bus = EventBus::new();
+        let saves = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = saves.clone();
+        bus.set_persister(Arc::new(move |_| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }));
+        let mut rx = bus.subscribe();
+        // Forty pieces within one window: the first goes at once, the rest together.
+        for index in 0..40 {
+            bus.emit(delta("answer", &format!("{index},"), index));
+        }
+        let first = drain(&mut rx);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].payload["delta"], "0,");
+        tokio::time::sleep(STREAM_WINDOW * 2).await;
+        let rest = drain(&mut rx);
+        assert_eq!(rest.len(), 1);
+        let expected: String = (1..40).map(|index| format!("{index},")).collect();
+        assert_eq!(rest[0].payload["delta"], expected.as_str());
+        assert_eq!(rest[0].payload["sequence"], 39);
+        assert_eq!(saves.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // A piece after a quiet window goes at once again.
+        tokio::time::sleep(STREAM_WINDOW * 2).await;
+        bus.emit(delta("answer", "later", 40));
+        assert_eq!(drain(&mut rx).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn held_pieces_leave_before_any_other_event_of_the_thread_and_items_stay_apart() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        bus.emit(delta("answer", "a", 0));
+        bus.emit(delta("answer", "b", 1));
+        bus.emit(delta("answer", "c", 2));
+        // Another item streams on its own; a repeated snapshot keeps only the newest.
+        bus.emit(snapshot("thinking", "t", "running"));
+        bus.emit(snapshot("thinking", "th", "running"));
+        bus.emit(snapshot("thinking", "thi", "running"));
+        // A finished item is never held, and lets everything before it out first.
+        bus.emit(snapshot("thinking", "thin", "completed"));
+        let order: Vec<_> = drain(&mut rx)
+            .into_iter()
+            .map(|event| {
+                event.payload["delta"]
+                    .as_str()
+                    .or(event.payload["item"]["text"].as_str())
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(order, ["a", "t", "bc", "thi", "thin"]);
+        // Nothing is left for the timer to send twice.
+        tokio::time::sleep(STREAM_WINDOW * 2).await;
+        assert!(drain(&mut rx).is_empty());
+        // The end of the turn does the same.
+        bus.emit(delta("answer", "d", 3));
+        bus.emit(delta("answer", "e", 4));
+        bus.emit(delta("answer", "f", 5));
+        bus.emit(event("thread.turn.completed"));
+        let kinds: Vec<_> = drain(&mut rx)
+            .into_iter()
+            .map(|event| event.event_type.to_string())
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "thread.output.delta",
+                "thread.output.delta",
+                "thread.turn.completed"
+            ]
+        );
+    }
+
+    #[test]
+    fn without_a_runtime_every_piece_goes_at_once() {
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        bus.emit(delta("answer", "a", 0));
+        bus.emit(delta("answer", "b", 1));
+        assert_eq!(drain(&mut rx).len(), 2);
     }
 }

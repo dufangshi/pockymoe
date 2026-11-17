@@ -37,7 +37,7 @@ export function useEnvironmentRequests(deviceId: string | null | undefined, thre
       } catch { if (!controller.signal.aborted) setError(t('loadFailed')); }
       finally { polling = false; if (!controller.signal.aborted) setLoading(false); }
     };
-    void load(); const timer = window.setInterval(() => void load(), 3000);
+    void load(); const timer = window.setInterval(() => { if (document.visibilityState !== 'hidden') void load(); }, 3000);
     return () => { controller.abort(); window.clearInterval(timer); };
   }, [deviceId, threadId, revision]);
   const update = useCallback((next: EnvironmentRequestDto) => {

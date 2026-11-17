@@ -145,6 +145,16 @@ away) is not reached.
 The next request that needs the session resumes it as usual, a few seconds
 slower, with fresh MCP servers.
 
+## Background observers
+
+A quiet Supervisor should read nothing. The two-second observer of Claude's
+scheduled history asks, from memory, whether a thread is due (every five
+seconds per thread) before it reads the database; `get_thread` reads one row;
+and whether a turn is running is answered by a partial index on in-progress
+turns. Before 0.13.62 this observer listed every thread and walked every turn
+of each opened Claude thread on every tick, about 70% of a quiet device's disk
+reads.
+
 ## Worker processes
 
 On Linux every Host command, Git read, terminal and harness runs under a

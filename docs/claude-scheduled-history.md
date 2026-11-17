@@ -35,5 +35,10 @@ backfilled after that scheduled turn finishes. An SDK that fails to execute the
 task at all still needs an upstream fix or a Supervisor/CLI-based scheduler.
 
 File checks are throttled to five seconds per thread; unchanged files are not
-parsed again. Only the exact native session UUID's file is inspected. No OAuth
-requests, harness probes, native credential access or inference are involved.
+parsed again. Recovery streams the initial file one record at a time, then reads
+only appended bytes, retaining unfinished records and scheduled-turn attribution
+between checks. A replaced or shortened file resets the reader; stable turn IDs
+keep the replay idempotent. Reader progress and completed results remain retryable
+until the history transaction commits. Only the exact native session UUID's file
+is inspected. No OAuth requests, harness probes, native credential access or
+inference are involved.

@@ -143,8 +143,16 @@ async fn broadcast_output_is_already_persisted_and_contains_the_complete_prefix(
                 "delta": delta,
             }),
         );
-        // No yielding or retries: receiving an event guarantees a refresh can read it.
-        let event = events.try_recv().unwrap();
+        // Receiving an event guarantees a refresh can read it. The first piece
+        // of an item goes at once; pieces right behind it are gathered for a
+        // moment and go together, saved the same way before they are sent.
+        let event = match events.try_recv() {
+            Ok(event) => event,
+            Err(_) => {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                events.try_recv().unwrap()
+            }
+        };
         assert_eq!(event.payload["delta"], delta);
         assert_eq!(event.payload["text"], expected);
         let restored = supervisor
