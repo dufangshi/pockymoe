@@ -32,6 +32,10 @@ mod tests {
     }
 }
 impl UpstreamModels {
+    pub fn directory(&self) -> &std::path::Path {
+        &self.directory
+    }
+
     pub fn native_oauth_selected(&self, harness: &str) -> bool {
         upstreams::native::oauth_selected(&self.directory, harness)
     }

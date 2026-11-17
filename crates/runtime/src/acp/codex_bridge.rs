@@ -24,6 +24,7 @@ impl CodexBridge {
         command: &str,
         env: &mut Vec<(&'static str, String)>,
         policy: &super::modes::ProductSessionPolicy,
+        upstream_directory: Option<&std::path::Path>,
     ) -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let token = uuid::Uuid::new_v4().to_string();
@@ -35,6 +36,7 @@ impl CodexBridge {
         env.push((
             "POCKYMOE_APP_SERVER_BRIDGE",
             json!({
+                "upstreamDirectory": upstream_directory,
                 "address": listener.local_addr()?.to_string(), "token": token, "command": command, "policy": super::codex_permissions::native_policy(policy)
             })
             .to_string(),
@@ -179,6 +181,9 @@ pub async fn run() -> Result<()> {
     let mut control_in = BufReader::new(read).lines();
     let mut pending = HashSet::new();
     let mut models = super::codex_models::ModelCatalogBridge::default();
+    let upstreams = config["upstreamDirectory"]
+        .as_str()
+        .map(|directory| super::upstream_models::UpstreamModels::new(directory.into()));
     let mut permissions = super::codex_permissions::PermissionBridge::new(config["policy"].clone());
     loop {
         tokio::select! {
@@ -186,6 +191,16 @@ pub async fn run() -> Result<()> {
                 let Some(line) = line? else { break; };
                 let mut message: Value = serde_json::from_str(&line)?;
                 permissions.request(&mut message);
+                if message["method"] == "model/list" && message["params"]["cursor"].is_null() {
+                    // Use only the connection applied to this harness, never an
+                    // arbitrary saved connection (which may route elsewhere).
+                    if let Some(upstreams) = &upstreams {
+                        match upstreams.catalog("codex").await {
+                            Ok(catalog) => models.set_upstream(catalog.map(|(_, models)| models).unwrap_or_default()),
+                            Err(_) => models.set_upstream(Vec::new()),
+                        }
+                    }
+                }
                 models.observe_request(&message);
                 native_in.write_all(format!("{message}\n").as_bytes()).await?;
             }
