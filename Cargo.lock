@@ -2445,6 +2445,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures-util",
+ "libc",
  "pockymoe-protocol",
  "pockymoe-relay",
  "pockymoe-runtime",
