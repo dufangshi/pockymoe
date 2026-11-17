@@ -89,6 +89,7 @@ pub async fn serve(state: Arc<Supervisor>) -> Result<()> {
         });
     }
     thread_uploads::spawn_sweeper(state.clone());
+    distribution::spawn_disk_cleanup(state.clone());
     let hub = treer::Hub::new(state.clone(), listener.local_addr()?.port())?;
     // A restart with no active turns still needs its startup outcome recorded.
     if state.defer_update_recovery() || distribution::host_managed_pending(&state) {

@@ -71,6 +71,32 @@ it. The private Agent Node runtime is checksum-verified from nodejs.org, and doe
 modify the user's global Node/npm. ACP adapters install into a fresh versioned prefix
 and activate only after their executable is verified, avoiding npm ENOTEMPTY leftovers.
 
+## Disk cleanup
+
+Each update installs a full release and copies a worker executable, so without
+cleanup a device keeps every version it ever ran. A Supervisor started from an
+installed release (`native/releases/<version>/`) cleans up 5 minutes after it
+starts, which is after the update worker has verified it, and then once a day.
+A source build or an npm-launched executable never cleans. The run is skipped
+while an update job is scheduled, preparing, installing, restarting, verifying or
+awaiting host-managed verification (`recoveryDeferred`), or while the update lock
+exists, and tried again 5 minutes later. It runs on a blocking thread and logs
+failures without failing anything.
+
+| Location | Kept | Removed |
+| --- | --- | --- |
+| `native/releases/` | the `current.json` version and the `current` link's target, the newest version below it (the rollback target), every newer version, the release of the running executable, the job's `targetVersion`/`runningVersion`, any release a systemd or launchd definition (relay or local) names, any release a running process of this user runs from or names, and names that are not versions | older versions; `stage-*` directories (interrupted installs) after 24 hours. Without a readable `current.json` nothing is removed. |
+| `updates/supervisor-<uuid>/` beside the database | the directory of the last job's log, and anything changed in the last 24 hours | finished staging directories (worker executable, log) |
+| `~/.remote-codex/bin/<version>/` | the newest version, versions changed in the last 7 days, and any a running process uses | older binaries of the retired npm launcher. Nothing in the native runtime reads this directory; that launcher downloads a missing binary again. A different `REMOTE_CODEX_NATIVE_CACHE_DIR` is never touched. |
+| ACP adapter installations | see [managed ACP adapters](managed-acp-adapters.md#installations-and-cleanup) | |
+
+Every removal is confined: it must be a real directory directly inside the
+expected parent (symlinks, files and other paths are refused), and it is renamed
+to a `.trash-<uuid>` sibling before it is deleted. Deletion never follows symlinks.
+A trash directory that could not be fully deleted is removed on the next run.
+Windows refuses to rename a directory whose executable is running, so a release
+or worker in use there stays untouched; the running ones are kept anyway.
+
 ## Publish
 
 Record the runtime commit, stable version and published shared UI full SHA. Update the

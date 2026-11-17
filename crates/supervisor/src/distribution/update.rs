@@ -86,6 +86,23 @@ fn job(context: &ContextData) -> Value {
     }
     job
 }
+/// The last update job when no update is running, paused or awaiting its
+/// host-managed verification; `None` means disk cleanup must wait.
+pub(super) fn idle_job(state: &Supervisor) -> Option<Value> {
+    let context = context(state).ok()?;
+    let job = job(&context);
+    let busy = active(&job) || job["recoveryDeferred"] == true || lock_path(&context).exists();
+    (!busy).then_some(job)
+}
+/// This Supervisor's update journal directory, beside its database.
+pub(super) fn updates_dir(state: &Supervisor) -> Option<PathBuf> {
+    let context = context(state).ok()?;
+    context
+        .database
+        .is_absolute()
+        .then(|| status_path(&context).parent().map(Path::to_path_buf))
+        .flatten()
+}
 fn context(state: &Supervisor) -> Result<ContextData> {
     Ok(ContextData {
         restart_strategy: state.config.supervisor_restart_strategy,
