@@ -206,11 +206,53 @@ impl Supervisor {
                         state.wait_for_job(&job.started_at).await;
                     }
                 }
+                if let Err(error) = state.maintain_database().await {
+                    tracing::warn!(%error, "database maintenance failed");
+                }
                 state.start_saved_cleanup();
                 drop(state);
                 tokio::time::sleep(RETENTION_INTERVAL).await;
             }
         });
+    }
+
+    async fn maintain_database(self: &Arc<Self>) -> Result<()> {
+        use crate::db::maintenance;
+        let state = self.clone();
+        tokio::task::spawn_blocking(move || state.db.with(maintenance::migrate_history_index))
+            .await??;
+        loop {
+            let state = self.clone();
+            let done = tokio::task::spawn_blocking(move || {
+                state
+                    .db
+                    .with(|c| maintenance::retain_slice(c, Utc::now().timestamp()))
+            })
+            .await??;
+            if done {
+                break;
+            }
+            tokio::time::sleep(PRUNE_PAUSE).await;
+        }
+        let path = self.database_path()?;
+        tokio::task::spawn_blocking(move || side_checkpoint(&path)).await??;
+        // Admission uses this gate too. Recheck idle under the database lock;
+        // never start compaction concurrently with turn admission or another job.
+        let Ok(admission) = self.maintenance_gate.clone().try_write_owned() else {
+            return Ok(());
+        };
+        let Ok(_storage) = self.storage.gate.try_lock() else {
+            return Ok(());
+        };
+        let state = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let _admission = admission;
+            state
+                .db
+                .with(|c| maintenance::compact_if_idle(c, Utc::now().timestamp()))
+        })
+        .await??;
+        Ok(())
     }
 
     async fn wait_for_job(&self, started_at: &str) {
