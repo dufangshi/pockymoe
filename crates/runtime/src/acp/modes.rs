@@ -45,6 +45,9 @@ impl ProductSessionPolicy {
 /// ACP `session/new` returns `modes.availableModes` and the client switches
 /// with `session/set_mode`. IDs are harness-defined:
 /// - Codex ACP: `read-only`, `agent` / `auto`, `agent-full-access` / `full-access`, optional `plan`
+/// - Claude ACP: `default`, `acceptEdits`, `plan`, optional `auto` and
+///   `bypassPermissions`. Its own default is `auto`, so full access must name
+///   `bypassPermissions` or the session keeps Claude's classifier on.
 /// - Claude-like: `plan` / `architect` / `ask` vs `code` / `build`
 /// - Grok and others may omit modes entirely
 ///
@@ -56,6 +59,7 @@ pub fn preferred_mode_ids(policy: &ProductSessionPolicy) -> Vec<&'static str> {
             "agent-full-access",
             "full-access",
             "danger-full-access",
+            "bypassPermissions",
             "yolo",
         ]
     } else if matches!(policy.collaboration_mode.as_deref(), Some("plan")) {
@@ -277,4 +281,56 @@ fn name_matches_preferred(name: &str, preferred: &str) -> bool {
 
 fn normalize_id(value: &str) -> String {
     value.trim().to_ascii_lowercase().replace([' ', '_'], "-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn claude_modes() -> Vec<SessionMode> {
+        [
+            ("default", "Manual"),
+            ("acceptEdits", "Accept edits"),
+            ("plan", "Plan"),
+            ("auto", "Auto"),
+            ("bypassPermissions", "Bypass permissions"),
+        ]
+        .into_iter()
+        .map(|(id, name)| SessionMode {
+            id: id.into(),
+            name: Some(name.into()),
+        })
+        .collect()
+    }
+
+    fn policy(sandbox: Option<&str>, approval: &str) -> ProductSessionPolicy {
+        ProductSessionPolicy {
+            collaboration_mode: None,
+            sandbox_mode: sandbox.map(str::to_string),
+            approval_mode: Some(approval.into()),
+        }
+    }
+
+    #[test]
+    fn claude_full_access_selects_bypass_permissions() {
+        for full in [
+            policy(None, "yolo"),
+            policy(Some("danger-full-access"), "guarded"),
+        ] {
+            assert_eq!(
+                resolve_mode(&claude_modes(), &full).as_deref(),
+                Some("bypassPermissions")
+            );
+        }
+        // Without bypass (root, or disabled in settings) Claude's own mode stays.
+        let without: Vec<_> = claude_modes()
+            .into_iter()
+            .filter(|mode| mode.id != "bypassPermissions")
+            .collect();
+        assert_eq!(resolve_mode(&without, &policy(None, "yolo")), None);
+        assert_eq!(
+            resolve_mode(&claude_modes(), &policy(Some("workspace-write"), "guarded")).as_deref(),
+            Some("auto")
+        );
+    }
 }

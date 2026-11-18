@@ -268,7 +268,10 @@ Device, Workspace and Plugins. There are no Session or Advanced sections; stale
 section links fall back to the first section. The composer's model key selects
 model and effort. Model menu → Harness settings retains harness plugins and the
 DSH panel, including on Treer scoped surfaces. Access levels are not shown or
-editable in the UI; new threads retain full access. The thread menu has no
+editable in the UI; new threads retain full access. For Claude that is its
+`bypassPermissions` mode, not its own `auto` default; where Claude does not offer
+bypass (root without a sandbox, or disabled in its settings), the thread keeps
+Claude's mode and Pockymoe still approves each request. The thread menu has no
 Session details window.
 
 Under Settings → Harness, select a harness to maintain its installation. Host
