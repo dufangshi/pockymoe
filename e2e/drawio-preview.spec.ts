@@ -20,7 +20,7 @@ test('draw.io renders under the public relay CSP without inline scripts or eval'
     if (pathname === '/') return route.fulfill({
       contentType: 'text/html', headers: { 'content-security-policy': csp }, body: '<!doctype html><html><body></body></html>',
     });
-    if (!['/vendor/drawio/bootstrap.v1.js', '/vendor/drawio/viewer-static.v32.3.0.min.js'].includes(pathname)) return route.abort();
+    if (!['/vendor/drawio/bootstrap.v2.js', '/vendor/drawio/viewer-static.v32.3.0.min.js'].includes(pathname)) return route.abort();
     await route.fulfill({ contentType: 'text/javascript', body: await readFile(path.resolve('apps/supervisor-web/public' + pathname)) });
   });
   await page.goto('https://drawio-csp.example/');
@@ -39,6 +39,34 @@ test('draw.io renders under the public relay CSP without inline scripts or eval'
   await expect(frame.getByText('数据库 / Architecture', { exact: true })).toBeVisible();
 });
 
+test('a diagram wider than its pane fits on first open', async ({ page }) => {
+  await page.route('https://drawio-fit.example/**', async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><body style="margin:0"></body></html>' });
+    if (!['/vendor/drawio/bootstrap.v2.js', '/vendor/drawio/viewer-static.v32.3.0.min.js'].includes(pathname)) return route.abort();
+    await route.fulfill({ contentType: 'text/javascript', body: await readFile(path.resolve('apps/supervisor-web/public' + pathname)) });
+  });
+  await page.goto('https://drawio-fit.example/');
+  // Two boxes 1000px apart in a 340px pane, the width of the default files dock's viewer.
+  const wide = `<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>`
+    + `<mxCell id="2" value="Start" style="rounded=1;" vertex="1" parent="1"><mxGeometry x="40" y="40" width="120" height="60" as="geometry"/></mxCell>`
+    + `<mxCell id="3" value="End" style="rounded=1;" vertex="1" parent="1"><mxGeometry x="1040" y="40" width="120" height="60" as="geometry"/></mxCell>`
+    + `</root></mxGraphModel>`;
+  const srcdoc = drawioPreviewDocument(`<mxfile><diagram name="Wide">${wide}</diagram></mxfile>`, new URL(page.url()).origin);
+  await page.evaluate((srcdoc) => {
+    const frame = document.createElement('iframe');
+    frame.title = 'Wide diagram';
+    frame.setAttribute('sandbox', 'allow-scripts');
+    frame.style.cssText = 'width:340px;height:300px;border:0';
+    frame.srcdoc = srcdoc;
+    document.body.append(frame);
+  }, srcdoc);
+  const frame = page.frameLocator('iframe');
+  await expect(frame.getByText('End', { exact: true })).toBeVisible();
+  const end = (await frame.getByText('End', { exact: true }).boundingBox())!;
+  expect(end.x + end.width).toBeLessThanOrEqual(340);
+});
+
 test('Explorer renders complete draw.io files, compressed pages and source on desktop and mobile', async ({ page, request }, testInfo) => {
   const absPath = path.resolve(process.env.E2E_WORKSPACE_ROOT!, `drawio-${randomUUID()}`);
   await mkdir(absPath, { recursive: true });
@@ -53,10 +81,14 @@ test('Explorer renders complete draw.io files, compressed pages and source on de
   page.on('request', (request) => {
     if (/diagrams\.net|draw\.io/.test(new URL(request.url()).hostname)) externalRequests.push(request.url());
   });
+  // The first-run onboarding card would cover the diagram's toolbar.
+  await page.addLocatorHandler(page.locator('.pm-tour-welcome'), async () => {
+    await page.locator('.pm-tour-welcome').getByRole('button', { name: /^(Later|稍后)$/ }).click();
+  });
   await page.goto(`/threads/${t.id ?? t.thread.id}`);
   if (testInfo.project.name === 'mobile-chromium') {
-    await page.getByRole('button', { name: 'Toggle shortcuts sidebar', exact: true }).click();
-    await page.getByRole('button', { name: 'Open Explorer', exact: true }).click();
+    // The phone opens files from its dock.
+    await page.getByRole('button', { name: 'Toggle Explorer', exact: true }).last().click();
   } else {
     await page.getByRole('navigation', { name: 'Workspace tools' }).getByRole('button', { name: 'Toggle Explorer' }).click();
   }
@@ -72,6 +104,8 @@ test('Explorer renders complete draw.io files, compressed pages and source on de
   const widthBeforeZoom = (await shape.boundingBox())!.width;
   await frame.getByTitle('Zoom In', { exact: true }).click();
   await expect.poll(async () => (await shape.boundingBox())!.width).toBeGreaterThan(widthBeforeZoom);
+  // The source/preview switch is one of the file's actions, behind its ⋯.
+  await page.getByRole('button', { name: 'File actions', exact: true }).click();
   await page.getByRole('button', { name: 'Diagram source', exact: true }).click();
   await expect(page.locator('iframe[title="Draw.io preview: architecture.drawio"]')).toHaveCount(0);
   await expect(page.locator('.monaco-editor, [aria-label="Source code"]')).toBeVisible();
@@ -80,7 +114,7 @@ test('Explorer renders complete draw.io files, compressed pages and source on de
   await expect(frame.getByText('Architecture root', { exact: true })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('drawio-preview.png') });
   if (testInfo.project.name === 'mobile-chromium') {
-    await page.getByRole('button', { name: 'Show Explorer', exact: true }).click();
+    await page.getByRole('button', { name: 'Back to files', exact: true }).click();
   }
   await page.getByRole('treeitem', { name: 'invalid.dio', exact: true }).press('Enter');
   await expect(page.frameLocator('iframe[title="Draw.io preview: invalid.dio"]').getByRole('alert')).toContainText('Invalid draw.io XML');
