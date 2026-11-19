@@ -38,7 +38,7 @@ function mount() {
 }
 it('asks before installing a missing adapter and continues the original creation after success', async () => {
   const created = mount();
-  const create = await screen.findByRole('button', { name: /Create thread/i });
+  const create = await screen.findByRole('button', { name: /New thread/i });
   await waitFor(() => expect(create).toBeEnabled());
   expect(api.install).not.toHaveBeenCalled(); expect(api.models).not.toHaveBeenCalled();
   fireEvent.click(create);
@@ -52,7 +52,7 @@ it('asks before installing a missing adapter and continues the original creation
   expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'workspace-a', agentId: 'codex', model: 'model-a', title: 'Keep my title', approvalMode: 'yolo' }));
 });
 it('cancel leaves the adapter untouched; failed installation keeps the form and can be retried', async () => {
-  const created = mount(); const create = await screen.findByRole('button', { name: /Create thread/i });
+  const created = mount(); const create = await screen.findByRole('button', { name: /New thread/i });
   await waitFor(() => expect(create).toBeEnabled()); fireEvent.click(create);
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(api.install).not.toHaveBeenCalled(); expect(api.create).not.toHaveBeenCalled();
@@ -67,7 +67,7 @@ it('cancel leaves the adapter untouched; failed installation keeps the form and 
 });
 it('a ready adapter creates directly without prompting or reinstalling', async () => {
   installed = true; const created = mount();
-  const create = await screen.findByRole('button', { name: /Create thread/i });
+  const create = await screen.findByRole('button', { name: /New thread/i });
   await waitFor(() => expect(create).toBeEnabled()); fireEvent.click(create);
   await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
   expect(api.install).not.toHaveBeenCalled(); expect(screen.queryByRole('dialog')).toBeNull();
@@ -79,7 +79,7 @@ it('does not create a thread after navigating away during installation', async (
   let resolve!: () => void;
   api.install.mockImplementation(() => new Promise<void>(r => { resolve = r; }));
   const onCreated = vi.fn(); const view = render(<MemoryRouter><ThreadCreateForm onCreated={onCreated} /></MemoryRouter>);
-  const create = await screen.findByRole('button', { name: /Create thread/i });
+  const create = await screen.findByRole('button', { name: /New thread/i });
   await waitFor(() => expect(create).toBeEnabled()); fireEvent.click(create);
   fireEvent.click(screen.getByRole('button', { name: 'Install adapter' }));
   view.unmount(); await act(async () => resolve());
@@ -91,7 +91,7 @@ it('keeps a created DSH thread when its run mode fails and retries only the mode
   api.harness.mockRejectedValueOnce(new Error('DSH is restarting')).mockResolvedValueOnce({});
   const created = mount();
   await waitFor(() => expect(api.catalog).toHaveBeenCalled());
-  const create = await screen.findByRole('button', { name: /Create thread/i });
+  const create = await screen.findByRole('button', { name: /New thread/i });
   await waitFor(() => expect(create).toBeEnabled()); fireEvent.click(create);
   expect(await screen.findByRole('alert')).toHaveTextContent('run mode was not applied: DSH is restarting');
   expect(created).not.toHaveBeenCalled();
@@ -106,7 +106,7 @@ it('creates a scoped thread in the same page and hides runtime administration', 
   host.scoped = true; installed = true;
   api.backends.mockResolvedValue([{ provider: 'acp', displayName: 'ACP', enabled: true, capabilities: { sessions: { resume: true }, turns: { start: true } }, installation: { installed: true, updateCommand:'fixture update' } }]);
   const created = mount();
-  const create = await screen.findByRole('button', { name: /Create thread/i });
+  const create = await screen.findByRole('button', { name: /New thread/i });
   await waitFor(() => expect(create).toBeEnabled());
   expect(screen.queryByRole('button', { name: /Update ACP/i })).toBeNull();
   fireEvent.click(create);
@@ -115,7 +115,7 @@ it('creates a scoped thread in the same page and hides runtime administration', 
 });
 it('does not offer denied adapter installation in a scoped form', async () => {
   host.scoped = true; mount();
-  const create = await screen.findByRole('button', { name: /Create thread/i });
+  const create = await screen.findByRole('button', { name: /New thread/i });
   await waitFor(() => expect(api.agents).toHaveBeenCalled());
   expect(create).toBeDisabled(); expect(screen.queryByRole('button',{name:'Install adapter'})).toBeNull();
   expect(api.install).not.toHaveBeenCalled();
@@ -134,7 +134,7 @@ it('sends isolation with creation, preserves the thread after start failure, and
   vi.mocked(environmentApi.actOnEnvironment).mockRejectedValueOnce(new Error('raw upstream response')).mockResolvedValueOnce({ ...isolatedEnvironment, state: 'running' });
   const created = mount();
   await selectIsolation();
-  const create = screen.getByRole('button', { name: /Create thread/i });
+  const create = screen.getByRole('button', { name: /New thread/i });
   await waitFor(() => expect(create).toBeEnabled()); fireEvent.click(create);
   const retry = await screen.findByRole('button', { name: 'Retry environment startup' });
   expect(created).not.toHaveBeenCalled();
@@ -156,7 +156,7 @@ it('retains the thread when its binding is absent and never starts an unrelated 
   installed = true;
   vi.mocked(environmentApi.fetchThreadEnvironment).mockResolvedValue({ environment: null, supportedHarnesses: ['codex'], limitations: [] });
   const created = mount(); await selectIsolation();
-  const create = screen.getByRole('button', { name: /Create thread/i });
+  const create = screen.getByRole('button', { name: /New thread/i });
   await waitFor(() => expect(create).toBeEnabled()); fireEvent.click(create);
   await screen.findByRole('button', { name: 'Retry environment startup' });
   expect(environmentApi.actOnEnvironment).not.toHaveBeenCalled();
@@ -169,7 +169,7 @@ it('disables Dokploy options for an unsupported Harness and keeps an already-sel
   api.agents.mockResolvedValue([agent(true), { ...agent(true), id: 'unsupported', model: 'unsupported', displayName: 'Unsupported ACP', acpAgent: { ...agent(true).acpAgent, transport: 'native' } }]);
   mount(); await selectIsolation();
   fireEvent.click(screen.getByRole('radio', { name: /Unsupported ACP/ }));
-  await waitFor(() => expect(screen.getByRole('button', { name: /Create thread/i })).toBeDisabled());
+  await waitFor(() => expect(screen.getByRole('button', { name: /New thread/i })).toBeDisabled());
   expect(screen.getByRole('combobox', { name: 'Execution environment' })).toHaveTextContent('Local Dokploy');
   fireEvent.click(screen.getByRole('combobox', { name: 'Execution environment' }));
   expect(await screen.findByRole('option', { name: 'Local Dokploy' })).toBeDisabled();
@@ -181,7 +181,7 @@ it('disables Dokploy options for an unsupported Harness and keeps an already-sel
 it('allows a configured Custom ACP transport with a distinct agent id', async () => {
   api.agents.mockResolvedValue([{ ...agent(true), id: 'custom-agent', model: 'custom-agent', acpAgent: { ...agent(true).acpAgent, transport: 'custom' } }]);
   const created = mount(); await selectIsolation();
-  const create = screen.getByRole('button', { name: /Create thread/i });
+  const create = screen.getByRole('button', { name: /New thread/i });
   await waitFor(() => expect(create).toBeEnabled()); fireEvent.click(create);
   await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
   expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'custom-agent', environmentConnectionId: 'dokploy-local' }));
@@ -191,7 +191,7 @@ it('does not install a Host adapter for isolation and retries only the created e
   const created = mount(); await selectIsolation();
   const agentCalls = api.agents.mock.calls.length;
   for (const mark of screen.getAllByText('Not yet verified in the isolated environment')) expect(mark).toBeVisible();
-  fireEvent.click(screen.getByRole('button', { name: /Create thread/i }));
+  fireEvent.click(screen.getByRole('button', { name: /New thread/i }));
   const retry = await screen.findByRole('button', { name: 'Retry environment startup' });
   expect(screen.queryByRole('button', { name: 'Install adapter' })).toBeNull();
   fireEvent.click(retry);
@@ -214,7 +214,7 @@ it('aborts an outstanding Host model probe and ignores its late result after cho
   fireEvent.change(screen.getByRole('textbox', { name: 'Model' }), { target: { value: 'environment-model' } });
   await act(async () => resolve([{ id: 'late-model', model: 'late-model', displayName: 'Late model', isDefault: true, supportedReasoningEfforts: [] }]));
   expect(screen.getByRole('textbox', { name: 'Model' })).toHaveValue('environment-model');
-  fireEvent.click(screen.getByRole('button', { name: /Create thread/i }));
+  fireEvent.click(screen.getByRole('button', { name: /New thread/i }));
   await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
   expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ model: 'environment-model', environmentConnectionId: 'dokploy-local' }));
   expect(api.models).toHaveBeenCalledTimes(1); expect(api.catalog).not.toHaveBeenCalled();
@@ -228,7 +228,7 @@ it('uses the supported static ACP choices after switching backend in isolation w
   fireEvent.click(screen.getByRole('radio', { name: 'acp' }));
   fireEvent.click(await screen.findByRole('radio', { name: /Claude Code/ }));
   expect(screen.queryByText(/Runtime is not installed/)).toBeNull();
-  fireEvent.click(screen.getByRole('button', { name: /Create thread/i }));
+  fireEvent.click(screen.getByRole('button', { name: /New thread/i }));
   await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
   expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ provider: 'acp', agentId: 'claude' }));
   expect(api.models).toHaveBeenCalledTimes(modelsBefore); expect(api.agents).toHaveBeenCalledTimes(agentsBefore);
@@ -241,7 +241,7 @@ it('allows isolated creation when the supported ACP agent is missing on the Host
   await selectIsolation();
   expect(screen.getByRole('radio', { name: /OpenAI Codex/ })).toBeChecked();
   expect(screen.getByRole('radio', { name: /OpenAI Codex/ })).toBeEnabled();
-  fireEvent.click(screen.getByRole('button', { name: /Create thread/i }));
+  fireEvent.click(screen.getByRole('button', { name: /New thread/i }));
   await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
   expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'codex', environmentConnectionId: 'dokploy-local' }));
   expect(api.install).not.toHaveBeenCalled(); expect(api.models).not.toHaveBeenCalled();
