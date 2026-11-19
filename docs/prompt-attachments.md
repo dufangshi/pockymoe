@@ -41,6 +41,10 @@ POST   /uploads/{id}/complete                        -> {token,size}
 DELETE /uploads/{id}
 ```
 
+- The first chunk is 512 KiB and each one that lands doubles the next, up to the
+  device's chunk size, so the bar moves within seconds on a slow link. While the
+  files upload, the bar shows the waiting prompt on one line, which file of how many,
+  the bytes so far and the time left; the send key shows a ring that fills.
 - A chunk is at most 4 MiB. A slow link's client halves it, down to 512 KiB, when
   requests time out.
 - `offset` must be where the file ends. Otherwise the answer is `409 offset_conflict`

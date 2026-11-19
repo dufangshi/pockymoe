@@ -43,7 +43,8 @@ describe('prepareAttachments', () => {
   it('sends a large file in chunks and names it in the prompt', async () => {
     const { offsets } = device();
     const result = await prepareAttachments('t', { prompt: 'x [FILE 1]', attachments: [attachment(17 * MB)] }, null, never, () => undefined);
-    expect(offsets).toEqual([0, 4 * MB, 8 * MB, 12 * MB, 16 * MB]);
+    // Slow start: 512 KiB, then doubling up to the device's 4 MiB.
+    expect(offsets).toEqual([0, 0.5 * MB, 1.5 * MB, 3.5 * MB, 7.5 * MB, 11.5 * MB, 15.5 * MB]);
     expect(result.prompt).toBe('x [FILE ./.temp/threads/t/big.bin]');
     expect(result.attachments).toBeUndefined();
   });
@@ -66,7 +67,15 @@ describe('prepareAttachments', () => {
       return null;
     });
     await prepareAttachments('t', { prompt: '[FILE 1]', attachments: [attachment(17 * MB, 'conflict')] }, null, never, () => undefined);
-    expect(state.offsets).toEqual([4 * MB, 8 * MB, 12 * MB, 16 * MB]);
+    expect(state.offsets).toEqual([4 * MB, 4.5 * MB, 5.5 * MB, 7.5 * MB, 11.5 * MB, 15.5 * MB]);
+  });
+
+  it('reports progress within seconds and names the waiting prompt', async () => {
+    device();
+    const reports: { loaded: number; preview?: string }[] = [];
+    await prepareAttachments('t', { prompt: 'look [FILE 1]', attachments: [attachment(17 * MB)] }, null, never, (state) => { if (state) reports.push(state); });
+    expect(reports[1]?.loaded).toBe(0.5 * MB);
+    expect(reports[0]?.preview).toBe('look big.bin');
   });
 
   it('falls back to one request on a device without the routes, and says when it cannot', async () => {
