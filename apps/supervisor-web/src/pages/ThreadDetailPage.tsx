@@ -1430,7 +1430,7 @@ export function ThreadDetailPage() {
     detailRef.current = detail;
   }, [detail]);
 
-  useThreadTabStatus(detail?.thread ?? null);
+  useThreadTabStatus(detail?.thread ?? null, (detail?.pendingRequests.length ?? 0) > 0);
 
   const refreshCapabilities = useCallback(async () => {
     if (!routeActiveRef.current || !caches.isCurrent()) return;

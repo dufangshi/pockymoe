@@ -94,14 +94,18 @@ after a short route-response timeout a new tab is the fallback.
 
 Thread tab titles contain only the thread name. Their favicon carries the state:
 
+The favicon uses the thread status marks of `docs/ui-principles.md` §6 on a dark
+tile, so a tab reads like the sidebar:
+
 | State | Favicon |
 | --- | --- |
-| Working | Amber open ring |
-| Completed, unread | Red dot |
-| Read, idle | Gray checkmark |
-
-Read failures use a red cross; recovering threads use an amber question mark
-rather than claiming completion. Read markers advance only when the thread page is
+| Working or recovering | Open ring |
+| Waiting for you (approval or input) | Amber speech bubble |
+| Completed, unread | Solid dot |
+| Read, idle | Small hollow ring |
+| Failed | Red diamond |
+| Interrupted | Amber square |
+ Read markers advance only when the thread page is
 visible and focused after completion. They persist in this browser's local
 storage and synchronize between its tabs. Other browsers have independent read
 markers. A thread this browser has never opened starts as read: the sidebar,
