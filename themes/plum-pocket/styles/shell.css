@@ -446,7 +446,9 @@
   background: transparent;
   color: var(--plum-chrome-fg);
 }
-:theme .thread-ui-shell .matter-workbench .matter-tabs-row > :not(.matter-tab-scroll, button, .workbench-thread-picker-actions) {
+/* The row wraps its controls in .matter-tabs-main / .matter-tabs-end, which sit on the dark chrome;
+   only content opening inside the row (the search field) takes the light content tokens. */
+:theme .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main, .matter-tabs-end) > :not(.matter-tab-scroll, button, .workbench-thread-picker-actions, .matter-tabs-main, .matter-tabs-end, .matter-tab-add, .matter-connection) {
   --theme-surface: var(--thread-gc-workspace);
   --theme-surface-strong: var(--thread-gc-surface);
   --theme-muted: var(--thread-gc-muted);
@@ -462,7 +464,7 @@
   --plum-status-running: #2f6fd6;
   color: var(--theme-fg);
 }
-:theme[data-theme-effective='dark'] .thread-ui-shell .matter-workbench .matter-tabs-row > :not(.matter-tab-scroll, button, .workbench-thread-picker-actions) { --plum-shell-focus: #f2c15c; --plum-status-running: #8fc3ff; }
+:theme[data-theme-effective='dark'] .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main, .matter-tabs-end) > :not(.matter-tab-scroll, button, .workbench-thread-picker-actions, .matter-tabs-main, .matter-tabs-end, .matter-tab-add, .matter-connection) { --plum-shell-focus: #f2c15c; --plum-status-running: #8fc3ff; }
 /* Tabs other than the open one sit on the dark chrome in both modes: their running halo uses the light blue. */
 :theme .thread-ui-shell .matter-workbench .matter-tab-scroll .matter-group-tab:not([aria-current='page']) { --plum-status-running: #8fc3ff; }
 :theme .thread-ui-shell .matter-workbench .matter-tab-scroll { z-index: 1; height: 40px; align-items: flex-end; box-shadow: none; }
@@ -584,7 +586,7 @@
   --plum-icon-split: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' x='3.5' y='4.5' width='8' height='15' rx='2.5'/%3E%0A%3Crect x='14.5' y='4.5' width='6' height='15' rx='2.5' fill='black' fill-opacity='.22' stroke='black' stroke-width='2' stroke-dasharray='1.7 2.1' stroke-linecap='round'/%3E%3C/svg%3E");
   --plum-icon-restore: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M5 12a7 7 0 1 0 2.1-5'/%3E%3Cpath fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round' d='M4.5 4v4h4'/%3E%0A%3Ccircle cx='12' cy='12' r='2' fill='black' fill-opacity='.35'/%3E%3C/svg%3E");
 }
-:theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle),
+:theme .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main) > :is(.matter-toolbar-toggle, .matter-watches-toggle),
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger {
   align-self: center;
   min-width: 32px;
@@ -597,21 +599,21 @@
   background: transparent;
   color: var(--plum-chrome-soft);
 }
-:theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle, .workbench-thread-picker-actions) { background: rgb(255 255 255 / 7%); }
+:theme .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main) > :is(.matter-toolbar-toggle, .matter-watches-toggle, .workbench-thread-picker-actions) { background: rgb(255 255 255 / 7%); }
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-actions { align-self: center; gap: 0; border-radius: 0 12px 12px 0; }
-:theme .thread-ui-shell .matter-workbench .matter-tabs-row > .matter-toolbar-toggle { margin-left: 6px; border-radius: 12px 0 0 12px; }
-:theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle):last-child,
+:theme .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main) > .matter-toolbar-toggle { margin-left: 6px; border-radius: 12px 0 0 12px; }
+:theme .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main) > :is(.matter-toolbar-toggle, .matter-watches-toggle):last-child,
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-actions > :last-child { border-radius: 0 12px 12px 0; }
-:theme .thread-ui-shell .matter-workbench .matter-tabs-row > .matter-toolbar-toggle:last-child { border-radius: 12px; }
-:theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle):is(:active, [aria-expanded='true']),
+:theme .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main) > .matter-toolbar-toggle:last-child { border-radius: 12px; }
+:theme .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main) > :is(.matter-toolbar-toggle, .matter-watches-toggle):is(:active, [aria-expanded='true']),
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger:is(:active, [aria-expanded='true']) { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
 @media (hover: hover) {
-  :theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle):is(:hover, [aria-expanded='true']),
+  :theme .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main) > :is(.matter-toolbar-toggle, .matter-watches-toggle):is(:hover, [aria-expanded='true']),
   :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger:is(:hover, [aria-expanded='true']) { background: var(--plum-chrome-active); color: var(--plum-chrome-fg); }
 }
-:theme .thread-ui-shell .matter-workbench .matter-tabs-row > .matter-toolbar-toggle[aria-expanded='true'],
+:theme .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main) > .matter-toolbar-toggle[aria-expanded='true'],
 :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger:is(.is-active, [aria-pressed='true']) { background: rgb(240 181 74 / 24%); color: #f6cf7c; }
-:theme .thread-ui-shell .matter-workbench .matter-tabs-row > :last-child:is(button, .workbench-thread-picker-actions) { margin-right: 8px; }
+:theme .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main) > :last-child:is(button, .workbench-thread-picker-actions) { margin-right: 8px; }
 :theme .matter-tabs-row :is(.matter-toolbar-toggle > .lucide-sliders-horizontal, .matter-watches-toggle > :is(.lucide-bot, .lucide-workflow), .workbench-thread-picker-trigger > :is(.lucide-columns-2, .lucide-rotate-ccw)) { display: none; }
 :theme .matter-tabs-row :is(.matter-toolbar-toggle:has(> .lucide-sliders-horizontal), .matter-watches-toggle:has(> :is(.lucide-bot, .lucide-workflow)), .workbench-thread-picker-trigger:has(> :is(.lucide-columns-2, .lucide-rotate-ccw)))::before {
   content: '';
@@ -623,6 +625,11 @@
   mask: var(--plum-icon) center / contain no-repeat;
 }
 :theme .matter-tabs-row .matter-toolbar-toggle { --plum-icon: var(--plum-icon-tools); }
+/* Notifications bell and the online count sit on the chrome in both modes. */
+:theme .thread-ui-shell .matter-workbench .matter-tabs-end > button { color: var(--plum-chrome-soft); }
+:theme .thread-ui-shell .matter-workbench .matter-tabs-end > button[aria-expanded='true'] { color: var(--plum-chrome-fg); }
+:theme .thread-ui-shell .matter-workbench .matter-tabs-end .matter-connection { color: var(--plum-chrome-muted); }
+@media (hover: hover) { :theme .thread-ui-shell .matter-workbench .matter-tabs-end > button:hover { color: var(--plum-chrome-fg); background: var(--plum-chrome-hover); } }
 :theme .matter-tabs-row .matter-watches-toggle:has(> .lucide-bot) { --plum-icon: var(--plum-icon-agents); }
 :theme .matter-tabs-row .matter-watches-toggle:has(> .lucide-workflow) { --plum-icon: var(--plum-icon-automations); }
 :theme .matter-tabs-row .workbench-thread-picker-trigger:has(> .lucide-columns-2) { --plum-icon: var(--plum-icon-split); }
@@ -937,14 +944,14 @@
   :theme .thread-ui-shell .matter-workbench .matter-group-toggle::after { content: ''; position: absolute; inset: -9px -4px; }
   :theme .thread-ui-shell .matter-workbench .matter-tab-add .matter-new-thread { width: 36px; height: 36px; margin-bottom: 2px; }
   /* A 44px-wide segment; the hit area grows to 44px tall around the 38px capsule. */
-  :theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle),
+  :theme .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main) > :is(.matter-toolbar-toggle, .matter-watches-toggle),
   :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger { position: relative; min-width: 44px; height: 38px; padding: 0 10px; }
-  :theme .thread-ui-shell .matter-workbench .matter-tabs-row > :is(.matter-toolbar-toggle, .matter-watches-toggle)::after,
+  :theme .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main) > :is(.matter-toolbar-toggle, .matter-watches-toggle)::after,
   :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-trigger::after { content: ''; position: absolute; inset: -3px 0; }
-  :theme .thread-ui-shell .matter-workbench .matter-tabs-row > .matter-toolbar-toggle { margin-left: 4px; border-radius: 14px 0 0 14px; }
+  :theme .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main) > .matter-toolbar-toggle { margin-left: 4px; border-radius: 14px 0 0 14px; }
   :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-actions,
   :theme .thread-ui-shell .matter-workbench .matter-tabs-row .workbench-thread-picker-actions > :last-child { border-radius: 0 14px 14px 0; }
-  :theme .thread-ui-shell .matter-workbench .matter-tabs-row > :last-child:is(button, .workbench-thread-picker-actions) { margin-right: 4px; }
+  :theme .thread-ui-shell .matter-workbench :is(.matter-tabs-row, .matter-tabs-main) > :last-child:is(button, .workbench-thread-picker-actions) { margin-right: 4px; }
   :theme .matter-tabs-row :is(.matter-toolbar-toggle, .matter-watches-toggle, .workbench-thread-picker-trigger)::before { width: 20px; height: 20px; }
   :theme .matter-tabs-row .matter-watches-toggle .native-agents-running-count { top: 1px; right: 3px; min-width: 15px; height: 15px; }
   :theme .thread-ui-shell .matter-workbench .matter-notifications { top: calc(48px + env(safe-area-inset-top)); right: 8px; width: calc(100vw - 16px); }
