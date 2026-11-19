@@ -184,7 +184,7 @@ async function answer(request: APIRequestContext, id: string, prompt: string) {
 
 test('New Chat starts a DSH thread in the chosen run mode', async ({ page, request }, testInfo) => {
   await page.goto(`/threads/${threadId}`);
-  await page.getByRole('button', { name: 'New Chat', exact: true }).first().click();
+  await page.getByRole('button', { name: 'New thread', exact: true }).first().click();
   const dialog = page.getByTestId('create-thread-dialog');
   await selectControl(page, dialog.locator('[role=combobox][id$="thread-backend"]'), 'acp');
   await dialog.locator('label').filter({ hasText: 'DeepSeek Harness' }).click();
@@ -196,7 +196,7 @@ test('New Chat starts a DSH thread in the chosen run mode', async ({ page, reque
   await expect(dialog.getByText(/Only a persistent terminal/)).toBeVisible();
   await dialog.getByLabel('Title', { exact: true }).fill('DSH minimal mode');
   await page.screenshot({ path: testInfo.outputPath('new-chat-run-mode.png') });
-  await dialog.getByRole('button', { name: 'Create Thread', exact: true }).click();
+  await dialog.getByRole('button', { name: 'New thread', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   const id = page.url().split('/threads/')[1]!;
   // DSH offers the Minimal tool set to the model from the first turn.

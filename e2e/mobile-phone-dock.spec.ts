@@ -298,7 +298,7 @@ test('More split picker pins both conversations in the dock and switches the sho
   await dock.locator('.matter-phone-more').tap();
   const more = page.getByRole('dialog', { name: 'More actions' });
   const trigger = more.getByRole('button', {
-    name: 'Split conversation',
+    name: 'Split view',
     exact: true,
   });
   await trigger.tap();

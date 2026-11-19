@@ -381,7 +381,7 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`thread loading s
     await expect(indicator).toBeVisible();
     await expect(indicator).toHaveAttribute('role', 'status');
     await expect(indicator.locator('.thread-loading-ring')).toHaveCSS('animation-name', 'thread-loading-rotate');
-    await expect(page.getByText('Send the first prompt to start the thread.', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Type the first prompt below to start.', { exact: true })).toHaveCount(0);
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await expect(indicator.locator('.thread-loading-ring')).toHaveCSS('animation-name', 'none');
     await page.emulateMedia({ reducedMotion: 'no-preference' });

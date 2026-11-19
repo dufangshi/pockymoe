@@ -47,7 +47,7 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`topbar search qu
   if (await later.isVisible({ timeout: 3000 }).catch(() => false)) await later.click();
   await expect(page.locator(`[data-turn-id="${id}-search-0"]`)).toHaveCount(0);
   if (testInfo.project.name === 'mobile-chromium') await page.setViewportSize({ width: 320, height: 720 });
-  await page.getByRole('button', { name: 'Search conversation', exact: true }).click();
+  await page.getByRole('button', { name: 'Search thread', exact: true }).click();
   const input = page.getByRole('combobox', { name: 'Search messages' });
   await expect(input).toBeFocused();
   expect(searches).toHaveLength(0);
@@ -75,8 +75,8 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`topbar search qu
   expect(option.height).toBeLessThan(120);
   await page.screenshot({ path: testInfo.outputPath(`topbar-search-${preset}.png`) });
   await input.press('Escape');
-  await expect(page.getByRole('button', { name: 'Search conversation', exact: true })).toBeFocused();
-  await page.getByRole('button', { name: 'Search conversation', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Search thread', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'Search thread', exact: true }).click();
   await expect(result).toBeVisible();
   expect(searches).toHaveLength(1);
   await input.press('Enter');
