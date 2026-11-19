@@ -7,9 +7,10 @@
 .env-settings { padding: 4px 0 16px; }
 .env-section { display: grid; gap: 8px; min-width: 0; }
 .env-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; }
+/* The settings sub-heading every section uses (Upstreams' 「连接」, Resources' 「运行内存」). */
 .env-heading h3 {
   display: flex; align-items: center; gap: 6px; margin: 0;
-  color: var(--theme-fg-muted); font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--theme-fg); font-size: 13px; font-weight: 600;
 }
 .env-heading-count {
   display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px;
@@ -43,10 +44,10 @@ ul.env-list > li + li { border-top: 1px solid var(--theme-border); }
 /* Buttons: one height per surface; destroy is red text, set apart. */
 .env-button, .env-icon-button {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: none;
-  min-height: 32px; padding: 0 10px; border: 1px solid var(--theme-border); border-radius: 7px;
+  min-height: 36px; padding: 0 10px; border: 1px solid var(--theme-border); border-radius: 8px;
   background: transparent; color: var(--theme-fg-soft); font-size: 12.5px; font-weight: 500; white-space: nowrap;
 }
-.env-icon-button { width: 32px; padding: 0; border-color: transparent; color: var(--theme-fg-muted); }
+.env-icon-button { width: 36px; padding: 0; color: var(--theme-fg-muted); }
 .env-button svg, .env-icon-button svg, .env-switch button svg { width: 14px; height: 14px; }
 .env-button.is-danger, .env-danger-button { color: var(--status-danger-fg); }
 .env-lifecycle .env-button.is-danger { margin-left: 8px; }
@@ -106,6 +107,7 @@ ul.env-list > li + li { border-top: 1px solid var(--theme-border); }
 .env-row-title { overflow: hidden; font-size: 13.5px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .env-row-meta { display: flex; flex-wrap: wrap; gap: 2px 10px; min-width: 0; color: var(--theme-fg-muted); font-size: 12px; }
 .env-row-meta > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.env-row-meta > .env-thread-ref { max-width: 14rem; }
 .env-row-chevron { flex: none; width: 16px; height: 16px; color: var(--theme-fg-muted); }
 .env-request-row[data-state='pending'] .env-row-title { font-weight: 600; }
 .env-item { min-width: 0; }

@@ -1,10 +1,50 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Check } from 'lucide-react';
-import { formatNumber } from '@pockymoe/thread-ui/i18n';
+import { formatNumber, getLocale } from '@pockymoe/thread-ui/i18n';
+import type { ThreadDto } from '../../../../../packages/shared/src/index';
+import { deviceRequest } from '../../lib/api';
 import type { EnvironmentLimits, EnvironmentRequestDto, EnvironmentState } from '../../lib/environmentApi';
 import { environmentText as t } from '../../lib/environmentI18n';
 import { environmentRequestText as rt } from '../../lib/environmentRequestI18n';
 import { environmentStateKey, gibValue } from './model';
+
+/** A list time: minutes, 24-hour, "today" for today. */
+export function listTimeText(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const locale = getLocale();
+  const clock = date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: false });
+  return date.toDateString() === new Date().toDateString()
+    ? t('today', { time: clock })
+    : `${date.toLocaleDateString(locale, { month: 'short', day: 'numeric' })} ${clock}`;
+}
+
+/** {@link listTimeText} in a `<time>`; the full time is its title. */
+export function ListTime({ value }: { value: string }) {
+  const date = new Date(value);
+  return <time dateTime={value} title={Number.isNaN(date.getTime()) ? undefined : date.toLocaleString(getLocale())}>{listTimeText(value)}</time>;
+}
+
+/** Thread titles on a device, so rows name a thread instead of showing a bare ID. */
+export function useThreadTitles(deviceId: string | null | undefined, enabled = true) {
+  const [titles, setTitles] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!enabled) return;
+    const controller = new AbortController();
+    deviceRequest<ThreadDto[]>(deviceId, 'api/threads?includeAgentThreads=true', { cache: 'no-store', signal: controller.signal })
+      .then((threads) => setTitles(Object.fromEntries(threads.filter((thread) => thread.title).map((thread) => [thread.id, thread.title as string]))))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [deviceId, enabled]);
+  return titles;
+}
+
+/** A thread named by its title, or by a labelled short ID while titles load. */
+export function ThreadRef({ threadId, title }: { threadId: string; title?: string | undefined }) {
+  return title
+    ? <span className="env-thread-ref" title={title}>{title}</span>
+    : <span className="env-thread-ref" title={threadId}>{t('threadLabel', { id: threadId.slice(0, 8) })}</span>;
+}
 
 /** Environment lifecycle mark (docs/ui-principles.md §6, «隔离环境状态»): its own
     shapes, never a thread status, always followed by the state's name. */

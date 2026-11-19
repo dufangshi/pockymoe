@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { ArrowRight, ChevronRight } from 'lucide-react';
-import { CopyButton, ErrorMark, PathChip, StatusMark, formatShortTimestamp } from '@pockymoe/thread-ui';
+import { CopyButton, ErrorMark, PathChip, StatusMark } from '@pockymoe/thread-ui';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
 import { decideEnvironmentRequest, type EnvironmentRequestDto } from '../../lib/environmentApi';
 import { environmentText as et } from '../../lib/environmentI18n';
 import { environmentRequestText as t } from '../../lib/environmentRequestI18n';
 import { EnvironmentConfirmation } from './EnvironmentConfirmation';
 import { EnvironmentWindow } from './EnvironmentWindow';
-import { Fact, MigrationSteps, Tag, limitsText, requestMark } from './ui';
+import { Fact, MigrationSteps, Tag, limitsText, listTimeText, requestMark } from './ui';
 
 type Spec = EnvironmentRequestDto['spec'];
 type Mount = Spec['credentialMounts'][number];
@@ -36,7 +36,7 @@ export const requestHasDecision = (state: EnvironmentRequestDto['state']) => sta
 
 export function RequestStatusLine({ request }: { request: EnvironmentRequestDto }) {
   return <span className="env-request-status"><StatusMark status={requestMark(request.state)} label={t(request.state)} />
-    <span>{t(request.state)}</span><span className="env-dim">· {t('submitted', { time: formatShortTimestamp(request.createdAt) })}</span></span>;
+    <span>{t(request.state)}</span><span className="env-dim">· {t('submitted', { time: listTimeText(request.createdAt) })}</span></span>;
 }
 
 /** The decision bar: approve/reject, retry, or restore Host, for the owner only. */

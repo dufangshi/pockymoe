@@ -12,7 +12,7 @@ import { ConnectionEditor } from './environments/ConnectionEditor';
 import { BudgetEditor } from './environments/BudgetEditor';
 import { EnvironmentCard } from './environments/EnvironmentCard';
 import { environmentError, gibValue, useEnvironmentSnapshot } from './environments/model';
-import { SectionHeading, Tag } from './environments/ui';
+import { SectionHeading, Tag, useThreadTitles } from './environments/ui';
 import './environments/environments.css';
 
 export function DokploySettings() {
@@ -35,6 +35,7 @@ function DeviceEnvironmentSettings({ deviceId }: { deviceId: string | null }) {
   const environments = snapshot?.environments.slice().sort(byLiveness) ?? [];
   const running = environments.filter(env => env.state === 'running' || env.state === 'starting').length;
   const budget = snapshot?.budget;
+  const threadTitles = useThreadTitles(deviceId, environments.length > 0);
   return <div className="env-settings" data-testid="dokploy-settings">
     {!snapshot && <div className="env-toolbar">
       {loading && <span role="status" className="env-dim">{t('loading')}</span>}
@@ -47,7 +48,7 @@ function DeviceEnvironmentSettings({ deviceId }: { deviceId: string | null }) {
           {saved && <span role="status" className="env-ok">{t('saved')}</span>}
           {error && <ErrorMark message={error} onRetry={() => void refresh()} kind={error === t('unsupported') || error === t('forbidden') ? 'unavailable' : 'error'} />}
           <button type="button" className="env-icon-button" aria-label={t('refresh')} title={t('refresh')} disabled={loading} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className={loading ? 'request-spin' : undefined} /></button>
-          <button type="button" className="env-button" onClick={() => setEditing('new')}><Plus aria-hidden="true" />{t('addConnection')}</button>
+          <button type="button" className="env-button" aria-label={t('addConnection')} title={t('addConnection')} onClick={() => setEditing('new')}><Plus aria-hidden="true" />{t('add')}</button>
         </SectionHeading>
         {!snapshot.connections.length ? <p className="env-empty">{t('noConnections')}</p>
           : <div className="env-group env-list">{snapshot.connections.map(connection => <ConnectionRow key={connection.id} connection={connection} deviceId={deviceId} onEdit={() => setEditing(connection)} />)}</div>}
@@ -68,7 +69,7 @@ function DeviceEnvironmentSettings({ deviceId }: { deviceId: string | null }) {
       <section className="env-section" aria-label={t('environments')}>
         <SectionHeading title={t('environments')} count={environments.filter(env => env.state !== 'destroyed').length} />
         {!environments.length ? <p className="env-empty">{t('noEnvironments')}</p>
-          : <div className="env-group env-list">{environments.map(env => <EnvironmentCard key={env.id} environment={env} deviceId={deviceId}
+          : <div className="env-group env-list">{environments.map(env => <EnvironmentCard key={env.id} environment={env} deviceId={deviceId} threadTitle={threadTitles[env.threadId]}
             connection={snapshot.connections.find(connection => connection.id === env.connectionId)}
             onUpdate={next => setSnapshot(current => current && { ...current, environments: current.environments.map(value => value.id === next.id ? next : value) })} />)}</div>}
       </section>
