@@ -109,30 +109,89 @@ fn record(
     Ok(())
 }
 
-pub(super) fn fields(
-    conn: &Connection,
-    resource_type: &str,
-    resource_id: &str,
-) -> (Value, Value, Vec<Value>) {
-    let events = (|| -> rusqlite::Result<Vec<Value>> {
-        let mut stmt = conn.prepare_cached("SELECT id,user_id,username,kind,accessed_at FROM relay_share_activity WHERE resource_type=?1 AND resource_id=?2 ORDER BY accessed_at DESC LIMIT 20")?;
-        let rows = stmt.query_map(params![resource_type, resource_id], |row| Ok(json!({
-            "id": row.get::<_, String>(0)?, "userId": row.get::<_, String>(1)?,
-            "username": row.get::<_, String>(2)?, "kind": row.get::<_, String>(3)?,
-            "accessedAt": row.get::<_, String>(4)?,
-            (if resource_type == "share" { "shareId" } else { "grantId" }): resource_id,
-        })))?;
-        rows.collect()
-    })().unwrap_or_default();
-    (
-        events
-            .first()
-            .map(|e| e["accessedAt"].clone())
-            .unwrap_or(Value::Null),
-        events
-            .first()
-            .map(|e| e["username"].clone())
-            .unwrap_or(Value::Null),
-        events,
-    )
+/// Attach up to 20 visits per listed resource in one query. Cross joining the
+/// listed IDs first lets SQLite stop each recent-activity index scan at 20.
+pub(super) fn attach(conn: &Connection, resource_type: &str, resources: &mut [Value]) {
+    if resources.is_empty() {
+        return;
+    }
+    let resource_key = if resource_type == "share" {
+        "shareId"
+    } else {
+        "grantId"
+    };
+    let ids: Vec<_> = resources
+        .iter()
+        .map(|r| r["id"].as_str().unwrap_or_default())
+        .collect();
+    let load = || -> rusqlite::Result<std::collections::HashMap<String, Vec<Value>>> {
+        let mut stmt = conn.prepare_cached(
+            "SELECT a.resource_id,a.id,a.user_id,a.username,a.kind,a.accessed_at
+             FROM json_each(?1) listed CROSS JOIN relay_share_activity a
+             WHERE a.rowid IN (
+               SELECT rowid FROM relay_share_activity
+               WHERE resource_type=?2 AND resource_id=listed.value
+               ORDER BY accessed_at DESC LIMIT 20
+             ) ORDER BY a.resource_id,a.accessed_at DESC",
+        )?;
+        let mut rows = stmt.query(params![json!(ids).to_string(), resource_type])?;
+        let mut events = std::collections::HashMap::<String, Vec<Value>>::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let event = json!({
+                (resource_key): id, "id": row.get::<_, String>(1)?,
+                "userId": row.get::<_, String>(2)?, "username": row.get::<_, String>(3)?,
+                "kind": row.get::<_, String>(4)?, "accessedAt": row.get::<_, String>(5)?
+            });
+            events.entry(id).or_default().push(event);
+        }
+        Ok(events)
+    };
+    let mut by_id = load().unwrap_or_default();
+    for resource in resources {
+        let events = by_id
+            .remove(resource["id"].as_str().unwrap_or_default())
+            .unwrap_or_default();
+        if let Some(last) = events.first() {
+            resource["lastAccessedAt"] = last["accessedAt"].clone();
+            resource["lastAccessedByUsername"] = last["username"].clone();
+        } else {
+            resource["lastAccessedAt"] = Value::Null;
+            resource["lastAccessedByUsername"] = Value::Null;
+        }
+        resource["accessEvents"] = Value::Array(events);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portal_activity_is_scoped_ordered_and_limited_per_resource() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        for (kind, id) in [("share", "a"), ("grant", "a"), ("share", "b")] {
+            for i in 0..25 {
+                let at = format!("2026-11-19T09:{i:02}:00.000Z");
+                conn.execute(
+                    "INSERT INTO relay_share_activity VALUES (?1,?2,?3,'user',?4,'open_thread',?5)",
+                    params![format!("{kind}-{id}-{i}"), id, kind, kind, at],
+                )
+                .unwrap();
+            }
+        }
+        let mut rows = [json!({"id":"b"}), json!({"id":"none"}), json!({"id":"a"})];
+        attach(&conn, "share", &mut rows);
+        for row in [&rows[0], &rows[2]] {
+            let events = row["accessEvents"].as_array().unwrap();
+            assert_eq!(events.len(), 20);
+            assert_eq!(events[0]["shareId"], row["id"]);
+            assert_eq!(events[0]["accessedAt"], row["lastAccessedAt"]);
+            assert_eq!(events[19]["accessedAt"], "2026-11-19T09:05:00.000Z");
+            assert_eq!(row["lastAccessedByUsername"], "share");
+        }
+        assert_eq!(rows[1]["accessEvents"], json!([]));
+        assert_eq!(rows[1]["lastAccessedAt"], Value::Null);
+    }
 }

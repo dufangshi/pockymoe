@@ -2545,8 +2545,7 @@ fn relay_shares_for(conn: &Connection, column: &str, user_id: &str) -> Vec<Value
     let Ok(mut stmt) = conn.prepare(&sql) else {
         return Vec::new();
     };
-    stmt.query_map(params![user_id, now_rfc3339()], |row| {
-        let activity = share_activity::fields(conn, "share", &row.get::<_, String>(0)?);
+    let mut rows: Vec<Value> = stmt.query_map(params![user_id, now_rfc3339()], |row| {
         Ok(json!({
             "id": row.get::<_, String>(0)?,
             "ownerUserId": row.get::<_, String>(1)?,
@@ -2566,15 +2565,14 @@ fn relay_shares_for(conn: &Connection, column: &str, user_id: &str) -> Vec<Value
             "revokedAt": row.get::<_, Option<String>>(15)?,
             "expiresAt": row.get::<_, Option<String>>(16)?,
             "pending": row.get::<_, i64>(17)? != 0,
-            "verifiedAt": row.get::<_, Option<String>>(18)?,
-            "lastAccessedAt": activity.0,
-            "lastAccessedByUsername": activity.1,
-            "accessEvents": activity.2
+            "verifiedAt": row.get::<_, Option<String>>(18)?
         }))
     })
     .ok()
     .map(|rows| rows.flatten().collect())
-    .unwrap_or_default()
+    .unwrap_or_default();
+    share_activity::attach(conn, "share", &mut rows);
+    rows
 }
 
 fn relay_grants_for(conn: &Connection, column: &str, user_id: &str) -> Vec<Value> {
@@ -2591,9 +2589,8 @@ fn relay_grants_for(conn: &Connection, column: &str, user_id: &str) -> Vec<Value
     let Ok(mut stmt) = conn.prepare(&sql) else {
         return Vec::new();
     };
-    stmt.query_map(params![user_id, now_rfc3339()], |row| {
+    let mut rows: Vec<Value> = stmt.query_map(params![user_id, now_rfc3339()], |row| {
         let workspace_ids: String = row.get(13)?;
-        let activity = share_activity::fields(conn, "grant", &row.get::<_, String>(0)?);
         Ok(json!({
             "id": row.get::<_, String>(0)?,
             "ownerUserId": row.get::<_, String>(1)?,
@@ -2617,15 +2614,14 @@ fn relay_grants_for(conn: &Connection, column: &str, user_id: &str) -> Vec<Value
             "revokedAt": row.get::<_, Option<String>>(19)?,
             "expiresAt": row.get::<_, Option<String>>(20)?,
             "pending": row.get::<_, i64>(21)? != 0,
-            "verifiedAt": row.get::<_, Option<String>>(22)?,
-            "lastAccessedAt": activity.0,
-            "lastAccessedByUsername": activity.1,
-            "accessEvents": activity.2
+            "verifiedAt": row.get::<_, Option<String>>(22)?
         }))
     })
     .ok()
     .map(|rows| rows.flatten().collect())
-    .unwrap_or_default()
+    .unwrap_or_default();
+    share_activity::attach(conn, "grant", &mut rows);
+    rows
 }
 
 async fn portal(
