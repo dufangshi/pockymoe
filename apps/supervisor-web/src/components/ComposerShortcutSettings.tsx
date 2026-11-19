@@ -21,9 +21,10 @@ export function ComposerShortcutSettings() {
   return (
     <fieldset className="settings-shortcuts py-5">
       <legend className="text-sm font-semibold">{translate("settings.messageShortcuts")}</legend>
-      {/* Where the choice is saved: a note, never hidden by a pack. */}
+      {/* Where the choice is saved (§15): the account, or this browser in local
+          mode. A note, never hidden by a pack. */}
       <p className="settings-note mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
-        {translate("settings.savedToYourAccountAndAppliedAcross")}</p>
+        {translate(nav?.sendShortcutScope === 'browser' ? "settings.savedInThisBrowserShortcut" : "settings.savedToYourAccountAndAppliedAcross")}</p>
       <div className="settings-choice-group mt-3 space-y-2">
         {(
           [
@@ -43,7 +44,8 @@ export function ComposerShortcutSettings() {
         ).map((option) => (
           <label
             key={option.value}
-            className="settings-choice flex min-h-11 items-start gap-3 rounded-md border border-[var(--theme-border)] p-3"
+            // A choice that cannot change right now looks it (§11), not only its radio.
+            className="settings-choice flex min-h-11 items-start gap-3 rounded-md border border-[var(--theme-border)] p-3 has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-60"
           >
             <input
               type="radio"

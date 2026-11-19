@@ -7,11 +7,17 @@ import {
   saveComposerPreferences,
 } from './composerPreferences';
 
+/** Without a Relay account (local mode) the choice lives in this browser. */
+const LOCAL_SHORTCUT_KEY = 'pockymoe.composer.sendShortcut';
+function readLocalShortcut(): ComposerSendShortcut {
+  try { return localStorage.getItem(LOCAL_SHORTCUT_KEY) === 'enter' ? 'enter' : 'ctrlEnter'; } catch { return 'ctrlEnter'; }
+}
+
 export function useComposerPreferences() {
   useI18n();
   const enabled = relayModeActive();
   const [sendShortcut, setShortcut] =
-    useState<ComposerSendShortcut>('ctrlEnter');
+    useState<ComposerSendShortcut>(() => (enabled ? 'ctrlEnter' : readLocalShortcut()));
   const [loading, setLoading] = useState(enabled);
   const [ready, setReady] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -88,9 +94,15 @@ export function useComposerPreferences() {
     [enabled, ready],
   );
 
+  const saveLocal = useCallback(async (shortcut: ComposerSendShortcut) => {
+    setShortcut(shortcut);
+    try { localStorage.setItem(LOCAL_SHORTCUT_KEY, shortcut); } catch { /* private mode: this page only */ }
+  }, []);
+
   return {
     sendShortcut,
-    ...(enabled ? { setSendShortcut: save, refreshSendShortcut: refresh } : {}),
+    sendShortcutScope: enabled ? 'account' as const : 'browser' as const,
+    ...(enabled ? { setSendShortcut: save, refreshSendShortcut: refresh } : { setSendShortcut: saveLocal }),
     sendShortcutLoading: enabled && (loading || !ready),
     sendShortcutSaving: saving,
     sendShortcutError: error,
