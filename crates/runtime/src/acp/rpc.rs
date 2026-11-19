@@ -9,7 +9,12 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tokio::time::timeout;
+use tokio::time::{timeout, timeout_at, Instant};
+
+/// Deadline for one outgoing frame, including the wait for the shared stdin
+/// lock. A live adapter that stops reading stdin would otherwise hold that lock
+/// forever and stall every session that shares the process.
+const ACP_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct Pending {
     pub tx: oneshot::Sender<Result<Value>>,
@@ -58,7 +63,10 @@ impl Drop for PendingGuard {
 }
 
 /// One ACP stdio process. stdin is locked only for the write, so multiple
-/// sessions on the same process can request/notify concurrently.
+/// sessions on the same process can request/notify concurrently. Each write is
+/// bounded by `write_timeout`; a write that misses it may have left half a frame
+/// on the pipe, so it closes the connection and stops the process, and the
+/// runtime starts a fresh one for the next turn.
 pub struct AcpProcess {
     pub(crate) host_guard: Option<crate::execution::host_process::HostProcessContext>,
     pub(crate) execution: Option<crate::execution::ExecutionContext>,
@@ -70,6 +78,7 @@ pub struct AcpProcess {
     /// Root of the harness process tree (and, on Unix, its process group).
     pub(crate) pid: Option<u32>,
     stdin: Mutex<ChildStdin>,
+    write_timeout: Duration,
     child: Arc<Mutex<Child>>,
     state: Arc<Mutex<RpcState>>,
     next_id: AtomicI64,
@@ -325,18 +334,13 @@ impl AcpProcess {
                 }
             };
             close_rpc_state(&reader_state, reason).await;
-            if let Some(context) = reader_execution {
-                let _ = context.kill(&reader_process_id).await;
-            }
-            if let Some(guard) = reader_guard {
-                let _ = guard.quiesce_process(&reader_process_id).await;
-                return;
-            }
-            let mut child = reader_child.lock().await;
-            if child.try_wait().ok().flatten().is_none() {
-                terminate_tree(&child);
-                let _ = child.start_kill();
-            }
+            stop_transport(
+                reader_child,
+                reader_execution,
+                reader_guard,
+                reader_process_id,
+            )
+            .await;
         });
         spawn_exit_monitor(child.clone(), state.clone());
         Ok((
@@ -355,6 +359,7 @@ impl AcpProcess {
                 started_at: pockymoe_protocol::now_rfc3339(),
                 pid,
                 stdin: Mutex::new(stdin),
+                write_timeout: ACP_WRITE_TIMEOUT,
                 child,
                 state,
                 next_id: AtomicI64::new(1),
@@ -417,17 +422,12 @@ impl AcpProcess {
             state: self.state.clone(),
             armed: true,
         };
-        {
-            let mut stdin = self.stdin.lock().await;
-            if let Err(err) = write_message(
-                &mut stdin,
-                &json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }),
-            )
+        if let Err(err) = self
+            .send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
             .await
-            {
-                guard.remove().await;
-                return Err(err);
-            }
+        {
+            guard.remove().await;
+            return Err(err);
         }
         let method = method.to_owned();
         Ok(Box::pin(async move {
@@ -448,24 +448,16 @@ impl AcpProcess {
     }
 
     pub async fn respond(&self, id: i64, result: Value) -> Result<()> {
-        let mut stdin = self.stdin.lock().await;
-        write_message(
-            &mut stdin,
-            &json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-        )
-        .await
+        self.send(&json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+            .await
     }
 
     pub async fn respond_error(&self, id: i64, message: &str) -> Result<()> {
-        let mut stdin = self.stdin.lock().await;
-        write_message(
-            &mut stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "error": { "code": -32000, "message": message }
-            }),
-        )
+        self.send(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": -32000, "message": message }
+        }))
         .await
     }
 
@@ -473,12 +465,40 @@ impl AcpProcess {
         if let Some(context) = &self.execution {
             context.checked()?;
         }
-        let mut stdin = self.stdin.lock().await;
-        write_message(
-            &mut stdin,
-            &json!({ "jsonrpc": "2.0", "method": method, "params": params }),
-        )
-        .await
+        self.send(&json!({ "jsonrpc": "2.0", "method": method, "params": params }))
+            .await
+    }
+
+    /// Write one whole frame within `write_timeout`, lock wait included. Waiting
+    /// for the lock writes nothing, so missing the deadline there only fails
+    /// this call (the writer holding the lock meets its own deadline). Once
+    /// bytes may be on the pipe, a timeout or error leaves the stream unframed:
+    /// close the connection and stop the process instead of reusing it.
+    async fn send(&self, value: &Value) -> Result<()> {
+        let mut body = serde_json::to_vec(value)?;
+        body.push(b'\n');
+        let deadline = Instant::now() + self.write_timeout;
+        let Ok(mut stdin) = timeout_at(deadline, self.stdin.lock()).await else {
+            return Err(anyhow!("ACP write timeout (stdin busy)"));
+        };
+        if let Some(reason) = &self.state.lock().await.closed_reason {
+            return Err(anyhow!(reason.clone()));
+        }
+        let reason = match timeout_at(deadline, write_frame(&mut stdin, &body)).await {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(err)) => format!("ACP write failed: {err}"),
+            Err(_) => "ACP write timeout (adapter stopped reading stdin)".to_string(),
+        };
+        drop(stdin);
+        tracing::warn!(process = %self.id, "{reason}; closing the ACP connection");
+        close_rpc_state(&self.state, reason.clone()).await;
+        tokio::spawn(stop_transport(
+            self.child.clone(),
+            self.execution.clone(),
+            self.host_guard.clone(),
+            self.id.clone(),
+        ));
+        Err(anyhow!(reason))
     }
 
     pub async fn exited(&self) -> Result<bool> {
@@ -486,12 +506,30 @@ impl AcpProcess {
     }
 }
 
-async fn write_message(stdin: &mut ChildStdin, value: &Value) -> Result<()> {
-    let mut body = serde_json::to_vec(value)?;
-    body.push(b'\n');
-    stdin.write_all(&body).await?;
-    stdin.flush().await?;
-    Ok(())
+async fn write_frame(stdin: &mut ChildStdin, body: &[u8]) -> std::io::Result<()> {
+    stdin.write_all(body).await?;
+    stdin.flush().await
+}
+
+/// Stop a process whose connection has closed (reader EOF or a failed write).
+async fn stop_transport(
+    child: Arc<Mutex<Child>>,
+    execution: Option<crate::execution::ExecutionContext>,
+    guard: Option<crate::execution::host_process::HostProcessContext>,
+    process_id: String,
+) {
+    if let Some(context) = execution {
+        let _ = context.kill(&process_id).await;
+    }
+    if let Some(guard) = guard {
+        let _ = guard.quiesce_process(&process_id).await;
+        return;
+    }
+    let mut child = child.lock().await;
+    if child.try_wait().ok().flatten().is_none() {
+        terminate_tree(&child);
+        let _ = child.start_kill();
+    }
 }
 
 async fn read_loop(
@@ -956,6 +994,50 @@ mod tests {
             .await
             .expect_err("requests after EOF must fail immediately");
         assert!(next_error.to_string().contains("stdout closed"));
+    }
+
+    #[tokio::test]
+    async fn a_stalled_stdin_write_times_out_and_closes_the_connection() {
+        let dir = std::env::temp_dir().join(format!("acp-rpc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("never_reads.py");
+        std::fs::write(&script, "import time\ntime.sleep(30)\n").unwrap();
+        let (mut process, _updates, _requests) =
+            AcpProcess::spawn(&python_command(&script), dir.to_str().unwrap(), &[])
+                .await
+                .expect("spawn process that never reads stdin");
+        process.write_timeout = Duration::from_millis(300);
+        let process = Arc::new(process);
+        // Far larger than a pipe buffer, so the write blocks while holding stdin.
+        let big = json!({ "text": "x".repeat(2 * 1024 * 1024) });
+        let started = std::time::Instant::now();
+        let (prompt, notice) = timeout(Duration::from_secs(5), async {
+            tokio::join!(process.request("session/prompt", big), async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                process.notify("session/cancel", json!({})).await
+            },)
+        })
+        .await
+        .expect("a stalled write must not hang the prompt or the next writer");
+        let error = prompt.expect_err("stalled prompt write must fail");
+        assert!(error.to_string().contains("write timeout"), "{error:#}");
+        notice.expect_err("a writer queued behind the stall must fail too");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(process.state.lock().await.pending.is_empty());
+        assert!(!process.connection_open().await);
+        // The half-written process is stopped so the runtime starts a new one.
+        timeout(Duration::from_secs(5), async {
+            while !process.exited().await.unwrap() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the stalled adapter should be stopped");
+        let next = process
+            .request("initialize", json!({}))
+            .await
+            .expect_err("a closed connection must not accept more frames");
+        assert!(next.to_string().contains("write timeout"), "{next:#}");
     }
 
     #[tokio::test]
