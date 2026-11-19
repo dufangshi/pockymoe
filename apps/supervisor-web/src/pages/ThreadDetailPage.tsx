@@ -175,6 +175,7 @@ import {
   relayDeviceIdFromPath,
   threadIdFromPath,
 } from '../lib/relayRoutes';
+import { useMediaQuery } from '../lib/useMediaQuery';
 import { useMobileComposerLayout } from './useMobileComposerLayout';
 import { useThreadAuxiliaryActions } from './useThreadAuxiliaryActions';
 import { useThreadListPolling } from './useThreadListPolling';
@@ -969,9 +970,10 @@ export function ThreadDetailPage() {
       ? toolsAccess.workspaceAccess : 'none';
   const toolsCanControl = toolsUseReference ? referenceController.canControl : relayThreadCanControl;
   const deviceLabel = presentationDeviceName ?? (relayRouteDeviceId ? relayRouteDeviceId.slice(0, 8) : translate('workbench.localDeviceName'));
-  // The desktop clients and a signed-in PC browser keep the rail for navigation:
-  // this conversation's device and its monitor end the sidebar instead.
-  const sidebarDevice = desktopSurface && !hostScope ? <>
+  // The rail is for navigation: on every computer this conversation's device and
+  // its labelled readings end the sidebar; phones keep them in the top bar.
+  const phoneWidth = useMediaQuery('(max-width: 639px)');
+  const sidebarDevice = !hostScope && !phoneWidth ? <>
     <MonitorSmartphone aria-hidden="true" className="matter-sidebar-device-icon" />
     <span className="matter-sidebar-device-name" title={deviceLabel}>{deviceLabel}</span>
     <DeviceMonitor key={relayRouteDeviceId ?? 'local'} />
@@ -4119,7 +4121,7 @@ export function ThreadDetailPage() {
     <ThreadDetailSurface
       restrictedNavigation={Boolean(hostScope)}
       scopedSettings={Boolean(hostScope)}
-      deviceMonitor={hostScope ? <OpenFullPageButton /> : desktopSurface ? <TourLauncherButton /> : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
+      deviceMonitor={hostScope ? <OpenFullPageButton /> : desktopSurface || !phoneWidth ? <TourLauncherButton /> : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
       workbench={workbenchUrls({ ...workbenchNavigation, ...desktopWorkbench, ...(sidebarDevice ? { sidebarFooter: sidebarDevice } : {}), panels: {
         deviceLabel,
         workspaceLabel: detail?.workspace.label ?? workbenchNavigation.workspacePath,

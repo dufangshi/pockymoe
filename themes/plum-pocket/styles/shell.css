@@ -855,21 +855,21 @@
     flex-shrink: 0;
     min-width: 34px;
   }
-  /* Two paired readings per row; GPU and VRAM never add a third row. */
+  /* Two labelled readings per row; GPU and VRAM never add a third row. */
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button {
-    flex: 0 1 96px;
-    width: 96px;
+    flex: none;
+    width: auto;
     min-width: 44px;
     height: 40px;
     overflow: hidden;
     align-items: stretch;
     justify-content: center;
     gap: 1px;
-    padding: 8px 3px;
+    padding: 4px 6px;
     border-radius: 12px;
     background: rgb(255 255 255 / 7%) content-box;
     color: var(--plum-chrome-muted);
-    font-size: 8.5px;
+    font-size: 11px;
     font-weight: 700;
     line-height: 11px;
     letter-spacing: 0;
@@ -881,8 +881,6 @@
     letter-spacing: -.02em;
     font-variant-numeric: tabular-nums;
   }
-  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button .dm-summary-capacity b { font-size: 7.5px; }
-  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button:not([data-gpu]) { font-size: 9px; }
   :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button[data-stale] b { color: var(--plum-chrome-muted); }
   /* The one-handed status bar shows the monitor and usage at their reading size,
      not in an icon slot. */
@@ -960,12 +958,10 @@
   :theme .matter-agent-threads-menu .matter-agent-threads-item { min-height: 48px; }
 }
 
-/* Phones under 400px: the device meter keeps its percentages and drops the
-   used/total figures, so it never pushes the end buttons off screen. */
+/* Phones under 400px: the device meter keeps only its CPU reading (the shell
+   hides the rest), so it never pushes the end buttons off screen. */
 @media (max-width: 399px) {
-  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button { flex-basis: 52px; width: 52px; }
-  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button :is(.dm-summary-capacity, .dm-summary-separator) { display: none; }
-  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button .dm-summary-row { grid-template-columns: 1fr; }
+  :theme .thread-ui-shell .matter-workbench .matter-topbar-end > .device-monitor-button { flex: none; width: auto; }
 }
 /* Narrow phones: slots narrow a little further; the pinned three stay 30px. */
 @media (max-width: 359px) {

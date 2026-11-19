@@ -300,17 +300,15 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
     (gpu.usedMemoryBytes != null && gpu.totalMemoryBytes != null && gpu.totalMemoryBytes > 0));
   const vram = gpu?.usedMemoryBytes != null && gpu.totalMemoryBytes != null && gpu.totalMemoryBytes > 0
     ? 100 * gpu.usedMemoryBytes / gpu.totalMemoryBytes : null;
-  const reading = (icon: ReactNode, value: number | null | undefined, title: string) => (
-    <span className="dm-summary-reading" title={title} aria-label={`${title}: ${pct(stale ? null : value)}`}>
-      {icon}<b style={load(stale ? null : value)}>{pct(stale ? null : value)}</b>
-    </span>
-  );
-  const capacity = (used: number | null | undefined, total: number | null | undefined, value: number | null | undefined, title: string) => {
-    const text = stale || used == null || total == null || total <= 0
-      ? '—' : `${(used / 2 ** 30).toFixed(1)}/${(total / 2 ** 30).toFixed(1)}`;
-    return <span className="dm-summary-reading dm-summary-capacity" title={`${title}: ${text} GiB`} aria-label={`${title}: ${text} GiB`}>
-      <MemoryStick data-icon="memory" aria-hidden style={{ width: 8, height: 8 }} /><b style={load(stale ? null : value)}>{text}{text !== '—' && <small>G</small>}</b>
-    </span>;
+  // Every reading carries its short name: a bare figure says nothing (ui-principles §13).
+  const reading = (name: string, value: number | null | undefined, title: string) => {
+    const shown = stale ? null : value;
+    return (
+      <span className="dm-summary-reading" title={title} aria-label={`${title}: ${pct(shown)}`}>
+        <span className="dm-summary-name" aria-hidden>{name}</span>
+        <b style={load(shown)} data-load={shown != null && shown >= 90 ? 'high' : undefined} aria-hidden>{pct(shown)}</b>
+      </span>
+    );
   };
   return (
     <>
@@ -325,15 +323,13 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
         onClick={() => setOpen(true)}
       >
         <span className="dm-summary-row">
-          {reading(<Cpu data-icon="cpu" aria-hidden style={{ width: 8, height: 8 }} />, data?.cpu.usagePercent, 'CPU')}
-          <span className="dm-summary-separator" aria-hidden>·</span>
-          {capacity(data?.memory.usedBytes, data?.memory.totalBytes, data?.memory.usagePercent, 'DRAM')}
+          {reading('CPU', data?.cpu.usagePercent, 'CPU')}
+          {reading(translate('devices.memoryShort'), data?.memory.usagePercent, translate('devices.memory'))}
         </span>
         {gpu && (
           <span className="dm-summary-row">
-            {reading(<Gpu data-icon="gpu" aria-hidden style={{ width: 8, height: 8 }} />, gpu.usagePercent, `GPU · ${gpu.name}`)}
-            <span className="dm-summary-separator" aria-hidden>·</span>
-            {capacity(gpu.usedMemoryBytes, gpu.totalMemoryBytes, vram, 'VRAM')}
+            {reading('GPU', gpu.usagePercent, `GPU · ${gpu.name}`)}
+            {reading(translate('devices.vramShort'), vram, translate('devices.gPUMemory'))}
           </span>
         )}
       </button>
