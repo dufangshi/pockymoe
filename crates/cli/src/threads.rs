@@ -528,6 +528,7 @@ impl Client {
             token,
             from: c.from,
             http: reqwest::Client::builder()
+                .no_proxy()
                 .timeout(std::time::Duration::from_secs(120))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
