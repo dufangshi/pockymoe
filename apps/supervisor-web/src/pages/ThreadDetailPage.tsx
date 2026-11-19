@@ -28,7 +28,7 @@ import { useWorkbenchNavigation } from './useWorkbenchNavigation';
 import { useThreadDirectory } from './useThreadDirectory';
 import { useScopedState } from './useScopedState';
 import { useOptimisticAttachmentPreviews } from './useOptimisticAttachmentPreviews';
-import { ImageFallbackProvider, ImageRecoveryProvider, ImageDiagnosisProvider } from '@pockymoe/thread-ui';
+import { ErrorMark, ImageFallbackProvider, ImageRecoveryProvider, ImageDiagnosisProvider } from '@pockymoe/thread-ui';
 import { diagnoseChatImage } from '../lib/chatImageDiagnosis';
 import { useSubscriptionUsage } from './useSubscriptionUsage';
 import { useThreadTabStatus } from '../lib/useThreadTabStatus';
@@ -4222,10 +4222,16 @@ export function ThreadDetailPage() {
         ? { onShellThemeModeChange: shellNav.setThemeMode }
         : {})}
       onShellStateChange={setShellControlState}
-      emptyContent={
+      emptyContent={error !== null && connectionErrorRef.current === error ? (
+        // The device did not answer: say so, not that the thread is broken.
+        <div className="host-muted flex flex-1 flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+          <p className="flex items-center gap-1.5">{translate("workbench.deviceUnreachable")}<ErrorMark message={error} /></p>
+          <button type="button" className="relay-button-secondary rounded-lg px-4 py-2" onClick={() => void loadThreadDetail()}>{translate("workbench.retry")}</button>
+        </div>
+      ) : (
         <div className="host-muted flex flex-1 items-center justify-center px-6 py-12 text-center">
           {translate("workbench.unableToResolveThisThread")}</div>
-      }
+      )}
       dialogs={<>{dialogs}{settingsDialogVisible && dialogDetail && <HarnessSettingsDialog
         key={`${dialogDevice}:${dialogDetail.thread.id}`} thread={dialogDetail.thread}
         models={dialogUseReference ? referenceController.models : modelOptions}

@@ -24,6 +24,7 @@ import { FormDialog } from './FormDialog';
 import { ConfirmDialog } from './ConfirmDialog';
 import { popoverPosition } from '../lib/popoverPosition';
 import { OWNER_UNLOCKED_EVENT, ownerUnlockedDevice } from '../lib/ownerUnlockRecovery';
+const DOWN_GRACE_MS = 2_500;
 export function DeviceEncryptionStatus({
   deviceId,
   online,
@@ -55,6 +56,15 @@ export function DeviceEncryptionStatus({
     if (deviceId) void ownerAccountPin(deviceId).then((pin) => { if (active) setHasOwnerPin(!!pin); }).catch(() => {});
     return () => { active = false; };
   }, [deviceId, status]);
+  // A loaded thread whose live connection dropped. Pages start "reconnecting"
+  // for a moment while the socket opens, so it shows only after a short grace.
+  const down = !!connection?.loaded && ['reconnecting', 'offline', 'checking'].includes(connection.state);
+  const [downShown, setDownShown] = useState(false);
+  useEffect(() => {
+    if (!down) { setDownShown(false); return; }
+    const timer = window.setTimeout(() => setDownShown(true), DOWN_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [down]);
   const [open, setOpen] = useState(false),
     [confirm, setConfirm] = useState<TransportStatus | null>(null);
   // Which identity action failed, shown as a mark after its button.
@@ -130,7 +140,8 @@ export function DeviceEncryptionStatus({
   const locked = status?.state === 'unlock-required';
   const encrypted = status?.state === 'encrypted',
     changed = status?.state === 'identity-changed';
-  if (hideHealthy && protection !== 'certificate-missing' && protection !== 'pending' && status?.role !== 'grantee' && !changed && !locked && connection?.loaded && connection.state === 'connected') return <span className="device-connection-slot" aria-hidden="true" />;
+  if (hideHealthy && protection !== 'certificate-missing' && protection !== 'pending' && status?.role !== 'grantee' && !changed && !locked && connection?.loaded && (connection.state === 'connected' || (down && !downShown))) return <span className="device-connection-slot" aria-hidden="true" />;
+  const disconnected = down && downShown && !changed && !locked;
   const label = !deviceId ? translate("auth.localDeviceConnection") : locked ? translate("auth.accountUnlock") : encrypted
     ? translate(status?.role === 'grantee' ? status.identityTrust === 'invite' ? 'sharing.granteeConnectionPinned' : 'sharing.granteeConnectionTofu' : 'auth.deviceConnectionEncrypted')
     : changed
@@ -159,7 +170,7 @@ export function DeviceEncryptionStatus({
           connection
             ? !connection.loaded
               ? 'detached'
-              : connection.state
+              : disconnected ? 'down' : connection.state
             : undefined
         }
         data-encryption={
@@ -171,7 +182,7 @@ export function DeviceEncryptionStatus({
         }
         className={
           connection
-            ? 'device-connection-button'
+            ? `device-connection-button${disconnected ? ' is-down' : ''}`
             : 'inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--theme-fg-muted)] hover:bg-[var(--theme-hover)]'
         }
         onClick={() =>
@@ -180,7 +191,16 @@ export function DeviceEncryptionStatus({
             : setOpen(!open)
         }
       >
-        {connection ? (
+        {connection && disconnected ? (
+          // Not the running ring: a lost connection has its own shape and words
+          // (ui-principles §6, device connection state); phones keep the icon.
+          <>
+            <WifiOff size={16} aria-hidden="true" />
+            <span className="device-connection-text">
+              {translate(connection.state === 'offline' ? 'auth.connectionOfflineShort' : 'auth.connectionDownShort')}
+            </span>
+          </>
+        ) : connection ? (
           <>
             {(connection.busy && !connection.loaded) || connection.state === 'reconnecting' ? (
               <LoaderCircle size={19} className="static-status-arc" />
