@@ -53,6 +53,7 @@ pub(super) async fn prepare_handoff(plan: &Plan) -> Result<Value> {
     let _cleanup = WorkerCleanup {
         plan: plan.directory.join("plan.json"),
         lock: plan.lock.clone(),
+        job_id: plan.job_id.clone(),
     };
     set_status(plan, "preparing", json!({}))?;
     let previous = releases::current().ok();
@@ -155,7 +156,10 @@ fn finish_startup(context: &ContextData, mut status: Value, relay_ready: bool) -
         });
     }
     write(&status_path(context), &status)?;
-    let _ = std::fs::remove_dir(lock_path(context));
+    lock::release(
+        &lock_path(context),
+        status["jobId"].as_str().unwrap_or_default(),
+    );
     Ok(success)
 }
 
@@ -237,6 +241,7 @@ mod tests {
             restart: true,
             status_file: status_path(&context),
             lock: lock_path(&context),
+            job_id: "host-managed-job".into(),
             directory: root.path().join("worker"),
             context,
         };
@@ -443,16 +448,16 @@ mod tests {
             executable(&candidate.executable).unwrap();
             write(&target.join("installed.json"), &candidate).unwrap();
             let context = context(&state).unwrap();
+            private_dir(status_path(&context).parent().unwrap()).unwrap();
             let plan = Plan {
                 version: "9.1.0".into(),
                 restart: false,
                 status_file: status_path(&context),
                 lock: lock_path(&context),
+                job_id: lock::acquire(&lock_path(&context), &status_path(&context)).unwrap(),
                 directory: root.join("worker"),
                 context,
             };
-            private_dir(plan.status_file.parent().unwrap()).unwrap();
-            std::fs::create_dir(&plan.lock).unwrap();
             let _guard = state.prepare_update_restart().await.unwrap();
             let status = prepare_handoff(&plan).await.unwrap();
             assert_eq!(status["phase"], "restarting");

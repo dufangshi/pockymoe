@@ -217,6 +217,10 @@ fn known_attach_failure(cause: &str) -> Option<(&'static str, &'static str)> {
             "thread_already_live",
             "This thread is already attached to a running Treer Agent.",
         ),
+        "attach_in_progress" => (
+            "attach_in_progress",
+            "This Agent's previous attach is still finishing on the hub.",
+        ),
         _ => return None,
     })
 }
@@ -390,11 +394,7 @@ impl Hub {
     }
     async fn bind(&self, hello: AttachHello) -> anyhow::Result<(Binding, bool)> {
         pockymoe_treer::validate_hello(&hello)?;
-        let _lock = self.lifecycle.lock().await;
-        anyhow::ensure!(
-            !self.live.lock().unwrap().contains_key(&hello.agent_id),
-            "agent_already_live"
-        );
+        let _lock = self.claim_agent(&hello).await?;
         let saved: Option<String> = self.state.db.with(|c| {
             Ok(c.query_row(
                 "SELECT thread_id FROM treer_bindings WHERE agent_id=?1",
@@ -503,6 +503,31 @@ impl Hub {
         self.state.resume_integration_thread(&thread);
         self.state.db.with(|c| { c.execute("INSERT INTO treer_registry(thread_id,state) VALUES(?1,'bound') ON CONFLICT(thread_id) DO UPDATE SET state='bound'", [&thread])?; Ok(()) })?;
         Ok((binding, created))
+    }
+    /// Take the lifecycle lock with no live binding for this Agent. An attach
+    /// whose first reply did not arrive in time reconnects with the same
+    /// instance ID: its earlier socket is abandoned, so cancel that binding and
+    /// wait for its detach instead of refusing the retry.
+    async fn claim_agent(
+        &self,
+        hello: &AttachHello,
+    ) -> anyhow::Result<tokio::sync::MutexGuard<'_, ()>> {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let lock = self.lifecycle.lock().await;
+            let same_instance = match self.live.lock().unwrap().get(&hello.agent_id) {
+                None => return Ok(lock),
+                Some(live) if live.instance == hello.instance_id => {
+                    live.cancelled.cancel();
+                    true
+                }
+                Some(_) => false,
+            };
+            anyhow::ensure!(same_instance, "agent_already_live");
+            anyhow::ensure!(tokio::time::Instant::now() < deadline, "attach_in_progress");
+            drop(lock);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
     async fn detach(&self, binding: &Binding) {
         {

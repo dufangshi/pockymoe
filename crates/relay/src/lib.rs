@@ -24,6 +24,7 @@ mod public_links;
 mod route_acl;
 mod security;
 mod share_activity;
+mod share_input;
 mod share_presence;
 mod share_verification;
 mod store;
@@ -2422,6 +2423,8 @@ fn registration_access(conn: &Connection, user: &str, device: &str) -> Option<Ef
          SELECT id,'grant',scope,thread_id,workspace_id,thread_access,workspace_access
          FROM relay_access_grants WHERE target_user_id=?1 AND device_id=?2
            AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>?3) AND pending=0
+           -- access::supported_grant_shape: a device grant covers all workspaces.
+           AND (scope<>'device' OR workspace_scope='all')
          LIMIT 1",
         params![user, device, now_rfc3339()],
         |row| {
@@ -2526,19 +2529,23 @@ async fn relay_access(
         .into_response()
 }
 
+// Portal rows come from one query each: the device's current name (the share's
+// snapshot once the device is gone) and the safety-code state are joined in,
+// never looked up row by row.
 fn relay_shares_for(conn: &Connection, column: &str, user_id: &str) -> Vec<Value> {
     let sql = format!(
-        "SELECT id,owner_user_id,owner_username,target_user_id,target_username,device_id,device_name,
-                thread_id,thread_title,workspace_id,workspace_label,label,thread_access,workspace_access,
-                created_at,revoked_at,expires_at
-         FROM relay_shares WHERE {column}=?1 AND revoked_at IS NULL
-           AND (expires_at IS NULL OR expires_at>?2) ORDER BY created_at DESC"
+        "SELECT s.id,s.owner_user_id,s.owner_username,s.target_user_id,s.target_username,s.device_id,
+                COALESCE(d.name,s.device_name),
+                s.thread_id,s.thread_title,s.workspace_id,s.workspace_label,s.label,s.thread_access,
+                s.workspace_access,s.created_at,s.revoked_at,s.expires_at,s.pending,s.verified_at
+         FROM relay_shares s LEFT JOIN relay_devices d ON d.id=s.device_id
+         WHERE s.{column}=?1 AND s.revoked_at IS NULL
+           AND (s.expires_at IS NULL OR s.expires_at>?2) ORDER BY s.created_at DESC"
     );
     let Ok(mut stmt) = conn.prepare(&sql) else {
         return Vec::new();
     };
-    stmt.query_map(params![user_id, now_rfc3339()], |row| {
-        let activity = share_activity::fields(conn, "share", &row.get::<_, String>(0)?);
+    let mut rows: Vec<Value> = stmt.query_map(params![user_id, now_rfc3339()], |row| {
         Ok(json!({
             "id": row.get::<_, String>(0)?,
             "ownerUserId": row.get::<_, String>(1)?,
@@ -2557,30 +2564,33 @@ fn relay_shares_for(conn: &Connection, column: &str, user_id: &str) -> Vec<Value
             "createdAt": row.get::<_, String>(14)?,
             "revokedAt": row.get::<_, Option<String>>(15)?,
             "expiresAt": row.get::<_, Option<String>>(16)?,
-            "lastAccessedAt": activity.0,
-            "lastAccessedByUsername": activity.1,
-            "accessEvents": activity.2
+            "pending": row.get::<_, i64>(17)? != 0,
+            "verifiedAt": row.get::<_, Option<String>>(18)?
         }))
     })
     .ok()
     .map(|rows| rows.flatten().collect())
-    .unwrap_or_default()
+    .unwrap_or_default();
+    share_activity::attach(conn, "share", &mut rows);
+    rows
 }
 
 fn relay_grants_for(conn: &Connection, column: &str, user_id: &str) -> Vec<Value> {
     let sql = format!(
-        "SELECT id,owner_user_id,owner_username,target_user_id,target_username,device_id,device_name,
-                scope,thread_id,thread_title,workspace_id,workspace_label,workspace_scope,workspace_ids,
-                label,thread_access,workspace_access,can_create_threads,created_at,revoked_at,expires_at
-         FROM relay_access_grants WHERE {column}=?1 AND revoked_at IS NULL
-           AND (expires_at IS NULL OR expires_at>?2) ORDER BY created_at DESC"
+        "SELECT g.id,g.owner_user_id,g.owner_username,g.target_user_id,g.target_username,g.device_id,
+                COALESCE(d.name,g.device_name),
+                g.scope,g.thread_id,g.thread_title,g.workspace_id,g.workspace_label,g.workspace_scope,
+                g.workspace_ids,g.label,g.thread_access,g.workspace_access,g.can_create_threads,
+                g.created_at,g.revoked_at,g.expires_at,g.pending,g.verified_at
+         FROM relay_access_grants g LEFT JOIN relay_devices d ON d.id=g.device_id
+         WHERE g.{column}=?1 AND g.revoked_at IS NULL
+           AND (g.expires_at IS NULL OR g.expires_at>?2) ORDER BY g.created_at DESC"
     );
     let Ok(mut stmt) = conn.prepare(&sql) else {
         return Vec::new();
     };
-    stmt.query_map(params![user_id, now_rfc3339()], |row| {
+    let mut rows: Vec<Value> = stmt.query_map(params![user_id, now_rfc3339()], |row| {
         let workspace_ids: String = row.get(13)?;
-        let activity = share_activity::fields(conn, "grant", &row.get::<_, String>(0)?);
         Ok(json!({
             "id": row.get::<_, String>(0)?,
             "ownerUserId": row.get::<_, String>(1)?,
@@ -2603,14 +2613,15 @@ fn relay_grants_for(conn: &Connection, column: &str, user_id: &str) -> Vec<Value
             "createdAt": row.get::<_, String>(18)?,
             "revokedAt": row.get::<_, Option<String>>(19)?,
             "expiresAt": row.get::<_, Option<String>>(20)?,
-            "lastAccessedAt": activity.0,
-            "lastAccessedByUsername": activity.1,
-            "accessEvents": activity.2
+            "pending": row.get::<_, i64>(21)? != 0,
+            "verifiedAt": row.get::<_, Option<String>>(22)?
         }))
     })
     .ok()
     .map(|rows| rows.flatten().collect())
-    .unwrap_or_default()
+    .unwrap_or_default();
+    share_activity::attach(conn, "grant", &mut rows);
+    rows
 }
 
 async fn portal(
@@ -2626,19 +2637,22 @@ async fn portal(
         return unauthorized();
     };
     let (shared_with_me, shared_by_me, grants_with_me, grants_by_me) = {
+        let mut lists = {
+            let conn = state.store.conn.lock().await;
+            [
+                relay_shares_for(&conn, "target_user_id", &user.id),
+                relay_shares_for(&conn, "owner_user_id", &user.id),
+                relay_grants_for(&conn, "target_user_id", &user.id),
+                relay_grants_for(&conn, "owner_user_id", &user.id),
+            ]
+        };
+        // Presence comes from the live sockets, read after the database lock is
+        // released and only as long as it takes to look up the listed devices.
         let sockets = state.sockets.read().await;
-        let connected = sockets.keys().cloned().collect();
-        let conn = state.store.conn.lock().await;
-        let mut lists = [
-            relay_shares_for(&conn, "target_user_id", &user.id),
-            relay_shares_for(&conn, "owner_user_id", &user.id),
-            relay_grants_for(&conn, "target_user_id", &user.id),
-            relay_grants_for(&conn, "owner_user_id", &user.id),
-        ];
-        for (index, list) in lists.iter_mut().enumerate() {
-            share_presence::enrich(&conn, &connected, list);
-            share_verification::enrich(&conn, index >= 2, list);
+        for list in &mut lists {
+            share_presence::mark_connected(|device| sockets.contains_key(device), list);
         }
+        drop(sockets);
         let [incoming, outgoing, incoming_grants, outgoing_grants] = lists;
         (incoming, outgoing, incoming_grants, outgoing_grants)
     };
@@ -2990,17 +3004,28 @@ async fn create_share(
         )
             .into_response();
     }
-    let thread_access = normalize_thread_access(body.thread_access.as_deref());
-    let workspace_access = normalize_workspace_access(body.workspace_access.as_deref());
+    let fields = share_input::thread_access(body.thread_access.as_deref()).and_then(|thread| {
+        Ok((
+            thread,
+            share_input::workspace_access(body.workspace_access.as_deref())?,
+            share_input::expiry(body.expires_at.as_deref())?,
+        ))
+    });
+    let (thread_access, workspace_access, expires_at) = match fields {
+        Ok(fields) => fields,
+        Err(invalid) => return invalid.into_response(),
+    };
     let id = Uuid::new_v4().to_string();
     let created_at = now_rfc3339();
-    if conn
-        .execute(
+    // The row is written in its final state: a share that waits for the
+    // safety-code check never exists, even briefly, as an active one.
+    let created = share_verification::insert_new(&conn, false, &owner.id, |tx, pending| {
+        tx.execute(
             "INSERT INTO relay_shares
          (id,owner_user_id,owner_username,target_user_id,target_username,device_id,device_name,
           thread_id,thread_title,workspace_id,workspace_label,label,thread_access,workspace_access,
-          created_at,revoked_at,expires_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,NULL,?16)",
+          created_at,revoked_at,expires_at,pending)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,NULL,?16,?17)",
             params![
                 id,
                 owner.id,
@@ -3017,19 +3042,16 @@ async fn create_share(
                 thread_access,
                 workspace_access,
                 created_at,
-                body.expires_at,
+                expires_at,
+                pending,
             ],
         )
-        .is_err()
-    {
-        return (
-            StatusCode::CONFLICT,
-            Json(ApiError::new("conflict", "Share could not be created")),
-        )
-            .into_response();
-    }
+    });
+    let pending = match created {
+        Ok(pending) => pending,
+        Err(response) => return *response,
+    };
     security::audit(&conn, Some(&owner.id), "share.created", Some(&id));
-    let pending = share_verification::hold_new(&conn, false, &id, &owner.id);
     Json(json!({
         "pending": pending,
         "id": id,
@@ -3048,7 +3070,7 @@ async fn create_share(
         "workspaceAccess": workspace_access,
         "createdAt": created_at,
         "revokedAt": Value::Null,
-        "expiresAt": body.expires_at
+        "expiresAt": expires_at
     }))
     .into_response()
 }
@@ -3108,51 +3130,45 @@ async fn update_share(
         )
             .into_response();
     }
-    if let Some(thread_title) = body.thread_title {
-        let _ = conn.execute(
-            "UPDATE relay_shares SET thread_title=?1 WHERE id=?2 AND owner_user_id=?3 AND revoked_at IS NULL",
-            params![thread_title, share_id, owner.id],
-        );
+    let mut patch = share_input::Patch::new();
+    let fields = (|| -> std::result::Result<(), share_input::Invalid> {
+        if let Some(thread_title) = body.thread_title {
+            patch.set("thread_title", thread_title);
+        }
+        if let Some(access) = body.thread_access.as_deref() {
+            patch.set(
+                "thread_access",
+                share_input::thread_access(Some(access))?.to_owned(),
+            );
+        }
+        if let Some(access) = body.workspace_access.as_deref() {
+            patch.set(
+                "workspace_access",
+                share_input::workspace_access(Some(access))?.to_owned(),
+            );
+        }
+        if let Some(workspace_id) = body.workspace_id {
+            patch.set("workspace_id", workspace_id);
+        }
+        if let Some(workspace_label) = body.workspace_label {
+            patch.set("workspace_label", workspace_label);
+        }
+        if let Some(label) = body.label {
+            patch.set("label", label);
+        }
+        if let Some(expires_at) = body.expires_at {
+            patch.set("expires_at", share_input::expiry(expires_at.as_deref())?);
+        }
+        Ok(())
+    })();
+    if let Err(invalid) = fields {
+        return invalid.into_response();
     }
-    if let Some(access) = body.thread_access {
-        let access = normalize_thread_access(Some(&access));
-        let _ = conn.execute(
-            "UPDATE relay_shares SET thread_access=?1 WHERE id=?2 AND owner_user_id=?3 AND revoked_at IS NULL",
-            params![access, share_id, owner.id],
-        );
-    }
-    if let Some(access) = body.workspace_access {
-        let access = normalize_workspace_access(Some(&access));
-        let _ = conn.execute(
-            "UPDATE relay_shares SET workspace_access=?1 WHERE id=?2 AND owner_user_id=?3 AND revoked_at IS NULL",
-            params![access, share_id, owner.id],
-        );
-    }
-    if let Some(workspace_id) = body.workspace_id {
-        let _ = conn.execute(
-            "UPDATE relay_shares SET workspace_id=?1 WHERE id=?2 AND owner_user_id=?3 AND revoked_at IS NULL",
-            params![workspace_id, share_id, owner.id],
-        );
-    }
-    if let Some(workspace_label) = body.workspace_label {
-        let _ = conn.execute(
-            "UPDATE relay_shares SET workspace_label=?1 WHERE id=?2 AND owner_user_id=?3 AND revoked_at IS NULL",
-            params![workspace_label, share_id, owner.id],
-        );
-    }
-    if let Some(label) = body.label {
-        let _ = conn.execute(
-            "UPDATE relay_shares SET label=?1 WHERE id=?2 AND owner_user_id=?3 AND revoked_at IS NULL",
-            params![label, share_id, owner.id],
-        );
-    }
-    if let Some(expires_at) = body.expires_at {
-        let _ = conn.execute(
-            "UPDATE relay_shares SET expires_at=?1 WHERE id=?2 AND owner_user_id=?3 AND revoked_at IS NULL",
-            params![expires_at, share_id, owner.id],
-        );
-    }
-    Json(json!({ "id": share_id, "ok": true })).into_response()
+    share_input::patch_response(
+        patch.apply(&conn, "relay_shares", &share_id, &owner.id),
+        &share_id,
+        "Share not found",
+    )
 }
 
 async fn revoke_share(
@@ -3271,7 +3287,21 @@ async fn create_grant(
         .trim()
         .to_ascii_lowercase();
     let device_id = body.device_id.unwrap_or_default();
-    let scope = normalize_scope(body.scope.as_deref());
+    let fields = share_input::scope(body.scope.as_deref()).and_then(|scope| {
+        let workspace_scope = share_input::workspace_scope(body.workspace_scope.as_deref())?;
+        share_input::grant_shape(scope, workspace_scope)?;
+        Ok((
+            scope,
+            workspace_scope,
+            share_input::thread_access(body.thread_access.as_deref())?,
+            share_input::workspace_access(body.workspace_access.as_deref())?,
+            share_input::expiry(body.expires_at.as_deref())?,
+        ))
+    });
+    let (scope, workspace_scope, thread_access, workspace_access, expires_at) = match fields {
+        Ok(fields) => fields,
+        Err(invalid) => return invalid.into_response(),
+    };
     if target_identifier.is_empty() || device_id.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -3338,20 +3368,15 @@ async fn create_grant(
     }
     let id = Uuid::new_v4().to_string();
     let created_at = now_rfc3339();
-    let thread_access = normalize_thread_access(body.thread_access.as_deref());
-    let workspace_access = normalize_workspace_access(body.workspace_access.as_deref());
-    let workspace_scope = match body.workspace_scope.as_deref() {
-        Some("selected") => "selected",
-        _ => "all",
-    };
     let workspace_ids = serde_json::to_string(&body.workspace_ids.clone().unwrap_or_default())
         .unwrap_or_else(|_| "[]".to_string());
-    if conn.execute(
+    let created = share_verification::insert_new(&conn, true, &owner.id, |tx, pending| {
+        tx.execute(
         "INSERT INTO relay_access_grants
          (id,owner_user_id,owner_username,target_user_id,target_username,device_id,device_name,
           scope,thread_id,thread_title,workspace_id,workspace_label,workspace_scope,workspace_ids,label,
-          thread_access,workspace_access,can_create_threads,created_at,revoked_at,expires_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL,?10,?19,?11,?12,?13,?14,?15,?16,?17,NULL,?18)",
+          thread_access,workspace_access,can_create_threads,created_at,revoked_at,expires_at,pending)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL,?10,?19,?11,?12,?13,?14,?15,?16,?17,NULL,?18,?20)",
         params![
             id,
             owner.id,
@@ -3370,18 +3395,17 @@ async fn create_grant(
             workspace_access,
             body.can_create_threads.unwrap_or(false) as i64,
             created_at,
-            body.expires_at,
+            expires_at,
             body.workspace_label,
+            pending,
         ],
-    ).is_err() {
-        return (
-            StatusCode::CONFLICT,
-            Json(ApiError::new("conflict", "Grant could not be created")),
-        )
-            .into_response();
-    }
+    )
+    });
+    let pending = match created {
+        Ok(pending) => pending,
+        Err(response) => return *response,
+    };
     security::audit(&conn, Some(&owner.id), "grant.created", Some(&id));
-    let pending = share_verification::hold_new(&conn, true, &id, &owner.id);
     Json(json!({ "id": id, "pending": pending })).into_response()
 }
 
@@ -3445,74 +3469,71 @@ async fn update_grant(
     else {
         return unauthorized();
     };
-    let owned = conn
+    let current: Option<(String, String)> = match conn
         .query_row(
-            "SELECT 1 FROM relay_access_grants WHERE id=?1 AND owner_user_id=?2 AND revoked_at IS NULL",
+            "SELECT scope,workspace_scope FROM relay_access_grants
+             WHERE id=?1 AND owner_user_id=?2 AND revoked_at IS NULL",
             params![grant_id, owner.id],
-            |_| Ok(()),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
-        .ok()
-        .flatten()
-        .is_some();
-    if !owned {
+    {
+        Ok(current) => current,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let Some((scope, current_workspace_scope)) = current else {
         return (
             StatusCode::NOT_FOUND,
             Json(ApiError::new("not_found", "Grant not found")),
         )
             .into_response();
-    }
-    if let Some(access) = body.thread_access {
-        let access = normalize_thread_access(Some(&access));
-        let _ = conn.execute(
-            "UPDATE relay_access_grants SET thread_access=?1 WHERE id=?2 AND owner_user_id=?3 AND revoked_at IS NULL",
-            params![access, grant_id, owner.id],
-        );
-    }
-    if let Some(access) = body.workspace_access {
-        let access = normalize_workspace_access(Some(&access));
-        let _ = conn.execute(
-            "UPDATE relay_access_grants SET workspace_access=?1 WHERE id=?2 AND owner_user_id=?3 AND revoked_at IS NULL",
-            params![access, grant_id, owner.id],
-        );
-    }
-    if let Some(can) = body.can_create_threads {
-        let _ = conn.execute(
-            "UPDATE relay_access_grants SET can_create_threads=?1 WHERE id=?2 AND owner_user_id=?3 AND revoked_at IS NULL",
-            params![can as i64, grant_id, owner.id],
-        );
-    }
-    if let Some(scope) = body.workspace_scope {
-        let scope = if scope == "selected" {
-            "selected"
-        } else {
-            "all"
+    };
+    let mut patch = share_input::Patch::new();
+    let fields = (|| -> std::result::Result<(), share_input::Invalid> {
+        if let Some(access) = body.thread_access.as_deref() {
+            patch.set(
+                "thread_access",
+                share_input::thread_access(Some(access))?.to_owned(),
+            );
+        }
+        if let Some(access) = body.workspace_access.as_deref() {
+            patch.set(
+                "workspace_access",
+                share_input::workspace_access(Some(access))?.to_owned(),
+            );
+        }
+        if let Some(can) = body.can_create_threads {
+            patch.set("can_create_threads", i64::from(can));
+        }
+        let workspace_scope = match body.workspace_scope.as_deref() {
+            Some(value) => {
+                let value = share_input::workspace_scope(Some(value))?;
+                patch.set("workspace_scope", value.to_owned());
+                value
+            }
+            None => current_workspace_scope.as_str(),
         };
-        let _ = conn.execute(
-            "UPDATE relay_access_grants SET workspace_scope=?1 WHERE id=?2 AND owner_user_id=?3 AND revoked_at IS NULL",
-            params![scope, grant_id, owner.id],
-        );
+        share_input::grant_shape(&scope, workspace_scope)?;
+        if let Some(ids) = body.workspace_ids {
+            let ids = serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string());
+            patch.set("workspace_ids", ids);
+        }
+        if let Some(label) = body.label {
+            patch.set("label", label);
+        }
+        if let Some(expires_at) = body.expires_at {
+            patch.set("expires_at", share_input::expiry(expires_at.as_deref())?);
+        }
+        Ok(())
+    })();
+    if let Err(invalid) = fields {
+        return invalid.into_response();
     }
-    if let Some(ids) = body.workspace_ids {
-        let ids = serde_json::to_string(&ids).unwrap_or_else(|_| "[]".to_string());
-        let _ = conn.execute(
-            "UPDATE relay_access_grants SET workspace_ids=?1 WHERE id=?2 AND owner_user_id=?3 AND revoked_at IS NULL",
-            params![ids, grant_id, owner.id],
-        );
-    }
-    if let Some(label) = body.label {
-        let _ = conn.execute(
-            "UPDATE relay_access_grants SET label=?1 WHERE id=?2 AND owner_user_id=?3 AND revoked_at IS NULL",
-            params![label, grant_id, owner.id],
-        );
-    }
-    if let Some(expires_at) = body.expires_at {
-        let _ = conn.execute(
-            "UPDATE relay_access_grants SET expires_at=?1 WHERE id=?2 AND owner_user_id=?3 AND revoked_at IS NULL",
-            params![expires_at, grant_id, owner.id],
-        );
-    }
-    Json(json!({ "id": grant_id, "ok": true })).into_response()
+    share_input::patch_response(
+        patch.apply(&conn, "relay_access_grants", &grant_id, &owner.id),
+        &grant_id,
+        "Grant not found",
+    )
 }
 
 async fn revoke_grant(
@@ -3542,30 +3563,6 @@ async fn revoke_grant(
     }
     security::audit(&conn, Some(&owner.id), "grant.revoked", Some(&grant_id));
     Json(json!({ "id": grant_id, "revokedAt": revoked_at })).into_response()
-}
-
-fn normalize_thread_access(value: Option<&str>) -> String {
-    if value == Some("read") {
-        "read".to_string()
-    } else {
-        "control".to_string()
-    }
-}
-
-fn normalize_workspace_access(value: Option<&str>) -> String {
-    match value {
-        Some("read") => "read".to_string(),
-        Some("write") => "write".to_string(),
-        _ => "none".to_string(),
-    }
-}
-
-fn normalize_scope(value: Option<&str>) -> String {
-    match value {
-        Some("workspace") => "workspace".to_string(),
-        Some("device") => "device".to_string(),
-        _ => "thread".to_string(),
-    }
 }
 
 #[derive(Deserialize)]

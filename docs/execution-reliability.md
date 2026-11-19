@@ -14,6 +14,10 @@ The Supervisor checks active executions on reads and every two seconds. Observat
 
 Runtime event streams are scoped to a thread/turn invocation and closed after completion. Late callbacks cannot mutate subsequent turns. Completion is persisted before broadcasting, and persistence failures produce a visible error instead of exposing unsaved output. The UI uses the neutral label “Interrupted”; a terminal status alone does not prove that a user pressed Stop.
 
+Every frame written to an ACP adapter's stdin, including the wait for the stdin lock that sessions on the same process share, must finish within 30 seconds. Control requests then wait up to 180 seconds for their response; `session/prompt` waits without limit. A write that misses its deadline or fails may have left half a frame on the pipe, so the Supervisor closes that connection, fails its pending requests and stops the process; the next turn starts a fresh one. A writer that only timed out waiting for the lock wrote nothing and just fails.
+
+ACP terminal commands keep the newest output up to their `outputByteLimit` (at most 1 MiB) in a ring buffer and report `truncated` once anything was dropped; a cut window starts at a UTF-8 character boundary. A command's exit status is published only after its stdout and stderr reach EOF, for at most 2 seconds after the exit, so a client that waits for the exit and then reads the output gets the last lines. Output from descendants that keep the pipes open longer still reaches the buffer while the terminal exists.
+
 ## Durable input
 
 The HTTP prompt endpoint stores the complete input (including images and model/effort overrides) before acknowledging it. Pending rows are also used for first-turn admission, so runtime preflight failure cannot silently erase accepted input. The row is consumed in the same transaction that creates the turn and its user message. Per-thread dispatch serialization prevents concurrent consumers.

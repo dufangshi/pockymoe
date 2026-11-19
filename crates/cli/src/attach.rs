@@ -318,38 +318,20 @@ impl Session {
             println!(
                 "Pockymoe attach: waiting for hub reply (thread setup may take a few minutes)."
             );
-            let mut progress = time::interval_at(
-                time::Instant::now() + Duration::from_secs(30),
-                Duration::from_secs(30),
-            );
-            progress.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
-            let reply = async {
-                loop {
-                    let frame = tokio::select! {
-                        frame = socket.next() => frame,
-                        _ = progress.tick() => {
-                            println!("Pockymoe attach: still waiting for hub reply.");
-                            continue;
-                        }
-                    };
-                    let Some(frame) = frame else {
-                        return Ok(None);
-                    };
-                    match frame {
-                        Ok(Message::Text(text)) => return Ok(Some(text)),
-                        Ok(Message::Ping(payload)) => {
-                            socket.send(Message::Pong(payload)).await?;
-                        }
-                        Ok(Message::Close(_)) => return Ok(None),
-                        Err(e) => return Err(e),
-                        _ => {}
-                    }
+            let text = match first_reply(&mut socket, REPLY_LIMIT).await {
+                FirstReply::Text(text) => text,
+                FirstReply::TimedOut => {
+                    // The retry keeps this instance ID, so the hub replaces the
+                    // abandoned socket's binding instead of refusing it.
+                    println!(
+                        "Pockymoe attach: no hub reply in {} minutes; reconnecting.",
+                        REPLY_LIMIT.as_secs() / 60
+                    );
+                    let _ = socket.close(None).await;
+                    retry(&mut delay).await;
+                    continue;
                 }
-            }
-            .await;
-            let text = match reply {
-                Ok(Some(text)) => text,
-                _ => {
+                FirstReply::Closed => {
                     retry(&mut delay).await;
                     continue;
                 }
@@ -370,6 +352,13 @@ impl Session {
                         println!("Pockymoe attach: still waiting; retrying in 30 seconds.");
                     }
                     time::sleep(Duration::from_secs(30)).await;
+                    continue;
+                }
+                AttachReply::Error { code, .. } if code == "attach_in_progress" => {
+                    println!(
+                        "Pockymoe attach: previous attach still finishing on the hub; retrying."
+                    );
+                    retry(&mut delay).await;
                     continue;
                 }
                 AttachReply::Error { code, message } => {
@@ -414,9 +403,11 @@ impl Session {
                     .all(|c| contract.capabilities.contains(c)),
                 "Hub AIS capabilities are unknown to this Treer Controller"
             );
+            // A create whose reply was lost rebinds the created thread with
+            // `created: false`; its startup command is still unsaved.
+            self.startup_pending |= created || self.hello.thread_id.is_none();
             self.hello.thread_id = Some(thread_id);
             self.hello.create = None;
-            self.startup_pending |= created;
             if self.startup_pending {
                 let executable = match &self.startup_executable {
                     Some(path) => path.clone(),
@@ -526,6 +517,53 @@ fn diagnostic(value: &str, secrets: &[Option<&str>], limit: usize) -> String {
         value.push('…');
     }
     value
+}
+
+/// Thread setup can legitimately take minutes; a hub that keeps the socket
+/// open without ever replying must still reach the retry and recovery path.
+const REPLY_LIMIT: Duration = Duration::from_secs(5 * 60);
+
+enum FirstReply {
+    Text(String),
+    Closed,
+    TimedOut,
+}
+
+/// Wait for the hub's first business reply within `limit`, answering pings and
+/// printing a progress line every 30 seconds.
+async fn first_reply<S>(socket: &mut S, limit: Duration) -> FirstReply
+where
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + futures_util::Sink<Message>
+        + Unpin,
+{
+    let deadline = time::sleep(limit);
+    tokio::pin!(deadline);
+    let mut progress = time::interval_at(
+        time::Instant::now() + Duration::from_secs(30),
+        Duration::from_secs(30),
+    );
+    progress.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    loop {
+        let frame = tokio::select! {
+            frame = socket.next() => frame,
+            _ = &mut deadline => return FirstReply::TimedOut,
+            _ = progress.tick() => {
+                println!("Pockymoe attach: still waiting for hub reply.");
+                continue;
+            }
+        };
+        match frame {
+            Some(Ok(Message::Text(text))) => return FirstReply::Text(text.to_string()),
+            Some(Ok(Message::Ping(payload))) => {
+                if socket.send(Message::Pong(payload)).await.is_err() {
+                    return FirstReply::Closed;
+                }
+            }
+            Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return FirstReply::Closed,
+            Some(Ok(_)) => {}
+        }
+    }
 }
 
 async fn retry(delay: &mut Duration) {
@@ -763,5 +801,58 @@ mod tests {
         assert!(startup_cwd(root.parent().unwrap(), &identity).is_err());
         assert!(startup_cwd(&root, b"{}").is_err());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    async fn socket_pair() -> (
+        tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>,
+        tokio_tungstenite::WebSocketStream<tokio::io::DuplexStream>,
+    ) {
+        use tokio_tungstenite::{tungstenite::protocol::Role, WebSocketStream};
+        let (client, hub) = tokio::io::duplex(64 * 1024);
+        (
+            WebSocketStream::from_raw_socket(client, Role::Client, None).await,
+            WebSocketStream::from_raw_socket(hub, Role::Server, None).await,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_hub_that_never_replies_reaches_the_retry_path() {
+        let (mut client, mut hub) = socket_pair().await;
+        // The hub keeps the connection alive with pings but never binds.
+        let pinger = tokio::spawn(async move {
+            loop {
+                if hub.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    break;
+                }
+                // Read the pongs so the connection stays healthy.
+                tokio::select! {
+                    _ = hub.next() => {}
+                    _ = time::sleep(Duration::from_millis(20)) => {}
+                }
+            }
+        });
+        let started = time::Instant::now();
+        assert!(matches!(
+            first_reply(&mut client, Duration::from_millis(300)).await,
+            FirstReply::TimedOut
+        ));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        pinger.abort();
+    }
+
+    #[tokio::test]
+    async fn the_first_text_reply_or_a_close_ends_the_wait() {
+        let (mut client, mut hub) = socket_pair().await;
+        hub.send(Message::Ping(Vec::new().into())).await.unwrap();
+        hub.send(Message::Text("{\"type\":\"bound\"}".into()))
+            .await
+            .unwrap();
+        let reply = first_reply(&mut client, Duration::from_secs(5)).await;
+        assert!(matches!(reply, FirstReply::Text(text) if text == "{\"type\":\"bound\"}"));
+        hub.close(None).await.unwrap();
+        assert!(matches!(
+            first_reply(&mut client, Duration::from_secs(5)).await,
+            FirstReply::Closed
+        ));
     }
 }

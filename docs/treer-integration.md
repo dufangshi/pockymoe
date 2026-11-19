@@ -264,6 +264,14 @@ Attach keeps the socket open, answers pings, and reconnects with exponential
 backoff from one to thirty seconds. Reconnects send the bound thread ID and
 register the interface again with the same process instance ID. Token contents
 are reread on reconnect. A missing token file is retried while the hub starts.
+Attach waits at most five minutes for the hub's first reply after its hello,
+because thread setup can take minutes. After that it closes the socket and
+reconnects with the same instance ID. A hub that still holds a binding for that
+instance (its reply was lost) ends that binding and binds the retry; a create
+whose reply was lost rebinds the created thread, and attach still saves its
+startup command. A binding held by another instance of the same Agent is still
+refused. If the earlier binding does not finish detaching within thirty seconds
+the hub answers `attach_in_progress`, and attach retries with backoff.
 A missing base agent CLI (`base_agent_missing`) or a provider not enabled on the
 hub (`provider_unavailable`) keeps attach running: it prints what to install and
 retries every 30 seconds, connecting on its own once the problem is fixed, because

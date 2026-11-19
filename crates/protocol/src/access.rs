@@ -16,6 +16,51 @@ pub struct EffectiveAccess {
     pub can_create_threads: bool,
 }
 
+/// The values a share or grant stores. The relay refuses anything else when a
+/// row is created or edited, and a device refuses it in a signed grant; a
+/// missing field takes its documented default at the caller, never a typo.
+pub fn thread_access_value(value: &str) -> Option<&'static str> {
+    match value {
+        "read" => Some("read"),
+        "control" => Some("control"),
+        _ => None,
+    }
+}
+
+pub fn workspace_access_value(value: &str) -> Option<&'static str> {
+    match value {
+        "none" => Some("none"),
+        "read" => Some("read"),
+        "write" => Some("write"),
+        _ => None,
+    }
+}
+
+pub fn grant_scope_value(value: &str) -> Option<&'static str> {
+    match value {
+        "thread" => Some("thread"),
+        "workspace" => Some("workspace"),
+        "device" => Some("device"),
+        _ => None,
+    }
+}
+
+pub fn workspace_scope_value(value: &str) -> Option<&'static str> {
+    match value {
+        "all" => Some("all"),
+        "selected" => Some("selected"),
+        _ => None,
+    }
+}
+
+/// Device collections, search and thread creation have no selected-workspace
+/// projection, so a device grant must cover all workspaces. Both the relay and
+/// the device refuse the other combination rather than widen it to every
+/// workspace, also for rows stored before this check.
+pub fn supported_grant_shape(scope: &str, workspace_scope: &str) -> bool {
+    scope != "device" || workspace_scope == "all"
+}
+
 pub fn owner_access() -> EffectiveAccess {
     EffectiveAccess {
         kind: "owner",
@@ -514,7 +559,10 @@ pub fn grant_matches_in(
     thread_workspaces: &[String],
 ) -> bool {
     match grant.scope.as_str() {
-        "device" => workspace_id.is_none() || grant.workspace_access != "none",
+        "device" => {
+            supported_grant_shape("device", grant.workspace_scope.as_deref().unwrap_or("all"))
+                && (workspace_id.is_none() || grant.workspace_access != "none")
+        }
         "thread" => thread_id.is_some_and(|id| {
             grant.thread_id.as_deref().is_some_and(|parent| {
                 parent == id || lineage.iter().take(3).any(|ancestor| ancestor == parent)
@@ -633,7 +681,7 @@ mod tests {
             workspace_access: workspace_access.into(),
             thread_id: Some("root".into()),
             workspace_id: Some("workspace".into()),
-            workspace_scope: Some("selected".into()),
+            workspace_scope: Some(if scope == "device" { "all" } else { "selected" }.into()),
             workspace_ids: vec![],
             grant_id: Some("grant".into()),
             share_id: None,
@@ -1330,5 +1378,31 @@ mod tests {
             None,
             &json!({"type":"thread.updated","threadId":"other"})
         ));
+    }
+
+    #[test]
+    fn grant_values_are_closed_sets_and_a_device_grant_covers_all_workspaces() {
+        assert_eq!(thread_access_value("read"), Some("read"));
+        assert_eq!(thread_access_value("control"), Some("control"));
+        for typo in ["Read", "reed", "", "write"] {
+            assert_eq!(thread_access_value(typo), None, "{typo}");
+        }
+        assert_eq!(workspace_access_value("write"), Some("write"));
+        assert_eq!(workspace_access_value("all"), None);
+        assert_eq!(grant_scope_value("device"), Some("device"));
+        assert_eq!(grant_scope_value("devices"), None);
+        assert_eq!(workspace_scope_value("selected"), Some("selected"));
+        assert_eq!(workspace_scope_value("some"), None);
+        assert!(supported_grant_shape("device", "all"));
+        assert!(!supported_grant_shape("device", "selected"));
+        assert!(supported_grant_shape("workspace", "selected"));
+        // A stored device grant over selected workspaces matches nothing.
+        let mut device = shared("device", "control", "write");
+        assert!(grant_matches_in(&device, None, Some("ws"), &[], &[]));
+        device.workspace_scope = Some("selected".into());
+        device.workspace_ids = vec!["ws".into()];
+        assert!(!grant_matches_in(&device, None, Some("ws"), &[], &[]));
+        assert!(!grant_matches_in(&device, Some("t"), None, &[], &[]));
+        assert!(!grant_matches_in(&device, None, None, &[], &[]));
     }
 }

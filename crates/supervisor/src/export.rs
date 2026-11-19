@@ -1,5 +1,6 @@
 use anyhow::{bail, Result};
-use pockymoe_protocol::{ThreadDetailDto, ThreadHistoryItemDto, ThreadTurnDto};
+use pockymoe_protocol::{ThreadHistoryItemDto, ThreadTurnDto, WorkspaceDto};
+use pockymoe_runtime::service::{SelectedTurns, TurnSelection};
 
 const MAX_ITEM_CHARS: usize = 12_000;
 #[derive(Debug, Clone)]
@@ -21,12 +22,12 @@ impl Default for TranscriptExportOptions {
     }
 }
 
-pub fn select_turns(
-    turns: &[ThreadTurnDto],
+/// Validates an export request before any history loads.
+pub fn turn_selection<'a>(
     mode: &str,
     limit: Option<usize>,
-    turn_ids: &[String],
-) -> Result<Vec<ThreadTurnDto>> {
+    turn_ids: &'a [String],
+) -> Result<TurnSelection<'a>> {
     if mode == "selected" {
         if turn_ids.is_empty() {
             bail!("Select at least one turn to export.");
@@ -34,31 +35,21 @@ pub fn select_turns(
         if turn_ids.len() > 100 {
             bail!("An export can include at most 100 turns.");
         }
-        let selected: Vec<_> = turns
-            .iter()
-            .filter(|turn| turn_ids.iter().any(|id| id == &turn.id))
-            .cloned()
-            .collect();
-        if selected.len() != turn_ids.len() {
-            bail!("One or more selected turns could not be found.");
-        }
-        return Ok(selected);
+        return Ok(TurnSelection::Ids(turn_ids));
     }
-
     let limit = limit.unwrap_or(10).clamp(1, 100);
-    Ok(turns[turns.len().saturating_sub(limit)..].to_vec())
+    Ok(TurnSelection::Latest(limit as u32))
 }
 
 pub fn html_transcript(
-    detail: &ThreadDetailDto,
-    turns: &[ThreadTurnDto],
+    selected: &SelectedTurns,
     options: &TranscriptExportOptions,
 ) -> Result<String> {
-    let title = escape_html(&detail.thread.title);
-    let workspace = escape_html(&detail.workspace.label);
+    let title = escape_html(&selected.thread.title);
+    let workspace = escape_html(&selected.workspace.label);
     let mut body = String::new();
-    for (index, turn) in turns.iter().enumerate() {
-        let number = turn_number(detail, turn, index);
+    for numbered in &selected.turns {
+        let (number, turn) = (numbered.number, &numbered.turn);
         let turn_meta = turn_meta(turn, options);
         body.push_str(&format!(
             "<section class=\"turn\"><header><span>Turn {number}</span><span class=\"status\">{}</span></header>",
@@ -66,7 +57,7 @@ pub fn html_transcript(
         ));
         for item in visible_items(turn, options) {
             let label = item_label(item.kind.as_str());
-            let text = escape_html(&export_item_text(item, detail, options));
+            let text = escape_html(&export_item_text(item, &selected.workspace, options));
             if matches!(item.kind.as_str(), "userMessage" | "agentMessage") {
                 let role = if item.kind == "userMessage" {
                     "user"
@@ -98,7 +89,7 @@ pub fn html_transcript(
 @media(prefers-color-scheme:dark){{:root,body{{background:#171713;color:#efefe8}}.document-header,.turn{{border-color:#37372f}}.meta,.turn>header,.label,.status{{color:#a4a49a}}.event{{border-color:#3b3b33;background:#22221d}}.event pre{{color:#c9c9bf}}}}@media(max-width:560px){{main{{width:min(100% - 24px,860px);padding-top:32px}}h1{{font-size:24px}}}}@media print{{:root,body{{background:white;color:#20201d}}main{{width:100%;padding:0}}.turn{{break-inside:avoid}}}}
 </style></head><body><main><header class="document-header"><h1>{title}</h1><p class="meta">{workspace} · {} turns exported</p></header>{body}</main></body></html>
 "#,
-        turns.len()
+        selected.turns.len()
     ))
 }
 
@@ -118,15 +109,6 @@ fn turn_meta(turn: &ThreadTurnDto, options: &TranscriptExportOptions) -> String 
     }
 }
 
-fn turn_number(detail: &ThreadDetailDto, turn: &ThreadTurnDto, fallback: usize) -> usize {
-    detail
-        .turns
-        .iter()
-        .position(|candidate| candidate.id == turn.id)
-        .map(|value| value + 1)
-        .unwrap_or(fallback + 1)
-}
-
 fn visible_items<'a>(
     turn: &'a ThreadTurnDto,
     options: &TranscriptExportOptions,
@@ -142,7 +124,7 @@ fn visible_items<'a>(
 
 fn export_item_text(
     item: &ThreadHistoryItemDto,
-    detail: &ThreadDetailDto,
+    workspace: &WorkspaceDto,
     options: &TranscriptExportOptions,
 ) -> String {
     let source = item.preview_text.as_deref().unwrap_or(&item.text);
@@ -152,8 +134,8 @@ fn export_item_text(
         source
     };
     let mut text = truncate_chars(source, MAX_ITEM_CHARS);
-    if !options.include_absolute_paths && !detail.workspace.abs_path.is_empty() {
-        text = text.replace(&detail.workspace.abs_path, "{workspace}");
+    if !options.include_absolute_paths && !workspace.abs_path.is_empty() {
+        text = text.replace(&workspace.abs_path, "{workspace}");
     }
     text
 }

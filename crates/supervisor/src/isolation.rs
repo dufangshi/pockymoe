@@ -11,16 +11,16 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 /// `device` is what other devices see: also isolated while peer access is off.
-fn view(state: &Supervisor) -> Value {
-    let isolation = state.agent_isolation();
-    json!({
+fn view(state: &Supervisor) -> Result<Value, ApiErr> {
+    let isolation = state.agent_isolation().map_err(map_err)?;
+    Ok(json!({
         "device": isolation.device || !state.peer_access_enabled(),
         "workspaces": isolation.workspaces,
-    })
+    }))
 }
 
-pub(crate) async fn get(State(state): State<Arc<Supervisor>>) -> Json<Value> {
-    Json(view(&state))
+pub(crate) async fn get(State(state): State<Arc<Supervisor>>) -> Result<Json<Value>, ApiErr> {
+    Ok(Json(view(&state)?))
 }
 
 #[derive(Deserialize)]
@@ -37,7 +37,7 @@ pub(crate) async fn set(
     if !input.device {
         state.set_peer_access(true).map_err(map_err)?;
     }
-    Ok(Json(view(&state)))
+    Ok(Json(view(&state)?))
 }
 
 #[derive(Deserialize)]

@@ -554,3 +554,39 @@ async fn automations_and_commands_cannot_act_in_or_watch_an_isolated_workspace()
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn unreadable_isolation_policy_denies_access_and_preserves_the_saved_value() {
+    use pockymoe_runtime::interaction::AgentRequester;
+    let f = setup().await;
+    f.state.db.set_kv("agent:isolation", "broken").unwrap();
+    assert!(f.state.ensure_peer_reaches_device().is_err());
+    assert!(!f
+        .state
+        .agent_reaches_workspace(AgentRequester::Outsider, &f.open));
+    assert!(f.state.set_device_isolation(false).is_err());
+    assert_eq!(
+        f.state.db.get_kv("agent:isolation").unwrap().as_deref(),
+        Some("broken")
+    );
+}
+
+#[tokio::test]
+async fn concurrent_workspace_isolation_updates_preserve_both_workspaces() {
+    let f = setup().await;
+    let start = std::sync::Barrier::new(2);
+    std::thread::scope(|scope| {
+        for workspace in [&f.open, &f.isolated] {
+            let start = &start;
+            let state = &f.state;
+            scope.spawn(move || {
+                start.wait();
+                state.set_workspace_isolation(workspace, true).unwrap();
+            });
+        }
+    });
+    assert_eq!(
+        f.state.agent_isolation().unwrap().workspaces,
+        [f.open, f.isolated].into_iter().collect()
+    );
+}

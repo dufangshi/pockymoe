@@ -326,7 +326,7 @@ async fn refresh(state: &AppState) -> Result<()> {
 }
 
 async fn refresh_from(state: &AppState, source: &str) -> Result<()> {
-    let response = state
+    let mut response = state
         .oauth_client
         .get(source)
         .send()
@@ -336,11 +336,14 @@ async fn refresh_from(state: &AppState, source: &str) -> Result<()> {
         response.content_length().unwrap_or(0) <= 32 * 1024 * 1024,
         "Pricing source is too large"
     );
-    let bytes = response.bytes().await?;
-    anyhow::ensure!(
-        bytes.len() <= 32 * 1024 * 1024,
-        "Pricing source is too large"
-    );
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        anyhow::ensure!(
+            chunk.len() <= 32 * 1024 * 1024 - bytes.len(),
+            "Pricing source is too large"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
     let catalog = import_litellm(&serde_json::from_slice(&bytes)?)?;
     state.store.conn.lock().await.execute("INSERT INTO relay_model_pricing VALUES(1,?1,?2) ON CONFLICT(id) DO UPDATE SET catalog=excluded.catalog,fetched_at=excluded.fetched_at",params![catalog.to_string(),now_rfc3339()])?;
     notify(state, None).await;

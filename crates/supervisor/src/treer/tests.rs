@@ -220,6 +220,48 @@ async fn attach_reports_known_setup_failures_without_exposing_internal_errors() 
     }
 }
 
+/// A client whose first reply was lost reconnects with the same instance ID
+/// while the hub still holds the abandoned socket's binding.
+#[tokio::test]
+async fn a_retry_from_the_same_instance_replaces_its_abandoned_attach() {
+    let f = fixture().await;
+    let h = hello(&f, "ag-retry");
+    let (mut abandoned, first) = attach_client(&f, &h).await;
+    assert_eq!(first["type"], "bound", "{first}");
+    assert_eq!(first["created"], true);
+    let thread = first["threadId"].as_str().unwrap().to_owned();
+    // The retry still carries the create request it never saw answered.
+    let (mut ws, retried) = attach_client(&f, &h).await;
+    assert_eq!(retried["type"], "bound", "{retried}");
+    assert_eq!(retried["threadId"], thread.as_str());
+    assert_eq!(retried["created"], false);
+    // The hub ended the abandoned socket's binding instead of the new one.
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        loop {
+            match abandoned.next().await {
+                None | Some(Err(_)) | Some(Ok(WireMessage::Close(_))) => break,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok());
+    assert_eq!(
+        f.hub.live.lock().unwrap()["ag-retry"].instance,
+        h.instance_id
+    );
+    assert!(!f.hub.live.lock().unwrap()["ag-retry"]
+        .cancelled
+        .is_cancelled());
+    // Another instance of the same Agent is still refused while this one lives.
+    let mut other = h.clone();
+    other.instance_id = "other-instance".into();
+    let (_, refused) = attach_client(&f, &other).await;
+    assert_eq!(refused["type"], "error", "{refused}");
+    ws.close(None).await.unwrap();
+    wait_until(|| f.hub.live.lock().unwrap().is_empty()).await;
+}
+
 #[tokio::test]
 async fn attach_create_rebind_refuse_version_token_and_identity() {
     let f = fixture().await;

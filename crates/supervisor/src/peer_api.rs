@@ -154,7 +154,7 @@ pub(crate) async fn cli(
                 "relayDeviceId": identity.as_ref().map(|i| &i.device_id),
                 "deviceName": identity.as_ref().map(|i| &i.device_name),
                 "peerAccess": true,
-                "isolated": state.agent_isolation().device,
+                "isolated": state.agent_isolation().map_err(map_err)?.device,
             })))
         }
         "workspaces" => Ok(Json(json!(state

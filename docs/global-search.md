@@ -8,7 +8,7 @@ This is a control-plane capability over the device journal, independent of harne
 
 - `GET /api/search?q=...&limit=50&offset=0` searches this device.
 - `GET /api/workspaces/{id}/search?q=...&limit=50&offset=0` filters by workspace in SQL.
-- `GET /api/threads/{id}/search` retains the existing thread-only contract.
+- `GET /api/threads/{id}/search?q=...&limit=50` searches one thread. It keeps its own contract: `matches` and `hasMore`, no offset, newest turn first and items in the order they were written. It reads the same projection and matching with a thread predicate, so it never decodes the thread's history either.
 
 Queries are literal case-insensitive substrings, 1–200 Unicode characters after trimming. Chinese, one/two-character queries, emoji, quotes, `%`, `_`, and FTS operators are data rather than query syntax. Limits are 1–100, offsets 0–10000. The response includes `matches`, `hasMore`, and `nextOffset`; results sort newest first with a deterministic document-ID tie break. Excerpts retain the original Unicode text, with at most 100 characters of leading and 240 characters of trailing context. Pagination reflects the current journal rather than a frozen snapshot.
 

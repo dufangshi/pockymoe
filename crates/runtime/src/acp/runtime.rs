@@ -4586,15 +4586,11 @@ async fn next_dsh_event(
     let Some(receiver) = events else {
         return std::future::pending().await;
     };
-    loop {
-        match receiver.recv().await {
-            Ok(event) => return Some(event),
-            // Committed ACP chunks replace any stream text a lag skipped.
-            Err(broadcast::error::RecvError::Lagged(_)) => {
-                return Some(super::deepseek::BridgeEvent::Lagged)
-            }
-            Err(broadcast::error::RecvError::Closed) => return None,
-        }
+    match receiver.recv().await {
+        Ok(event) => Some(event),
+        // Committed ACP chunks replace any stream text a lag skipped.
+        Err(broadcast::error::RecvError::Lagged(_)) => Some(super::deepseek::BridgeEvent::Lagged),
+        Err(broadcast::error::RecvError::Closed) => None,
     }
 }
 

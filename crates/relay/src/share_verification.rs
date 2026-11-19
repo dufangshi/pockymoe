@@ -44,38 +44,42 @@ const fn table(grant: bool) -> &'static str {
     }
 }
 
-/// Holds a row the owner just created when their preference asks for the check.
-pub(super) fn hold_new(conn: &Connection, grant: bool, id: &str, owner: &str) -> bool {
-    preferences::require_safety_code(conn, owner)
-        && conn
-            .execute(
-                &format!("UPDATE {} SET pending=1 WHERE id=?1", table(grant)),
-                [id],
-            )
-            .is_ok_and(|changed| changed == 1)
+/// Creates a share or grant in its final state. `insert` writes the row with
+/// the `pending` value the owner's preference asks for; reading the preference
+/// and writing the row commit together, so no row is ever active before its
+/// check, and a failed write is an error rather than an active row. A
+/// preference that cannot be read counts as on.
+pub(super) fn insert_new(
+    conn: &Connection,
+    grant: bool,
+    owner: &str,
+    insert: impl FnOnce(&Connection, bool) -> rusqlite::Result<usize>,
+) -> std::result::Result<bool, Box<Response>> {
+    let created = (|| {
+        let tx = conn.unchecked_transaction()?;
+        let pending = preferences::require_safety_code(&tx, owner);
+        insert(&tx, pending)?;
+        tx.commit()?;
+        Ok(pending)
+    })();
+    created.map_err(|error: rusqlite::Error| Box::new(creation_failure(grant, &error)))
 }
 
-/// Adds `pending` and `verifiedAt` to portal rows of one table.
-pub(super) fn enrich(conn: &Connection, grant: bool, rows: &mut [Value]) {
-    let sql = format!(
-        "SELECT pending,verified_at FROM {} WHERE id=?1",
-        table(grant)
-    );
-    for row in rows {
-        let Some(id) = row["id"].as_str().map(str::to_owned) else {
-            continue;
-        };
-        let (pending, verified_at) = conn
-            .query_row(&sql, [&id], |found| {
-                Ok((
-                    found.get::<_, i64>(0)? != 0,
-                    found.get::<_, Option<String>>(1)?,
-                ))
-            })
-            .unwrap_or((false, None));
-        row["pending"] = Value::Bool(pending);
-        row["verifiedAt"] = verified_at.map_or(Value::Null, Value::String);
+fn creation_failure(grant: bool, error: &rusqlite::Error) -> Response {
+    if error.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation) {
+        let what = if grant { "Grant" } else { "Share" };
+        return failure(
+            StatusCode::CONFLICT,
+            "conflict",
+            &format!("{what} could not be created"),
+        );
     }
+    tracing::warn!(%error, grant, "Shared access could not be stored");
+    failure(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "internal",
+        "Shared access could not be stored",
+    )
 }
 
 /// The safety code of an account key: the first 12 characters of the Crockford
@@ -419,6 +423,8 @@ mod tests {
                 .route("/relay/access", get(crate::relay_access))
                 .route("/relay/shares", post(crate::create_share))
                 .route("/relay/grants", post(crate::create_grant))
+                .route("/relay/shares/{share_id}", patch(crate::update_share))
+                .route("/relay/grants/{grant_id}", patch(crate::update_grant))
                 .route(
                     "/relay/devices/{device_id}/api/{*rest}",
                     any(crate::device_api),
@@ -722,5 +728,456 @@ mod tests {
             .await;
         assert_eq!(status, StatusCode::OK);
         assert!(body["verifiedAt"].is_string());
+    }
+
+    impl Fixture {
+        async fn sql<T: rusqlite::types::FromSql>(&self, sql: &str) -> T {
+            self.state
+                .store
+                .conn
+                .lock()
+                .await
+                .query_row(sql, [], |row| row.get(0))
+                .unwrap()
+        }
+        async fn exec(&self, sql: &str) {
+            self.state
+                .store
+                .conn
+                .lock()
+                .await
+                .execute_batch(sql)
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn new_rows_are_written_pending_and_a_failed_write_is_an_error() {
+        let (f, [owner, alice, _]) = Fixture::new("share-verification-atomic").await;
+        // The trigger sees the row as it is first written.
+        f.exec(
+            "CREATE TABLE seen(kind TEXT, pending INTEGER);
+             CREATE TRIGGER seen_share AFTER INSERT ON relay_shares
+               BEGIN INSERT INTO seen VALUES ('share', NEW.pending); END;
+             CREATE TRIGGER seen_grant AFTER INSERT ON relay_access_grants
+               BEGIN INSERT INTO seen VALUES ('grant', NEW.pending); END;",
+        )
+        .await;
+        let (status, share) = f
+            .call(Method::POST, "/relay/shares", &owner, Some(json!({
+                "targetIdentifier": "alice", "deviceId": "dev", "threadId": "t1", "threadAccess": "control"
+            })))
+            .await;
+        assert_eq!(
+            (status, share["pending"].as_bool()),
+            (StatusCode::OK, Some(true))
+        );
+        let (status, grant) = f
+            .call(Method::POST, "/relay/grants", &owner, Some(json!({
+                "targetIdentifier": "alice", "deviceId": "dev", "scope": "device", "threadAccess": "read"
+            })))
+            .await;
+        assert_eq!(
+            (status, grant["pending"].as_bool()),
+            (StatusCode::OK, Some(true))
+        );
+        let never_active: i64 = f.sql("SELECT COUNT(*) FROM seen WHERE pending<>1").await;
+        assert_eq!(never_active, 0);
+        assert_eq!(f.sql::<i64>("SELECT COUNT(*) FROM seen").await, 2);
+
+        // A preference that cannot be read counts as on.
+        f.exec("ALTER TABLE relay_account_preferences RENAME TO gone")
+            .await;
+        let (_, share) = f
+            .call(
+                Method::POST,
+                "/relay/shares",
+                &owner,
+                Some(json!({
+                    "targetIdentifier": "alice", "deviceId": "dev", "threadId": "t2"
+                })),
+            )
+            .await;
+        assert_eq!(share["pending"], true);
+        f.exec("ALTER TABLE gone RENAME TO relay_account_preferences")
+            .await;
+
+        // A write that fails is reported and leaves nothing behind.
+        f.exec(
+            "CREATE TRIGGER broken BEFORE INSERT ON relay_access_grants
+               BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        )
+        .await;
+        let before: i64 = f.sql("SELECT COUNT(*) FROM relay_access_grants").await;
+        let (status, _) = f
+            .call(Method::POST, "/relay/grants", &owner, Some(json!({
+                "targetIdentifier": "alice", "deviceId": "dev", "scope": "thread", "threadId": "t3"
+            })))
+            .await;
+        assert!(!status.is_success(), "{status}");
+        assert_eq!(
+            f.sql::<i64>("SELECT COUNT(*) FROM relay_access_grants")
+                .await,
+            before
+        );
+        let (status, _) = f
+            .call(
+                Method::GET,
+                "/relay/access?deviceId=dev&threadId=t3",
+                &alice,
+                None,
+            )
+            .await;
+        assert_ne!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn edits_save_every_field_or_none_and_refuse_unknown_values() {
+        let (f, [owner, alice, _]) = Fixture::new("share-verification-edits").await;
+        f.call(
+            Method::PATCH,
+            "/relay/account/preferences",
+            &owner,
+            Some(json!({"requireSafetyCode": false})),
+        )
+        .await;
+        let (_, share) = f
+            .call(Method::POST, "/relay/shares", &owner, Some(json!({
+                "targetIdentifier": "alice", "deviceId": "dev", "threadId": "t1", "threadAccess": "control"
+            })))
+            .await;
+        let id = share["id"].as_str().unwrap().to_owned();
+        let path = format!("/relay/shares/{id}");
+        let stored = format!("SELECT label||'/'||thread_access FROM relay_shares WHERE id='{id}'");
+        f.exec(&format!(
+            "UPDATE relay_shares SET label='old' WHERE id='{id}'"
+        ))
+        .await;
+
+        // A typo is refused, not stored as control, and the label stays.
+        let (status, body) = f
+            .call(
+                Method::PATCH,
+                &path,
+                &owner,
+                Some(json!({"label": "new", "threadAccess": "Read"})),
+            )
+            .await;
+        assert_eq!(
+            (status, body["code"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("bad_request"))
+        );
+        assert_eq!(f.sql::<String>(&stored).await, "old/control");
+
+        // A failed write is an error, and the whole edit is rolled back.
+        f.exec(
+            "CREATE TRIGGER broken BEFORE UPDATE OF thread_access ON relay_shares
+               BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        )
+        .await;
+        let (status, body) = f
+            .call(
+                Method::PATCH,
+                &path,
+                &owner,
+                Some(json!({"label": "new", "threadAccess": "read"})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_ne!(body["ok"], true);
+        assert_eq!(f.sql::<String>(&stored).await, "old/control");
+        let (_, access) = f
+            .call(
+                Method::GET,
+                "/relay/access?deviceId=dev&threadId=t1",
+                &alice,
+                None,
+            )
+            .await;
+        assert_eq!(access["threadAccess"], "control");
+        f.exec("DROP TRIGGER broken").await;
+        let (status, body) = f
+            .call(
+                Method::PATCH,
+                &path,
+                &owner,
+                Some(json!({"label": "new", "threadAccess": "read"})),
+            )
+            .await;
+        assert_eq!((status, body["ok"].as_bool()), (StatusCode::OK, Some(true)));
+        assert_eq!(f.sql::<String>(&stored).await, "new/read");
+        let (_, access) = f
+            .call(
+                Method::GET,
+                "/relay/access?deviceId=dev&threadId=t1",
+                &alice,
+                None,
+            )
+            .await;
+        assert_eq!(access["threadAccess"], "read");
+
+        // Grants: unknown values and a device grant over selected workspaces.
+        for body in [
+            json!({"scope": "devices"}),
+            json!({"scope": "device", "threadAccess": "ctrl"}),
+            json!({"scope": "device", "workspaceAccess": "all"}),
+            json!({"scope": "device", "workspaceScope": "some"}),
+            json!({"scope": "device", "workspaceScope": "selected", "workspaceIds": ["web"]}),
+            json!({"scope": "device", "expiresAt": "next week"}),
+        ] {
+            let mut input = json!({"targetIdentifier": "alice", "deviceId": "dev"});
+            input
+                .as_object_mut()
+                .unwrap()
+                .extend(body.as_object().unwrap().clone());
+            let (status, _) = f
+                .call(Method::POST, "/relay/grants", &owner, Some(input))
+                .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        }
+        assert_eq!(
+            f.sql::<i64>("SELECT COUNT(*) FROM relay_access_grants")
+                .await,
+            0
+        );
+        let (status, grant) = f
+            .call(Method::POST, "/relay/grants", &owner, Some(json!({
+                "targetIdentifier": "alice", "deviceId": "dev", "scope": "device", "threadAccess": "read"
+            })))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let grant_path = format!("/relay/grants/{}", grant["id"].as_str().unwrap());
+        let (status, _) = f
+            .call(
+                Method::PATCH,
+                &grant_path,
+                &owner,
+                Some(json!({
+                    "workspaceScope": "selected", "workspaceIds": ["web"], "threadAccess": "control"
+                })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (_, access) = f
+            .call(Method::GET, "/relay/access?deviceId=dev", &alice, None)
+            .await;
+        assert_eq!(
+            (access["scope"].as_str(), access["threadAccess"].as_str()),
+            (Some("device"), Some("read"))
+        );
+        // Such a row stored earlier gives no access instead of every workspace.
+        f.exec(
+            "UPDATE relay_access_grants SET workspace_scope='selected',workspace_ids='[\"web\"]'",
+        )
+        .await;
+        for path in [
+            "/relay/access?deviceId=dev",
+            "/relay/access?deviceId=dev&workspaceId=other",
+            "/relay/access?deviceId=dev&workspaceId=web",
+        ] {
+            let (status, _) = f.call(Method::GET, path, &alice, None).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{path}");
+        }
+        let (status, _) = f
+            .call(
+                Method::PATCH,
+                &grant_path,
+                &owner,
+                Some(json!({"label": "x"})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = f
+            .call(
+                Method::PATCH,
+                &grant_path,
+                &owner,
+                Some(json!({"workspaceScope": "all"})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = f
+            .call(Method::GET, "/relay/access?deviceId=dev", &alice, None)
+            .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn expiry_times_with_offsets_end_access_at_the_right_instant() {
+        use chrono::{Duration, FixedOffset, SecondsFormat, Utc};
+        let (f, [owner, alice, _]) = Fixture::new("share-verification-expiry").await;
+        f.call(
+            Method::PATCH,
+            "/relay/account/preferences",
+            &owner,
+            Some(json!({"requireSafetyCode": false})),
+        )
+        .await;
+        let at = |minutes: i64, hours_east: i32| {
+            (Utc::now() + Duration::minutes(minutes))
+                .with_timezone(&FixedOffset::east_opt(hours_east * 3600).unwrap())
+                .to_rfc3339_opts(SecondsFormat::Secs, false)
+        };
+        // Past, written east of UTC (its text sorts after now); future, west.
+        let past = at(-30, 5);
+        let future = at(30, -5);
+        assert!(past > crate::now_rfc3339() && future < crate::now_rfc3339());
+        let share = |thread: &str, expires: &str| json!({"targetIdentifier": "alice", "deviceId": "dev", "threadId": thread, "expiresAt": expires});
+        let (status, body) = f
+            .call(
+                Method::POST,
+                "/relay/shares",
+                &owner,
+                Some(share("past", &past)),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body["expiresAt"].as_str().unwrap().ends_with('Z'));
+        let (_, future_share) = f
+            .call(
+                Method::POST,
+                "/relay/shares",
+                &owner,
+                Some(share("future", &future)),
+            )
+            .await;
+        let (status, _) = f
+            .call(
+                Method::GET,
+                "/relay/access?deviceId=dev&threadId=past",
+                &alice,
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = f
+            .call(
+                Method::GET,
+                "/relay/access?deviceId=dev&threadId=future",
+                &alice,
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        // The same instant written two ways is stored once.
+        let path = format!("/relay/shares/{}", future_share["id"].as_str().unwrap());
+        let (status, _) = f
+            .call(
+                Method::PATCH,
+                &path,
+                &owner,
+                Some(json!({"expiresAt": "2030-01-01T02:00:00+02:00"})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let stored: String = f
+            .sql("SELECT expires_at FROM relay_shares WHERE thread_id='future'")
+            .await;
+        assert_eq!(stored, "2030-01-01T00:00:00.000Z");
+        // Unreadable values are refused; null clears the expiry.
+        let (status, _) = f
+            .call(
+                Method::PATCH,
+                &path,
+                &owner,
+                Some(json!({"expiresAt": "tomorrow"})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        f.exec("UPDATE relay_shares SET expires_at='2000-01-01T00:00:00.000Z' WHERE thread_id='future'").await;
+        let (status, _) = f
+            .call(
+                Method::GET,
+                "/relay/access?deviceId=dev&threadId=future",
+                &alice,
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = f
+            .call(
+                Method::PATCH,
+                &path,
+                &owner,
+                Some(json!({"expiresAt": null})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = f
+            .call(
+                Method::GET,
+                "/relay/access?deviceId=dev&threadId=future",
+                &alice,
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Rows stored before validation are rewritten at start; unreadable ones expire.
+        f.exec(&format!(
+            "INSERT INTO relay_shares(id,owner_user_id,target_user_id,device_id,thread_id,thread_access,created_at,expires_at)
+             VALUES ('offset','owner','alice','dev','o','read','now','{future}'),
+                    ('garbage','owner','alice','dev','g','read','now','never')"
+        ))
+        .await;
+        crate::share_input::ensure_schema(&*f.state.store.conn.lock().await).unwrap();
+        let offset: String = f
+            .sql("SELECT expires_at FROM relay_shares WHERE id='offset'")
+            .await;
+        assert_eq!(Some(offset), crate::share_input::normalize_expiry(&future));
+        let garbage: String = f
+            .sql("SELECT expires_at FROM relay_shares WHERE id='garbage'")
+            .await;
+        assert_eq!(garbage, crate::share_input::UNREADABLE_EXPIRY);
+        for (thread, expected) in [("o", StatusCode::OK), ("g", StatusCode::FORBIDDEN)] {
+            let (status, _) = f
+                .call(
+                    Method::GET,
+                    &format!("/relay/access?deviceId=dev&threadId={thread}"),
+                    &alice,
+                    None,
+                )
+                .await;
+            assert_eq!(status, expected, "{thread}");
+        }
+    }
+
+    #[tokio::test]
+    async fn portal_rows_carry_the_current_device_name_and_check_state() {
+        let (f, [owner, alice, _]) = Fixture::new("share-verification-portal").await;
+        f.call(
+            Method::POST,
+            "/relay/shares",
+            &owner,
+            Some(json!({
+                "targetIdentifier": "alice", "deviceId": "dev", "threadId": "t1"
+            })),
+        )
+        .await;
+        f.call(
+            Method::POST,
+            "/relay/grants",
+            &owner,
+            Some(json!({
+                "targetIdentifier": "alice", "deviceId": "dev", "scope": "device"
+            })),
+        )
+        .await;
+        f.exec("UPDATE relay_devices SET name='Renamed' WHERE id='dev'")
+            .await;
+        let (_, portal) = f.call(Method::GET, "/relay/portal", &alice, None).await;
+        for list in ["sharedWithMe", "sharedDevicesWithMe"] {
+            let row = &portal[list][0];
+            assert_eq!(row["deviceName"], "Renamed", "{list}");
+            assert_eq!(row["deviceConnected"], false, "{list}");
+            assert_eq!(row["pending"], true, "{list}");
+            assert_eq!(row["verifiedAt"], Value::Null, "{list}");
+        }
+        // A deleted device keeps the name the share recorded.
+        f.exec("PRAGMA foreign_keys=OFF; DELETE FROM relay_devices WHERE id='dev';")
+            .await;
+        let (_, portal) = f.call(Method::GET, "/relay/portal", &owner, None).await;
+        assert_eq!(portal["sharedByMe"][0]["deviceName"], "Laptop");
+        assert_eq!(portal["grantsByMe"][0]["deviceName"], "Laptop");
     }
 }

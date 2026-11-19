@@ -610,6 +610,8 @@ impl Supervisor {
         tokio::spawn(async move {
             let running = Arc::new(std::sync::Mutex::new(HashSet::<String>::new()));
             let mut next_inbox_reminder = std::time::Instant::now();
+            let mut next_command_cleanup = std::time::Instant::now();
+            let cleanup_running = Arc::new(std::sync::atomic::AtomicBool::new(false));
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 let Some(state) = weak.upgrade() else {
@@ -633,6 +635,22 @@ impl Supervisor {
                     }
                     next_inbox_reminder =
                         std::time::Instant::now() + std::time::Duration::from_secs(30);
+                }
+                // Proving a held command stopped can wait on its guardian, so it
+                // runs beside the loop rather than delaying the next tick.
+                if std::time::Instant::now() >= next_command_cleanup
+                    && !cleanup_running.swap(true, Ordering::SeqCst)
+                {
+                    next_command_cleanup =
+                        std::time::Instant::now() + std::time::Duration::from_secs(30);
+                    let state = state.clone();
+                    let cleanup_running = cleanup_running.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = state.reconcile_command_cleanup().await {
+                            tracing::warn!(%error, "command cleanup check failed");
+                        }
+                        cleanup_running.store(false, Ordering::SeqCst);
+                    });
                 }
                 let ids = state.db.with(|c| {
                     let mut stmt = c.prepare("SELECT DISTINCT p.thread_id FROM thread_pending_steers p JOIN threads t ON t.id=p.thread_id WHERE p.delivery='continuation' AND t.status!='running'")?;

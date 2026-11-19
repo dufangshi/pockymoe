@@ -12,6 +12,7 @@ use std::{
 };
 
 mod host_managed;
+mod lock;
 pub(crate) use host_managed::{complete_host_managed_startup, host_managed_pending};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -47,6 +48,9 @@ struct Plan {
     directory: PathBuf,
     status_file: PathBuf,
     lock: PathBuf,
+    /// Matches the lock's owner record and every status this job writes.
+    #[serde(default)]
+    job_id: String,
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -82,7 +86,10 @@ fn job(context: &ContextData) -> Value {
         job["phase"] = json!("failed");
         job["error"] = json!("The independent native update worker stopped unexpectedly. Check its log before retrying.");
         let _ = write(&file, &job);
-        let _ = std::fs::remove_dir(lock_path(context));
+        lock::release(
+            &lock_path(context),
+            job["jobId"].as_str().unwrap_or_default(),
+        );
     }
     job
 }
@@ -216,7 +223,7 @@ async fn action(context: ContextData, action: &str) -> Result<Value> {
     let status_file = status_path(&context);
     private_dir(status_file.parent().unwrap())?;
     let lock = lock_path(&context);
-    std::fs::create_dir(&lock).context("An update is already in progress")?;
+    let job_id = lock::acquire(&lock, &status_file)?;
     let failed_status = status_file.clone();
     let result = async {
         let directory = status_file
@@ -231,6 +238,7 @@ async fn action(context: ContextData, action: &str) -> Result<Value> {
             directory: directory.clone(),
             status_file,
             lock: lock.clone(),
+            job_id: job_id.clone(),
         };
         if plan.context.restart_strategy == RestartStrategy::HostManaged {
             base["job"] = host_managed::prepare_handoff(&plan).await?;
@@ -241,7 +249,7 @@ async fn action(context: ContextData, action: &str) -> Result<Value> {
         executable(&worker)?;
         let plan_file = directory.join("plan.json");
         write(&plan_file, &plan)?;
-        let scheduled = json!({"phase":"scheduled","action":if plan.restart {"restart"} else {"update"},"targetVersion":version,"updatedAt":now(),"logPath":directory.join("update.log")});
+        let scheduled = json!({"phase":"scheduled","action":if plan.restart {"restart"} else {"update"},"targetVersion":version,"jobId":plan.job_id,"updatedAt":now(),"logPath":directory.join("update.log")});
         write(&plan.status_file, &scheduled)?;
         service::independent(
             &worker,
@@ -259,9 +267,9 @@ async fn action(context: ContextData, action: &str) -> Result<Value> {
     if let Err(error) = &result {
         let _ = write(
             &failed_status,
-            &json!({"phase":"failed","error":format!("{error:#}"),"updatedAt":now()}),
+            &json!({"phase":"failed","error":format!("{error:#}"),"jobId":job_id,"updatedAt":now()}),
         );
-        let _ = std::fs::remove_dir(&lock);
+        lock::release(&lock, &job_id);
     }
     result
 }
@@ -278,7 +286,7 @@ pub async fn maintenance_cli(action_name: &str) -> Result<Value> {
     action(compatible_context()?, action_name).await
 }
 fn set_status(plan: &Plan, phase: &str, extra: Value) -> Result<()> {
-    let mut status = json!({"phase":phase,"action":if plan.restart {"restart"} else {"update"},"targetVersion":plan.version,"runningVersion":plan.context.running_version,"workerPid":std::process::id(),"updatedAt":now(),"logPath":plan.directory.join("update.log")});
+    let mut status = json!({"phase":phase,"action":if plan.restart {"restart"} else {"update"},"targetVersion":plan.version,"jobId":plan.job_id,"runningVersion":plan.context.running_version,"workerPid":std::process::id(),"updatedAt":now(),"logPath":plan.directory.join("update.log")});
     status["restartStrategy"] = json!(plan.context.restart_strategy);
     if plan.context.restart_strategy == RestartStrategy::HostManaged {
         status.as_object_mut().unwrap().remove("workerPid");
@@ -317,11 +325,12 @@ fn version_parts(version: &str) -> Result<(u32, u32, u32)> {
 struct WorkerCleanup {
     plan: PathBuf,
     lock: PathBuf,
+    job_id: String,
 }
 impl Drop for WorkerCleanup {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.plan);
-        let _ = std::fs::remove_dir(&self.lock);
+        lock::release(&self.lock, &self.job_id);
     }
 }
 pub async fn run_worker(path: PathBuf) -> Result<()> {
@@ -337,6 +346,7 @@ pub async fn run_worker(path: PathBuf) -> Result<()> {
     let _cleanup = WorkerCleanup {
         plan: path.clone(),
         lock: plan.lock.clone(),
+        job_id: plan.job_id.clone(),
     };
     let previous = releases::current().ok();
     let mut stopped = false;
@@ -496,7 +506,7 @@ pub async fn run_worker(path: PathBuf) -> Result<()> {
         }
     }
     let _ = std::fs::remove_file(path);
-    let _ = std::fs::remove_dir(plan.lock);
+    lock::release(&plan.lock, &plan.job_id);
     Ok(())
 }
 
@@ -572,20 +582,22 @@ mod tests {
         };
         let directory = root.path().join("worker");
         private_dir(&directory).unwrap();
+        private_dir(status_path(&context).parent().unwrap()).unwrap();
         let plan = Plan {
             version: "9.1.0".into(),
             restart: false,
             status_file: status_path(&context),
             lock: lock_path(&context),
+            job_id: lock::acquire(&lock_path(&context), &status_path(&context)).unwrap(),
             context,
             directory: directory.clone(),
         };
-        private_dir(plan.status_file.parent().unwrap()).unwrap();
-        std::fs::create_dir(&plan.lock).unwrap();
         let file = directory.join("plan.json");
         write(&file, &plan).unwrap();
         run_worker(file.clone()).await.unwrap();
-        assert_eq!(read::<Value>(&plan.status_file).unwrap()["phase"], "failed");
+        let status = read::<Value>(&plan.status_file).unwrap();
+        assert_eq!(status["phase"], "failed");
+        assert_eq!(status["jobId"], plan.job_id.as_str());
         assert!(!file.exists());
         assert!(!plan.lock.exists());
         assert!(service::alive(std::process::id()));

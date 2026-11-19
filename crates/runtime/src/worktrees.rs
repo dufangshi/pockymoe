@@ -1,5 +1,5 @@
 //! Managed working copies and observed tool locations. A binding is not a shell cd.
-use crate::Supervisor;
+use crate::{child_process::PipeReader, Supervisor};
 use anyhow::{bail, ensure, Context, Result};
 use pockymoe_protocol::{now_rfc3339, ThreadEventEnvelope, ThreadEventType};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -46,6 +46,9 @@ struct GitOutput {
 // Drain both pipes even after the response cap. Commands are bounded and cannot
 // retain an unbounded diff in memory or block a runtime worker indefinitely.
 fn git(root: &Path, args: &[&str]) -> Result<GitOutput> {
+    git_within(root, args, Duration::from_secs(15))
+}
+fn git_within(root: &Path, args: &[&str], timeout: Duration) -> Result<GitOutput> {
     if let Some(value) = crate::execution::file_request("git", root, "", json!({"args":args}))? {
         use base64::Engine;
         return Ok(GitOutput {
@@ -53,21 +56,6 @@ fn git(root: &Path, args: &[&str]) -> Result<GitOutput> {
                 .decode(value["bytes"].as_str().context("missing Git response")?)?,
             truncated: value["truncated"].as_bool().unwrap_or(false),
         });
-    }
-    fn drain(mut pipe: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
-        let mut kept = Vec::new();
-        let mut truncated = false;
-        let mut buf = [0; 8192];
-        loop {
-            let n = pipe.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            let take = n.min(OUTPUT_LIMIT.saturating_sub(kept.len()));
-            kept.extend_from_slice(&buf[..take]);
-            truncated |= take < n;
-        }
-        Ok((kept, truncated))
     }
     let mut cmd = Command::new("git");
     let hooks = tempfile::tempdir()?;
@@ -82,6 +70,8 @@ fn git(root: &Path, args: &[&str]) -> Result<GitOutput> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Only the direct spawn path uses this; a host guardian owns its own group.
+    crate::child_process::own_process_group(&mut cmd);
     for key in crate::child_process::inherited_host_identity() {
         cmd.env_remove(key);
     }
@@ -103,32 +93,39 @@ fn git(root: &Path, args: &[&str]) -> Result<GitOutput> {
     let mut child = crate::execution::host_process::spawn_sync(&mut cmd, &process_id, true)
         .context("Git is unavailable")?;
     let _transport = child.stdin.take();
-    let out = child.stdout.take().unwrap();
-    let err = child.stderr.take().unwrap();
-    let stdout = std::thread::spawn(move || drain(out));
-    let stderr = std::thread::spawn(move || drain(err));
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let stdout = PipeReader::spawn(child.stdout.take().unwrap(), OUTPUT_LIMIT);
+    let stderr = PipeReader::spawn(child.stderr.take().unwrap(), OUTPUT_LIMIT);
+    // One deadline covers the process and both pipes: a descendant that keeps
+    // a pipe open after Git exits must not block this worker either.
+    let deadline = Instant::now() + timeout;
+    let stop = |child: &mut std::process::Child| -> Result<()> {
+        if let Some(context) = &host {
+            context.stop_process_sync(&process_id)?;
+        } else {
+            crate::child_process::kill_process_group(child.id());
+            let _ = child.kill();
+        }
+        Ok(())
+    };
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break Some(status);
         }
         if Instant::now() >= deadline {
-            if let Some(context) = &host {
-                context.stop_process_sync(&process_id)?;
-            } else {
-                let _ = child.kill();
-            }
+            stop(&mut child)?;
             let _ = child.wait();
             break None;
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    let (bytes, truncated) = stdout
-        .join()
-        .map_err(|_| anyhow::anyhow!("Git reader failed"))??;
-    let (errors, _) = stderr
-        .join()
-        .map_err(|_| anyhow::anyhow!("Git reader failed"))??;
+    // After a timeout the stop above closes the pipes; allow a moment for that.
+    let drained = deadline.max(Instant::now()) + Duration::from_millis(500);
+    let (Some(out), Some(errors)) = (stdout.finish(drained), stderr.finish(drained)) else {
+        let _ = stop(&mut child);
+        bail!("Git output did not close in time");
+    };
+    let (bytes, truncated) = out.context("Git reader failed")?;
+    let (errors, _) = errors.context("Git reader failed")?;
     ensure!(status.is_some(), "Git operation timed out");
     ensure!(
         status.unwrap().success(),

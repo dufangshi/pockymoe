@@ -99,6 +99,9 @@ impl Supervisor {
         })
     }
 
+    /// Same projection and literal matching as [`Self::search_conversations`],
+    /// scoped to one thread: no JSON decoding, and only matching documents
+    /// are read for queries of three or more characters.
     pub fn search_thread_messages(&self, id: &str, query: &str, limit: usize) -> Result<Value> {
         let imported = self.get_thread(id)?.source == "local_codex_import";
         let query = query.trim();
@@ -111,18 +114,34 @@ impl Supervisor {
             "bad_request: limit must be between 1 and 100"
         );
         let needle = query.to_lowercase();
+        let use_fts = needle.chars().count() >= 3;
+        let fts_query = format!("\"{}\"", needle.replace('"', "\"\""));
         self.db.with(|conn| {
-            let mut statement = conn.prepare(
-                "SELECT i.turn_id, i.item_id, json_extract(i.item_json, '$.kind'),
-                        json_extract(i.item_json, '$.text'), i.created_at,
-                        COALESCE(json_extract(i.item_json, '$.phase'), json_extract(i.item_json, '$.status'))
-                 FROM thread_turns t JOIN thread_history_items i
-                   ON i.thread_id=t.thread_id AND i.turn_id=t.id
-                 WHERE t.thread_id=?1
-                   AND json_extract(i.item_json, '$.kind') IN ('userMessage', 'agentMessage')
-                 ORDER BY t.ordinal DESC, i.created_at ASC, i.rowid ASC",
-            )?;
-            let mut rows = statement.query(params![id])?;
+            let candidates = if use_fts {
+                "JOIN search_documents_fts f ON f.rowid=d.id"
+            } else {
+                ""
+            };
+            let predicate = if use_fts {
+                "AND search_documents_fts MATCH ?3"
+            } else {
+                "AND ?3 IS NOT NULL"
+            };
+            // Joining the journal row keeps the transcript order (newest turn
+            // first, items in written order); the projection's id changes on
+            // every streaming update.
+            let sql = format!(
+                "SELECT d.turn_id, d.item_id, d.kind, d.text, i.created_at, d.phase
+                 FROM search_documents d {candidates}
+                 JOIN thread_turns t ON t.id=d.turn_id AND t.thread_id=d.thread_id
+                 JOIN thread_history_items i
+                   ON i.thread_id=d.thread_id AND i.turn_id=d.turn_id AND i.item_id=d.item_id
+                 WHERE d.thread_id=?1 AND d.kind IN ('userMessage', 'agentMessage')
+                   AND instr(d.folded, ?2)>0 {predicate}
+                 ORDER BY t.ordinal DESC, i.created_at ASC, i.rowid ASC"
+            );
+            let mut statement = conn.prepare(&sql)?;
+            let mut rows = statement.query(params![id, needle, fts_query])?;
             let mut matches = Vec::new();
             let mut has_more = false;
             let mut current_turn = String::new();
@@ -130,17 +149,25 @@ impl Supervisor {
             while let Some(row) = rows.next()? {
                 let turn_id: String = row.get(0)?;
                 let kind: String = row.get(2)?;
-                let mut text: String = row.get::<_, Option<String>>(3)?.unwrap_or_default();
+                // The projection already holds the imported request text
+                // without injected context.
+                let text: String = row.get(3)?;
                 if imported {
-                    if current_turn != turn_id { current_turn.clone_from(&turn_id); seen.clear(); }
-                    if kind == "userMessage" {
-                        let Some(cleaned) = crate::local_sessions::sanitize_codex_user_text(&text) else { continue };
-                        text = cleaned;
+                    // Duplicates share their text, so the earliest copy is
+                    // always among the matches and wins.
+                    if current_turn != turn_id {
+                        current_turn.clone_from(&turn_id);
+                        seen.clear();
                     }
-                    let commentary = kind == "agentMessage" && row.get::<_, Option<String>>(5)?.as_deref() == Some("commentary");
-                    if !seen.insert((kind.clone(), text.trim().to_string(), commentary)) { continue; }
+                    let commentary =
+                        kind == "agentMessage" && row.get::<_, String>(5)? == "commentary";
+                    if !seen.insert((kind.clone(), text.trim().to_string(), commentary)) {
+                        continue;
+                    }
                 }
-                let Some(excerpt) = search_excerpt(&text, &needle) else { continue };
+                let Some(excerpt) = search_excerpt(&text, &needle) else {
+                    continue;
+                };
                 if matches.len() == limit {
                     has_more = true;
                     break;

@@ -85,10 +85,7 @@ pub async fn install_harness(state: &Supervisor, id: &str) -> Result<()> {
             .send()
             .await?
             .error_for_status()?;
-        let script = response.bytes().await?;
-        if script.len() > 1024 * 1024 {
-            bail!("Installer is unexpectedly large");
-        }
+        let script = crate::http_body::limited(response, 1024 * 1024).await?;
         let tmp = tempfile::tempdir()?;
         let file = tmp.path().join("install.sh");
         std::fs::write(&file, script)?;
