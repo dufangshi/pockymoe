@@ -1850,6 +1850,8 @@ export interface ShellSessionDto {
   createdAt: string;
   updatedAt: string;
   lastActivityAt: string | null;
+  /** A command, not the prompt, owns the terminal; null when the device cannot tell. */
+  commandRunning?: boolean | null;
 }
 
 export interface ThreadShellStateDto {
