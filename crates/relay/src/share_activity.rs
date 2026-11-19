@@ -115,7 +115,7 @@ pub(super) fn fields(
     resource_id: &str,
 ) -> (Value, Value, Vec<Value>) {
     let events = (|| -> rusqlite::Result<Vec<Value>> {
-        let mut stmt = conn.prepare("SELECT id,user_id,username,kind,accessed_at FROM relay_share_activity WHERE resource_type=?1 AND resource_id=?2 ORDER BY accessed_at DESC LIMIT 20")?;
+        let mut stmt = conn.prepare_cached("SELECT id,user_id,username,kind,accessed_at FROM relay_share_activity WHERE resource_type=?1 AND resource_id=?2 ORDER BY accessed_at DESC LIMIT 20")?;
         let rows = stmt.query_map(params![resource_type, resource_id], |row| Ok(json!({
             "id": row.get::<_, String>(0)?, "userId": row.get::<_, String>(1)?,
             "username": row.get::<_, String>(2)?, "kind": row.get::<_, String>(3)?,

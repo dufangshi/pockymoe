@@ -113,9 +113,8 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 256 && !id.contains(['\n', '\r', '/', '?', '#', '%', '\\'])
 }
 fn supported_workspace_scope(g: &Grant) -> bool {
-    // Device collections, search, and thread creation do not yet support a
-    // selected-workspace projection. Reject this combination rather than widen it.
-    g.scope != "device" || g.workspace_scope == "all"
+    // The relay applies the same rule (docs/account-key-trust.md#grant-values).
+    access::supported_grant_shape(&g.scope, &g.workspace_scope)
 }
 fn validate(c: &Connection, id: &str, g: &Grant) -> Result<()> {
     let good = g.version == 1
@@ -127,11 +126,11 @@ fn validate(c: &Connection, id: &str, g: &Grant) -> Result<()> {
         && valid_id(&g.relay_ref.id)
         && valid_id(&g.grantee.user_id)
         && g.grantee.label.len() <= 1024
-        && matches!(g.scope.as_str(), "thread" | "workspace" | "device")
-        && matches!(g.workspace_scope.as_str(), "all" | "selected")
+        && access::grant_scope_value(&g.scope).is_some()
+        && access::workspace_scope_value(&g.workspace_scope).is_some()
         && supported_workspace_scope(g)
-        && matches!(g.thread_access.as_str(), "read" | "control")
-        && matches!(g.workspace_access.as_str(), "none" | "read" | "write")
+        && access::thread_access_value(&g.thread_access).is_some()
+        && access::workspace_access_value(&g.workspace_access).is_some()
         && g.thread_id.as_deref().is_none_or(valid_id)
         && g.workspace_id.as_deref().is_none_or(valid_id)
         && g.workspace_ids.len() <= 256

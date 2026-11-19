@@ -947,6 +947,42 @@ key (`grantee_is_owner`); one recipient key maps to one user and public key acro
 grants; device-scope grants need `workspaceScope: "all"`; workspace-scope grants
 need a `workspaceId`; shares are thread-scoped; at most 256 grants (`grant_limit`).
 
+### Grant values
+
+The relay accepts on `POST`/`PATCH /relay/shares` and `/relay/grants` only the
+values a device accepts in a signed grant (`crates/protocol` access:
+`thread_access_value`, `workspace_access_value`, `grant_scope_value`,
+`workspace_scope_value`, `supported_grant_shape`):
+
+| Field | Values | Left out |
+| --- | --- | --- |
+| `threadAccess` | `read`, `control` | `control` |
+| `workspaceAccess` | `none`, `read`, `write` | `none` |
+| `scope` (grants) | `thread`, `workspace`, `device` | `thread` |
+| `workspaceScope` (grants) | `all`, `selected`; a device grant only `all` | `all` |
+| `expiresAt` | An RFC 3339 date and time with any offset, or `null` (no expiry; `null` in a `PATCH` clears it) | No expiry |
+
+Any other value answers 400 `bad_request` and changes nothing; a misspelled
+value is never read as another permission. A device grant over selected
+workspaces has no projection for device lists, search or new threads, so both
+sides refuse it rather than widen it to every workspace. A row stored with that
+combination earlier gives no access at the relay or the device; the owner's only
+accepted edit for it sets `workspaceScope: "all"`.
+
+The relay stores `expiresAt` as UTC with milliseconds
+(`2026-11-19T08:30:00.000Z`), the form of the current time it compares it with, so
+an offset never moves the moment access ends. At start it rewrites stored rows
+into that form; a stored value it cannot read as a time becomes
+`1970-01-01T00:00:00.000Z`, so that row counts as expired instead of staying
+active, and the relay logs a warning naming the row.
+
+A create reads the owner's [safety-code](#safety-code-check) preference and writes
+the row with its final `pending` value in one transaction; a preference it cannot
+read counts as on. A failed write answers 409 `conflict` or 500 `internal` and
+leaves no row. An edit is a single update of every named field: `{id, ok: true}`
+only after the row changed, 404 `not_found` when no live row of the owner has the
+ID, and 500 `internal`, with nothing changed, when the write fails.
+
 ### Safety-code check
 
 **Safety code.** The first 12 characters of the Crockford base32 encoding of
@@ -1386,6 +1422,8 @@ senders).
 | `PUT /relay/devices/{id}/certificate` | Owner | Device certificate (at most 16 KiB, matching `deviceId`), stored unverified |
 | `GET /relay/devices/{id}/owner-account` | Owner or recipient | → `{accountKeyId, accountPublicKey}`; 404 |
 | `GET /relay/shares/{id}/recipient-account`, `GET /relay/grants/{id}/recipient-account` | Owner of the live row | → `{accountKeyId, accountPublicKey}`; 404 `recipient_account_missing` (recipient without a vault) or `not_found` |
+| `POST /relay/shares`, `POST /relay/grants` | Owner of the device | The row's target, permissions and `expiresAt` → the row with `pending`; 400 `bad_request` ([grant values](#grant-values)), 404 `not_found`, 409 `conflict`, 500 `internal` |
+| `PATCH /relay/shares/{id}`, `PATCH /relay/grants/{id}` | Owner of the live row | Only the fields it changes; `null` clears a nullable one → `{id, ok: true}` once every field changed; 400 `bad_request`, 404 `not_found`, 500 `internal` |
 | `POST /relay/shares/{id}/approve`, `POST /relay/grants/{id}/approve` | Owner of the live row | `{safetyCode?}` → `{id, pending: false, verifiedAt}`; 400 `safety_code_required`, 409 `safety_code_mismatch` or `recipient_account_missing` (a code for a recipient without a vault), 404 `not_found` |
 | `GET`/`PATCH /relay/account/preferences` | Signed in | `{sendShortcut, requireSafetyCode, showReasoningSummaries}`; a `PATCH` names only what it changes |
 | `POST /relay/devices/{id}/port-mappings/{mappingId}/open?lease=` | Owner, or a recipient of the thread that created the mapping | `{path}` → `{url}`; 403 `preview_lease_required`; 400 `invalid_lease` (not 43 characters of `[A-Za-z0-9_-]`) |
