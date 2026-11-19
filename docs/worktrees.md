@@ -78,6 +78,11 @@ the existing linked-file permission, so a conversation or workspace share does
 not gain access to associated external worktrees. Older Supervisors show the
 feature as unavailable until updated.
 
+Each Git command, on the host or in an environment worker, has fifteen seconds
+in total, including the closing of its output pipes, and keeps at most 512 KiB of
+output. A command whose descendant keeps a pipe open after Git exits fails at
+that deadline; the command is stopped rather than awaited.
+
 ## Location observations
 
 The thread's configured checkout and a tool's actual operation location are

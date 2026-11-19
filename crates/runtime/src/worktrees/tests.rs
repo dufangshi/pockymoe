@@ -730,3 +730,28 @@ async fn parallel_tool_and_subagent_observations_do_not_rebind_the_thread() {
     assert_ne!(context["primaryWorkingCopyId"], first.id);
     assert_ne!(context["primaryWorkingCopyId"], second.id);
 }
+
+#[cfg(unix)]
+#[test]
+fn git_returns_by_its_deadline_when_a_descendant_keeps_its_output_open() {
+    let dir = tempfile::tempdir().unwrap();
+    run_git(dir.path(), &["init", "-q"]);
+    let started = Instant::now();
+    // A shell alias exits at once but leaves a background process on stdout.
+    let error = git_within(
+        dir.path(),
+        &["-c", "alias.hold=!sleep 30 & echo held", "hold"],
+        Duration::from_millis(500),
+    )
+    .err()
+    .expect("a held pipe must not report success");
+    assert!(error.to_string().contains("did not close"), "{error:#}");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let out = git_within(
+        dir.path(),
+        &["rev-parse", "--git-dir"],
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    assert_eq!(out.bytes, b".git\n");
+}

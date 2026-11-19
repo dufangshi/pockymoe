@@ -2,8 +2,7 @@
 //! window, reasoning levels and input kinds. Codex runs with a catalog that has
 //! them for its models, and `codex debug models` prints it.
 use std::collections::HashMap;
-use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -140,37 +139,32 @@ fn version(output: &[u8]) -> Vec<u64> {
         .collect()
 }
 
+/// `codex debug models` prints about 1 MB today; leave room for growth.
+const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+
+/// RUN_TIMEOUT bounds the whole run: the process, its output and its pipe.
+/// A descendant that keeps stdout open must not hold the model cache lock.
 fn run(program: &std::path::Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    let mut child = Command::new(program)
-        .args(args)
-        .env("PATH", crate::acp::child_path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    let mut stdout = child.stdout.take().ok_or("no stdout")?;
-    let reader = std::thread::spawn(move || {
-        let mut buffer = Vec::new();
-        stdout.read_to_end(&mut buffer).map(|_| buffer)
-    });
-    let started = Instant::now();
-    loop {
-        match child.try_wait().map_err(|e| e.to_string())? {
-            Some(status) if status.success() => break,
-            Some(status) => return Err(format!("exited with {status}")),
-            None if started.elapsed() > RUN_TIMEOUT => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("timed out".into());
-            }
-            None => std::thread::sleep(Duration::from_millis(50)),
-        }
+    run_until(program, args, Instant::now() + RUN_TIMEOUT)
+}
+
+fn run_until(
+    program: &std::path::Path,
+    args: &[&str],
+    deadline: Instant,
+) -> Result<Vec<u8>, String> {
+    let mut command = Command::new(program);
+    command.args(args).env("PATH", crate::acp::child_path());
+    let (status, bytes, truncated) =
+        crate::child_process::run_bounded(&mut command, OUTPUT_LIMIT, deadline)
+            .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err(format!("exited with {status}"));
     }
-    reader
-        .join()
-        .map_err(|_| "reader panicked".to_string())?
-        .map_err(|e| e.to_string())
+    if truncated {
+        return Err(format!("output exceeded {OUTPUT_LIMIT} bytes"));
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -198,5 +192,35 @@ mod tests {
         assert_eq!(models["bare"], ModelMeta::default());
         assert_eq!(version(b"codex-cli 0.160.0\n"), vec![0, 160, 0]);
         assert!(version(b"codex-cli 0.154.0") < version(b"codex-cli 0.160.0"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_descendant_holding_stdout_cannot_outlast_the_run_deadline() {
+        let started = Instant::now();
+        let error = run_until(
+            std::path::Path::new("sh"),
+            &["-c", "sleep 30 & printf '{}'"],
+            Instant::now() + Duration::from_millis(500),
+        )
+        .unwrap_err();
+        assert!(error.contains("output to close"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let error = run_until(
+            std::path::Path::new("sh"),
+            &["-c", "sleep 30"],
+            Instant::now() + Duration::from_millis(300),
+        )
+        .unwrap_err();
+        assert_eq!(error, "timed out");
+        assert_eq!(
+            run_until(
+                std::path::Path::new("sh"),
+                &["-c", "printf '{}'"],
+                Instant::now() + Duration::from_secs(5),
+            )
+            .unwrap(),
+            b"{}"
+        );
     }
 }

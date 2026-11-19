@@ -648,8 +648,8 @@ fn operation(input: Value) -> Result<Value> {
         }
         "git" => {
             let args: Vec<String> = serde_json::from_value(input["args"].clone())?;
-            let out = std::process::Command::new("git")
-                .current_dir(root)
+            let mut git = std::process::Command::new("git");
+            git.current_dir(root)
                 .args([
                     "-c",
                     "core.fsmonitor=false",
@@ -663,12 +663,14 @@ fn operation(input: Value) -> Result<Value> {
                 .env_clear()
                 .env("PATH", "/usr/local/bin:/usr/bin:/bin")
                 .env("HOME", "/pockymoe/state")
-                .env("GIT_TERMINAL_PROMPT", "0")
-                .stdin(Stdio::null())
-                .output()?;
-            ensure!(out.stdout.len() < 512 * 1024, "Git output exceeds limit");
-            ensure!(out.status.success(), "sandbox Git operation failed");
-            Ok(json!({"bytes":STANDARD.encode(out.stdout),"truncated":false}))
+                .env("GIT_TERMINAL_PROMPT", "0");
+            // Same 15-second bound as host Git, covering exit and output.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            let (status, stdout, truncated) =
+                crate::child_process::run_bounded(&mut git, 512 * 1024, deadline)?;
+            ensure!(!truncated, "Git output exceeds limit");
+            ensure!(status.success(), "sandbox Git operation failed");
+            Ok(json!({"bytes":STANDARD.encode(stdout),"truncated":false}))
         }
         _ => bail!("unsupported sandbox file operation"),
     }

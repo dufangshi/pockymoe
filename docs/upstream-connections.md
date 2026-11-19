@@ -153,8 +153,11 @@ window carried over from an imported native configuration applies only to models
 without one. DSH declares every model the upstream lists (up to 200, the selected
 and earlier ones first) with its declared name, context window, input modalities
 and reasoning levels. Missing names and reasoning levels first use the shared
-Relay model catalog. Other missing facts fall back to Codex's model catalog,
-then to what DSH already had. Shared pricing context sizes never replace
+Relay model catalog. Other missing facts fall back to Codex's model catalog
+(`codex debug models`, cached for ten minutes), then to what DSH already had.
+Each Codex run is limited to twenty seconds in total, covering its exit and the
+closing of its output, and to 16 MiB of output; its process group is stopped
+when either limit is hit, and the run then contributes no facts. Shared pricing context sizes never replace
 endpoint/native limits. The output limit is not written, because DSH would send it
 as every request's output cap. Applying writes the metadata as last gathered;
 apply again after loading models to pick up changes.
