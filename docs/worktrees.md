@@ -56,23 +56,32 @@ grant that ownership.
 The Git entry on the workbench rail (on a phone, the top bar or the dock's More
 sheet) docks a read-only Git inspector at the right of the conversation, which
 stays usable beside it; Files and the isolation inspector share that dock. It
-follows the open thread and shows that thread's title. Its first row switches
-between the configured and associated working copies; the line below names the
-branch, HEAD, whether the copy is the primary one and its source. When the
+follows the open thread and shows that thread's title. With more than one
+working copy, its first row switches between the configured and associated
+ones; the line below names the branch, HEAD, whether the copy is the primary one
+and how it was found (a configured checkout is not labelled). With a single copy
+there is no chooser: the branch line comes first and carries the refresh. When the
 latest tool location is in another working copy, a notice shows that path with
 **View that copy**. Selecting a copy changes this view only.
 
 Changes list files per scope: unstaged (including untracked), staged, or a
 comparison from a revision's merge base. Selecting a file shows its diff,
 including the contents of an untracked file; the whole-scope diff is split per
-file with added and removed lines colored. In the default dock width the list
-and diff stack in one scroll; a dock dragged wider (720px or more) puts them
+file with added and removed lines colored (tint plus an edge bar), and untracked
+files appear in it as new files within the same output limit. A file's counts
+leave out a side with no lines (`+3`, not `+3 −0`). In the default dock width the
+list and diff stack in one scroll; a dock dragged wider (720px or more) puts them
 side by side.
-Commits are paginated. PR status and Git writes are not included.
+Commits are paginated (the pager shows only when there is more than one page).
+Selecting a commit shows what it changed against its first parent in the
+changes view, with a way back to the unstaged changes. PR status and Git writes
+are not included.
 It refreshes when opened, on thread updates and on request; it does not poll.
 
 The endpoints are `GET /api/threads/{id}/working-context` and
-`GET /api/threads/{id}/git/{status|diff|commits}`. Git reads accept a
+`GET /api/threads/{id}/git/{status|diff|commits}`. `diff` takes `area`
+(`worktree`, `index`, `branch` with `base`, or `commit` with `base` set to the
+commit). Git reads accept a
 `workingCopyId`; leaving it out selects the configured checkout. They require
 the existing linked-file permission, so a conversation or workspace share does
 not gain access to associated external worktrees. Older Supervisors show the

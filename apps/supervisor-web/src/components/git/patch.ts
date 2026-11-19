@@ -35,7 +35,15 @@ export function parsePatch(patch: string): ParsedPatch {
   let inHunk = false;
   const lines = patch.split('\n');
   if (lines.at(-1) === '') lines.pop();
-  for (const text of lines) {
+  for (const [index, text] of lines.entries()) {
+    // A file header without `diff --git` (an untracked file's `--no-index`
+    // patch, or a plain unified diff) still opens a file: its `---`/`+++` pair
+    // names it, and it is never shown as a deleted and an added line.
+    if (text.startsWith('--- ') && lines[index + 1]?.startsWith('+++ ') && (!file || inHunk)) {
+      const from = strip(text.slice(4)), to = strip(lines[index + 1]!.slice(4));
+      file = { path: to === '/dev/null' ? from : to, oldPath: from === '/dev/null' ? undefined : from, additions: 0, deletions: 0, binary: false, created: from === '/dev/null', removed: to === '/dev/null', lines: [] };
+      files.push(file); inHunk = false; continue;
+    }
     if (text.startsWith('diff --git ')) {
       const names = headerPath(text);
       file = { path: names?.path ?? text.slice(11), oldPath: names?.oldPath, additions: 0, deletions: 0, binary: false, created: false, removed: false, lines: [] };
