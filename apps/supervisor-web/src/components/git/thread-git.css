@@ -26,6 +26,10 @@
 .thread-git-icon svg { width: 16px; height: 16px; }
 
 .thread-git-context { display: grid; gap: 4px; flex: none; padding: 0 14px 10px; border-bottom: 1px solid var(--theme-border); }
+/* One working copy: no chooser row above, so the facts row (with refresh) leads. */
+.thread-git-scroll > .thread-git-context:first-child { padding-top: 6px; }
+.thread-git-scroll > .thread-git-context:first-child:has(> .thread-git-facts > .thread-git-actions) { position: relative; padding-right: 48px; }
+.thread-git-facts > .thread-git-actions { position: absolute; top: 0; right: 8px; margin: 0; }
 .thread-git-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
 .thread-git-facts .path-chip { flex: 1 1 220px; max-width: 100%; min-width: 0; color: var(--theme-fg-muted); }
 .thread-git-branch { display: inline-flex; align-items: center; gap: 5px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
@@ -124,8 +128,17 @@
 .thread-git-patch:focus-visible { box-shadow: inset 0 0 0 2px var(--theme-accent-solid); }
 .thread-git-patch pre { margin: 0; padding: 4px 0; overflow-x: auto; font-size: 12px; line-height: 1.6; tab-size: 4; }
 .thread-git-line { display: block; min-width: max-content; padding: 0 16px; white-space: pre; color: var(--theme-fg); }
-.thread-git-line[data-kind='add'] { background: color-mix(in oklch, var(--status-success-fg) 13%, transparent); }
-.thread-git-line[data-kind='del'] { background: color-mix(in oklch, var(--status-danger-fg) 12%, transparent); }
+/* Added and removed lines read apart from context and the @@ line in every
+   theme: a clear green or red tint plus an edge bar, so the kind is told by a
+   shape as well as a colour. Packs may set the two tokens. */
+.thread-git-patch {
+  --thread-git-add: color-mix(in oklch, #2da44e 26%, transparent);
+  --thread-git-del: color-mix(in oklch, #cf222e 22%, transparent);
+  --thread-git-add-edge: #2da44e;
+  --thread-git-del-edge: #cf222e;
+}
+.thread-git-line[data-kind='add'] { background: var(--thread-git-add); box-shadow: inset 3px 0 0 var(--thread-git-add-edge); }
+.thread-git-line[data-kind='del'] { background: var(--thread-git-del); box-shadow: inset 3px 0 0 var(--thread-git-del-edge); }
 .thread-git-line[data-kind='hunk'] { margin-top: 4px; background: var(--theme-surface); color: var(--theme-fg-muted); }
 .thread-git-line[data-kind='note'] { color: var(--theme-fg-muted); font-style: italic; }
 .thread-git-patch-file + .thread-git-patch-file { border-top: 1px solid var(--theme-border); }
@@ -139,7 +152,16 @@
 /* Commits. */
 .thread-git-history { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; padding: 4px 18px 12px; overscroll-behavior: contain; }
 .thread-git-commits { display: grid; margin: 0; padding: 0; list-style: none; }
-.thread-git-commits > li { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 10px 0; }
+.thread-git-commits > li { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 4px 0; }
+.thread-git-commit-open { display: flex; flex: 1; align-items: center; gap: 12px; min-width: 0; padding: 6px 6px 6px 4px; border-radius: 6px; text-align: left; color: inherit; }
+.thread-git-commit-open:active { background: var(--theme-hover); }
+.thread-git-commit-open:focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 1px; }
+@media (hover: hover) { .thread-git-commit-open:hover { background: var(--theme-hover); } }
+.thread-git-commit-chevron { flex: none; width: 15px; height: 15px; color: var(--theme-fg-muted); }
+.thread-git-commit-scope { display: flex; align-items: center; gap: 6px; min-height: 32px; color: var(--theme-fg-muted); font-size: 12px; }
+.thread-git-commit-scope > svg { width: 15px; height: 15px; }
+.thread-git-commit-scope > code { color: var(--theme-fg); }
+.thread-git-commit-scope > .thread-git-icon { margin-left: auto; }
 .thread-git-commits > li + li { border-top: 1px solid var(--theme-border); }
 .thread-git-commit-icon { flex: none; width: 16px; height: 16px; color: var(--theme-fg-muted); }
 .thread-git-commit-main { display: grid; gap: 2px; flex: 1; min-width: 0; }

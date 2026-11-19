@@ -238,11 +238,15 @@ impl SocketClientState {
                 "payload": { "threadId": shell.thread_id, "state": "exited" }
             }));
         }
+        let mut payload = json!({ "data": shell.data });
+        if let Some(running) = crate::shells::hub().command_running(&shell.shell_id) {
+            payload["isCommandRunning"] = json!(running);
+        }
         Some(json!({
             "type": "shell.output",
             "shellId": shell.shell_id,
             "timestamp": now_rfc3339(),
-            "payload": { "data": shell.data }
+            "payload": payload
         }))
     }
 }

@@ -31,7 +31,8 @@ export interface GitStatus {
   files: { path: string; indexStatus: string; worktreeStatus: string; originalPath?: string }[];
   truncated: boolean;
 }
-export type GitDiffArea = 'worktree' | 'index' | 'branch';
+/** `commit`: what the commit named by `base` changed against its first parent. */
+export type GitDiffArea = 'worktree' | 'index' | 'branch' | 'commit';
 export interface GitDiff {
   workingCopyId: string;
   area: GitDiffArea;

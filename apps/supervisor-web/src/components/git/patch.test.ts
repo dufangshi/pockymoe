@@ -41,3 +41,11 @@ it('decodes Git C-quoted UTF-8 paths without changing patch text', () => {
   expect(files[1]!.path).toBe('new\t"\\name.png');
   expect(files[1]!.lines.at(-1)!.text).toBe(String.raw`rename to "new\t\"\\name.png"`);
 });
+
+it('opens a file at a bare ---/+++ header instead of showing it as deleted and added lines', () => {
+  const parsed = parsePatch('--- /dev/null\n+++ b/NEW-untracked.txt\n@@ -0,0 +1 @@\n+untracked new file\n');
+  expect(parsed.preamble).toEqual([]);
+  expect(parsed.files).toHaveLength(1);
+  expect(parsed.files[0]).toMatchObject({ path: 'NEW-untracked.txt', created: true, additions: 1, deletions: 0 });
+  expect(parsed.files[0]!.lines.map(line => line.kind)).toEqual(['hunk', 'add']);
+});

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, FileDiff, GitBranch, GitCommitHorizontal, LoaderCircle, MapPin, RefreshCw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, FileDiff, GitBranch, GitCommitHorizontal, LoaderCircle, MapPin, RefreshCw, X } from 'lucide-react';
 import { CopyButton, ErrorMark, MiddleName, PathChip, Select, formatShortTimestamp } from '@pockymoe/thread-ui';
 import { formatNumber, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ApiError } from '../../lib/api';
@@ -20,8 +20,8 @@ export interface ThreadGitPanelProps {
 
 const SOURCE_KEY = { created: 'workbench.gitSourceCreated', adopted: 'workbench.gitSourceAdopted', observed: 'workbench.gitSourceObserved', configured: 'workbench.gitSourceConfigured' } as const;
 const CHANGE_LETTER: Record<FileChange, string> = { untracked: 'U', added: 'A', modified: 'M', deleted: 'D', renamed: 'R', copied: 'C', conflicted: '!', typeChanged: 'T', changed: '•' };
-const copyLabel = (copy: WorkingCopy) => `${copy.branch ?? translate('workbench.gitDetached')} · ${copy.path}`;
 const baseName = (path: string) => path.split('/').pop() || path;
+const copyLabel = (copy: WorkingCopy) => `${copy.branch ?? translate('workbench.gitDetached')} · ${baseName(copy.path.replace(/[\\/]+$/, ''))}`;
 const dirName = (path: string) => path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '';
 
 interface ListedFile { path: string; change: FileChange; originalPath?: string | undefined }
@@ -70,7 +70,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
     return () => controller.abort();
   }, [threadId, deviceId, revision, refreshKey, visible]);
 
-  const areaScope = JSON.stringify([selected, area, area === 'branch' ? base : '']);
+  const areaScope = JSON.stringify([selected, area, area === 'branch' || area === 'commit' ? base : '']);
   useEffect(() => {
     if (!visible || !context) return;
     if (!selected) { setLoading(false); return; }
@@ -83,7 +83,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
     const operation = tab === 'changes'
       ? Promise.all([
         fetchThreadGitStatus(threadId, selected, deviceId, controller.signal),
-        fetchThreadGitDiff(threadId, selected, { area, ...(path ? { path } : {}), ...(area === 'branch' ? { base } : {}) }, deviceId, controller.signal),
+        fetchThreadGitDiff(threadId, selected, { area, ...(path ? { path } : {}), ...(area === 'branch' || area === 'commit' ? { base } : {}) }, deviceId, controller.signal),
       ]).then(([nextStatus, nextDiff]) => {
         if (controller.signal.aborted) return;
         setStatus(nextStatus); setDiff(nextDiff);
@@ -102,7 +102,11 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
   const unavailable = error instanceof ApiError && [403, 404, 501].includes(error.statusCode);
   const errorMessage = error instanceof ApiError && error.statusCode === 403 ? translate('workbench.gitAccessUnavailable') : unavailable ? translate('workbench.gitUnavailable') : translate('workbench.gitLoadFailed');
   const selectCopy = (id: string) => { setSelected(id); setPath(''); setOffset(0); };
-  const selectArea = (next: GitDiffArea) => { setArea(next); setPath(''); };
+  const selectArea = (next: GitDiffArea) => {
+    // A commit opened from the list borrows `base`; any other view restores the comparison base.
+    if (area === 'commit' && next !== 'commit') setBase(baseDraft.trim() || 'HEAD');
+    setArea(next); setPath('');
+  };
   const known = scopeFiles?.scope === areaScope ? scopeFiles.files : null;
   const stats = useMemo(() => new Map((known ?? []).map(file => [file.path, file])), [known]);
   const unstaged = status?.files.filter(file => file.worktreeStatus !== ' ') ?? [];
@@ -118,27 +122,34 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
   const parsed = useMemo(() => diff ? parsePatch(diff.patch) : null, [diff]);
   const observedCopy = observedOutside && context?.workingCopies.find(copy => copy.id === observedOutside.workingCopyId);
 
+  const manyCopies = (context?.workingCopies.length ?? 0) > 1;
+  const actions = <div className="thread-git-actions">
+    {error ? <ErrorMark message={errorMessage} detail={error instanceof Error ? error.message : undefined} kind={unavailable ? 'unavailable' : 'error'} onRetry={refresh} /> : null}
+    <button type="button" className="thread-git-icon" onClick={refresh} disabled={loading} aria-label={translate('workbench.gitRefresh')} title={translate('workbench.gitRefresh')}><RefreshCw aria-hidden="true" className={loading ? 'request-spin' : ''} /></button>
+  </div>;
+  const openCommit = (oid: string) => { setTab('changes'); setArea('commit'); setBase(oid); setPath(''); };
+
   return <div className="thread-git-panel" data-testid="thread-git">
     <div className="thread-git-scroll">
-      <div className="thread-git-header">
-        {context && context.workingCopies.length > 0 && <div className="thread-git-copy">
+      {/* One working copy has nothing to choose: its facts row carries refresh,
+          and no chooser, source tag or explanation repeats what is shown. */}
+      {(manyCopies || !workingCopy) && <div className="thread-git-header">
+        {context && manyCopies && <div className="thread-git-copy">
           <Select aria-label={translate('workbench.gitWorkingCopy')} value={selected} onValueChange={selectCopy}
             options={context.workingCopies.map(copy => ({ value: copy.id, label: copyLabel(copy) }))} />
         </div>}
-        <div className="thread-git-actions">
-          {error ? <ErrorMark message={errorMessage} detail={error instanceof Error ? error.message : undefined} kind={unavailable ? 'unavailable' : 'error'} onRetry={refresh} /> : null}
-          <button type="button" className="thread-git-icon" onClick={refresh} disabled={loading} aria-label={translate('workbench.gitRefresh')} title={translate('workbench.gitRefresh')}><RefreshCw aria-hidden="true" className={loading ? 'request-spin' : ''} /></button>
-        </div>
-      </div>
+        {actions}
+      </div>}
       {workingCopy && <section className="thread-git-context" aria-label={translate('workbench.gitWorkingCopy')}>
         <div className="thread-git-facts">
           <span className="thread-git-branch"><GitBranch aria-hidden="true" />{status?.branch ?? workingCopy.branch ?? translate('workbench.gitDetached')}</span>
+          {!manyCopies && actions}
           {(status?.head ?? workingCopy.head) && <span className="thread-git-head"><code>{(status?.head ?? workingCopy.head)!.slice(0, 10)}</code><CopyButton value={(status?.head ?? workingCopy.head)!} label={gt('copyHead')} /></span>}
-          <span className="thread-git-tag" data-primary={workingCopy.id === context?.primaryWorkingCopyId || undefined}>{workingCopy.id === context?.primaryWorkingCopyId ? translate('workbench.gitPrimary') : translate('workbench.gitViewing')}</span>
-          <span className="thread-git-tag">{translate(SOURCE_KEY[workingCopy.source] ?? 'workbench.gitSourceConfigured')}</span>
+          {manyCopies && <span className="thread-git-tag" data-primary={workingCopy.id === context?.primaryWorkingCopyId || undefined}>{workingCopy.id === context?.primaryWorkingCopyId ? translate('workbench.gitPrimary') : translate('workbench.gitViewing')}</span>}
+          {workingCopy.source !== 'configured' && <span className="thread-git-tag">{translate(SOURCE_KEY[workingCopy.source] ?? 'workbench.gitSourceConfigured')}</span>}
           <PathChip path={workingCopy.path} label={translate('workbench.gitCopyAbsolutePath')} />
         </div>
-        <p className="thread-git-hint"><span>{translate('workbench.gitViewOnly')}</span> <span>{gt('readOnlyHint')}</span></p>
+        {manyCopies && <p className="thread-git-hint">{translate('workbench.gitViewOnly')}</p>}
       </section>}
       {observedOutside && <div className="thread-git-observation" role="note">
         <MapPin aria-hidden="true" />
@@ -161,6 +172,10 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
               <button type="button" aria-pressed={area === 'index'} onClick={() => selectArea('index')}>{translate('workbench.gitStaged')}{status && <span>{formatNumber(staged.length)}</span>}</button>
               <button type="button" aria-pressed={area === 'branch'} onClick={() => selectArea('branch')}>{translate('workbench.gitCompare')}</button>
             </div>
+            {area === 'commit' && <div className="thread-git-commit-scope">
+              <GitCommitHorizontal aria-hidden="true" /><span>{translate('workbench.gitCommitShown')}</span><code>{base.slice(0, 10)}</code>
+              <button type="button" className="thread-git-icon" onClick={() => selectArea('worktree')} aria-label={translate('workbench.gitLeaveCommit')} title={translate('workbench.gitLeaveCommit')}><X aria-hidden="true" /></button>
+            </div>}
             {area === 'branch' && <form className="thread-git-base" onSubmit={event => { event.preventDefault(); setBase(baseDraft.trim() || 'HEAD'); setPath(''); }}>
               <label><span>{gt('base')}</span><input aria-label={translate('workbench.gitBase')} value={baseDraft} spellCheck={false} autoCapitalize="off" onChange={event => setBaseDraft(event.target.value)} /></label>
               <button type="submit" className="thread-git-button">{gt('apply')}</button>
@@ -174,7 +189,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
                   <span className="thread-git-letter" data-change={file.change} title={gt(file.change)} aria-hidden="true">{CHANGE_LETTER[file.change]}</span>
                   <span className="thread-git-file-text"><MiddleName name={baseName(file.path)} className="thread-git-file-name" />
                     {(dirName(file.path) || file.originalPath) && <span className="thread-git-file-dir">{file.originalPath ? `${file.originalPath} → ` : ''}{dirName(file.path)}</span>}</span>
-                  {stat && !stat.binary && <span className="thread-git-stat"><ins>+{formatNumber(stat.additions)}</ins><del>−{formatNumber(stat.deletions)}</del></span>}
+                  {stat && !stat.binary && <Stat file={stat} />}
                 </button>
               </li>; })}
             </ul>}
@@ -195,18 +210,22 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
         </div> : <section className="thread-git-history" aria-label={translate('workbench.gitCommits')}>
           {commits && !!commits.commits.length && <ol className="thread-git-commits">
             {commits.commits.map(commit => <li key={commit.oid}>
-              <GitCommitHorizontal aria-hidden="true" className="thread-git-commit-icon" />
-              <div className="thread-git-commit-main"><strong>{commit.subject}</strong>
-                <span className="thread-git-commit-meta"><span>{commit.author}</span><time dateTime={commit.authoredAt}>{Number.isNaN(Date.parse(commit.authoredAt)) ? commit.authoredAt : formatShortTimestamp(commit.authoredAt)}</time></span></div>
+              {/* A commit opens what it changed, in the changes view. */}
+              <button type="button" className="thread-git-commit-open" onClick={() => openCommit(commit.oid)} aria-label={translate('workbench.gitOpenCommit', { subject: commit.subject })}>
+                <GitCommitHorizontal aria-hidden="true" className="thread-git-commit-icon" />
+                <span className="thread-git-commit-main"><strong>{commit.subject}</strong>
+                  <span className="thread-git-commit-meta"><span>{commit.author}</span><time dateTime={commit.authoredAt}>{Number.isNaN(Date.parse(commit.authoredAt)) ? commit.authoredAt : formatShortTimestamp(commit.authoredAt)}</time></span></span>
+                <ChevronRight aria-hidden="true" className="thread-git-commit-chevron" />
+              </button>
               <span className="thread-git-head"><code>{commit.oid.slice(0, 10)}</code><CopyButton value={commit.oid} label={translate('workbench.gitCopyCommit')} /></span>
             </li>)}
           </ol>}
           {commits && !commits.commits.length && <p className="thread-git-empty">{translate('workbench.gitNoCommits')}</p>}
-          <div className="thread-git-pagination">
+          {(offset > 0 || commits?.hasMore) && <div className="thread-git-pagination">
             <button type="button" className="thread-git-button" disabled={loading || offset === 0} onClick={() => setOffset(value => Math.max(0, value - 30))}><ChevronLeft aria-hidden="true" />{translate('workbench.gitPrevious')}</button>
             <span className="thread-git-dim">{gt('page', { n: formatNumber(offset / 30 + 1) })}</span>
             <button type="button" className="thread-git-button" disabled={loading || !commits?.hasMore} onClick={() => setOffset(value => value + 30)}>{translate('workbench.gitNext')}<ChevronRight aria-hidden="true" /></button>
-          </div>
+          </div>}
         </section>}
       </>}
       {!workingCopy && loading && <p role="status" className="thread-git-empty is-page">{translate('workbench.gitLoading')}</p>}
@@ -221,11 +240,19 @@ function PatchView({ parsed, single, onSelect }: { parsed: ReturnType<typeof par
     {parsed.files.map((file, index) => <section key={`${file.path}:${index}`} className="thread-git-patch-file">
       {!single && <button type="button" className="thread-git-patch-file-head" aria-label={translate('workbench.gitViewFile', { path: file.path })} onClick={() => onSelect(file.path)}>
         <MiddleName name={file.path} />
-        {!file.binary ? <span className="thread-git-stat"><ins>+{formatNumber(file.additions)}</ins><del>−{formatNumber(file.deletions)}</del></span> : <span className="thread-git-dim">{gt('binary')}</span>}
+        {!file.binary ? <Stat file={file} /> : <span className="thread-git-dim">{gt('binary')}</span>}
       </button>}
       <Lines lines={file.lines} />
     </section>)}
   </div>;
+}
+
+/** Lines added and removed; a side with none is left out, not shown as a red 0. */
+function Stat({ file }: { file: Pick<PatchFile, 'additions' | 'deletions'> }) {
+  return <span className="thread-git-stat">
+    {file.additions > 0 && <ins>+{formatNumber(file.additions)}</ins>}
+    {file.deletions > 0 && <del>−{formatNumber(file.deletions)}</del>}
+  </span>;
 }
 
 function Lines({ lines }: { lines: PatchLine[] }) {
