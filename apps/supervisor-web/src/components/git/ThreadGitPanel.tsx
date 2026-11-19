@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, FileDiff, GitBranch, GitCommitHorizontal, MapPin, RefreshCw } from 'lucide-react';
+import { ChevronLeft, ChevronRight, FileDiff, GitBranch, GitCommitHorizontal, LoaderCircle, MapPin, RefreshCw } from 'lucide-react';
 import { CopyButton, ErrorMark, MiddleName, PathChip, Select, formatShortTimestamp } from '@pockymoe/thread-ui';
 import { formatNumber, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ApiError } from '../../lib/api';
@@ -151,7 +151,8 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
         <div className="thread-git-tabs" role="group" aria-label={translate('workbench.gitScope')}>
           <button type="button" aria-pressed={tab === 'changes'} onClick={() => setTab('changes')}><FileDiff aria-hidden="true" />{translate('workbench.gitChanges')}{status && <span className="thread-git-count">{formatNumber(status.files.length)}</span>}</button>
           <button type="button" aria-pressed={tab === 'commits'} onClick={() => setTab('commits')}><GitCommitHorizontal aria-hidden="true" />{translate('workbench.gitCommits')}</button>
-          {loading && <span role="status" className="thread-git-loading">{translate('workbench.gitLoading')}</span>}
+          {/* A short request: a spinner, with the words beside it where they fit (phones keep the icon, UI §13). */}
+          {loading && <span role="status" className="thread-git-loading"><LoaderCircle className="request-spin" aria-hidden="true" /><span className="thread-git-loading-text">{translate('workbench.gitLoading')}</span></span>}
         </div>
         {tab === 'changes' ? <div className="thread-git-changes">
           <aside className="thread-git-files" aria-label={translate('workbench.gitChangedFiles')}>
