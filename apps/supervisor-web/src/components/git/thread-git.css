@@ -64,7 +64,12 @@
   min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--theme-surface-strong); color: var(--theme-fg-soft);
   font-size: 11px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums;
 }
-.thread-git-loading { margin-left: auto; padding-right: 6px; color: var(--theme-fg-muted); font-size: 12px; }
+.thread-git-loading { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; padding-right: 6px; color: var(--theme-fg-muted); font-size: 12px; }
+.thread-git-loading > svg { flex: none; width: 15px; height: 15px; }
+/* Phones show the spinner only; the words stay for screen readers. */
+@media (max-width: 639px) {
+  .thread-git-loading-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
 
 /* Changes: files beside the diff on wide screens, each scrolling on its own. */
 .thread-git-changes { display: grid; grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); flex: 1; min-height: 0; }

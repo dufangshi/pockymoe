@@ -655,6 +655,19 @@ fieldset {
   padding-bottom: max(3rem, env(safe-area-inset-bottom));
 }
 
+/* A new thread on a phone: the form is longer than the screen, so its actions
+   stay at the bottom instead of below the fold (UI §4: actions at the bottom). */
+@media (max-width: 639px) {
+  .product-page .thread-create-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    margin: 16px -16px 0;
+    padding: 10px 16px max(10px, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--theme-border);
+    background: var(--theme-bg);
+  }
+}
 .product-page-wide {
   max-width: 92rem;
 }

@@ -839,7 +839,7 @@ export function ThreadCreateForm({
 
       </div>
 
-      <div className="flex shrink-0 flex-wrap items-center gap-2 pt-1">
+      <div className="thread-create-actions flex shrink-0 flex-wrap items-center gap-2 pt-1">
         <button
           type="submit"
           disabled={

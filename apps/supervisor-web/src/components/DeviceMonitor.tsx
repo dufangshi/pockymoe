@@ -342,6 +342,7 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
           title={translate("devices.deviceMonitor")}
           onClose={() => setOpen(false)}
           className="device-monitor-dialog"
+          secondary
           meta={data && (
             <span className="dm-meta" data-stale={stale || undefined}>
               <i aria-hidden />
