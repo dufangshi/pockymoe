@@ -110,7 +110,7 @@ async function openThreadEnvironment(page: Page) {
 }
 async function openNewThread(page: Page) {
   await page.goto('/threads/thread-one');
-  await page.getByRole('button', { name: 'New Chat', exact: true }).last().click();
+  await page.getByRole('button', { name: 'New thread', exact: true }).last().click();
   const dialog = page.getByTestId('create-thread-dialog');
   await expect(dialog).toHaveCount(1);
   await expect(dialog).toBeVisible();
@@ -213,7 +213,7 @@ test('child thread keeps inherited isolation and explains the disabled controls'
 test('New Chat buttons open one accessible dialog and restore focus to each trigger', async ({ page }) => {
   await mockApi(page);
   await page.goto('/threads/thread-one');
-  const triggers = page.getByRole('button', { name: 'New Chat', exact: true });
+  const triggers = page.getByRole('button', { name: 'New thread', exact: true });
   await expect(triggers).toHaveCount(2);
   for (const index of [0, 1]) {
     const trigger = triggers.nth(index);
@@ -221,7 +221,7 @@ test('New Chat buttons open one accessible dialog and restore focus to each trig
     const dialog = page.getByTestId('create-thread-dialog');
     await expect(dialog).toHaveCount(1);
     await expect(dialog).toBeVisible();
-    await expect(dialog).toHaveAccessibleName('Create New Chat');
+    await expect(dialog).toHaveAccessibleName('New thread');
     if (index === 0) await page.keyboard.press('Escape');
     else await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(dialog).toBeHidden();
@@ -242,12 +242,12 @@ test('new thread isolation is submitted before startup and a failed startup neve
   // Changing a Harness after choosing isolation must not probe the Host.
   await dialog.locator('[id$="-thread-backend"]').click();
   await page.getByRole('option', { name: 'OpenCode', exact: true }).click();
-  await expect(dialog.getByRole('button', { name: 'Create Thread', exact: true })).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: 'New thread', exact: true })).toBeDisabled();
   await dialog.locator('[id$="-thread-backend"]').click();
   await page.getByRole('option', { name: 'Codex', exact: true }).click();
   await expect(dialog.getByRole('textbox', { name: 'Model', exact: true })).toHaveValue('environment-model');
   await dialog.getByLabel('Title', { exact: true }).fill('Created in isolation');
-  await dialog.getByRole('button', { name: 'Create Thread', exact: true }).click();
+  await dialog.getByRole('button', { name: 'New thread', exact: true }).click();
   await expect(dialog.getByRole('button', { name: 'Retry environment startup' })).toBeEnabled();
   await expect(dialog.getByRole('combobox', { name: 'Execution environment' })).toBeDisabled();
   await expect(dialog.getByLabel('Title', { exact: true })).toBeDisabled();
@@ -280,7 +280,7 @@ test('isolated ACP navigation from New Chat does not probe Host agents or models
   await page.getByRole('option', { name: 'Local Dokploy', exact: true }).click();
   await dialog.getByRole('textbox', { name: 'Model', exact: true }).fill('isolated-acp-model');
   const threadModelResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/api/threads/created-thread/models' && response.status() === 404);
-  await dialog.getByRole('button', { name: 'Create Thread', exact: true }).click();
+  await dialog.getByRole('button', { name: 'New thread', exact: true }).click();
   await expect(dialog).toBeHidden();
   await expect(page).toHaveURL(/\/threads\/created-thread$/);
   await threadModelResponse;
@@ -328,7 +328,7 @@ for (const theme of ['classic', 'plum-pocket', 'terminal']) for (const mode of [
     await page.screenshot({ path: path.join(directory, `${theme}-${mode}-selection.png`), animations: 'disabled', fullPage: true });
     const box = (await environment.boundingBox())!;
     expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(page.viewportSize()!.width);
-    await expect(dialog.getByRole('button', { name: 'Create Thread', exact: true })).toBeInViewport();
+    await expect(dialog.getByRole('button', { name: 'New thread', exact: true })).toBeInViewport();
     const dialogBox = (await dialog.boundingBox())!;
     expect(dialogBox.y).toBeGreaterThanOrEqual(0);
     expect(dialogBox.y + dialogBox.height).toBeLessThanOrEqual(page.viewportSize()!.height + 1);

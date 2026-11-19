@@ -92,13 +92,13 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
     name: 'Device monitor',
     exact: true,
   });
-  await expect(monitor.locator('[aria-label^=CPU]')).toHaveText('37%');
-  await expect(monitor.locator('[aria-label^=DRAM]')).toHaveText('25.4/60.9G');
-  await expect(monitor.locator('[aria-label^=VRAM]')).toHaveText('1.0/8.0G');
+  // Every reading is a short name and a percentage, never a bare figure.
+  await expect(monitor.locator('[aria-label^="CPU:"]')).toHaveText('CPU37%');
+  await expect(monitor.locator('[aria-label^="Memory:"]')).toHaveText('Mem42%');
+  await expect(monitor.locator('[aria-label^="GPU memory:"]')).toHaveText(/^VRAM\d+%$/);
   const mobile = testInfo.project.name === 'mobile-chromium';
   if (!mobile) {
-    expect(await monitor.locator('[aria-label^=DRAM] b').evaluate(value => parseFloat(getComputedStyle(value).fontSize))).toBeGreaterThanOrEqual(8);
-    expect(await monitor.locator('[aria-label^=CPU] b').evaluate(value => parseFloat(getComputedStyle(value).fontSize))).toBeGreaterThanOrEqual(8.5);
+    expect(await monitor.locator('[aria-label^="CPU:"] b').evaluate(value => parseFloat(getComputedStyle(value).fontSize))).toBeGreaterThanOrEqual(11);
   }
   await expect(
     mobile
@@ -106,18 +106,11 @@ test('device monitor shows cores, memory and real watts, and marks failed sample
           .locator('.matter-topbar')
           .getByRole('button', { name: 'Device monitor' })
       : page
-          .locator('.matter-rail-bottom')
+          .locator('.matter-sidebar-device')
           .getByRole('button', { name: 'Device monitor' }),
   ).toBeVisible();
-  if (!mobile) {
-    await page.getByRole('button', { name: 'Toggle shortcuts sidebar' }).click();
-    await expect(monitor).toBeVisible();
-    const settings = page.locator('.matter-rail-bottom').getByRole('button', { name: 'Open settings' });
-    await expect(settings).toBeVisible();
-    const monitorBox = await monitor.boundingBox();
-    const settingsBox = await settings.boundingBox();
-    expect(monitorBox!.y + monitorBox!.height).toBeLessThanOrEqual(settingsBox!.y);
-  }
+  // On a computer the readings end the sidebar under the device name; the rail is for navigation.
+  if (!mobile) await expect(page.locator('.matter-rail .device-monitor-button')).toHaveCount(0);
   const fit = await monitor.evaluate(button => {
     const bounds = button.getBoundingClientRect();
     return [...button.querySelectorAll('.dm-summary-reading')].map(cell => {

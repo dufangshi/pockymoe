@@ -68,7 +68,7 @@ test('language switch synchronizes host and shared workbench, preserves draft, f
   await selectControl(page, page.getByRole('combobox', { name: '语言', exact: true }), 'en');
   await expect(page.getByRole('tab', { name: 'Preferences', exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
-  await page.getByRole('button', { name: 'Search conversation', exact: true }).click();
+  await page.getByRole('button', { name: 'Search thread', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Search scope' })).toHaveValue('workspace');
   await expect(page.getByRole('listbox', { name: 'Matching messages', exact: true })).toContainText('Title');
   await page.getByRole('button', { name: 'Close search', exact: true }).click();

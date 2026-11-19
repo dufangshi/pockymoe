@@ -2748,6 +2748,20 @@ main:has(.product-navigation) { padding-top: 0 !important; }
   .device-connection-button:hover { background: var(--theme-hover); }
 }
 .device-connection-button:disabled { opacity: .6; }
+/* Lost connection: amber, with short words on wide screens and the icon alone on phones. */
+.device-connection-slot:has(> .device-connection-button.is-down) { flex: none; width: auto; }
+.device-connection-button.is-down,
+.matter-connection .device-connection-button.is-down {
+  width: auto; gap: 5px; padding: 0 9px; white-space: nowrap; font-size: 12px; line-height: 1;
+  color: var(--status-warning-fg); border-color: color-mix(in srgb, var(--status-warning-fg) 40%, transparent);
+  background: color-mix(in srgb, var(--status-warning-fg) 13%, var(--theme-panel));
+}
+.matter-connection .device-connection-button.is-down > svg { width: 15px; height: 15px; }
+@media (max-width: 639px) {
+  .device-connection-button.is-down,
+  .matter-connection .device-connection-button.is-down { width: 28px; padding: 0; }
+  .device-connection-button.is-down .device-connection-text { display: none; }
+}
 .device-connection-popover { background: #f7f8f6; color: #121416; border-color: #cbd2d7; }
 :root[data-theme-effective='dark'] .device-connection-popover { background: #141b20; color: #f4f7f6; border-color: #36434d; }
 .device-connection-popover > span { color: #5d6972; }
@@ -3003,3 +3017,5 @@ main:has(.product-navigation) { padding-top: 0 !important; }
 /* Settings › Device: the passcode card keeps the same gap above the divider and the Supervisor block below it as other groups. */
 .local-passcode-settings { margin-bottom: 1.25rem; }
 .local-passcode-settings + * { padding-top: 1.25rem; }
+/* Workspace paths on the workspaces page: muted path chips, one line, middle-truncated. */
+.workspace-path-chip { display: flex; width: fit-content; font-size: 12.5px; line-height: 20px; color: var(--theme-fg-muted); }

@@ -3,7 +3,7 @@ import { WorkspacesFrame, useDesktopWorkspaceLayout } from '../desktop/Workspace
 import type { ReactNode } from 'react';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { ErrorMark, PathChip } from '@pockymoe/thread-ui';
 import { DeviceEncryptionStatus } from '../components/DeviceEncryptionStatus';
 import { DeviceProtectionPrompt } from '../components/DeviceSetupProgress';
 import { TourLauncherButton } from '../components/onboarding/TourProvider';
@@ -299,9 +299,11 @@ export function WorkspacesPage() {
           />
           <span className="shrink-0 font-medium text-[var(--theme-fg)]">Supervisor</span>
           <span className="flex min-w-0 flex-1 items-center gap-1.5">
-            <span className="min-w-0 truncate font-mono text-xs text-[var(--theme-fg-muted)]" title={runtimeSummary}>
-              {runtimeSummary}
-            </span>
+            {runtimeConfig ? <PathChip path={runtimeSummary} className="workspace-path-chip" /> : (
+              <span className="min-w-0 truncate font-mono text-xs text-[var(--theme-fg-muted)]" title={runtimeSummary}>
+                {runtimeSummary}
+              </span>
+            )}
             {runtimeError ? <ErrorMark message={runtimeError} /> : null}
           </span>
           <span className="hidden shrink-0 text-xs tabular-nums text-[var(--theme-fg-muted)] sm:inline">
@@ -413,9 +415,12 @@ export function WorkspacesPage() {
                     menuOpen ? 'z-20' : ''
                   }`}
                 >
+                  {/* The name is a link stretched over the card; the path chip sits
+                      above it, so it can show the whole path and copy it (§2). */}
+                  <div className="relative min-w-0 px-4 py-3.5 sm:px-5">
                   <Link
                     to={currentThreadsHref(workspace.id)}
-                    className="group min-w-0 px-4 py-3.5 focus-visible:outline-none focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)] sm:px-5"
+                    className="group block min-w-0 after:absolute after:inset-0 after:content-[''] focus-visible:outline-none focus-visible:after:z-10 focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-[var(--theme-accent-ring)]"
                   >
                     <span className="flex min-w-0 items-center gap-2">
                       <span className="truncate text-sm font-semibold text-[var(--theme-fg)] sm:text-base">
@@ -432,19 +437,15 @@ export function WorkspacesPage() {
                       ) : null}
 
                     </span>
-                    <span
-                      className="mt-1 block truncate font-mono text-xs leading-5 text-[var(--theme-fg-muted)]"
-                      title={workspace.absPath}
-                    >
-                      {workspace.absPath}
-                    </span>
+                  </Link>
+                    <PathChip path={workspace.absPath} className="workspace-path-chip relative z-20 mt-1" />
                     <time
                       dateTime={workspace.lastOpenedAt ?? undefined}
                       className="mt-1 block text-xs text-[var(--theme-fg-muted)]"
                     >
                       {lastOpenedLabel(workspace.lastOpenedAt)}
                     </time>
-                  </Link>
+                  </div>
 
                   {sharedOnly ? null : <div className="flex items-center gap-1 pr-2 sm:pr-3">
                     <button

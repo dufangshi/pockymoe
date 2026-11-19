@@ -40,7 +40,7 @@ async function openThread(page: Page, id: string) {
 }
 
 const panelButton = (page: Page) =>
-  page.getByRole('button', { name: /^Plugins in this conversation/ });
+  page.getByRole('button', { name: /^Plugins in this thread/ });
 
 test('a conversation turns a plugin off for itself only and edits its own settings', async ({
   page,
@@ -51,7 +51,7 @@ test('a conversation turns a plugin off for itself only and edits its own settin
   await openThread(page, first.id);
   await expect(page.getByRole('button', { name: 'Terminal', exact: true })).toBeVisible();
   await panelButton(page).click();
-  const panel = page.getByRole('dialog', { name: 'Plugins in this conversation' });
+  const panel = page.getByRole('dialog', { name: 'Plugins in this thread' });
   const terminal = panel.getByRole('listitem', { name: 'Terminal' });
   await expect(terminal.getByText('Active', { exact: true })).toBeVisible();
   await terminal.getByRole('radio', { name: 'Off in this conversation' }).check();
@@ -119,7 +119,7 @@ test('the conversation plugin panel is a reachable bottom sheet on phones', asyn
   expect(buttonBox.x).toBeGreaterThanOrEqual(0);
   expect(buttonBox.x + buttonBox.width).toBeLessThanOrEqual(viewport.width + 1);
   await button.tap();
-  const panel = page.getByRole('dialog', { name: 'Plugins in this conversation' });
+  const panel = page.getByRole('dialog', { name: 'Plugins in this thread' });
   await expect(panel.getByRole('listitem').first()).toBeVisible();
   const box = (await panel.boundingBox())!;
   // A sheet from the bottom edge, full width (docs/ui-principles.md).

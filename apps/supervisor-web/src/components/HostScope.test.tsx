@@ -43,7 +43,7 @@ it('keeps child routes and allowed controls, keeps creation available and hides 
     </ThreadWorkspaceLayout></HostScopeRouteGate>
   </HostCapabilitiesProvider></MemoryRouter>);
   expect(await screen.findByRole('button', { name: 'Delegate thread' })).toBeVisible();
-  expect(screen.getByRole('button', { name: /New chat/i })).toBeVisible();
+  expect(screen.getByRole('button', { name: /New thread/i })).toBeVisible();
   for (const label of ['Open settings', 'Device monitor', 'Management']) expect(screen.queryByRole('button', { name: label })).toBeNull();
   expect(document.querySelector('a[href="/workspaces"]')).toBeNull();
   expect(document.querySelector('a[href="/threads/child"]')).not.toBeNull();

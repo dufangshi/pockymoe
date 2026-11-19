@@ -175,6 +175,7 @@ import {
   relayDeviceIdFromPath,
   threadIdFromPath,
 } from '../lib/relayRoutes';
+import { useMediaQuery } from '../lib/useMediaQuery';
 import { useMobileComposerLayout } from './useMobileComposerLayout';
 import { useThreadAuxiliaryActions } from './useThreadAuxiliaryActions';
 import { useThreadListPolling } from './useThreadListPolling';
@@ -969,9 +970,10 @@ export function ThreadDetailPage() {
       ? toolsAccess.workspaceAccess : 'none';
   const toolsCanControl = toolsUseReference ? referenceController.canControl : relayThreadCanControl;
   const deviceLabel = presentationDeviceName ?? (relayRouteDeviceId ? relayRouteDeviceId.slice(0, 8) : translate('workbench.localDeviceName'));
-  // The desktop clients and a signed-in PC browser keep the rail for navigation:
-  // this conversation's device and its monitor end the sidebar instead.
-  const sidebarDevice = desktopSurface && !hostScope ? <>
+  // The rail is for navigation: on every computer this conversation's device and
+  // its labelled readings end the sidebar; phones keep them in the top bar.
+  const phoneWidth = useMediaQuery('(max-width: 639px)');
+  const sidebarDevice = !hostScope && !phoneWidth ? <>
     <MonitorSmartphone aria-hidden="true" className="matter-sidebar-device-icon" />
     <span className="matter-sidebar-device-name" title={deviceLabel}>{deviceLabel}</span>
     <DeviceMonitor key={relayRouteDeviceId ?? 'local'} />
@@ -1428,7 +1430,7 @@ export function ThreadDetailPage() {
     detailRef.current = detail;
   }, [detail]);
 
-  useThreadTabStatus(detail?.thread ?? null);
+  useThreadTabStatus(detail?.thread ?? null, (detail?.pendingRequests.length ?? 0) > 0);
 
   const refreshCapabilities = useCallback(async () => {
     if (!routeActiveRef.current || !caches.isCurrent()) return;
@@ -4119,7 +4121,7 @@ export function ThreadDetailPage() {
     <ThreadDetailSurface
       restrictedNavigation={Boolean(hostScope)}
       scopedSettings={Boolean(hostScope)}
-      deviceMonitor={hostScope ? <OpenFullPageButton /> : desktopSurface ? <TourLauncherButton /> : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
+      deviceMonitor={hostScope ? <OpenFullPageButton /> : desktopSurface || !phoneWidth ? <TourLauncherButton /> : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
       workbench={workbenchUrls({ ...workbenchNavigation, ...desktopWorkbench, ...(sidebarDevice ? { sidebarFooter: sidebarDevice } : {}), panels: {
         deviceLabel,
         workspaceLabel: detail?.workspace.label ?? workbenchNavigation.workspacePath,
@@ -4222,10 +4224,16 @@ export function ThreadDetailPage() {
         ? { onShellThemeModeChange: shellNav.setThemeMode }
         : {})}
       onShellStateChange={setShellControlState}
-      emptyContent={
+      emptyContent={error !== null && connectionErrorRef.current === error ? (
+        // The device did not answer: say so, not that the thread is broken.
+        <div className="host-muted flex flex-1 flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+          <p className="flex items-center gap-1.5">{translate("workbench.deviceUnreachable")}<ErrorMark message={error} /></p>
+          <button type="button" className="relay-button-secondary rounded-lg px-4 py-2" onClick={() => void loadThreadDetail()}>{translate("workbench.retry")}</button>
+        </div>
+      ) : (
         <div className="host-muted flex flex-1 items-center justify-center px-6 py-12 text-center">
           {translate("workbench.unableToResolveThisThread")}</div>
-      }
+      )}
       dialogs={<>{dialogs}{settingsDialogVisible && dialogDetail && <HarnessSettingsDialog
         key={`${dialogDevice}:${dialogDetail.thread.id}`} thread={dialogDetail.thread}
         models={dialogUseReference ? referenceController.models : modelOptions}

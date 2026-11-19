@@ -40,7 +40,7 @@ test('Plum Pocket redraws the tab-bar tools and keeps Classic icons', async ({ p
     expect(glyph.width).not.toBe('auto');
   }
   await expect(tools).toHaveAccessibleName('Thread tools');
-  await expect(split).toHaveAccessibleName('Split conversation');
+  await expect(split).toHaveAccessibleName('Split view');
   await page.evaluate(() => { document.documentElement.dataset.themePreset = 'classic'; });
   await expect(tools.locator('svg')).toBeVisible();
   await expect(split.locator('svg')).toBeVisible();
@@ -92,26 +92,25 @@ for (const [preset, width] of [['plum-pocket', 360], ['plum-pocket', 320], ['cla
   for (const gpu of [false, true]) {
     hasGpu = gpu;
     if (gpu) await page.reload();
-    await expect(monitor.locator('[aria-label^=DRAM]')).toHaveText('12.3/16.0G');
-    await expect(monitor.locator('[aria-label^=CPU] svg')).toBeVisible();
+    await expect(monitor.locator('[aria-label^="Memory:"]')).toHaveText('Mem100%');
+    await expect(monitor.locator('[aria-label^="CPU:"]')).toBeVisible();
+    await expect(monitor.locator('[aria-label^="CPU:"] .dm-summary-name')).toHaveText('CPU');
     await expect(monitor.locator('.dm-summary-row')).toHaveCount(gpu ? 2 : 1);
     if (gpu) {
-      await expect(monitor.locator('[aria-label^=GPU]')).toHaveText('100%');
-      await expect(monitor.locator('[aria-label^=VRAM]')).toHaveText('6.8/8.0G');
+      await expect(monitor.locator('[aria-label^="GPU ·"]')).toHaveText('GPU100%');
+      await expect(monitor.locator('[aria-label^="GPU memory:"]')).toHaveText('VRAM85%');
     }
     const fit = await monitor.evaluate(button => {
       const box = button.getBoundingClientRect();
-      return [...button.querySelectorAll('.dm-summary-reading')].map(row => {
+      // Below 400px only the CPU reading shows; the dialog has the rest.
+      return [...button.querySelectorAll<HTMLElement>('.dm-summary-reading')].filter(row => row.getClientRects().length > 0).map(row => {
         const r = row.getBoundingClientRect();
         return { overflow: row.scrollWidth - row.clientWidth, top: r.top - box.top, bottom: box.bottom - r.bottom };
       });
     });
-    const pairGaps = await monitor.locator('.dm-summary-row').evaluateAll(rows => rows.map(row => {
-      const separator = row.querySelector('.dm-summary-separator')!.getBoundingClientRect();
-      const memory = row.querySelector('.dm-summary-capacity svg')!.getBoundingClientRect();
-      return memory.left - separator.right;
-    }));
-    for (const gap of pairGaps) expect(gap).toBeLessThanOrEqual(3);
+    // Memory and VRAM share a column wherever they show.
+    const columns = await monitor.locator('.dm-summary-row').evaluateAll(rows => rows.map(row => row.querySelectorAll('.dm-summary-reading')[1]!).filter(cell => cell.getClientRects().length > 0).map(cell => cell.getBoundingClientRect().left));
+    for (const left of columns) expect(Math.abs(left - columns[0]!)).toBeLessThanOrEqual(1);
     for (const row of fit) {
       expect(row.overflow, JSON.stringify(fit)).toBeLessThanOrEqual(0);
       expect(row.top).toBeGreaterThanOrEqual(0);
@@ -145,7 +144,7 @@ for (const [preset, width] of [['plum-pocket', 360], ['plum-pocket', 320], ['cla
   }
   expect(await topbar.evaluate(header => header.scrollWidth <= header.clientWidth)).toBe(true);
   // The search trigger receives its own clicks.
-  const search = topbar.getByRole('button', { name: 'Search conversation' });
+  const search = topbar.getByRole('button', { name: 'Search thread' });
   const box = (await search.boundingBox())!;
   expect(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('.matter-search-trigger') !== null, [box.x + box.width / 2, box.y + box.height / 2])).toBe(true);
   if (preset === 'plum-pocket') {

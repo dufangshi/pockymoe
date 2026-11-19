@@ -38,9 +38,9 @@ test.describe('Phase 2 acceptance', () => {
       page.locator('.matter-workbench'),
     ).toBeVisible();
 
-    await page.getByRole('link', { name: 'Create thread', exact: true }).click();
+    await page.getByRole('link', { name: 'New thread', exact: true }).click();
     await page.getByLabel('Title').fill(`${workspaceName} thread`);
-    await page.getByRole('button', { name: 'Create Thread' }).click();
+    await page.getByRole('button', { name: 'New thread' }).click();
 
     await expect(page).toHaveURL(/\/threads\/.+/);
     await expect(page.getByRole('textbox', { name: 'Prompt' })).toBeVisible();

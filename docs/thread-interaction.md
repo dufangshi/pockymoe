@@ -570,7 +570,7 @@ right after it recent conversations elsewhere; each part scrolls on its own. The
 in the drawer: Terminal and Files in the top bar toggle back to the conversation.
 The desktop sidebar lists the same way, with the thread map on its rail. The tab bar and **This workspace**
 list the conversations started in the current workspace, each with all its agent
-threads wherever they work; each row names the workspace its own thread works in. An agent thread working here for a conversation started
+threads wherever they work. The sidebar heading names the workspace once, so its rows there carry no subtitle; a row names a workspace only when its thread works elsewhere. With no shortcuts, the Shortcuts section is one line: a star and "Starred threads appear here". Row menus are ⋯ everywhere. An agent thread working here for a conversation started
 elsewhere belongs to that workspace; while it is open it shows inside its
 conversation. Shortcuts keep the account's own order:
 drag one with the mouse, long-press and drag on touch, or press Alt+↑/↓ on a
@@ -708,7 +708,11 @@ On touch two fingers
 pinching in go up a level, spreading them opens the block under them, and dragging
 the map down closes it. A block too small for what it holds folds up. Go to (the list icon) reaches every block of the current level,
 however small. Hovering or focusing a block shows its details. The map reads its
-devices again every 30 seconds while it is open.
+devices again every 30 seconds while it is open. While nothing has answered it
+shows placeholder tiles and the thread count reads "—", not 0. A device's threads
+appear as soon as its thread list answers, sized alike, and take their 24-hour
+sizes and heat when the slower activity read arrives; first answers from several
+devices land together, like later ones.
 
 It opens from More on a phone, the workspace drawer, the rail on wider screens and
 the workspace list's header. In relay mode it reads each of the account's own

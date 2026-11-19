@@ -1,6 +1,8 @@
 /* The same quiet green-neutral surfaces as the conversation workbench. */
 :root:root:root {
-  font-family: 'DM Sans', Inter, ui-sans-serif, system-ui, sans-serif;
+  /* Chinese text names its fonts: left to the browser, an English page falls back
+     to Japanese glyphs (centered 。and ，). */
+  font-family: 'DM Sans', Inter, ui-sans-serif, system-ui, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans SC', sans-serif;
   --app-bg: #0c0f11;
   --app-fg: #f4f7f6;
   --theme-bg: var(--app-bg);
@@ -157,6 +159,8 @@
 .recent-thread-menu > button[data-copy-state='copied'] { color: var(--status-success-fg, #15803d); }
 .recent-thread-menu > button[data-copy-state='failed'] { color: var(--theme-danger, #c2410c); }
 .recent-thread-menu > .recent-thread-delete { color: var(--status-danger-fg); }
+.recent-thread-menu > .recent-thread-menu-separator { height: 1px; margin: 4px 6px; background: var(--theme-border); }
+.recent-thread-menu-spacer { flex: none; width: 15px; }
 .recent-thread-menu :focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: -2px; }
 .recent-thread-menu > p { padding: 8px; font-size: 11px; line-height: 1.5; color: var(--theme-fg-muted); }
 /* Up to two lines of the title, so threads with one prefix stay apart. */
