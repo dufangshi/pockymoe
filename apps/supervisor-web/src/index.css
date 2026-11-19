@@ -3017,3 +3017,5 @@ main:has(.product-navigation) { padding-top: 0 !important; }
 /* Settings › Device: the passcode card keeps the same gap above the divider and the Supervisor block below it as other groups. */
 .local-passcode-settings { margin-bottom: 1.25rem; }
 .local-passcode-settings + * { padding-top: 1.25rem; }
+/* Workspace paths on the workspaces page: muted path chips, one line, middle-truncated. */
+.workspace-path-chip { display: flex; width: fit-content; font-size: 12.5px; line-height: 20px; color: var(--theme-fg-muted); }

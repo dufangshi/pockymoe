@@ -348,3 +348,8 @@
 }
 
 .pm-tour-launcher-labeled { width: auto; min-height: 44px; gap: 6px; padding: 0 10px; font-size: 12px; white-space: nowrap; }
+/* Narrow phones keep the page title and device name: the entry is its icon alone. */
+@media (max-width: 419px) {
+  .pm-tour-launcher-labeled { width: 44px; padding: 0; }
+  .pm-tour-launcher-labeled > span { display: none; }
+}
