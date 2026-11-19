@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Box, GitBranch } from 'lucide-react';
 import type { WorkbenchInspector, WorkbenchToolPanel } from '@pockymoe/thread-ui';
+import { StatusMark } from '@pockymoe/thread-ui';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
 import type { ThreadDto } from '@pockymoe/shared';
 import { environmentText as et } from '../lib/environmentI18n';
@@ -55,7 +56,7 @@ export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, 
     ...(gitAvailable ? [{ id: 'git', label: 'Git', icon: <GitBranch data-icon="git" />, active: shown === 'git', onToggle: () => toggle('git') }] : []),
     ...(isolationAvailable ? [{ id: 'isolation', label: isolationLabel, active: shown === 'isolation', onToggle: () => toggle('isolation'),
       attention: attention ? requestMark(attention.state) : undefined,
-      icon: <span className="inspector-rail-icon" data-attention={attention ? requestMark(attention.state) : undefined}><Box data-icon="isolation" /></span> }] : []),
+      icon: <IsolationIcon attention={attention ? requestMark(attention.state) : undefined} /> }] : []),
   ];
   const scope = `${deviceId ?? 'local'}:${thread?.id ?? ''}`;
   const inspector: WorkbenchInspector | null = shown && thread ? {
@@ -73,12 +74,22 @@ export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, 
   return { toolPanels, inspector };
 }
 
+/** The isolation entry's icon. A request that needs a look carries the thread
+    status mark itself (waiting bubble, running ring, failed diamond), so it is
+    told apart by shape in every theme (docs/ui-principles.md §6). */
+function IsolationIcon({ attention }: { attention: string | undefined }) {
+  return <span className="inspector-rail-icon" data-attention={attention}>
+    <Box data-icon="isolation" aria-hidden="true" />
+    {attention ? <span className="inspector-attention-mark" aria-hidden="true"><StatusMark status={attention} /></span> : null}
+  </span>;
+}
+
 /** Switch the dock between Git and isolation without leaving it. */
 function InspectorSwitch({ value, onChange, isolationLabel, attention }: { value: InspectorView; onChange(view: InspectorView): void; isolationLabel: string; attention: string | undefined }) {
   return <div className="inspector-switch" role="group" aria-label={et('inspectorViews')}>
     <button type="button" aria-pressed={value === 'git'} aria-label="Git" title="Git" onClick={() => onChange('git')}><GitBranch aria-hidden="true" /></button>
     <button type="button" aria-pressed={value === 'isolation'} aria-label={isolationLabel} title={isolationLabel} onClick={() => onChange('isolation')}>
-      <span className="inspector-rail-icon" data-attention={attention}><Box aria-hidden="true" /></span>
+      <IsolationIcon attention={attention} />
     </button>
   </div>;
 }
