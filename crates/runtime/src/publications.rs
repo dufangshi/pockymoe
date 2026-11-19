@@ -162,17 +162,15 @@ impl Supervisor {
                 .collect::<Vec<_>>())
         })?;
         ensure!(ids.len() <= 10_000, "Published transcript is too large");
-        let detail = self.get_thread_detail(&policy.thread_id, None).await?;
-        let title = detail.thread.title;
-        let ids: HashSet<_> = ids.into_iter().collect();
+        // Only the visible turns are read; private turns never load.
+        let selected = self
+            .get_thread_turns(&policy.thread_id, crate::service::TurnSelection::Ids(&ids))
+            .await?;
+        let title = selected.thread.title;
         let mut turns = Vec::new();
         let mut images = serde_json::Map::new();
         let mut image_bytes = 0;
-        for turn in detail
-            .turns
-            .into_iter()
-            .filter(|turn| ids.contains(&turn.id))
-        {
+        for crate::service::NumberedTurn { turn, .. } in selected.turns {
             let projected = project_turn(&turn);
             for message in projected["messages"].as_array().unwrap() {
                 if message["role"] != "user" {

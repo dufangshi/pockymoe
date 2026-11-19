@@ -1362,6 +1362,46 @@ async fn http_files_prompt_interrupt_export_and_capabilities() {
         let html_body = html.text().await.unwrap();
         assert!(html_body.starts_with("<!doctype html>"));
         assert!(html_body.contains("hello"));
+        let picker = json(
+            &client,
+            client.get(format!("{base}/api/threads/{thread_id}/export-turns")),
+        )
+        .await;
+        assert_eq!(picker["totalTurnCount"], 1);
+        assert_eq!(picker["turns"][0]["turnNumber"], 1);
+        assert_eq!(
+            picker["turns"][0]["userPromptPreview"],
+            "hello, reply me with hello"
+        );
+        let turn_id = picker["turns"][0]["turnId"].as_str().unwrap();
+        let selected = client
+            .get(format!(
+                "{base}/api/threads/{thread_id}/exports/html?mode=selected&turnIds={turn_id}"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(selected.status(), 200);
+        assert!(selected.text().await.unwrap().contains("Turn 1"));
+        for query in ["mode=selected&turnIds=missing", "mode=selected", "mode=all"] {
+            let rejected = client
+                .get(format!(
+                    "{base}/api/threads/{thread_id}/exports/html?{query}"
+                ))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(rejected.status(), 400, "{query}");
+        }
+        // A stale history cursor is a conflict, never the newest page again.
+        let stale = client
+            .get(format!(
+                "{base}/api/threads/{thread_id}?view=summary&beforeTurnId=missing"
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stale.status(), 409);
         let pdf = client
             .get(format!(
                 "{base}/api/threads/{thread_id}/exports/pdf?format=pdf&mode=latest&limit=10"

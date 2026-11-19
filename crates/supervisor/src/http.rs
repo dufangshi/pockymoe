@@ -2940,24 +2940,21 @@ async fn export_turns(
     Path(id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<Value>, ApiErr> {
-    let detail = state.get_thread_detail(&id, None).await.map_err(map_err)?;
-    let turns: Vec<Value> = detail
-        .turns
-        .iter()
-        .enumerate()
-        .map(|(idx, turn)| {
+    let options = state.export_turn_options(&id).map_err(map_err)?;
+    let total = options.len();
+    let turns: Vec<Value> = options
+        .into_iter()
+        .map(|turn| {
             json!({
                 "turnId": turn.id,
-                "turnNumber": idx + 1,
+                "turnNumber": turn.number,
                 "startedAt": turn.started_at,
                 "status": turn.status,
-                "userPromptPreview": turn.items.iter().find(|i| i.kind == "userMessage").map(|i| i.text.clone()).unwrap_or_default()
+                "userPromptPreview": turn.user_prompt_preview,
             })
         })
         .collect();
-    Ok(Json(
-        json!({ "turns": turns, "totalTurnCount": detail.total_turn_count }),
-    ))
+    Ok(Json(json!({ "turns": turns, "totalTurnCount": total })))
 }
 
 async fn export_html(
@@ -2965,29 +2962,14 @@ async fn export_html(
     Query(query): Query<ExportTranscriptQuery>,
     State(state): State<AppState>,
 ) -> Result<Response, ApiErr> {
-    let detail = state.get_thread_detail(&id, None).await.map_err(map_err)?;
-    render_transcript_export(&detail, &query)
-}
-
-fn render_transcript_export(
-    detail: &pockymoe_protocol::ThreadDetailDto,
-    query: &ExportTranscriptQuery,
-) -> Result<Response, ApiErr> {
+    let bad_request = |message: &str| err(StatusCode::BAD_REQUEST, "bad_request", message);
     let mode = query.mode.as_deref().unwrap_or("latest");
     if !matches!(mode, "latest" | "selected") {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "bad_request",
-            "Export mode must be latest or selected.",
-        ));
+        return Err(bad_request("Export mode must be latest or selected."));
     }
     let profile = query.profile.as_deref().unwrap_or("review");
     if !matches!(profile, "review" | "technical") {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "bad_request",
-            "Export profile must be review or technical.",
-        ));
+        return Err(bad_request("Export profile must be review or technical."));
     }
     let turn_ids = query
         .turn_ids
@@ -2998,20 +2980,30 @@ fn render_transcript_export(
         .filter(|value| !value.is_empty())
         .map(str::to_string)
         .collect::<Vec<_>>();
-    let turns = crate::export::select_turns(&detail.turns, mode, query.limit, &turn_ids)
-        .map_err(|error| err(StatusCode::BAD_REQUEST, "bad_request", error.to_string()))?;
+    let selection = crate::export::turn_selection(mode, query.limit, &turn_ids)
+        .map_err(|error| bad_request(&error.to_string()))?;
+    // Only the exported turns are loaded, never the rest of the thread.
+    let selected = state
+        .get_thread_turns(&id, selection)
+        .await
+        .map_err(map_err)?;
+    if mode == "selected" && selected.turns.len() != turn_ids.len() {
+        return Err(bad_request(
+            "One or more selected turns could not be found.",
+        ));
+    }
     let options = crate::export::TranscriptExportOptions {
         profile: profile.into(),
         include_token_and_price: query.include_token_and_price.unwrap_or(true),
         include_command_output: query.include_command_output.unwrap_or(false),
         include_absolute_paths: query.include_absolute_paths.unwrap_or(false),
     };
-    let bytes = crate::export::html_transcript(detail, &turns, &options)
+    let bytes = crate::export::html_transcript(&selected, &options)
         .map_err(map_err)?
         .into_bytes();
     let content_type = "text/html; charset=utf-8";
     let extension = "html";
-    let stem = safe_export_stem(&detail.thread.title);
+    let stem = safe_export_stem(&selected.thread.title);
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)

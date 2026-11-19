@@ -14,6 +14,7 @@ mod search;
 mod session_resume;
 mod storage;
 pub(crate) mod thread_summary;
+mod turn_selection;
 mod update;
 mod watches;
 
@@ -51,6 +52,7 @@ use crate::local_sessions::{find_local_session, list_local_sessions, LocalSessio
 pub use harness_release::{DisplayChange, HarnessViewer, InvalidSettings, MAX_VIEWED_THREADS};
 use pockymoe_protocol::HarnessLoadReason;
 pub use storage::{StorageBusy, STORAGE_PAGE_LIMIT};
+pub use turn_selection::{ExportTurnOption, NumberedTurn, SelectedTurns, TurnSelection};
 
 fn thread_session_settings(thread: &ThreadDto) -> SessionSettings {
     SessionSettings {
@@ -2865,6 +2867,8 @@ impl Supervisor {
                 params![thread_id],
                 |row| row.get(0),
             )?;
+            // A cursor that is no longer a turn of this thread (deleted, or
+            // from another thread) must not fall back to the newest page.
             let before_ordinal = before_turn_id
                 .map(|turn_id| {
                     conn.query_row(
@@ -2872,43 +2876,25 @@ impl Supervisor {
                         params![thread_id, turn_id],
                         |row| row.get::<_, i64>(0),
                     )
-                    .optional()
+                    .optional()?
+                    .ok_or_else(|| {
+                        anyhow!("conflict: beforeTurnId is not a turn of this thread; reload the newest turns")
+                    })
                 })
-                .transpose()?
-                .flatten();
+                .transpose()?;
             let page_limit = limit
                 .map(i64::from)
                 .or_else(|| before_turn_id.map(|_| 10))
                 .unwrap_or(i64::MAX);
-            let mut stmt = conn.prepare(
-                "SELECT id, status, error, model, reasoning_effort, token_usage_json, started_at, completed_at, pricing_model_key, pricing_tier_key, origin
+            let mut stmt = conn.prepare(&format!(
+                "SELECT {TURN_META_COLUMNS}
                  FROM thread_turns
                  WHERE thread_id=?1 AND (?2 IS NULL OR ordinal < ?2)
-                 ORDER BY ordinal DESC, rowid DESC LIMIT ?3",
-            )?;
+                 ORDER BY ordinal DESC, rowid DESC LIMIT ?3"
+            ))?;
             let mut turns = stmt
                 .query_map(params![thread_id, before_ordinal, page_limit], |row| {
-                    let stored_usage = row.get::<_, Option<String>>(5)?.and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
-                    let model = row.get::<_, Option<String>>(3)?;
-                    let pricing_model = row.get::<_, Option<String>>(8)?.or(model.clone());
-                    let tier = row.get::<_, Option<String>>(9)?;
-                    let price_estimate = stored_usage.as_ref().and_then(|usage| crate::usage::estimate_price_with_catalog(usage, pricing_model.as_deref(), tier.as_deref(), &catalog, row.get::<_, String>(6).ok().as_deref()));
-                    Ok(ThreadTurnDto {
-                        origin: Some(row.get(10)?),
-                        id: row.get(0)?,
-                        started_at: row.get(6)?,
-                        completed_at: row.get(7)?,
-                        status: row.get::<_, String>(1)?.into(),
-                        error: row.get(2)?,
-                        model: row.get(3)?,
-                        reasoning_effort: row.get(4)?,
-                        token_usage: stored_usage.as_ref().and_then(crate::usage::public_usage).or(stored_usage),
-                        price_estimate,
-                        has_deferred_items: None,
-                        deferred_item_count: None,
-                        activity: None,
-                        items: Vec::new(),
-                    })
+                    turn_meta_row(row, &catalog)
                 })?
                 .filter_map(|r| r.ok())
                 .collect::<Vec<_>>();
@@ -4697,6 +4683,47 @@ impl Supervisor {
         self.runtime(provider)?.install(agent_id).await
     }
 }
+
+/// Maps `TURN_META_COLUMNS` (in order) to a turn without items.
+fn turn_meta_row(row: &rusqlite::Row<'_>, catalog: &Value) -> rusqlite::Result<ThreadTurnDto> {
+    let stored_usage = row
+        .get::<_, Option<String>>(5)?
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok());
+    let model = row.get::<_, Option<String>>(3)?;
+    let pricing_model = row.get::<_, Option<String>>(8)?.or(model.clone());
+    let tier = row.get::<_, Option<String>>(9)?;
+    let price_estimate = stored_usage.as_ref().and_then(|usage| {
+        crate::usage::estimate_price_with_catalog(
+            usage,
+            pricing_model.as_deref(),
+            tier.as_deref(),
+            catalog,
+            row.get::<_, String>(6).ok().as_deref(),
+        )
+    });
+    Ok(ThreadTurnDto {
+        origin: Some(row.get(10)?),
+        id: row.get(0)?,
+        started_at: row.get(6)?,
+        completed_at: row.get(7)?,
+        status: row.get::<_, String>(1)?.into(),
+        error: row.get(2)?,
+        model,
+        reasoning_effort: row.get(4)?,
+        token_usage: stored_usage
+            .as_ref()
+            .and_then(crate::usage::public_usage)
+            .or(stored_usage),
+        price_estimate,
+        has_deferred_items: None,
+        deferred_item_count: None,
+        activity: None,
+        items: Vec::new(),
+    })
+}
+
+/// Turn metadata columns read by [`turn_meta_row`].
+const TURN_META_COLUMNS: &str = "id, status, error, model, reasoning_effort, token_usage_json, started_at, completed_at, pricing_model_key, pricing_tier_key, origin";
 
 fn normalize_imported_turns(turns: &mut [ThreadTurnDto]) {
     for turn in turns {

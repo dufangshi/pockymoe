@@ -115,6 +115,20 @@ Clients that send `compact=1` on those three endpoints get compact items
 The Web sends `compact=1`; native apps, the CLI and older Web builds do not and
 keep the full encoding. Older Supervisors ignore the parameter.
 
+`beforeTurnId` pages to the turns before that turn. A cursor that is not a
+turn of the thread, because it was deleted while the client paged or belongs to
+another thread, returns 409 `conflict`; the client reloads the newest turns
+instead of receiving them again as an older page. The CLI transcript returns
+`before turn not found` for the same case.
+
+HTML exports (`GET /api/threads/{id}/exports/html`), their turn picker
+(`GET /api/threads/{id}/export-turns`) and public links read only what they
+include. SQL picks the exported turns (`mode=latest` newest `limit`, or
+`mode=selected` `turnIds`) and their position in the thread from turn metadata,
+then loads those turns' items in one query; the picker reads turn metadata and
+user messages only. A public link loads its selected turns and the turns after
+it was created, never the rest of the thread.
+
 HTTP responses are compressed (gzip or brotli, by `Accept-Encoding`) when the
 body is at least 1 KB of text, JSON, JavaScript, XML or SVG. SSE, WebSocket
 upgrades, images, archives, other binary types and range responses stay
