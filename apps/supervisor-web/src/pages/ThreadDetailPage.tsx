@@ -32,7 +32,7 @@ import { ImageFallbackProvider, ImageRecoveryProvider, ImageDiagnosisProvider } 
 import { diagnoseChatImage } from '../lib/chatImageDiagnosis';
 import { useSubscriptionUsage } from './useSubscriptionUsage';
 import { useThreadTabStatus } from '../lib/useThreadTabStatus';
-import { DeviceEncryptionStatus } from '../components/DeviceEncryptionStatus';
+import { DeviceEncryptionStatus, useConnectionDownShown } from '../components/DeviceEncryptionStatus';
 import { ThreadPublicLinks } from '../components/ThreadPublicLinks';
 import { useThreadShares, type ThreadShareTarget } from '../components/ThreadShareDialog';
 import { ThreadWatchesControl } from '../components/ThreadWatchesControl';
@@ -3672,6 +3672,12 @@ export function ThreadDetailPage() {
   );
 
   const threadLoaded = detail?.thread.isLoaded ?? false;
+  // While the device's connection is down (as the bar's mark shows it, after
+  // the same grace), the send key greys out and says why; the draft stays.
+  const connectionDown = useConnectionDownShown(realtimeConnection.status, threadLoaded && detail?.thread.status !== 'recovering');
+  const sendUnavailableReason = connectionDown.shown
+    ? translate(connectionDown.offline ? 'auth.connectionOfflineShort' : 'workbench.deviceUnreachable')
+    : null;
   const realtimeConnectionLabel = threadConnectionSummary(threadLoaded, realtimeConnection);
   const sessionConnectionIndicator = (
     <DeviceEncryptionStatus hideHealthy deviceId={relayRouteDeviceId ?? undefined} connection={{
@@ -3825,6 +3831,7 @@ export function ThreadDetailPage() {
         threadConnected: detail.thread.isLoaded,
         shellAvailable: terminalAvailable,
         disabled: Boolean(promptDisabledReason),
+        sendUnavailableReason,
         ...(promptDisabledReason
           ? { disabledPlaceholder: promptDisabledReason }
           : {}),

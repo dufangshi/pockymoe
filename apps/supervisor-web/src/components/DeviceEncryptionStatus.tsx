@@ -25,6 +25,23 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { popoverPosition } from '../lib/popoverPosition';
 import { OWNER_UNLOCKED_EVENT, ownerUnlockedDevice } from '../lib/ownerUnlockRecovery';
 const DOWN_GRACE_MS = 2_500;
+
+/** A loaded thread whose live connection dropped, as the reader is told it:
+    pages start "reconnecting" for a moment while the socket opens, so a drop
+    counts only after a short grace; the browser saying it is offline needs
+    none. The connection mark and the composer's send key share this. */
+export function useConnectionDownShown(state: string | undefined, loaded: boolean) {
+  const down = state !== undefined && (['reconnecting', 'offline'].includes(state) || (loaded && state === 'checking'));
+  const offline = state === 'offline';
+  const [graceOver, setGraceOver] = useState(false);
+  useEffect(() => {
+    if (!down || offline) { setGraceOver(false); return; }
+    const timer = window.setTimeout(() => setGraceOver(true), DOWN_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [down, offline]);
+  return { down, offline, shown: down && (offline || graceOver) };
+}
+
 export function DeviceEncryptionStatus({
   deviceId,
   online,
@@ -56,18 +73,7 @@ export function DeviceEncryptionStatus({
     if (deviceId) void ownerAccountPin(deviceId).then((pin) => { if (active) setHasOwnerPin(!!pin); }).catch(() => {});
     return () => { active = false; };
   }, [deviceId, status]);
-  // A loaded thread whose live connection dropped. Pages start "reconnecting"
-  // for a moment while the socket opens, so it shows only after a short grace.
-  const down = !!connection && (['reconnecting', 'offline'].includes(connection.state) || (connection.loaded && connection.state === 'checking'));
-  // The browser saying it is offline needs no grace.
-  const offline = connection?.state === 'offline';
-  const [graceOver, setGraceOver] = useState(false);
-  useEffect(() => {
-    if (!down || offline) { setGraceOver(false); return; }
-    const timer = window.setTimeout(() => setGraceOver(true), DOWN_GRACE_MS);
-    return () => window.clearTimeout(timer);
-  }, [down, offline]);
-  const downShown = down && (offline || graceOver);
+  const { down, shown: downShown } = useConnectionDownShown(connection?.state, connection?.loaded ?? false);
   const [open, setOpen] = useState(false),
     [confirm, setConfirm] = useState<TransportStatus | null>(null);
   // Which identity action failed, shown as a mark after its button.
