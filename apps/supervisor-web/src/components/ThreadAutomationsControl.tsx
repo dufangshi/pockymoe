@@ -770,6 +770,8 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
             {refreshError && <ErrorMark message={refreshError} onRetry={() => refreshRef.current()} />}
           </DialogHeader>
           <div className="automation-body" aria-busy={loading}>
+            {/* With nothing scheduled the totals are all zero: the empty state says it instead. */}
+            {(items.length > 0 || watches.length > 0 || unavailable) && (
             <section
               className="automation-metrics"
               aria-label={t('automation.totals')}
@@ -819,6 +821,7 @@ export function ThreadAutomationsControl({ thread }: { thread: ThreadDto }) {
                 partial={!dash && partialPrice}
               />
             </section>
+            )}
             {unavailable && (
               <div className="automation-availability" role="status">
                 <CircleSlash size={16} />
