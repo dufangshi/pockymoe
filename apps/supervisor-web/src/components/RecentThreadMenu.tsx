@@ -3,7 +3,7 @@ import { narrationQuery } from '../lib/transcriptPreferences';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, Copy, ExternalLink, MoreHorizontal, Pencil, Share2, Star, Trash2, TriangleAlert } from 'lucide-react';
+import { Check, Copy, ExternalLink, MoreHorizontal, Pencil, Share2, Star, Trash2, TriangleAlert, X } from 'lucide-react';
 import type { ThreadDetailDto } from '@pockymoe/shared';
 import { copyText, useMenuKeyboard, type ThreadMenuContext, type WorkbenchThread } from '@pockymoe/thread-ui';
 import { fetchRelayAccess, isInvisibleThreadError, relayModeActive, request } from '../lib/api';
@@ -107,7 +107,7 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
   const copyItem = (key: string, label: string, text: string | null | undefined) => {
     const state = copied?.key === key ? copied.state : null;
     return (
-      <button data-copy-state={state ?? undefined} disabled={!text} onClick={async () => {
+      <button role="menuitem" data-copy-state={state ?? undefined} disabled={!text} onClick={async () => {
         if (!text) return;
         const ok = await copyText(text);
         setCopied({ key, state: ok ? 'copied' : 'failed' });
@@ -119,24 +119,35 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
     );
   };
   return <>
-    {!context && <button ref={trigger} className="recent-thread-actions" aria-label={translate("workbench.actionsFor", { value1: thread.title })} aria-expanded={!!position} aria-haspopup="dialog" onClick={() => {
+    {!context && <button ref={trigger} className="recent-thread-actions" aria-label={translate("workbench.actionsFor", { value1: thread.title })} aria-expanded={!!position} aria-haspopup="menu" onClick={() => {
       if (position) { setPosition(null); return; }
       const box = trigger.current!.getBoundingClientRect();
       setPosition(place(box.right - 260, box.bottom + 6));
     }}><MoreHorizontal data-icon="more" size={16} /></button>}
-    {position && createPortal(<div ref={menu} role="dialog" aria-label={translate("workbench.threadActions", { value1: thread.title })} className="recent-thread-menu" style={{ left: position.left, top: position.top - lift }}>
-      <p className="recent-thread-menu-title">{thread.title}</p>
-      <button disabled={busy} onClick={async () => { setBusy(true); try { await onFavorite(thread.key); setPosition(null); } finally { setBusy(false); } }}><Star data-icon="shortcut" size={15} fill={thread.favorite ? 'currentColor' : 'none'} />{thread.favorite ? translate("workbench.unstarThread") : translate("workbench.starThread")}</button>
-      <button onClick={() => { setPosition(null); onNavigate(thread.href); }}><ExternalLink data-icon="open" size={15} />{translate("workbench.openThread")}</button>
+    {/* A menu (ui-principles §3): menu items, arrow keys, Esc returns focus. */}
+    {position && createPortal(<div ref={menu} role="menu" aria-label={translate("workbench.threadActions", { value1: thread.title })} className="recent-thread-menu" style={{ left: position.left, top: position.top - lift }}>
+      <p className="recent-thread-menu-title" role="presentation">{thread.title}</p>
+      <button role="menuitem" disabled={busy} onClick={async () => { setBusy(true); try { await onFavorite(thread.key); setPosition(null); } finally { setBusy(false); } }}><Star data-icon="shortcut" size={15} fill={thread.favorite ? 'currentColor' : 'none'} />{thread.favorite ? translate("workbench.unstarThread") : translate("workbench.starThread")}</button>
+      <button role="menuitem" onClick={() => { setPosition(null); onNavigate(thread.href); }}><ExternalLink data-icon="open" size={15} />{translate("workbench.openThread")}</button>
       {/* Labelled, so an agent it is pasted to knows what it is (the Pockymoe
           skill says how to read that thread); another device's thread carries
           its device, as the CLI addresses it. */}
       {copyItem('pockymoe', translate("workbench.copyPockymoeSessionID"), `pockymoe_session_id: ${device === 'local' ? id : `${device}/${id}`}`)}
       {copyItem('harness', translate("workbench.copyHarnessSessionID"), detail?.thread.providerSessionId)}
       {detail?.thread.providerSessionId && (detail.thread.agentId === 'codex' || detail.thread.provider === 'codex') && copyItem('codex', translate("workbench.copyCodexDeeplink"), `codex://threads/${encodeURIComponent(detail.thread.providerSessionId)}`)}
-      {shareTarget && <button onClick={() => { setNotice(''); setPosition(null); setSharing(true); }}><Share2 data-icon="share" size={15} />{translate("sharing.shareThread")}</button>}
-      {owner && <button onClick={() => { setTitle(detail?.thread.title ?? thread.title); setNotice(''); setPosition(null); setRenaming(true); }}><Pencil data-icon="rename" size={15} />{translate("workbench.renameThread")}</button>}
-      {owner && <button className="recent-thread-delete" onClick={() => { setNotice(''); setPosition(null); setDeleting(true); }}><Trash2 data-icon="delete" size={15} />{translate("workbench.deleteThread")}</button>}
+      {shareTarget && <button role="menuitem" onClick={() => { setNotice(''); setPosition(null); setSharing(true); }}><Share2 data-icon="share" size={15} />{translate("sharing.shareThread")}</button>}
+      {owner && <button role="menuitem" onClick={() => { setTitle(detail?.thread.title ?? thread.title); setNotice(''); setPosition(null); setRenaming(true); }}><Pencil data-icon="rename" size={15} />{translate("workbench.renameThread")}</button>}
+      {/* From an editor tab: close it or its neighbours, kept apart from Delete. */}
+      {context?.tab && <>
+        <div role="separator" className="recent-thread-menu-separator" />
+        <button role="menuitem" onClick={() => { setPosition(null); context.tab!.close(); }}><X data-icon="close" size={15} />{translate("workbench.closeThisTab")}</button>
+        {context.tab.closeOthers && <button role="menuitem" onClick={() => { setPosition(null); context.tab!.closeOthers!(); }}><span className="recent-thread-menu-spacer" aria-hidden="true" />{translate("workbench.closeOtherTabs")}</button>}
+        {context.tab.closeRight && <button role="menuitem" onClick={() => { setPosition(null); context.tab!.closeRight!(); }}><span className="recent-thread-menu-spacer" aria-hidden="true" />{translate("workbench.closeTabsToTheRight")}</button>}
+      </>}
+      {owner && <>
+        {context?.tab && <div role="separator" className="recent-thread-menu-separator" />}
+        <button role="menuitem" className="recent-thread-delete" onClick={() => { setNotice(''); setPosition(null); setDeleting(true); }}><Trash2 data-icon="delete" size={15} />{translate("workbench.deleteThread")}</button>
+      </>}
       {notice && <p role="status">{notice}</p>}
     </div>, document.body)}
     <RenameDialog open={renaming} title={translate("workbench.renameThread")} label={translate("workbench.threadTitle")} value={title} busy={busy} error={notice} onChange={setTitle} onCancel={() => setRenaming(false)} onSubmit={async () => {

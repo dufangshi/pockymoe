@@ -22,14 +22,14 @@ function mount() {
 it('offers scoped favorite, rename and confirmed deletion, with successful requests', async () => {
   const {renamed,removed,navigate}=mount();
   fireEvent.click(await screen.findByRole('button',{name:'Actions for reply 1'}));
-  expect(screen.queryByRole('button', {name:'Session details'})).toBeNull();
-  fireEvent.click(await screen.findByRole('button',{name:'Rename thread'}));
+  expect(screen.queryByRole('menuitem', { name: 'Session details' })).toBeNull();
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Rename thread' }));
   fireEvent.change(screen.getByRole('textbox',{name:'Thread title'}),{target:{value:'renamed'}});
   fireEvent.click(screen.getByRole('button',{name:'Save'}));
   await waitFor(() => expect(renamed).toHaveBeenCalledWith('local:reply-1','renamed'));
   expect(request).toHaveBeenCalledWith('api/threads/reply-1',expect.objectContaining({method:'PATCH',body:'{"title":"renamed"}'}));
   fireEvent.click(screen.getByRole('button',{name:'Actions for reply 1'}));
-  fireEvent.click(await screen.findByRole('button',{name:'Delete thread'}));
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete thread' }));
   expect(removed).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button',{name:'Delete'}));
   await waitFor(() => expect(removed).toHaveBeenCalledWith('local:reply-1'));
@@ -48,7 +48,7 @@ it('names its icons with data-icon for theme packs', async () => {
   const trigger = await screen.findByRole('button',{name:'Actions for reply 1'});
   expect(trigger.querySelector('svg')?.getAttribute('data-icon')).toBe('more');
   fireEvent.click(trigger);
-  const icon = async (name: string) => (await screen.findByRole('button',{name})).querySelector('svg')?.getAttribute('data-icon');
+  const icon = async (name: string) => (await screen.findByRole('menuitem',{name})).querySelector('svg')?.getAttribute('data-icon');
   expect(await icon('Star thread')).toBe('shortcut');
   expect(await icon('Open thread')).toBe('open');
   expect(await icon('Rename thread')).toBe('rename');
@@ -59,7 +59,7 @@ it('confirms a copy on the item that copied, then closes', async () => {
   Object.assign(navigator, { clipboard: { writeText } });
   mount();
   fireEvent.click(await screen.findByRole('button',{name:'Actions for reply 1'}));
-  const item = await screen.findByRole('button',{name:'Copy thread ID'});
+  const item = await screen.findByRole('menuitem', { name: 'Copy thread ID' });
   fireEvent.click(item);
   await waitFor(() => expect(item).toHaveAttribute('data-copy-state','copied'));
   // Labelled, so an agent knows it names a Pockymoe thread.
@@ -76,11 +76,23 @@ it('follows a visible trigger while scrolling without reloading its detail', asy
   let top = 100;
   vi.spyOn(trigger, 'getBoundingClientRect').mockImplementation(() => new DOMRect(40, top, 40, 40));
   fireEvent.click(trigger);
-  const item = await screen.findByRole('button', { name: 'Copy harness session ID' });
+  const item = await screen.findByRole('menuitem', { name: 'Copy harness session ID' });
   await waitFor(() => expect(request).toHaveBeenCalled());
   const before = vi.mocked(request).mock.calls.length;
   top = 160;
   fireEvent.scroll(window);
   expect(item.closest('.recent-thread-menu')).toHaveStyle({ top: '206px' });
   expect(request).toHaveBeenCalledTimes(before);
+});
+it('is a menu, and from an editor tab it closes the tab or its neighbours apart from Delete', async () => {
+  const close = vi.fn(), closeOthers = vi.fn(), closeRight = vi.fn(), onClose = vi.fn();
+  render(<HostCapabilitiesProvider scope="local"><RecentThreadMenu thread={thread} currentKey={thread.key} onFavorite={vi.fn()} onRenamed={vi.fn()} onRemoved={vi.fn()} onNavigate={vi.fn()}
+    context={{ x: 10, y: 10, onClose, tab: { close, closeOthers, closeRight } }} /></HostCapabilitiesProvider>);
+  const menu = await screen.findByRole('menu', { name: 'Thread actions: reply 1' });
+  await screen.findByRole('menuitem', { name: 'Delete thread' });
+  const labels = Array.from(menu.querySelectorAll('[role=menuitem], [role=separator]')).map(item => item.getAttribute('role') === 'separator' ? '—' : item.textContent);
+  expect(labels.slice(-6)).toEqual(['—', 'Close tab', 'Close other tabs', 'Close tabs to the right', '—', 'Delete thread']);
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Close other tabs' }));
+  expect(closeOthers).toHaveBeenCalledTimes(1);
+  expect(close).not.toHaveBeenCalled();
 });
