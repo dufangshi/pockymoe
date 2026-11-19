@@ -58,7 +58,7 @@ export function DeviceEncryptionStatus({
   }, [deviceId, status]);
   // A loaded thread whose live connection dropped. Pages start "reconnecting"
   // for a moment while the socket opens, so it shows only after a short grace.
-  const down = !!connection?.loaded && ['reconnecting', 'offline', 'checking'].includes(connection.state);
+  const down = !!connection && (['reconnecting', 'offline'].includes(connection.state) || (connection.loaded && connection.state === 'checking'));
   const [downShown, setDownShown] = useState(false);
   useEffect(() => {
     if (!down) { setDownShown(false); return; }
@@ -141,6 +141,7 @@ export function DeviceEncryptionStatus({
   const encrypted = status?.state === 'encrypted',
     changed = status?.state === 'identity-changed';
   if (hideHealthy && protection !== 'certificate-missing' && protection !== 'pending' && status?.role !== 'grantee' && !changed && !locked && connection?.loaded && (connection.state === 'connected' || (down && !downShown))) return <span className="device-connection-slot" aria-hidden="true" />;
+  // Also before an opened thread has loaded: without the device it never will.
   const disconnected = down && downShown && !changed && !locked;
   const label = !deviceId ? translate("auth.localDeviceConnection") : locked ? translate("auth.accountUnlock") : encrypted
     ? translate(status?.role === 'grantee' ? status.identityTrust === 'invite' ? 'sharing.granteeConnectionPinned' : 'sharing.granteeConnectionTofu' : 'auth.deviceConnectionEncrypted')
