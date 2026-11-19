@@ -53,8 +53,7 @@ pub async fn latest() -> Result<String> {
         .send()
         .await?
         .error_for_status()?;
-    let bytes = response.bytes().await?;
-    ensure!(bytes.len() <= 128, "Invalid release version response");
+    let bytes = pockymoe_runtime::http_body::limited(response, 128).await?;
     stable_version(std::str::from_utf8(&bytes)?)
 }
 pub fn checksums(text: &str) -> Result<BTreeMap<String, String>> {
@@ -82,15 +81,13 @@ pub fn checksums(text: &str) -> Result<BTreeMap<String, String>> {
     Ok(result)
 }
 async fn sums(repo: &str, version: &str) -> Result<BTreeMap<String, String>> {
-    let text = client()?
+    let response = client()?
         .get(format!("{repo}/releases/download/v{version}/SHA256SUMS"))
         .send()
         .await?
-        .error_for_status()?
-        .text()
-        .await?;
-    ensure!(text.len() < 64 * 1024, "Unexpected checksum file size");
-    let sums = checksums(&text)?;
+        .error_for_status()?;
+    let bytes = pockymoe_runtime::http_body::limited(response, 64 * 1024 - 1).await?;
+    let sums = checksums(std::str::from_utf8(&bytes)?)?;
     for name in [
         "remote-codex-linux-x64-gnu",
         "remote-codex-linux-arm64-gnu",

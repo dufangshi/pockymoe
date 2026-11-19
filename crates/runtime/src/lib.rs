@@ -17,6 +17,7 @@ pub mod history;
 pub mod host_hooks;
 pub mod host_messaging;
 pub mod host_mode;
+pub mod http_body;
 pub mod import_id;
 pub mod interaction;
 pub mod local_access;
