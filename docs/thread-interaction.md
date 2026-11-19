@@ -378,7 +378,9 @@ the harness reports twice before it settles shows once) and joins the run when i
 finishes. When the turn ends,
 its work folds into the work line ("Worked for 10s · ✓4 ✕1 · edited 1 file +2 −1";
 counts are icons with numbers, explained after the pointer rests on one for a
-second). Opening that line shows the narration with each run folded; opening a
+moment, or in place on a tap on a touch screen, where the tap does not fold the
+line; failures read in the failure color). On a phone the edits shrink to "±N" so
+the line stays one row. Opening that line shows the narration with each run folded; opening a
 run lists its operations. A folded turn with several answers shows the work
 between them as one counted line; tapping it opens that stretch alone, under the
 line (its narration, its last run open), while the rest of the turn stays folded.
@@ -386,12 +388,25 @@ A folded turn shows the prompts that started it above its work line and the
 prompts added while it worked below it, so opening or folding the turn never
 moves what is above the line, and every toggle stays where it was clicked. The file counts on the work line open only the
 changed files. Command and tool output never opens by itself, and a row loads its
-output only when clicked. Clicking an output, diff or code block opens it in a
-floating viewer, and command rows carry a copy button.
+output only when clicked. An opened command row shows the whole command (up to
+five lines, then it scrolls) whenever its title was cut. Clicking an output, diff
+or code block opens it in a floating viewer, and command rows carry a copy button;
+the viewer key sits in a gutter of the output box, and a code block's copy key in
+its head row beside the language, so neither covers text. A Markdown table scrolls
+in its own box: an edge with more columns past it fades and names how many, a tall
+table keeps its header row in view, and a figure with its unit ("0.42 ms") never
+breaks across lines. A workspace file link reads like a path (mono, a file glyph,
+dashed underline); a web link carries ↗. A picture that cannot load keeps its
+description beside the placeholder.
 
-Each turn opens with a head line above its prompt: a dot with the time the turn
-has worked (green and pulsing while it works, red when it failed) and the cost
-control, which opens the token and price breakdown. On a wide screen (640 px and
+Durations read the same everywhere in a thread: "39m 24s" in English, "39 分 24 秒"
+in Chinese, hours without seconds; token counts use K/M/B, so "m" is only ever
+minutes. A turn whose model has no API price shows its token total instead of a
+price, and an unknown speed is left out rather than shown as a dash.
+
+Each turn opens with a head line above its prompt: a mark with the time the turn
+has worked (a dot, green and pulsing while it works; a red diamond when it failed,
+an amber square when it was interrupted) and the cost control, which opens the token and price breakdown. On a wide screen (640 px and
 up) the same line goes on with the rest; on a phone tapping the head opens it on
 one more line under it: the start time (tapping it adds the date), the model, shortened
 ("claude-opus-5-5" reads "opus 5.5", "gpt-6-astra" "6 astra"), with its reasoning
@@ -404,6 +419,25 @@ the call in progress. A prompt added while the turn
 worked carries a merge mark and its time above it. Waiting for a wake and running
 background agents show as small moving marks (an hourglass, a bot with its count)
 whose wording is in their label.
+
+A working turn's footer starts with three still dots in the theme accent while
+output arrives; they turn muted after five quiet seconds and hollow after twenty,
+when a wide screen adds "3 min without new output" (a long command is work, not an
+error, so red stays for failures). Tapping the dots says when progress last came.
+
+An ended turn that recorded nothing opens to say so, then why in one readable
+sentence (usage limit reached, model unavailable, server error, connection lost),
+with Retry, which sends the reader's own prompt again, and the original error
+folded under "Original error". An interrupted turn's reason mark sits beside its
+amber "Interrupted" on the work line, in amber; its bubble leads with the readable
+sentence and keeps the raw error in small type. A turn that ran no tools shows its
+time as a quiet note without the dashed rule of a work line that opens.
+
+Above the first loaded turn one centred row offers "↑ N earlier turns" while more
+remain; each step loads ten turns. A search result opens its turn, waits until the
+turn's work has unfolded and lands on the matching message itself, held in place
+while anything above it settles. Search excerpts show a message's words without
+Markdown marks or link targets.
 
 Settings > Preferences > Text size (12–22 px, 16 by default, stored in this
 browser) scales the conversation and the prompt as a whole in every theme pack,
@@ -601,10 +635,13 @@ usage and split switches. Its Hand choice (also More > Left-handed) mirrors the
 panel for the left thumb: More, the views, Send, the turn strip, the files
 prompt's send button and the thread sheet's New thread move to the left.
 
-Above the composer, at its right edge, one strip holds previous turn, next turn
-and the latest reply; the latest-reply button takes an accent tint (not Send's
-fill) only while the reader is away from the end. An opened message's "Show
-less", a small label on a light wash, rides just above the composer's own box
+Above the composer, at its right edge, one strip holds only what can act: at the
+end of the conversation just previous turn; away from it previous turn, next turn
+and a labelled "Latest" in an accent tint (not Send's fill). A phone shows only
+"Latest", and only away from the end. On a wide screen the conversation fades out
+under the floating composer instead of showing cut lines below it. A long reply
+folds behind "Show all (about N more characters)" with a right-pointing chevron;
+an opened message's "Show less", a small pill with an edge, rides just above the composer's own box
 (6px), or just above whatever stands over the composer at that spot (the turn
 strip, the composer's corner marks, queued prompts). A reply longer than 1,200
 characters opens folded at that length.

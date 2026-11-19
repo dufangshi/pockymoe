@@ -185,7 +185,8 @@ import { useThreadWorkspaceAdapter } from './useThreadWorkspaceAdapter';
 import { ThreadCreateForm } from './thread-create/ThreadCreateForm';
 
 const INITIAL_DETAIL_TURN_PAGE_SIZE = 3;
-const DETAIL_TURN_PAGE_SIZE = 3;
+// Paging back: ten turns a step, so a long thread does not take fifty clicks.
+const DETAIL_TURN_PAGE_SIZE = 10;
 const SUPERVISOR_SOCKET_RECONNECT_DELAY_MS = 1_000;
 const SUPERVISOR_HEALTHCHECK_INTERVAL_MS = 2_000;
 const SUPERVISOR_CONNECTION_STALE_MS = SUPERVISOR_HEARTBEAT_TIMEOUT_MS;

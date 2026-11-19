@@ -774,6 +774,12 @@
   :theme .thread-ui-shell .thread-graph-message-bubble.is-user { padding: 0.7rem 0.95rem; border-radius: 18px 18px 6px 18px; }
   :theme .thread-ui-shell .thread-transcript-agent .matter-thread-avatar { width: 28px; height: 28px; }
   :theme .thread-ui-shell .thread-transcript-agent-name { font-size: 15px; }
+  /* An opened turn's work line rides at the top: there the byline shrinks to a
+     small avatar beside the summary (one row, about 36px) instead of a row of
+     its own; the agent keeps its avatar. */
+  :theme .thread-ui-shell .thread-graph-worked-summary:has(> .thread-worked-toggle[aria-expanded='true']) { flex-wrap: nowrap; min-height: 0; padding-block: 2px; }
+  :theme .thread-ui-shell .thread-graph-worked-summary:has(> .thread-worked-toggle[aria-expanded='true']) .thread-transcript-agent-name { display: none; }
+  :theme .thread-ui-shell .thread-graph-worked-summary:has(> .thread-worked-toggle[aria-expanded='true']) .thread-transcript-agent .matter-thread-avatar { width: 22px; height: 22px; }
   :theme .thread-ui-shell .thread-execution-timeline { padding: 4px 6px; border-radius: 14px; }
   /* 44px touch targets for everything a thumb opens. */
   :theme .thread-ui-shell .thread-graph-worked-summary > button,
