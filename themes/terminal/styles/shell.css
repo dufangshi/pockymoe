@@ -66,8 +66,9 @@
 }
 :theme .thread-ui-shell .matter-workbench .matter-thread-row[aria-current='page'] .matter-thread-avatar { box-shadow: 0 0 0 1px var(--theme-bg); }
 :theme .matter-status-dot { border-radius: 0; }
-/* Beside an emblem only a state worth noticing keeps its mark. */
-:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item, .matter-thread-tabs > a) > .matter-thread-avatar + .matter-status-dot[data-status='idle'] { display: none; }
+/* Beside an emblem only a state worth noticing keeps its mark. An idle mark is
+   hidden but keeps its place, so the title does not move left of the others. */
+:theme :is(.matter-thread-row, .matter-group-tab, .matter-agent-threads-item, .matter-thread-tabs > a) > .matter-thread-avatar + .matter-status-dot[data-status='idle'] { visibility: hidden; }
 /* The terminal's own marks, with the same meanings: running is a blinking block
    cursor, agent threads working an outlined block that breathes, interrupted a
    short bar (a stop), so no two states differ by color alone. */
@@ -82,6 +83,11 @@
 }
 :theme .matter-status-dot[data-status='interrupted'] { width: 9px; height: 3px; border: 0; background: #c08a3e; }
 :theme .matter-status-dot[data-status='unread'] { box-shadow: none; }
+/* Its marks are 6–9px wide: one 9px slot keeps list titles in line. */
+:theme :is(.matter-thread-row, .matter-agent-threads-item) > .matter-status-dot { margin-inline: 1px; }
+:theme :is(.matter-thread-row, .matter-agent-threads-item) > .matter-status-dot[data-status='running'] { margin-inline: 1.5px; }
+:theme :is(.matter-thread-row, .matter-agent-threads-item) > .matter-status-dot[data-status='interrupted'] { margin-inline: 0; }
+:theme :is(.matter-thread-row, .matter-agent-threads-item) > .matter-status-dot[data-status='waiting'] { margin-inline: -1.5px; }
 
 
 /* Tab strip: square tabs, the current one inverse. */
