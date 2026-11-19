@@ -173,6 +173,7 @@
   --ws-selected-fg: #f7e6ff;
 }
 :theme .thread-ui-shell :is(.thread-graph-explorer, .thread-graph-explorer-header) {
+  --thread-graph-explorer-background: var(--theme-panel);
   border-color: var(--theme-border);
   background: var(--theme-panel);
 }
