@@ -59,12 +59,15 @@ export function DeviceEncryptionStatus({
   // A loaded thread whose live connection dropped. Pages start "reconnecting"
   // for a moment while the socket opens, so it shows only after a short grace.
   const down = !!connection && (['reconnecting', 'offline'].includes(connection.state) || (connection.loaded && connection.state === 'checking'));
-  const [downShown, setDownShown] = useState(false);
+  // The browser saying it is offline needs no grace.
+  const offline = connection?.state === 'offline';
+  const [graceOver, setGraceOver] = useState(false);
   useEffect(() => {
-    if (!down) { setDownShown(false); return; }
-    const timer = window.setTimeout(() => setDownShown(true), DOWN_GRACE_MS);
+    if (!down || offline) { setGraceOver(false); return; }
+    const timer = window.setTimeout(() => setGraceOver(true), DOWN_GRACE_MS);
     return () => window.clearTimeout(timer);
-  }, [down]);
+  }, [down, offline]);
+  const downShown = down && (offline || graceOver);
   const [open, setOpen] = useState(false),
     [confirm, setConfirm] = useState<TransportStatus | null>(null);
   // Which identity action failed, shown as a mark after its button.
