@@ -46,7 +46,7 @@ test('selected-turn fork shows errors at the selected row and retries into the n
   });
   await page.goto(`/threads/${id}`);
   await page.getByRole('button', { name: 'Open slash toolbox' }).click();
-  await page.getByRole('button', { name: '/fork', exact: false }).click();
+  await page.getByRole('menuitem', { name: '/fork', exact: false }).click();
   await page.getByRole('button', { name: 'Fork from selected turn' }).click();
   await page.getByRole('button', { name: /^Turn 20\b/ }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Creating fork' })).toBeInViewport();

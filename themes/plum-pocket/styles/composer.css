@@ -411,13 +411,17 @@
   font-weight: 700;
   letter-spacing: 0.08em !important;
 }
-/* Active toggles (plan, fast, an active goal) light up the whole row. */
-:theme .thread-ui-shell [data-composer-menu-surface='true'] button[data-toolbox-action].ui-status-warning {
+/* Active toggles (plan, fast, an active goal) light up the whole row; the
+   switch or state on the right says the same in every theme. */
+:theme .thread-ui-shell [data-composer-menu-surface='true'] button[data-toolbox-action]:is([data-on], [data-active]),
+:theme .thread-ui-shell [data-composer-menu-surface='true'] [data-toolbox-action][data-active] > button:first-child {
   background: var(--theme-accent-soft) !important;
   box-shadow: inset 0 0 0 1.5px var(--theme-accent-border);
 }
-:theme .thread-ui-shell button[data-toolbox-action].ui-status-warning .composer-toolbox-status { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg) !important; }
-:theme .thread-ui-shell button[data-toolbox-action].ui-status-warning .composer-toolbox-icon { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); }
+:theme .thread-ui-shell [data-toolbox-action]:is([data-on], [data-active]) .composer-toolbox-status:not(.composer-toolbox-status-switch) { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg) !important; }
+:theme .thread-ui-shell [data-toolbox-action]:is([data-on], [data-active]) .composer-toolbox-icon { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); }
+/* The switch sits bare in the pill column. */
+:theme .thread-ui-shell .composer-toolbox-status-switch { padding: 0; background: transparent; }
 /* /goal is a split row: view goals | open the goal composer. */
 :theme .thread-ui-shell .composer-toolbox-split { border: 0 !important; border-radius: 12px; }
 :theme .thread-ui-shell .composer-toolbox-split > button:first-child { padding: 6px 8px 6px 6px !important; }
@@ -600,7 +604,8 @@
   font-weight: 600;
   letter-spacing: 0.1em;
 }
-:theme .thread-ui-shell .thread-goal-compose-label::before {
+/* The goal composer's target; the mode chips (goal, plan, fast) bring their own icon. */
+:theme .thread-ui-shell .thread-goal-compose-card:not(.composer-mode-chip) .thread-goal-compose-label::before {
   content: '';
   width: 14px;
   height: 14px;
