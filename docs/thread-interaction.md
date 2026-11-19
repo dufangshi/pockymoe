@@ -325,7 +325,11 @@ to the whole report, set at the size of a reply in every theme, then **Work afte
 wake** above the receiving agent's execution history. What the agent answered
 after the wake stands outside the wake's fold, under its row: its first four lines
 with a fade, opening in place, so a folded wake never hides the answer. The last
-wake's answer is the task's closing answer below the wakes and shows once. `idle` means
+wake's answer is the task's closing answer below the wakes and shows once. What
+the reader sent into a wake turn while it worked (steers, added prompts) stands
+there too, in time order with that answer and drawn like a turn's added prompt;
+a folded task lists them under its work line. Only the wake prompt the
+Supervisor wrote is never shown as the reader's. `idle` means
 execution ended, not that the task succeeded. The UI reads reports from the
 original wake envelope when older devices supply only state metadata, and shows
 an explicit missing-report message if no report was included.
