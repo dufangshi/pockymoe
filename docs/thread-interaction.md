@@ -708,7 +708,11 @@ On touch two fingers
 pinching in go up a level, spreading them opens the block under them, and dragging
 the map down closes it. A block too small for what it holds folds up. Go to (the list icon) reaches every block of the current level,
 however small. Hovering or focusing a block shows its details. The map reads its
-devices again every 30 seconds while it is open.
+devices again every 30 seconds while it is open. While nothing has answered it
+shows placeholder tiles and the thread count reads "—", not 0. A device's threads
+appear as soon as its thread list answers, sized alike, and take their 24-hour
+sizes and heat when the slower activity read arrives; first answers from several
+devices land together, like later ones.
 
 It opens from More on a phone, the workspace drawer, the rail on wider screens and
 the workspace list's header. In relay mode it reads each of the account's own

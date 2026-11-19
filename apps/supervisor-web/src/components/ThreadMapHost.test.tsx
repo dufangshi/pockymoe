@@ -128,6 +128,18 @@ describe('useThreadMapDevices', () => {
     await waitFor(() => expect(result.current.devices.every(device => device.state === 'ready')).toBe(true));
     expect(new Set(seen.filter(Boolean))).toEqual(new Set(['loading,loading,loading', 'ready,ready,ready']));
   });
+  it('draws the threads before a slow activity read answers', async () => {
+    vi.mocked(request).mockImplementation(async (path) => {
+      const url = String(path);
+      if (url === 'relay/portal') return { devices: [{ id: 'a', name: 'a', connected: true }] };
+      if (url.includes('thread-activity')) return new Promise(() => {});
+      if (url.endsWith('/api/workspaces')) return workspaces;
+      return [thread('a')];
+    });
+    const { result } = renderHook(() => useThreadMapDevices(true));
+    await waitFor(() => expect(result.current.devices.map(device => device.state)).toEqual(['ready']));
+    expect(result.current.devices[0]!.workspaces.flatMap(workspace => workspace.threads)).toHaveLength(1);
+  });
   it('shows what has answered when one device is slow', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
