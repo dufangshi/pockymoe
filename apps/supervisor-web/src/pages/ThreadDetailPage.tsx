@@ -2678,22 +2678,15 @@ export function ThreadDetailPage() {
 
     setBusy(true);
     setError(null);
-    if (input.attachments?.length) {
-      // Before anything of the prompt shows: its draft stays until the files are there.
-      try {
-        const prepared = await attachmentUploads.upload(input);
-        if (!prepared || activeRouteRef.current !== routeKey) {
-          setBusy(false);
-          return false;
-        }
-        input = prepared;
-      } catch (caught) {
-        setError(caught instanceof ApiError ? caught.payload.message : caught instanceof Error ? caught.message : translate("workbench.unableToSendPrompt"));
-        setBusy(false);
-        return false;
-      }
-    }
-    setScrollRequestKey((current) => current + 1);
+    // A sent prompt shows only in the transcript: the composer empties now and
+    // the send key spins. A prompt that is not sent goes back to the composer,
+    // ahead of anything typed meanwhile. The setter stays bound to this thread.
+    const restoreChatDraft = setChatDraft;
+    let sentDraft: { prompt: string; attachments: PromptAttachmentUpload[] } | null = null;
+    restoreChatDraft((current) => {
+      sentDraft ??= current;
+      return { prompt: '', attachments: [] };
+    });
     const activeDetail = detailRef.current;
     const effectiveThread = activeDetail
       ? {
@@ -2708,6 +2701,99 @@ export function ThreadDetailPage() {
     const optimisticSteerId = `optimistic-steer-${clientRequestId}`;
     const optimisticStartedAt = new Date().toISOString();
     let optimisticAttachmentPreviews: OptimisticAttachmentPreview[] = [];
+    let pendingShownAs: 'turn' | 'steer' | null = null;
+    const showPendingPrompt = (steerTurnId: string | null) => {
+      if (steerTurnId) {
+        if (pendingShownAs === 'turn') {
+          setOptimisticTurn((current) => current && current.id === optimisticTurnId ? null : current);
+        }
+        setOptimisticSteers((current) => [
+          ...current.filter((steer) => steer.id !== optimisticSteerId),
+          {
+            id: optimisticSteerId,
+            clientRequestId,
+            turnId: steerTurnId,
+            prompt: input.prompt,
+            createdAt: optimisticStartedAt,
+            status: 'steering',
+            delivery: input.delivery === 'steer' ? 'steer' : 'continuation',
+          },
+        ]);
+        pendingShownAs = 'steer';
+        return;
+      }
+      if (pendingShownAs === 'steer') {
+        setOptimisticSteers((current) => current.filter((steer) => steer.id !== optimisticSteerId));
+      }
+      if (pendingShownAs === 'turn') return;
+      optimisticAttachmentPreviews = buildOptimisticAttachmentPreviews(
+        input.attachments,
+      );
+      clearBufferedLiveOutput();
+      setLiveOutput('');
+      setOptimisticTurn({
+        id: optimisticTurnId,
+        clientRequestId,
+        serverTurnId: null,
+        startedAt: optimisticStartedAt,
+        status: 'sending',
+        error: null,
+        prompt: input.prompt,
+        attachmentPreviews: optimisticAttachmentPreviews,
+        model: optimisticModel,
+        reasoningEffort: optimisticReasoningEffort,
+        reasoningEffortAvailable: getReasoningEffortAvailability(
+          modelOptions,
+          optimisticModel,
+        ),
+        tokenUsage: null,
+        priceEstimate: null,
+      });
+      pendingShownAs = 'turn';
+    };
+    const withdrawPendingPrompt = () => {
+      setOptimisticSteers((current) =>
+        current.filter((steer) => steer.clientRequestId !== clientRequestId),
+      );
+      setOptimisticTurn((current) =>
+        current && current.id === optimisticTurnId ? null : current,
+      );
+      restoreChatDraft((current) => {
+        const sent = sentDraft;
+        if (!sent || (!sent.prompt && sent.attachments.length === 0)) return current;
+        if (!current.prompt && current.attachments.length === 0) return sent;
+        return {
+          prompt: [sent.prompt, current.prompt].filter(Boolean).join('\n\n'),
+          attachments: [...sent.attachments, ...current.attachments],
+        };
+      });
+    };
+    const runningTurnId = (thread: ThreadDto | null | undefined) =>
+      activeView === 'chat' && thread?.status === 'running' ? thread.activeTurnId : null;
+
+    setScrollRequestKey((current) => current + 1);
+    if (input.attachments?.length) {
+      // The prompt shows while its files upload; their progress stays in the composer.
+      showPendingPrompt(runningTurnId(effectiveThread));
+      try {
+        const prepared = await attachmentUploads.upload(input);
+        if (!prepared || activeRouteRef.current !== routeKey) {
+          withdrawPendingPrompt();
+          setBusy(false);
+          return false;
+        }
+        input = prepared;
+        // Large files are uploaded first and their placeholders become paths.
+        const preparedPrompt = prepared.prompt;
+        setOptimisticTurn((current) => current && current.id === optimisticTurnId ? { ...current, prompt: preparedPrompt } : current);
+        setOptimisticSteers((current) => current.map((steer) => steer.id === optimisticSteerId ? { ...steer, prompt: preparedPrompt } : steer));
+      } catch (caught) {
+        withdrawPendingPrompt();
+        setError(caught instanceof ApiError ? caught.payload.message : caught instanceof Error ? caught.message : translate("workbench.unableToSendPrompt"));
+        setBusy(false);
+        return false;
+      }
+    }
 
     try {
       let currentDetail = detailRef.current;
@@ -2722,7 +2808,10 @@ export function ThreadDetailPage() {
             ...(currentDetail.thread.model ? { model: currentDetail.thread.model } : {}),
           },
         );
-        if (activeRouteRef.current !== routeKey) return false;
+        if (activeRouteRef.current !== routeKey) {
+          withdrawPendingPrompt();
+          return false;
+        }
         const resumedDetail = {
           ...resumed,
           thread: {
@@ -2762,51 +2851,9 @@ export function ThreadDetailPage() {
             ...(pendingThreadSettingsRef.current ?? {}),
           }
         : null;
-      const steerTargetTurnId =
-        currentEffectiveThread?.status === 'running'
-          ? currentEffectiveThread.activeTurnId
-          : null;
-      const shouldSteer =
-        activeView === 'chat' && Boolean(steerTargetTurnId);
-
-      if (shouldSteer && steerTargetTurnId) {
-        setOptimisticSteers((current) => [
-          ...current,
-          {
-            id: optimisticSteerId,
-            clientRequestId,
-            turnId: steerTargetTurnId,
-            prompt: input.prompt,
-            createdAt: optimisticStartedAt,
-            status: 'steering',
-            delivery: input.delivery === 'steer' ? 'steer' : 'continuation',
-          },
-        ]);
-      } else {
-        optimisticAttachmentPreviews = buildOptimisticAttachmentPreviews(
-          input.attachments,
-        );
-        clearBufferedLiveOutput();
-        setLiveOutput('');
-        setOptimisticTurn({
-          id: optimisticTurnId,
-          clientRequestId,
-          serverTurnId: null,
-          startedAt: optimisticStartedAt,
-          status: 'sending',
-          error: null,
-          prompt: input.prompt,
-          attachmentPreviews: optimisticAttachmentPreviews,
-          model: optimisticModel,
-          reasoningEffort: optimisticReasoningEffort,
-          reasoningEffortAvailable: getReasoningEffortAvailability(
-            modelOptions,
-            optimisticModel,
-          ),
-          tokenUsage: null,
-          priceEstimate: null,
-        });
-      }
+      const steerTargetTurnId = runningTurnId(currentEffectiveThread);
+      const shouldSteer = Boolean(steerTargetTurnId);
+      showPendingPrompt(steerTargetTurnId);
 
       const promptInput = {
         prompt: input.prompt,
@@ -2921,10 +2968,6 @@ export function ThreadDetailPage() {
           setError(translate("workbench.messageSavedButSteerCouldNotBe", { value1: caught instanceof Error ? caught.message : translate("workbench.tryTheQueuedMessageAfterReconnecting") }));
         }
       }
-      setChatDraft({
-        prompt: '',
-        attachments: [],
-      });
       return true;
     } catch (caught) {
       const message =
@@ -2938,18 +2981,7 @@ export function ThreadDetailPage() {
       } else {
         setError(message);
       }
-      setOptimisticSteers((current) =>
-        current.filter((steer) => steer.clientRequestId !== clientRequestId),
-      );
-      setOptimisticTurn((current) =>
-        current && current.id === optimisticTurnId
-          ? {
-              ...current,
-              status: 'failed',
-              error: message,
-            }
-          : current,
-      );
+      withdrawPendingPrompt();
       return false;
     } finally {
       setBusy(false);
