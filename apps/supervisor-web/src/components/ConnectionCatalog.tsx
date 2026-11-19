@@ -547,13 +547,14 @@ function ConnectionRow({
                 <span className={fullMeta ? 'min-w-0 break-all' : 'min-w-0 truncate'}>{meta}</span>
               ) : (
                 <>
-                  <span className="shrink-0">{protocols}</span>
-                  <span className="shrink-0" aria-hidden>·</span>
+                  {/* The spaces keep the line's text whole ("A · url · model") for copy and find. */}
+                  <span className="shrink-0">{protocols}</span>{' '}
+                  <span className="shrink-0">·</span>{' '}
                   <span className="flex min-w-0 font-mono">
                     <span className="min-w-0 truncate">{urlHead}</span>
                     <span className="shrink-0">{urlTail}</span>
                   </span>
-                  {rest && <span className="min-w-0 max-w-[40%] shrink truncate">· {rest}</span>}
+                  {rest && <>{' '}<span className="min-w-0 max-w-[40%] shrink truncate">· {rest}</span></>}
                 </>
               )}
             </button>
