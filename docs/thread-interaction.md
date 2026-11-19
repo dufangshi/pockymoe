@@ -318,9 +318,14 @@ not fetch all continuation details. Viewing a question does not acknowledge or
 answer its inbox record.
 
 Result notifications from a registered wait have a separate **Delegate wake**
-label and bell icon. The collapsed row names the triggering delegates; expanding
-it shows each source, a localized execution state and its closing report, then
-**Work after wake** above the receiving agent's execution history. `idle` means
+label and bell icon; the row leads with its chevron. The collapsed row names
+the triggering delegates; expanding it lists each source as one row (name, a
+localized execution state and the first line of its closing report) that opens
+to the whole report, set at the size of a reply in every theme, then **Work after
+wake** above the receiving agent's execution history. What the agent answered
+after the wake stands outside the wake's fold, under its row: its first four lines
+with a fade, opening in place, so a folded wake never hides the answer. The last
+wake's answer is the task's closing answer below the wakes and shows once. `idle` means
 execution ended, not that the task succeeded. The UI reads reports from the
 original wake envelope when older devices supply only state metadata, and shows
 an explicit missing-report message if no report was included.
@@ -328,7 +333,7 @@ an explicit missing-report message if no report was included.
 The physical execution turns and their billing remain separate. The task header
 adds known usage and costs across its visible continuations; an unknown cost is
 not treated as zero. The latest active progress or final reply stays outside the
-fold, while older responses stay with the question that caused them. Pending
+fold; each earlier wake's answer shows under that wake's row. Pending
 human approvals remain accessible outside the folded history. A new human task
 is a display boundary. If pagination has not loaded the parent, a continuation
 has its own question fold until the parent arrives.
