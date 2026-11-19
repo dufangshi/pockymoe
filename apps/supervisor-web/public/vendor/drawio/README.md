@@ -12,7 +12,11 @@ URLs and external stencil downloads are intentionally unavailable; embedded data
 images and the shapes included in the official static viewer are supported.
 
 The versioned filenames match the relay's immutable asset caching policy.
-`bootstrap.v1.js` is our small initialization adapter. Executable code must stay
+`bootstrap.v2.js` is our small initialization adapter; the shared UI loads it.
+It gives the diagram element an explicit full-pane size so the viewer fits a
+larger diagram into the pane on first open. `bootstrap.v1.js` is kept unchanged
+for older clients that still request it (relay caching is immutable per
+filename). Executable code must stay
 in external scripts: srcdoc inherits the relay's HTTP CSP, which prohibits inline
 scripts and eval. Diagram XML is escaped in an inert application/json element.
 

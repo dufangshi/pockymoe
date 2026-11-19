@@ -322,6 +322,47 @@ async fn staged_and_worktree_diff_read_their_own_git_states() {
 }
 
 #[tokio::test]
+async fn the_full_worktree_diff_lists_untracked_files_as_new_files() {
+    let f = Fixture::new().await;
+    std::fs::write(f.repo.join("tracked.txt"), "changed\n").unwrap();
+    std::fs::write(f.repo.join("brand new.txt"), "fresh line\n").unwrap();
+    let diff = f
+        .state
+        .worktree_git_diff(&f.thread, None, "worktree", None, None)
+        .unwrap();
+    let patch = diff["patch"].as_str().unwrap();
+    assert!(patch.contains("+changed"));
+    assert!(patch.contains("--- /dev/null\n+++ b/brand new.txt\n"));
+    assert!(patch.contains("+fresh line"));
+    assert_eq!(diff["truncated"], false);
+    let staged = f
+        .state
+        .worktree_git_diff(&f.thread, None, "index", None, None)
+        .unwrap();
+    assert!(!staged["patch"].as_str().unwrap().contains("brand new.txt"));
+}
+
+#[tokio::test]
+async fn a_commit_diff_shows_only_what_that_commit_changed() {
+    let f = Fixture::new().await;
+    std::fs::write(f.repo.join("tracked.txt"), "second version\n").unwrap();
+    run_git(&f.repo, &["commit", "-qam", "second"]);
+    std::fs::write(f.repo.join("tracked.txt"), "uncommitted\n").unwrap();
+    let head = run_git(&f.repo, &["rev-parse", "HEAD"]);
+    let diff = f
+        .state
+        .worktree_git_diff(&f.thread, None, "commit", Some(head.trim()), None)
+        .unwrap();
+    let patch = diff["patch"].as_str().unwrap();
+    assert!(patch.contains("+second version"));
+    assert!(!patch.contains("uncommitted"));
+    assert!(f
+        .state
+        .worktree_git_diff(&f.thread, None, "commit", Some("--output=/tmp/x"), None)
+        .is_err());
+}
+
+#[tokio::test]
 async fn untracked_previews_bound_utf8_output_and_do_not_follow_symlinks() {
     let f = Fixture::new().await;
     std::fs::write(f.repo.join("large.txt"), "é\n".repeat(OUTPUT_LIMIT / 3)).unwrap();

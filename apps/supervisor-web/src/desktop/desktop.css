@@ -81,14 +81,33 @@
 .desktop-route[hidden] { display: block; visibility: hidden; pointer-events: none; }
 
 
-/* A ready update is a host action, not a thread status. Keep its 32px circle
-   and 40px target across packs; only the existing busy spinner animates.
+/* A ready update is a host action, not a thread status: an outlined accent ring with a
+   download glyph, a dot and a one-word label, so it never reads as the composer's filled
+   Send button. Keep the 40px target across packs; only the busy spinner animates. A retry
+   that is no longer allowed is dimmed and says so (ui-principles §11 unavailable controls).
    The rail pack's generic SVG size must not resize this 16px action glyph. */
 :root:root [data-desktop-surface] .desktop-client-update { position: relative; display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
-:root:root [data-desktop-surface] .desktop-client-update-button { width: 40px; height: 40px; padding: 4px; display: grid; place-items: center; border: 0; background: transparent; border-radius: 50%; box-shadow: none; color: var(--theme-accent-solid-fg); }
-:root:root [data-desktop-surface] .desktop-client-update-circle { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 50%; background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); }
-:root:root [data-desktop-surface] .desktop-client-update-circle > svg { width: 16px !important; height: 16px !important; }
-:root:root [data-desktop-surface] .desktop-client-update-button:disabled { opacity: 1; cursor: progress; }
+:root:root [data-desktop-surface] .desktop-client-update-button { width: 44px; min-height: 40px; padding: 2px 0; display: flex; flex-direction: column; align-items: center; gap: 1px; border: 0; background: transparent; border-radius: 8px; box-shadow: none; color: var(--theme-accent-solid); }
+:root:root [data-desktop-surface] .desktop-client-update-circle { position: relative; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; border: 1.5px solid var(--theme-accent-solid); background: transparent; color: var(--theme-accent-solid); box-sizing: border-box; }
+:root:root [data-desktop-surface] .desktop-client-update-circle::after { content: ''; position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--theme-accent-solid); box-shadow: 0 0 0 1.5px var(--matter-chrome, var(--theme-bg)); }
+:root:root [data-desktop-surface] .desktop-client-update-circle > svg { width: 15px !important; height: 15px !important; }
+:root:root [data-desktop-surface] .desktop-client-update-label { font-size: 10px; line-height: 12px; font-weight: 600; white-space: nowrap; }
+:root:root [data-desktop-surface] .desktop-client-update-button[aria-busy='true'] { cursor: progress; }
+:root:root [data-desktop-surface] .desktop-client-update-button:disabled:not([aria-busy='true']) { opacity: .45; cursor: not-allowed; }
+:root:root [data-desktop-surface] .desktop-client-update-button:disabled:not([aria-busy='true']) .desktop-client-update-circle::after { display: none; }
 :root:root [data-desktop-surface] .desktop-client-update-button:focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 1px; }
+@media (hover: hover) { :root:root [data-desktop-surface] .desktop-client-update-button:not(:disabled):hover { background: var(--theme-hover); } }
 :root:root [data-desktop-surface] .desktop-client-update-failure { width: 40px; height: 40px; display: grid; place-items: center; }
 [data-desktop-surface] .desktop-route > [data-page="account"] { height: 100%; overflow-y: auto; }
+
+/* Signed out or Relay unreachable: one card with its ways out, centred under the title bar. */
+.desktop-blocked { position: fixed; inset: var(--desktop-title-height, 38px) 0 0; display: grid; place-items: center; padding: 24px; }
+.desktop-blocked-card { width: min(360px, 100%); padding: 24px; border: 1px solid var(--theme-border); border-radius: 12px; background: var(--theme-panel, var(--theme-bg)); color: var(--theme-fg); box-shadow: var(--theme-shadow); }
+.desktop-blocked-card h1 { margin: 0 0 6px; font-size: 17px; line-height: 24px; font-weight: 600; }
+.desktop-blocked-card p { margin: 0 0 18px; font-size: 13px; line-height: 20px; color: var(--theme-fg-muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.desktop-blocked-primary { width: 100%; min-height: 40px; border: 0; border-radius: 8px; background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); font-weight: 600; font-size: 14px; }
+.desktop-blocked-links { display: flex; justify-content: center; gap: 4px; margin-top: 8px; }
+.desktop-blocked-links:empty { display: none; }
+.desktop-blocked-links button { min-height: 32px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--theme-accent-solid); font-size: 12px; }
+.desktop-blocked :is(button):focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 2px; }
+@media (hover: hover) { .desktop-blocked-links button:hover { background: var(--theme-hover); } .desktop-blocked-primary:hover { filter: brightness(1.06); } }

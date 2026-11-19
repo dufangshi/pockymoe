@@ -32,7 +32,7 @@ test('searches device and workspace histories and opens the original message wit
     await expect.poll(async () => (await (await request.get(`${apiBase}/api/threads/${thread.id}?view=summary`)).json()).thread.status).toBe('idle');
   }
   await page.goto(`/threads/${threads[0]!.id}`);
-  await page.getByRole('button', { name: 'Search conversation', exact: true }).click();
+  await page.getByRole('button', { name: 'Search thread', exact: true }).click();
   const input = page.getByRole('combobox', { name: 'Search messages' });
   const scope = page.getByRole('button', { name: 'Search scope' });
   await input.fill(needle);
@@ -61,7 +61,7 @@ test('searches device and workspace histories and opens the original message wit
   await expect(original).toContainText(`${needle} 1 100% _`);
   await page.reload();
   await expect(page.locator(`[data-message-id="${messageId}"]`)).toBeVisible();
-  await page.getByRole('button', { name: 'Search conversation', exact: true }).click();
+  await page.getByRole('button', { name: 'Search thread', exact: true }).click();
   await selectControl(page, page.getByRole('button', { name: 'Search scope' }), 'device');
   await page.getByRole('combobox', { name: 'Search messages' }).fill(`Decision 0 ${suffix}`);
   await expect(page.getByRole('listbox').getByRole('option')).toHaveCount(1);

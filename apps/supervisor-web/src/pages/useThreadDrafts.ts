@@ -7,8 +7,70 @@ interface Draft {
 const empty: Draft = { prompt: '', attachments: [] };
 /** Drafts outlive the page that edits them: switching to a thread on another
     device remounts the workbench, and a half-written prompt must not vanish.
-    Memory only (this tab), never storage. */
+    The text also survives a reload of this tab (sessionStorage: this tab only,
+    gone when it closes, never localStorage); attached files stay in memory, so a
+    reload keeps the words and drops the files' placeholders. Leaving the page
+    with a draft asks first (docs/ui-principles.md §4). */
 const kept = new Map<string, Draft>();
+const STORE_KEY = 'pockymoe.threadDrafts.v1';
+/** Attachment and quote placeholders; their files do not survive a reload. */
+const PLACEHOLDER = /\[(?:PHOTO|FILE|QUOTE) [^\]\n]*\]/g;
+function restoreStoredDrafts() {
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(STORE_KEY) ?? '{}') as Record<string, unknown>;
+    for (const [key, prompt] of Object.entries(stored)) {
+      if (typeof prompt !== 'string') continue;
+      const text = prompt.replace(PLACEHOLDER, '').replace(/[ \t]+\n/g, '\n').trim();
+      if (text && !kept.has(key)) kept.set(key, { prompt: text, attachments: [] });
+    }
+  } catch { /* No storage (private mode): drafts stay in memory only. */ }
+}
+function storeDrafts() {
+  try {
+    const texts = Object.fromEntries([...kept].filter(([, draft]) => draft.prompt.trim()).map(([key, draft]) => [key, draft.prompt]));
+    if (Object.keys(texts).length) sessionStorage.setItem(STORE_KEY, JSON.stringify(texts));
+    else sessionStorage.removeItem(STORE_KEY);
+  } catch { /* Full or unavailable: the draft still holds in memory. */ }
+}
+if (typeof window !== 'undefined') restoreStoredDrafts();
+
+/** A native client update asked for and got approval for these drafts. */
+let unloadApproval: number | null = null;
+export function approveThreadDraftUnload(revision: number | null) { unloadApproval = revision; }
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', event => {
+    if (!kept.size) return;
+    if (unloadApproval !== null && unloadApproval === keptRevision) {
+      if (event.isTrusted) unloadApproval = null;
+      return;
+    }
+    event.preventDefault();
+    event.returnValue = '';
+  });
+}
+
+/** A thread created with its first prompt: the thread page sends it once open. */
+const autoSend = new Set<string>();
+export function seedThreadDraft(key: string, prompt: string, send: boolean) {
+  if (!key || !prompt.trim()) return;
+  kept.set(key, { prompt, attachments: [] });
+  keptRevision++;
+  storeDrafts();
+  if (send) autoSend.add(key);
+}
+/** True once for a thread whose first prompt waits to be sent. */
+export function takeThreadAutoSend(key: string) {
+  return autoSend.delete(key);
+}
+
+/** The start of the unsent prompt kept for a thread, for its tab and row. */
+export function getThreadDraftPreview(key: string): string | undefined {
+  const draft = kept.get(key);
+  if (!draft) return undefined;
+  const text = draft.prompt.replace(PLACEHOLDER, ' ').replace(/\s+/g, ' ').trim();
+  if (text) return text.length > 60 ? `${text.slice(0, 60)}…` : text;
+  return draft.attachments[0]?.originalName;
+}
 const titles = new Map<string, string>();
 export function registerThreadDraftTitle(key: string, title: string | undefined): void {
   if (key && title?.trim()) titles.set(key, title.trim());
@@ -27,11 +89,11 @@ export function getUnsentThreadDraftCounts(): { drafts: number; attachments: num
 }
 function keep(key: string, draft: Draft | undefined) {
   if (!key) return;
-  if (!draft || (!draft.prompt && !draft.attachments.length)) { if (kept.delete(key)) keptRevision++; }
-  else if (kept.get(key) !== draft) { kept.set(key, draft); keptRevision++; }
+  if (!draft || (!draft.prompt && !draft.attachments.length)) { if (kept.delete(key)) { keptRevision++; storeDrafts(); } }
+  else if (kept.get(key) !== draft) { kept.set(key, draft); keptRevision++; storeDrafts(); }
 }
 /** For tests: forget every kept draft. */
-export function resetKeptDrafts() { kept.clear(); titles.clear(); keptRevision++; }
+export function resetKeptDrafts() { kept.clear(); titles.clear(); keptRevision++; storeDrafts(); }
 function useDraftBinding(
   key: string,
   drafts: Record<string, Draft>,

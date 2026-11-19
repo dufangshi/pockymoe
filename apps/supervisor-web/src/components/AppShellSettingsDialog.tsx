@@ -9,6 +9,8 @@ import { HarnessResourceSettings } from './HarnessResourceSettings';
 import { DokploySettings } from './DokploySettings';
 import { environmentText } from '../lib/environmentI18n';
 import { ModelPricingSettings } from './ModelPricingSettings';
+import { iconButton } from './ConnectionCatalog';
+import { RefreshCw } from 'lucide-react';
 import { ComposerShortcutSettings } from './ComposerShortcutSettings';
 import { TourSettingsEntry } from './onboarding/TourProvider';
 import { ThemePresetSettings } from './ThemePresetSettings';
@@ -65,6 +67,18 @@ function unavailablePluginReason(plugin: unknown) {
 // The built-in Terminal plugin's manifest is English; show it in the reader's language.
 function pluginDescription(plugin: { id: string; description?: string | null }) {
   return plugin.id === 'remote-codex.terminal' ? translate('files.terminalPluginDescription') : plugin.description;
+}
+
+/** A built-in plugin's name in the reader's language; others keep their manifest name. */
+function pluginName(plugin: { id: string; name: string }) {
+  return plugin.id === 'remote-codex.terminal' ? translate('files.terminalMenu') : plugin.name;
+}
+
+/** What a plugin adds, in words: a terminal panel, a Harness mode; other types keep their id. */
+function pluginCapabilityLabel(kind: string) {
+  if (kind === 'terminal') return translate('files.terminalMenu');
+  if (kind.startsWith('harness:')) return 'Harness';
+  return kind;
 }
 
 export function AppShellSettingsDialog({
@@ -253,6 +267,7 @@ export function AppShellSettingsDialog({
     return null;
   }
 
+  const anyUnavailable = plugins.plugins.some((plugin) => unavailablePluginReason(plugin) !== null);
   const pluginsManagementNode = (
     <>
       <div className="mt-3 divide-y divide-[var(--theme-border)] border-y border-[var(--theme-border)]">
@@ -265,19 +280,20 @@ export function AppShellSettingsDialog({
             <div className="flex min-h-11 items-start gap-2">
               <label htmlFor={toggleId} className="min-w-0 flex-1 cursor-pointer">
                 <span className="block text-sm font-medium text-[var(--theme-fg)]">
-                  {plugin.name}
+                  {pluginName(plugin)}
                 </span>
-                <span className="settings-hint mt-1 block text-xs leading-5 text-[var(--theme-fg-muted)]">
+                {/* What the plugin does decides whether to turn it on: a note, never hidden by a pack. */}
+                <span className="settings-note mt-1 block text-xs leading-5 text-[var(--theme-fg-muted)]">
                   {pluginDescription(plugin)}
                 </span>
                 <span className="settings-hint mt-1 block text-[11px] leading-5 text-[var(--theme-fg-muted)]">
                   {[
-                    [
+                    [...new Set([
                       ...plugin.capabilities.artifactTypes.map((type) => type.type),
                       ...plugin.capabilities.threadPanels.map(
                         (panel) => panel.kind ?? panel.id,
                       ),
-                    ].join(', ') || translate("files.utility"),
+                    ].map(pluginCapabilityLabel))].join(', ') || translate("files.utility"),
                     plugin.source === 'imported'
                       ? translate("files.importedManifest")
                       : plugin.source === 'external'
@@ -293,7 +309,7 @@ export function AppShellSettingsDialog({
                   className="h-5 w-5 accent-[var(--theme-accent-solid)] disabled:cursor-not-allowed disabled:opacity-50"
                   checked={plugin.enabled}
                   disabled={unavailable !== null}
-                  aria-label={translate("files.enabled", { value1: plugin.name })}
+                  aria-label={translate("files.enabled", { value1: pluginName(plugin) })}
                   onChange={(event) =>
                     void plugins.setPluginEnabled(
                       plugin.id,
@@ -303,23 +319,26 @@ export function AppShellSettingsDialog({
                   type="checkbox"
                 />
               </span>
-              {/* A plugin this device cannot run keeps its switch, greyed, with the reason on a mark. */}
-              {unavailable ? (
-                <span className="grid h-8 shrink-0 place-items-center">
-                  <ErrorMark kind="unavailable" message={unavailable} />
+              {/* A plugin this device cannot run keeps its switch, greyed, with the reason on a mark.
+                  Every row keeps the mark's slot while any has one, so the switches stay in one column. */}
+              {anyUnavailable ? (
+                <span className="grid h-8 w-8 shrink-0 place-items-center">
+                  {unavailable ? <ErrorMark kind="unavailable" message={unavailable} /> : null}
                 </span>
               ) : null}
             </div>
             {/* An enabled plugin says whether conversations that follow the default have it on. */}
             {plugin.enabled && plugin.defaultEnabled !== undefined && (
-              <div className="plugin-default-row" role="radiogroup" aria-label={`${plugin.name} · ${translate('settings.pluginDefaultLabel')}`} title={translate('settings.pluginDefaultHint')}>
+              <div className="plugin-default-row" title={translate('settings.pluginDefaultHint')}>
                 <span>{translate('settings.pluginDefaultLabel')}</span>
-                {[true, false].map((value) => (
-                  <button key={String(value)} type="button" role="radio" aria-checked={plugin.defaultEnabled === value}
-                    onClick={() => { if (plugin.defaultEnabled !== value) void plugins.setPluginDefaultEnabled(plugin.id, value); }}>
-                    {translate(value ? 'settings.pluginDefaultOn' : 'settings.pluginDefaultOff')}
-                  </button>
-                ))}
+                <span className="product-segmented is-compact" role="radiogroup" aria-label={`${pluginName(plugin)} · ${translate('settings.pluginDefaultLabel')}`}>
+                  {[true, false].map((value) => (
+                    <button key={String(value)} type="button" role="radio" className="product-segment" aria-checked={plugin.defaultEnabled === value}
+                      onClick={() => { if (plugin.defaultEnabled !== value) void plugins.setPluginDefaultEnabled(plugin.id, value); }}>
+                      {translate(value ? 'settings.pluginDefaultOn' : 'settings.pluginDefaultOff')}
+                    </button>
+                  ))}
+                </span>
               </div>
             )}
             </div>
@@ -498,11 +517,16 @@ export function AppShellSettingsDialog({
                     <ErrorMark message={plugins.error} onRetry={() => void plugins.refresh()} />
                   )}
                 </span>
+                {/* The same bordered refresh key as Upstreams and Isolated environments. */}
                 <button
-                  className="host-secondary-button rounded-md border px-3 py-2"
+                  type="button"
+                  className={iconButton}
+                  aria-label={translate("files.refreshPlugins")}
+                  title={translate("files.refreshPlugins")}
+                  disabled={plugins.loading}
                   onClick={() => void plugins.refresh()}
                 >
-                  {translate("files.refreshPlugins")}</button>
+                  <RefreshCw size={14} aria-hidden className={plugins.loading ? 'request-spin' : undefined} /></button>
               </div>
               {pluginsManagementNode}
             </section>
@@ -534,7 +558,7 @@ export function AppShellSettingsDialog({
             <details className="settings-detail">
               <summary>{translate("files.modelPricing")}</summary>
               <div>
-                <ModelPricingSettings />
+                <ModelPricingSettings embedded />
               </div>
             </details>
           )}

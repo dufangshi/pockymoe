@@ -1,8 +1,9 @@
 import { useHostScope } from '../../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { Select, ErrorMark } from '@pockymoe/thread-ui';
+import { Select, ErrorMark, formatReasoningEffortLabel } from '@pockymoe/thread-ui';
 import type { FormEvent, ReactNode } from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
+import { seedThreadDraft } from '../useThreadDrafts';
 import { Link } from 'react-router-dom';
 
 import {
@@ -109,6 +110,18 @@ function Field({
   );
 }
 
+/** A workspace path in a picker: home as `~`, and when long the first and last
+    segments with an ellipsis between (docs/ui-principles.md §14). */
+export function shortPath(path: string, max = 44) {
+  const home = path.replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, '~');
+  if (home.length <= max) return home;
+  const parts = home.split('/');
+  if (parts.length <= 4) return home;
+  const head = parts.slice(0, 3).join('/');
+  const tail = parts.slice(-2).join('/');
+  return `${head}/…/${tail}`;
+}
+
 export function ThreadCreateForm({
   initialWorkspaceId,
   initialTitle = '',
@@ -155,6 +168,9 @@ export function ThreadCreateForm({
   const [environmentLoadError, setEnvironmentLoadError] = useState<string | null>(null);
   const [environmentLoadAttempt, setEnvironmentLoadAttempt] = useState(0);
   const [title, setTitle] = useState(() => initialTitle ?? '');
+  // The first prompt, optional: written here, the thread is created and sent in
+  // one step (quick start); left empty, the thread opens with an empty composer.
+  const [firstPrompt, setFirstPrompt] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [runtimeBusyProvider, setRuntimeBusyProvider] = useState<AgentBackendIdDto | null>(null);
@@ -448,6 +464,9 @@ export function ThreadCreateForm({
     }
     if (!alive.current) return;
     setCreated(null);
+    if (firstPrompt.trim()) {
+      seedThreadDraft(`${currentRelayDeviceIdFromPath() ?? 'local'}:${thread.id}`, firstPrompt, true);
+    }
     onCreated(thread);
   }
   function askAdapterInstall(entry: ModelOptionDto, createAfter: boolean) {
@@ -543,13 +562,30 @@ export function ThreadCreateForm({
     >
       {compact ? (
         <div className="shrink-0 pr-8">
-          <h2 className="text-base font-semibold text-[var(--theme-fg)]">{translate("workbench.createNewChat")}</h2>
-          <p className="mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
-            {translate("workbench.chooseTheWorkspaceAndAgentForThis")}</p>
+          {/* One name for one thing (§13): a thread, created here. */}
+          <h2 className="text-base font-semibold text-[var(--theme-fg)]">{translate("workbench.newThread")}</h2>
         </div>
       ) : null}
 
       <div className={compact ? 'min-h-0 space-y-3 overflow-y-auto overscroll-contain pr-1' : 'space-y-5'}>
+      <Field id={`${formId}-thread-first-prompt`} label={translate("workbench.firstPrompt")}>
+        <textarea
+          id={`${formId}-thread-first-prompt`}
+          disabled={fieldsLocked}
+          value={firstPrompt}
+          rows={compact ? 2 : 3}
+          onChange={(event) => setFirstPrompt(event.target.value)}
+          onKeyDown={(event) => {
+            // The composer's own send keys: Ctrl or Command with Enter creates and sends.
+            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }
+          }}
+          placeholder={translate("workbench.firstPromptPlaceholder")}
+          className={`${controlClass} min-h-[4.5rem] resize-y py-2 leading-6`}
+        />
+      </Field>
       <fieldset>
         <legend className="host-form-label text-xs font-medium">{translate("workbench.backend")}</legend>
         {compact ? (
@@ -600,7 +636,7 @@ export function ThreadCreateForm({
           <div className="mt-3 flex flex-col gap-2 border-b border-[var(--theme-border)] pb-4 sm:flex-row sm:items-center sm:justify-between">
             <p className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-[var(--theme-fg-muted)]">
               {selectedBackend.installation.installed
-                ? translate("workbench.installed", { value1: selectedBackend.installation.installedVersion ? `, version ${selectedBackend.installation.installedVersion}` : '' })
+                ? translate("workbench.installed", { value1: selectedBackend.installation.installedVersion ? ` · ${selectedBackend.installation.installedVersion}` : '' })
                 : translate("workbench.runtimeIsNotInstalled")}
               {/* The runtime's last failure is behind a mark, not a sentence. */}
               {!selectedBackend.installation.installed && (selectedBackend.installation.lastError ?? selectedBackend.status.lastError)
@@ -642,7 +678,7 @@ export function ThreadCreateForm({
           {!workspaceId ? <option value="">{translate("workbench.chooseAWorkspace")}</option> : null}
           {workspaces.map((workspace) => (
             <option key={workspace.id} value={workspace.id}>
-              {workspace.label} · {workspace.absPath}
+              {workspace.label} · {shortPath(workspace.absPath)}
             </option>
           ))}
         </Select>
@@ -785,7 +821,7 @@ export function ThreadCreateForm({
             >
               {selectedModel.supportedReasoningEfforts.map((entry) => (
                 <option key={entry.reasoningEffort} value={entry.reasoningEffort}>
-                  {entry.reasoningEffort || translate("workbench.providerDefault")}
+                  {entry.reasoningEffort ? formatReasoningEffortLabel(entry.reasoningEffort) : translate("workbench.providerDefault")}
                 </option>
               ))}
             </Select>
@@ -839,7 +875,7 @@ export function ThreadCreateForm({
 
       </div>
 
-      <div className="flex shrink-0 flex-wrap items-center gap-2 pt-1">
+      <div className="thread-create-actions flex shrink-0 flex-wrap items-center gap-2 pt-1">
         <button
           type="submit"
           disabled={
@@ -860,7 +896,7 @@ export function ThreadCreateForm({
         >
           {busy ? created && environmentConnectionId ? environmentLabel('startingCreatedEnvironment') : translate("workbench.creating")
             : created ? environmentConnectionId ? environmentLabel('retryEnvironmentStart') : translate("workbench.retryRunMode")
-            : translate("workbench.createThread_ea3fa3")}
+            : firstPrompt.trim() ? translate("workbench.createAndSend") : translate("workbench.createThread_ea3fa3")}
         </button>
         {error && error.at !== 'runtime' ? (
           <ErrorMark

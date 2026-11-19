@@ -44,7 +44,7 @@ test('workspace opens chat directly and deleting its last thread preserves an em
   await removeCurrent('First workspace conversation');
   await expect(page).toHaveURL(new RegExp(`/threads\\?workspaceId=${workspace.id}$`));
   await expect(page.locator('.matter-workbench')).toBeVisible();
-  const createLink = page.getByRole('link', { name: 'Create thread', exact: true });
+  const createLink = page.getByRole('link', { name: 'New thread', exact: true });
   await expect(createLink).toBeVisible();
   await expect(createLink).toHaveAttribute('href', `/threads/new?workspaceId=${workspace.id}`);
   await expect(page.getByRole('textbox', { name: 'Prompt' })).toHaveCount(0);

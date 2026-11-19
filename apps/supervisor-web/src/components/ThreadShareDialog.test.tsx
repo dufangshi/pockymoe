@@ -47,17 +47,17 @@ function mount(thread = relayThread, scope = 'dev-1') {
 async function openMenu(title = relayThread.title) {
   fireEvent.click(await screen.findByRole('button', { name: `Actions for ${title}` }));
   // The owner's own items arrive with the thread's details.
-  await screen.findByRole('button', { name: 'Rename thread' });
-  return screen.getByRole('dialog', { name: `Thread actions: ${title}` });
+  await screen.findByRole('menuitem', { name: 'Rename thread' });
+  return screen.getByRole('menu', { name: `Thread actions: ${title}` });
 }
 
 it('offers Share thread to the owner of a relay device, before rename and delete', async () => {
   mount();
   const menu = await openMenu();
-  const labels = within(menu).getAllByRole('button').map(item => item.textContent);
-  expect(labels.indexOf('Share thread')).toBeGreaterThan(labels.indexOf('Copy Pockymoe session ID'));
+  const labels = within(menu).getAllByRole('menuitem').map(item => item.textContent);
+  expect(labels.indexOf('Share thread')).toBeGreaterThan(labels.indexOf('Copy thread ID'));
   expect(labels.indexOf('Share thread')).toBeLessThan(labels.indexOf('Rename thread'));
-  expect(within(menu).getByRole('button', { name: 'Share thread' }).querySelector('svg')?.getAttribute('data-icon')).toBe('share');
+  expect(within(menu).getByRole('menuitem', { name: 'Share thread' }).querySelector('svg')?.getAttribute('data-icon')).toBe('share');
   expect(fetchRelayAccess).toHaveBeenCalledWith({ deviceId: 'dev-1', threadId: 't-1' });
 });
 
@@ -67,35 +67,35 @@ it('leaves Share thread out when this account cannot share the thread', async ()
   mount();
   fireEvent.click(await screen.findByRole('button', { name: 'Actions for Fix login' }));
   await waitFor(() => expect(request).toHaveBeenCalled());
-  await screen.findByRole('button', { name: 'Copy harness session ID' });
-  expect(screen.queryByRole('button', { name: 'Share thread' })).toBeNull();
+  await screen.findByRole('menuitem', { name: 'Copy harness session ID' });
+  expect(screen.queryByRole('menuitem', { name: 'Share thread' })).toBeNull();
   cleanup();
   // A direct Supervisor has no relay to share through.
   vi.mocked(relayModeActive).mockReturnValue(false);
   mount({ ...relayThread, key: 'local:t-1', href: '/threads/t-1' }, 'local');
   await openMenu();
-  expect(screen.queryByRole('button', { name: 'Share thread' })).toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'Share thread' })).toBeNull();
 });
 
 it('leaves Share thread out of a host-scoped workbench', async () => {
   vi.mocked(fetchRuntimeConfig).mockResolvedValue({ hostScope: { kind: 'treerAgent', hubId: 'hub', boundThreadId: 'root' } } as RuntimeConfigDto);
   mount();
   await openMenu();
-  expect(screen.queryByRole('button', { name: 'Share thread' })).toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'Share thread' })).toBeNull();
 });
 
 it('opens the share window for that thread and shares it with someone', async () => {
   vi.mocked(fetchRelayPortal).mockResolvedValue(portal({ sharedByMe: [share, { ...share, id: 'other', threadId: 't-2' }] } as never));
   mount();
   await openMenu();
-  fireEvent.click(screen.getByRole('button', { name: 'Share thread' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Share thread' }));
   const window = await screen.findByRole('dialog', { name: 'Thread actions' });
   expect(within(window).getByText('Sharing permissions')).toBeTruthy();
   // Only this thread's own shares are listed.
   await within(window).findByText('bob');
   expect(within(window).getAllByRole('button', { name: 'Revoke' })).toHaveLength(1);
   // The menu closed; the window offers this thread, its workspace and the device.
-  expect(screen.queryByRole('dialog', { name: 'Thread actions: Fix login' })).toBeNull();
+  expect(screen.queryByRole('menu', { name: 'Thread actions: Fix login' })).toBeNull();
   expect(within(window).getByRole('radio', { name: /This workspace/ })).toBeTruthy();
   expect(within(window).getByRole('radio', { name: /Whole device/ })).toBeTruthy();
   fireEvent.change(within(window).getByPlaceholderText('username or email'), { target: { value: 'carol' } });
@@ -115,7 +115,7 @@ it('shares the thread\'s workspace as a workspace grant and revokes a share', as
   vi.mocked(fetchRelayPortal).mockResolvedValue(portal({ sharedByMe: [share] } as never));
   mount();
   await openMenu();
-  fireEvent.click(screen.getByRole('button', { name: 'Share thread' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Share thread' }));
   const window = await screen.findByRole('dialog', { name: 'Thread actions' });
   await within(window).findByText('bob');
   fireEvent.click(within(window).getByRole('radio', { name: /This workspace/ }));
@@ -132,7 +132,7 @@ it('keeps a share\'s thread title current when it lists the shares', async () =>
   vi.mocked(fetchRelayPortal).mockResolvedValue(portal({ sharedByMe: [{ ...share, threadTitle: 'Old title' }] } as never));
   mount();
   await openMenu();
-  fireEvent.click(screen.getByRole('button', { name: 'Share thread' }));
+  fireEvent.click(screen.getByRole('menuitem', { name: 'Share thread' }));
   await waitFor(() => expect(updateRelayShare).toHaveBeenCalledWith('share-1', { threadTitle: 'Fix login' }));
 });
 
@@ -141,7 +141,7 @@ it('stays open from a tab\'s right-click menu until its share window closes', as
   const returnFocus = document.createElement('button');
   document.body.append(returnFocus);
   render(<HostCapabilitiesProvider scope="dev-1"><RecentThreadMenu thread={relayThread} currentKey="" context={{ x: 40, y: 40, returnFocus, onClose }} onFavorite={vi.fn()} onRenamed={vi.fn()} onRemoved={vi.fn()} onNavigate={vi.fn()} /></HostCapabilitiesProvider>);
-  fireEvent.click(await screen.findByRole('button', { name: 'Share thread' }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Share thread' }));
   const window = await screen.findByRole('dialog', { name: 'Thread actions' });
   expect(onClose).not.toHaveBeenCalled();
   fireEvent.click(within(window).getByRole('button', { name: 'Close' }));

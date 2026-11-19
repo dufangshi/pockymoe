@@ -1,7 +1,7 @@
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { Plus, Pencil } from 'lucide-react';
-import { ConfirmDialog, ErrorMark } from '@pockymoe/thread-ui';
+import { ConfirmDialog, ErrorMark, MiddleName } from '@pockymoe/thread-ui';
 import { FormDialog } from './FormDialog';
 import { useEffect, useState } from 'react';
 import { readSelectedRelayDeviceId } from '../lib/api';
@@ -13,6 +13,8 @@ import {
   type ModelPriceRates,
 } from '../lib/modelPricingApi';
 
+/** The two cache-write prices are edited in the window; a phone's table leaves them out. */
+const phoneHidden = (key: string) => (key.startsWith('cacheWrite') ? 'max-sm:hidden' : '');
 const pricingFields = () => [
   ['inputUsdPerMillion', translate("settings.in")],
   ['cachedInputUsdPerMillion', translate("settings.cached")],
@@ -23,7 +25,8 @@ const pricingFields = () => [
 const inputClass =
   'min-w-0 w-full rounded-md border border-[var(--theme-border)] bg-[var(--theme-surface-strong)] px-2 py-1.5 text-sm text-[var(--theme-fg)]';
 
-export function ModelPricingSettings({ scope = 'local' }: { scope?: PricingScope }) {
+/** `embedded`: inside the Preferences fold, whose summary already names it. */
+export function ModelPricingSettings({ scope = 'local', embedded = false }: { scope?: PricingScope; embedded?: boolean }) {
   useI18n();
   const [models, setModels] = useState<Record<string, ModelPriceRates>>({});
   const [query, setQuery] = useState('');
@@ -89,6 +92,11 @@ export function ModelPricingSettings({ scope = 'local' }: { scope?: PricingScope
       setBusy(false);
     }
   }
+  function openNew(id: string) {
+    setError('');
+    setDraftDirty(false);
+    setDraft({ id, rates: {}, aliases: '', isNew: true });
+  }
   async function importLegacy() {
     setBusy(true); setError(''); setMessage('');
     try {
@@ -99,11 +107,21 @@ export function ModelPricingSettings({ scope = 'local' }: { scope?: PricingScope
     } catch (error) {setError(error instanceof Error ? error.message : translate('settings.unableToSavePrices'));}
     finally {setBusy(false);}
   }
+  const shown = Object.entries(models)
+    .filter(([id, r]) => [id, ...(r.aliases ?? [])].some((s) => s.toLowerCase().includes(query.toLowerCase())))
+    .sort(([a, ar], [b, br]) => Number(Boolean(br.unpriced)) - Number(Boolean(ar.unpriced)) || a.localeCompare(b));
+  const notes = <>
+    <p className={`${embedded ? '' : 'mt-1 '}text-xs text-[var(--theme-fg-muted)]`}>
+      {translate(scope === 'account' ? 'settings.referencePricesAccount' : 'settings.referencePricesLocal')}</p>
+    <p className="mt-1 text-xs text-[var(--theme-fg-muted)]">{translate('settings.uSDPer1MTokensInExcludesCache')}</p>
+  </>;
   return (
-    <section className="py-5" aria-label={translate("settings.modelPricing")}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-1">
-          <h3 className="text-sm font-semibold">{translate("settings.modelPricing")}</h3>
+    <section className={embedded ? 'pb-1' : 'py-5'} aria-label={translate("settings.modelPricing")}>
+      <div className={`flex justify-between gap-2 ${embedded ? 'items-start' : 'flex-wrap items-center'}`}>
+        <div className={embedded ? 'min-w-0' : 'flex items-center gap-1'}>
+          <h3 className={embedded ? 'sr-only' : 'text-sm font-semibold'}>{translate("settings.modelPricing")}</h3>
+          {/* Inside the fold the notes take the heading's place beside the add key. */}
+          {embedded ? notes : null}
           {/* The price list never arrived: the reason and a Retry on the mark. */}
           {error && !draft && (
             <ErrorMark message={error} onRetry={() => setAttempt((value) => value + 1)} />
@@ -114,23 +132,12 @@ export function ModelPricingSettings({ scope = 'local' }: { scope?: PricingScope
           aria-label={translate("settings.addModel")}
           title={translate("settings.addModel")}
           className="host-icon-button inline-flex h-9 w-9 items-center justify-center rounded-md"
-          onClick={() => {
-            setError('');
-            setDraftDirty(false);
-            setDraft({
-              id: '',
-              rates: {},
-              aliases: '',
-              isNew: true,
-            });
-          }}
+          onClick={() => openNew('')}
         >
           <Plus size={18} />
         </button>
       </div>
-      <p className="mt-1 text-xs text-[var(--theme-fg-muted)]">
-        {translate(scope === 'account' ? 'settings.referencePricesAccount' : 'settings.referencePricesLocal')}</p>
-      <p className="mt-1 text-xs text-[var(--theme-fg-muted)]">{translate('settings.uSDPer1MTokensInExcludesCache')}</p>
+      {embedded ? null : notes}
       {scope === 'account' && syncedAt && <p className="mt-1 text-xs text-[var(--theme-fg-muted)]">{translate('settings.pricesSyncedAt', { value1: new Date(syncedAt).toLocaleString(getLocale()) })}</p>}
       {Object.keys(legacy).length > 0 && <button type="button" disabled={busy} onClick={() => void importLegacy()} className="host-secondary-button mt-2 min-h-10 rounded-md border px-3 text-xs">{translate('settings.importDevicePrices')}</button>}
       <input
@@ -140,13 +147,15 @@ export function ModelPricingSettings({ scope = 'local' }: { scope?: PricingScope
         value={query}
         onChange={(e) => setQuery(e.target.value)}
       />
-      <div className="mt-2 max-h-72 overflow-auto rounded-md border border-[var(--theme-border)]">
-        <table className="min-w-[40rem] w-full text-left text-xs">
-          <thead className="sticky top-0 bg-[var(--theme-surface-strong)]">
+      {/* The settings panel is the only vertical scroll; phones drop the two
+          cache-write columns (they stay in the editor) instead of scrolling sideways. */}
+      <div className="mt-2 overflow-x-auto rounded-md border border-[var(--theme-border)]">
+        <table className="w-full text-left text-xs sm:min-w-[40rem]">
+          <thead className="bg-[var(--theme-surface-strong)]">
             <tr>
-              <th className="p-2">{translate("settings.model")}</th>
+              <th className="px-1.5 py-2 sm:p-2">{translate("settings.model")}</th>
               {pricingFields().map(([key, label]) => (
-                <th className="p-2 text-right" key={key}>
+                <th className={`px-1.5 py-2 text-right sm:p-2 ${phoneHidden(key)}`} key={key}>
                   {label}
                 </th>
               ))}
@@ -156,17 +165,20 @@ export function ModelPricingSettings({ scope = 'local' }: { scope?: PricingScope
             </tr>
           </thead>
           <tbody>
-            {Object.entries(models)
-              .filter(([id, r]) =>
-                [id, ...(r.aliases ?? [])].some((s) =>
-                  s.toLowerCase().includes(query.toLowerCase()),
-                ),
-              )
-              .sort(([a, ar], [b, br]) => Number(Boolean(br.unpriced)) - Number(Boolean(ar.unpriced)) || a.localeCompare(b))
-              .map(([id, rates]) => (
+            {shown.length === 0 && query.trim() ? (
+              <tr className="border-t border-[var(--theme-border)]">
+                <td colSpan={pricingFields().length + 2} className="p-4 text-center text-[var(--theme-fg-muted)]">
+                  {translate('settings.noModelPriceMatch', { value1: query.trim() })}
+                  {' · '}
+                  <button type="button" className="text-[var(--theme-accent-strong)] underline underline-offset-2" disabled={busy}
+                    onClick={() => openNew(query.trim())}>{translate('settings.addModelNamed', { value1: query.trim() })}</button>
+                </td>
+              </tr>
+            ) : null}
+            {shown.map(([id, rates]) => (
                 <tr className="border-t border-[var(--theme-border)]" key={id}>
-                  <td className="p-2">
-                    <span>{id}</span>
+                  <td className="max-w-[7rem] px-1.5 py-2 sm:max-w-none sm:p-2">
+                    <MiddleName name={id} />
                     {rates.unpriced === true && <span className="ml-1 text-[var(--theme-fg-muted)]">{translate('settings.pricePending')}</span>}
                     {rates.custom && (
                       <span className="ml-1 text-[var(--theme-fg-muted)]">
@@ -174,14 +186,14 @@ export function ModelPricingSettings({ scope = 'local' }: { scope?: PricingScope
                     )}
                   </td>
                   {pricingFields().map(([key]) => (
-                    <td className="p-2 text-right tabular-nums" key={key}>
+                    <td className={`px-1.5 py-2 text-right tabular-nums sm:p-2 ${phoneHidden(key)}`} key={key}>
                       {typeof rates[key] === 'number' ? `$${rates[key]}` : '—'}
                     </td>
                   ))}
-                  <td className="p-2">
+                  <td className="px-1.5 py-2 sm:p-2">
                     <button
                       aria-label={translate("settings.edit_c10442", { value1: id })}
-                      className="host-secondary-button rounded border px-2 py-1"
+                      className="host-secondary-button rounded border px-1.5 py-1 sm:px-2"
                       onClick={() => {
                         setError('');
                         setDraftDirty(false);
@@ -292,35 +304,33 @@ export function ModelPricingSettings({ scope = 'local' }: { scope?: PricingScope
                 {translate('settings.pricingSource')} {draft.rates.verifiedAt}
               </a>
             )}
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                disabled={busy}
-                type="submit"
-                className="relay-button-primary min-h-10 rounded-md px-4 text-xs font-semibold"
-              >
-                {busy ? translate("settings.saving_56a228") : translate("settings.savePrices")}
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={requestClose}
-                className="host-secondary-button min-h-10 rounded-md border px-3 text-xs"
-              >
-                {translate("settings.cancel")}</button>
+            {/* The footer every form window uses: Cancel then the primary action, at the end. */}
+            <div className="form-dialog-actions">
               {!draft.isNew && draft.rates.custom && (
                 <button
                   type="button"
                   disabled={busy}
-                  className="host-secondary-button rounded border px-3 py-2 text-xs"
+                  className="host-secondary-button form-dialog-actions-lead min-h-10 rounded-md border px-3 text-xs"
                   onClick={() => void save(true)}
                 >
                   {translate("settings.resetRemoveCustom")}</button>
               )}
-              {error && !busy && (
-                <span className="flex min-h-10 items-center">
-                  <ErrorMark message={error} />
-                </span>
-              )}
+              {error && !busy && <ErrorMark message={error} />}
+              <button
+                type="button"
+                disabled={busy}
+                onClick={requestClose}
+                className="host-secondary-button min-h-10 rounded-md border px-4 text-xs"
+              >
+                {translate("settings.cancel")}</button>
+              <button
+                disabled={busy}
+                type="submit"
+                aria-label={translate("settings.savePrices")}
+                className="relay-button-primary min-h-10 rounded-md px-4 text-xs font-semibold"
+              >
+                {busy ? translate("settings.saving_56a228") : translate("files.save")}
+              </button>
             </div>
           </form>
         </FormDialog>

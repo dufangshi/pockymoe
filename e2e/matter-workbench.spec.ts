@@ -30,8 +30,8 @@ test('recent thread menus manage shortcuts and history while glass controls and 
   // Both threads live in this workspace, so they sit in its section above recent chats.
   const recent = page.getByTestId('workspace-threads');
   await recent.getByRole('button', { name: 'Actions for Manage from Recent chats' }).click();
-  const menu = page.getByRole('dialog', { name: 'Thread actions: Manage from Recent chats', exact: true });
-  await menu.getByRole('button', { name: 'Star thread', exact: true }).click();
+  const menu = page.getByRole('menu', { name: 'Thread actions: Manage from Recent chats', exact: true });
+  await menu.getByRole('menuitem', { name: 'Star thread', exact: true }).click();
   // Shortcuts start folded.
   // Shortcuts start open on the desktop; a phone's drawer keeps them folded.
   if (testInfo.project.name === 'mobile-chromium') await page.getByRole('button', { name: /^Shortcuts/, expanded: false }).click();
@@ -39,7 +39,7 @@ test('recent thread menus manage shortcuts and history while glass controls and 
   await expect(page.getByTestId('shortcuts').getByRole('link', { name: /Manage from Recent chats/ })).toBeVisible();
   await expect(page.locator('.matter-thread-tabs a[aria-current="page"]')).toContainText('Keep this conversation');
   await recent.getByRole('button', { name: 'Actions for Manage from Recent chats' }).click();
-  await menu.getByRole('button', { name: 'Rename thread', exact: true }).click();
+  await menu.getByRole('menuitem', { name: 'Rename thread', exact: true }).click();
   const rename = page.getByRole('dialog', { name: 'Rename thread', exact: true });
   await rename.getByRole('textbox', { name: 'Thread title' }).fill('Renamed in sidebar');
   await rename.getByRole('button', { name: 'Save', exact: true }).click();
@@ -47,14 +47,14 @@ test('recent thread menus manage shortcuts and history while glass controls and 
   await page.reload();
   if (testInfo.project.name === 'mobile-chromium') await page.getByRole('button', { name: 'Toggle shortcuts sidebar' }).click();
   await recent.getByRole('button', { name: 'Actions for Renamed in sidebar' }).click();
-  await page.getByRole('dialog', { name: 'Thread actions: Renamed in sidebar', exact: true }).getByRole('button', { name: 'Delete thread' }).click();
+  await page.getByRole('menu', { name: 'Thread actions: Renamed in sidebar', exact: true }).getByRole('menuitem', { name: 'Delete thread' }).click();
   await page.getByRole('dialog', { name: 'Delete thread?' }).getByRole('button', { name: 'Delete', exact: true }).click();
   await expect(recent.getByRole('link', { name: /Renamed in sidebar/ })).toHaveCount(0);
   await expect.poll(async () => (await request.get(`${base}/api/threads/${ids[1]}`)).status()).toBe(404);
   if (testInfo.project.name === 'mobile-chromium') await page.getByRole('button', { name: 'Close sidebar', exact: true }).click();
   // The current thread's star sits in the thread tools.
   await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
-  await page.getByRole('button', { name: 'Add shortcut', exact: true }).click();
+  await page.getByRole('button', { name: 'Star thread', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Remove shortcut', exact: true })).toBeVisible();
   for (const theme of ['light', 'dark']) {
     await page.evaluate(theme => localStorage.setItem('remote-codex-theme-mode', theme), theme);
@@ -133,7 +133,7 @@ test('search reveals an older collapsed message, Explorer resizes and connection
   await page.addInitScript(() => localStorage.setItem('remote-codex-theme-mode', 'light'));
   await page.goto(`/threads/${id}`);
   await expect(page.locator('[data-turn-id="search-turn-0"]')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Search conversation', exact: true }).click();
+  await page.getByRole('button', { name: 'Search thread', exact: true }).click();
   await page.getByRole('combobox', { name: 'Search messages' }).fill('hidden cobalt');
   const result = page.locator('.workbench-search-results > button').filter({ hasText: 'hidden cobalt' });
   await expect(result).toHaveCount(1);
@@ -223,7 +223,7 @@ test('workbench keeps tab positions, fills the viewport and separates session id
   // A parent's old bottom padding clipped the workbench even when its own bounds were correct.
   expect(await page.evaluate(() => document.elementsFromPoint(innerWidth / 2, innerHeight - 1).some(e => e.classList.contains('matter-workbench')))).toBe(true);
   await page.locator('.matter-thread-menu > summary').click();
-  await page.getByRole('button', { name: 'Copy Pockymoe session ID', exact: true }).click();
+  await page.getByRole('button', { name: 'Copy thread ID', exact: true }).click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(ids[0]);
   const detail = await (await request.get(`${base}/api/threads/${ids[0]}`)).json();
   expect(detail.thread.providerSessionId).toBeTruthy();
@@ -338,7 +338,7 @@ test('Matter workbench floats the composer, persists shortcuts, searches history
       .getByRole('button', { name: 'Close sidebar', exact: true })
       .click();
   await page
-    .getByRole('button', { name: 'Search conversation', exact: true })
+    .getByRole('button', { name: 'Search thread', exact: true })
     .click();
   await page.getByRole('combobox', { name: 'Search messages' }).fill('clarity');
   await expect(page.getByText('1 matching messages')).toBeVisible();

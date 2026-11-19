@@ -33,8 +33,9 @@ and relaunch, and rejects requests without an already-verified update.
 
 The control sits in the rail's bottom host-action slot immediately above the
 account avatar. Narrow desktop windows expose the same host action in the navigation
-drawer. Its 40px target contains a static 32px accent circle and a 16px ArrowUp;
-all colours come from the current theme. A failed installation retains the
+drawer. Its 40px target contains a static 28px outlined accent ring with a 16px
+ArrowDownToLine, a small accent dot and the word “Update” underneath, so it never
+looks like the composer's filled Send button; all colours come from the current theme. A failed installation retains the
 button and uses `ErrorMark` for the reason, Retry and Go to download. Download
 recovery accepts only the client's canonical GitHub release-tag page.
 
@@ -43,13 +44,31 @@ download never adds an icon. Clients without a valid signed release can offer
 manual downloads through their own Preferences; the page does not invent a
 ready state. Unsigned or invalidly signed offers do not create a link or an icon.
 `retryAllowed: false` keeps the icon and Retry disabled after the native attempt
-limit; the verified release page remains available for manual recovery.
+limit: the button is dimmed with a not-allowed cursor and its label reads “Restart”;
+the verified release page remains available for manual recovery.
 
 `prepareUpdate { cancel: true }` revokes earlier consent, including dismissing an
 open confirmation if another window refused. Consent covers only the draft and
 document revisions shown in that window. Synthetic native unload preflight does
 not consume it; a real browser unload does. New edits veto closing again. Native
 installation starts only after all windows have actually closed.
+
+## Window chrome
+
+`windowChrome` reports the native controls in device-independent pixels. The page
+reserves that space beside the tab row (`--desktop-controls-left/right`) and uses
+`toolbarHeight` as the title row height. When the shell exposes the Window Controls
+Overlay (`navigator.windowControlsOverlay`, available with `titleBarOverlay`), the
+page takes the insets from `getTitlebarAreaRect()` instead and follows its
+`geometrychange` events, so the reserve and the row height stay aligned with the
+native controls when the page is zoomed (`desktop/windowControls.ts`).
+
+## Signed out or Relay unavailable
+
+If the account session is missing, the desktop window shows one card: the reason,
+a Sign in button that opens `/relay-portal` with `returnTo`, Retry, and Change
+address (`window.openPreferences('general')`). A Relay error shows the same card
+with Retry as the main action and the reason in `ErrorMark`.
 
 ## Composer drafts
 

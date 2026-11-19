@@ -61,7 +61,9 @@ every [capability flag](theme-packs.md#capability-flags).
   CSS masks over the existing buttons; labels, titles and badges stay.
 - Outer pages (`data-page`) hide help paragraphs and eyebrows, turn boxed lists
   into plain rows and size buttons so their labels never wrap.
-- Settings hide help text visually (`settings-hint`, kept for screen readers),
+- Settings hide help text visually (`settings-hint`, kept for screen readers)
+  but keep notes (`settings-note`: safety warnings, save scope, plugin
+  descriptions) as one small line,
   give each settings tab an icon (icons only on phones), and restyle the shared
   buttons, inputs, switches, segmented controls, dialogs and menus.
 - The terminal, the file editor and code blocks use the pack's `--terminal-*`,

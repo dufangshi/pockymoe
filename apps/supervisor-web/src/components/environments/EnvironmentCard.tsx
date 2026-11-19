@@ -7,7 +7,7 @@ import { environmentText as t } from '../../lib/environmentI18n';
 import { environmentRequestText as rt } from '../../lib/environmentRequestI18n';
 import { environmentActions, environmentError } from './model';
 import { EnvironmentConfirmation } from './EnvironmentConfirmation';
-import { EnvironmentStateMark, Fact, limitsText, sameLimits } from './ui';
+import { EnvironmentStateMark, Fact, ThreadRef, limitsText, sameLimits } from './ui';
 
 /** Start/stop, rebuild and destroy for one environment. Rebuild and destroy
     confirm first (Cancel focused); destroy is set apart in the danger color. */
@@ -57,8 +57,10 @@ export function EnvironmentFacts({ environment: env, connection, showThread = fa
 }
 
 /** Settings row: state, name and lifecycle on one line; paths and limits fold. */
-export function EnvironmentCard({ environment: env, connection, deviceId, onUpdate, disabledReason }: {
+export function EnvironmentCard({ environment: env, connection, deviceId, onUpdate, disabledReason, threadTitle }: {
   environment: EnvironmentDto; connection?: EnvironmentConnectionDto | undefined; deviceId?: string | null | undefined; onUpdate(env: EnvironmentDto): void; disabledReason?: string | undefined;
+  /** The thread it runs, by title. */
+  threadTitle?: string | undefined;
 }) {
   useI18n();
   const [expanded, setExpanded] = useState(false);
@@ -68,7 +70,7 @@ export function EnvironmentCard({ environment: env, connection, deviceId, onUpda
         <ChevronRight aria-hidden="true" />
         <span className="env-row-main">
           <span className="env-row-title">{env.name}</span>
-          <span className="env-row-meta"><span>{connection?.name ?? 'Dokploy'}</span><span>{limitsText(env.limits)}</span><code>{env.threadId.slice(0, 8)}</code></span>
+          <span className="env-row-meta"><span>{connection?.name ?? 'Dokploy'}</span><span>{limitsText(env.limits)}</span><ThreadRef threadId={env.threadId} title={threadTitle} /></span>
         </span>
       </button>
       <EnvironmentStateMark state={env.state} />

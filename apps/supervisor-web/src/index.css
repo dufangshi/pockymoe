@@ -655,6 +655,19 @@ fieldset {
   padding-bottom: max(3rem, env(safe-area-inset-bottom));
 }
 
+/* A new thread on a phone: the form is longer than the screen, so its actions
+   stay at the bottom instead of below the fold (UI §4: actions at the bottom). */
+@media (max-width: 639px) {
+  .product-page .thread-create-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    margin: 16px -16px 0;
+    padding: 10px 16px max(10px, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--theme-border);
+    background: var(--theme-bg);
+  }
+}
 .product-page-wide {
   max-width: 92rem;
 }
@@ -827,16 +840,22 @@ fieldset {
 
 .product-segment[aria-selected='true'],
 .product-segment[aria-pressed='true'],
+.product-segment[aria-checked='true'],
 .product-segment:has(input:checked) {
   background: var(--theme-panel);
   color: var(--theme-fg);
   box-shadow: 0 1px 3px oklch(0.12 0.01 90 / 0.18);
 }
 
+.product-segment:focus-visible,
 .product-segment:has(input:focus-visible) {
   outline: 2px solid var(--theme-accent-solid);
   outline-offset: 1px;
 }
+
+/* A small two-way choice inside a row (a plugin's default): the same look, shorter. */
+.product-segmented.is-compact .product-segment { min-height: 2.25rem; padding-inline: 0.875rem; font-size: 0.75rem; }
+@media (max-width: 639px) { .product-segmented.is-compact .product-segment { min-height: 2.5rem; } }
 
 .product-segment:has(input:disabled) {
   cursor: not-allowed;
@@ -2557,9 +2576,8 @@ input:not(:where(.settings-workspace, .host-dialog, .plugin-settings-dialog) *) 
 }
 
 .relay-button-primary:disabled {
-  border-color: var(--status-neutral-border);
-  background: var(--status-neutral-bg);
-  color: var(--status-neutral-fg);
+  /* Still the primary action, only not yet available: faded, never restyled as a secondary button. */
+  opacity: 0.42;
   cursor: not-allowed;
   box-shadow: none;
 }
@@ -2730,6 +2748,20 @@ main:has(.product-navigation) { padding-top: 0 !important; }
   .device-connection-button:hover { background: var(--theme-hover); }
 }
 .device-connection-button:disabled { opacity: .6; }
+/* Lost connection: amber, with short words on wide screens and the icon alone on phones. */
+.device-connection-slot:has(> .device-connection-button.is-down) { flex: none; width: auto; }
+.device-connection-button.is-down,
+.matter-connection .device-connection-button.is-down {
+  width: auto; gap: 5px; padding: 0 9px; white-space: nowrap; font-size: 12px; line-height: 1;
+  color: var(--status-warning-fg); border-color: color-mix(in srgb, var(--status-warning-fg) 40%, transparent);
+  background: color-mix(in srgb, var(--status-warning-fg) 13%, var(--theme-panel));
+}
+.matter-connection .device-connection-button.is-down > svg { width: 15px; height: 15px; }
+@media (max-width: 639px) {
+  .device-connection-button.is-down,
+  .matter-connection .device-connection-button.is-down { width: 28px; padding: 0; }
+  .device-connection-button.is-down .device-connection-text { display: none; }
+}
 .device-connection-popover { background: #f7f8f6; color: #121416; border-color: #cbd2d7; }
 :root[data-theme-effective='dark'] .device-connection-popover { background: #141b20; color: #f4f7f6; border-color: #36434d; }
 .device-connection-popover > span { color: #5d6972; }
@@ -2958,7 +2990,12 @@ main:has(.product-navigation) { padding-top: 0 !important; }
 .host-secondary-window[data-slot='dialog-content'] { display: flex; flex-direction: column; overflow: clip !important; }
 .host-secondary-window > [data-slot='dialog-header'] { flex-shrink: 0; padding-right: 36px; text-align: left; }
 .host-secondary-window-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-.host-secondary-window-overlay { backdrop-filter: blur(6px); }
+/* Blur behind a window is the phone sheet's (UI §4); on a desktop every form window dims the same way. */
+@media (max-width: 639px) { .host-secondary-window-overlay { backdrop-filter: blur(6px); } }
+/* One footer for form windows: a lead action on the left, then Cancel and the primary action at the end (UI §1). */
+.form-dialog-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--theme-border); }
+.form-dialog-actions-lead { margin-right: auto; }
+@media (max-width: 639px) { .form-dialog-actions > button:not(.error-mark):not(.form-dialog-actions-lead) { flex: 1; } }
 .host-secondary-window > [data-slot='dialog-close'] { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; top: 12px; right: 12px; }
 @media (max-width: 639px) {
   .host-secondary-window[data-slot='dialog-content'] {
@@ -2976,3 +3013,9 @@ main:has(.product-navigation) { padding-top: 0 !important; }
 /* Rises 24px from wherever it sits, above a keyboard too. */
 @keyframes host-secondary-enter { from { opacity: 0; margin-bottom: -24px; } }
 @media (prefers-reduced-motion: reduce) { .host-secondary-window[data-slot='dialog-content'] { animation: none; } }
+
+/* Settings › Device: the passcode card keeps the same gap above the divider and the Supervisor block below it as other groups. */
+.local-passcode-settings { margin-bottom: 1.25rem; }
+.local-passcode-settings + * { padding-top: 1.25rem; }
+/* Workspace paths on the workspaces page: muted path chips, one line, middle-truncated. */
+.workspace-path-chip { display: flex; width: fit-content; font-size: 12.5px; line-height: 20px; color: var(--theme-fg-muted); }

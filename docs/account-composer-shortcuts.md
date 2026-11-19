@@ -9,7 +9,7 @@
 
 macOS 上 Command 可代替 Ctrl。中文等输入法组合期间 Enter 不触发发送；持续按住快捷键不重复提交。Shell 保留原有按键行为。
 
-此设置通过 `/relay/account/preferences` 的 GET/PATCH 存在 Relay 的 `relay_account_preferences` 中，以当前登录用户为唯一键。同账号的设备和浏览器共用，其他账号独立。页面打开、重新获得焦点或从后台返回时读取账号配置；保存失败会提示错误并保留上一次成功保存的模式。独立本地 Supervisor 页没有 Relay 账号时使用默认模式。
+此设置通过 `/relay/account/preferences` 的 GET/PATCH 存在 Relay 的 `relay_account_preferences` 中，以当前登录用户为唯一键。同账号的设备和浏览器共用，其他账号独立。页面打开、重新获得焦点或从后台返回时读取账号配置；保存失败会提示错误并保留上一次成功保存的模式。独立本地 Supervisor 页没有 Relay 账号时，选择存在此浏览器的 localStorage（`pockymoe.composer.sendShortcut`），设置页写明「保存在此浏览器」；登录 Relay 后以账号为准。
 
 运行中的直接 steer 先按现有可靠流程保存消息，再根据该次提交的 `clientRequestId` 自动 steer 对应队列项。不会选择队列里其他消息；原 turn 已结束时保留正常投递。steer 失败或结果未确认时显示原因、保留已保存消息并清空草稿，避免重复提交。后端不支持 steer 时保留草稿并提示正常发送；空闲时 steer 快捷键等同发送新 turn。附件经过原有上传、持久化路径。
 

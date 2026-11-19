@@ -171,6 +171,8 @@ function DeviceResourceSettings({ deviceId }: { deviceId: string | null }) {
   const values = Object.fromEntries(FIELDS.map(({ field }) =>
     [field, parseResourceField(field, draft[field].on, draft[field].text, saved?.[field])])) as Record<Field, number | null | undefined>;
   const invalid = FIELDS.some(({ field }) => values[field] === undefined);
+  // Save follows the page's other cards: available once something changed.
+  const changed = !saved || FIELDS.some(({ field }) => (values[field] ?? null) !== (saved[field] ?? null));
   const change = (field: Field, patch: Partial<Draft[Field]>) => {
     setDraft(current => current && { ...current, [field]: { ...current[field], ...patch } });
     setMessage(null);
@@ -220,7 +222,7 @@ function DeviceResourceSettings({ deviceId }: { deviceId: string | null }) {
       })}
       <div className="pm-res-footer">
         {message && <span role="status" className="pm-res-saved">{message}</span>}
-        <button type="button" className="relay-button-primary pm-res-primary" disabled={invalid || busy} onClick={() => void save()}>
+        <button type="button" className="relay-button-primary pm-res-primary" disabled={invalid || busy || !changed} onClick={() => void save()}>
           {busy ? translate('settings.saving') : translate('files.save')}
         </button>
         {error && <ErrorMark message={error} onRetry={invalid ? undefined : () => void save()} />}

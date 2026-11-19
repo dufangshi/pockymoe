@@ -99,14 +99,15 @@ test('plum menus open by pointer and keyboard and keep their items', async ({ pa
   const goal = page.locator('[data-toolbox-action="goal"]');
   await expect(goal).toBeVisible();
   await expect(goal.locator('.composer-toolbox-icon')).toBeVisible();
-  await expect(page.locator('[data-toolbox-action="plan"] .composer-toolbox-status')).toHaveText(/off/i);
+  await expect(page.locator('[data-toolbox-action="plan"]')).toHaveAttribute('aria-checked', 'false');
+  await expect(page.locator('[data-toolbox-action="plan"] .composer-toolbox-switch:not([data-on])')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(goal).toBeHidden();
 
   const attach = composer.getByRole('button', { name: 'Add attachment', exact: true });
   await attach.focus();
   await page.keyboard.press('Enter');
-  await expect(page.getByRole('button', { name: 'Photo' })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'Photo' })).toBeVisible();
   await expect(page.locator('.composer-attach-icon')).toHaveCount(2);
   await dismiss(page);
 

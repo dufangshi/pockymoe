@@ -9,7 +9,7 @@ import { SupervisorHeartbeat, SUPERVISOR_HEARTBEAT_TIMEOUT_MS } from '../lib/sup
 import { appUrl } from '../lib/webBase';
 import { workbenchUrls } from '../lib/workbenchUrls';
 import { HostFeatureGate, useHostScope, UnscopedOnly } from '../lib/hostCapabilities';
-import { useThreadDrafts, useThreadDraftTitle } from './useThreadDrafts';
+import { takeThreadAutoSend, useThreadDrafts, useThreadDraftTitle } from './useThreadDrafts';
 import { useWorkbenchReference } from './useWorkbenchReference';
 import { WorkbenchThreadPicker } from '../components/WorkbenchThreadPicker';
 import { WorkbenchTerminal, terminalTargetKey, type TerminalOpenRequest } from '../components/WorkbenchTerminal';
@@ -32,7 +32,7 @@ import { ImageFallbackProvider, ImageRecoveryProvider, ImageDiagnosisProvider } 
 import { diagnoseChatImage } from '../lib/chatImageDiagnosis';
 import { useSubscriptionUsage } from './useSubscriptionUsage';
 import { useThreadTabStatus } from '../lib/useThreadTabStatus';
-import { DeviceEncryptionStatus } from '../components/DeviceEncryptionStatus';
+import { DeviceEncryptionStatus, useConnectionDownShown } from '../components/DeviceEncryptionStatus';
 import { ThreadPublicLinks } from '../components/ThreadPublicLinks';
 import { useThreadShares, type ThreadShareTarget } from '../components/ThreadShareDialog';
 import { ThreadWatchesControl } from '../components/ThreadWatchesControl';
@@ -65,6 +65,7 @@ import { OpenFullPageButton } from '../components/OpenFullPageButton';
 import { useAppShellNav } from '../components/AppShellNavContext';
 import {
   ConfirmDialog,
+  ErrorMark,
   confirmWorkspaceDocumentLeave,
   LongTextDialog,
   ThreadActionsDialog,
@@ -174,6 +175,7 @@ import {
   relayDeviceIdFromPath,
   threadIdFromPath,
 } from '../lib/relayRoutes';
+import { useMediaQuery } from '../lib/useMediaQuery';
 import { useMobileComposerLayout } from './useMobileComposerLayout';
 import { useThreadAuxiliaryActions } from './useThreadAuxiliaryActions';
 import { useThreadListPolling } from './useThreadListPolling';
@@ -185,7 +187,8 @@ import { useThreadWorkspaceAdapter } from './useThreadWorkspaceAdapter';
 import { ThreadCreateForm } from './thread-create/ThreadCreateForm';
 
 const INITIAL_DETAIL_TURN_PAGE_SIZE = 3;
-const DETAIL_TURN_PAGE_SIZE = 3;
+// Paging back: ten turns a step, so a long thread does not take fifty clicks.
+const DETAIL_TURN_PAGE_SIZE = 10;
 const SUPERVISOR_SOCKET_RECONNECT_DELAY_MS = 1_000;
 const SUPERVISOR_HEALTHCHECK_INTERVAL_MS = 2_000;
 const SUPERVISOR_CONNECTION_STALE_MS = SUPERVISOR_HEARTBEAT_TIMEOUT_MS;
@@ -468,6 +471,10 @@ function writeTerminalOpen(routeKey: string, open: boolean) {
   } catch { /* Optional preference. */ }
 }
 
+
+function detailIsRouteThread(detail: { thread: { id: string } } | null, id: string | undefined) {
+  return Boolean(detail && id && detail.thread.id === id);
+}
 
 export function ThreadDetailPage() {
   const caches = getThreadCaches();
@@ -963,9 +970,10 @@ export function ThreadDetailPage() {
       ? toolsAccess.workspaceAccess : 'none';
   const toolsCanControl = toolsUseReference ? referenceController.canControl : relayThreadCanControl;
   const deviceLabel = presentationDeviceName ?? (relayRouteDeviceId ? relayRouteDeviceId.slice(0, 8) : translate('workbench.localDeviceName'));
-  // The desktop clients and a signed-in PC browser keep the rail for navigation:
-  // this conversation's device and its monitor end the sidebar instead.
-  const sidebarDevice = desktopSurface && !hostScope ? <>
+  // The rail is for navigation: on every computer this conversation's device and
+  // its labelled readings end the sidebar; phones keep them in the top bar.
+  const phoneWidth = useMediaQuery('(max-width: 639px)');
+  const sidebarDevice = !hostScope && !phoneWidth ? <>
     <MonitorSmartphone aria-hidden="true" className="matter-sidebar-device-icon" />
     <span className="matter-sidebar-device-name" title={deviceLabel}>{deviceLabel}</span>
     <DeviceMonitor key={relayRouteDeviceId ?? 'local'} />
@@ -1422,7 +1430,7 @@ export function ThreadDetailPage() {
     detailRef.current = detail;
   }, [detail]);
 
-  useThreadTabStatus(detail?.thread ?? null);
+  useThreadTabStatus(detail?.thread ?? null, (detail?.pendingRequests.length ?? 0) > 0);
 
   const refreshCapabilities = useCallback(async () => {
     if (!routeActiveRef.current || !caches.isCurrent()) return;
@@ -2988,6 +2996,27 @@ export function ThreadDetailPage() {
     }
   }
 
+  // The compact detail leaves the goal out; a harness with goals loads it once
+  // per opened thread, so the composer can show a running goal (§12 modes).
+  const goalsAvailable = Boolean(backendCapabilities?.controls.goals);
+  const goalLoadedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!goalsAvailable || !detailIsRouteThread(detail, id) || goalLoadedFor.current === routeKey) return;
+    goalLoadedFor.current = routeKey;
+    void handleOpenGoal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per opened thread
+  }, [goalsAvailable, detail?.thread.id, routeKey]);
+
+  // A thread created with its first prompt (the new-thread form) sends it once
+  // here, through the same path as the composer; a failure leaves it as a draft.
+  const autoSendDetailId = detail && detail.thread.id === id ? detail.thread.id : null;
+  useEffect(() => {
+    if (!autoSendDetailId || !takeThreadAutoSend(routeKey)) return;
+    const prompt = chatDraft.prompt;
+    if (prompt.trim()) void handlePrompt({ prompt });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per opened thread
+  }, [autoSendDetailId, routeKey]);
+
   async function handlePrompt(input: SendThreadPromptRequestInput) {
     if (activeRouteRef.current !== routeKey || promptSubmissionOwner.inFlight) return false;
     promptSubmissionOwner.inFlight = true;
@@ -3643,6 +3672,12 @@ export function ThreadDetailPage() {
   );
 
   const threadLoaded = detail?.thread.isLoaded ?? false;
+  // While the device's connection is down (as the bar's mark shows it, after
+  // the same grace), the send key greys out and says why; the draft stays.
+  const connectionDown = useConnectionDownShown(realtimeConnection.status, threadLoaded && detail?.thread.status !== 'recovering');
+  const sendUnavailableReason = connectionDown.shown
+    ? translate(connectionDown.offline ? 'auth.connectionOfflineShort' : 'workbench.deviceUnreachable')
+    : null;
   const realtimeConnectionLabel = threadConnectionSummary(threadLoaded, realtimeConnection);
   const sessionConnectionIndicator = (
     <DeviceEncryptionStatus hideHealthy deviceId={relayRouteDeviceId ?? undefined} connection={{
@@ -3677,8 +3712,13 @@ export function ThreadDetailPage() {
   );
   const threadActionsButton = <div>
     {relayThreadIsOwner && relayRouteDeviceId && <HostFeatureGate feature="previews"><button aria-label={translate("workbench.portMappings")} title={translate("workbench.portMappings")} onClick={() => setPortsOpen(true)}><Network data-icon="ports" /></button></HostFeatureGate>}
-    {!hostScope && <button aria-label={translate("workbench.shareAsLink")} title={translate("workbench.createAndCopyReadOnlyLink")} onClick={() => { setActionMode('link'); setExportDialogOpen(true); }}><Link2 data-icon="share-link" /></button>}
-    {!hostScope && <button aria-label={translate("workbench.sharingPermissions")} title={translate("workbench.sharingPermissions")} onClick={() => { setActionMode('share'); setExportDialogOpen(true); }}><Users data-icon="sharing" /></button>}
+    {/* Sharing goes through a Relay: on a local address both stay, greyed, with the reason on a mark (docs/ui-principles.md §11). */}
+    {!hostScope && (relaySharingActive()
+      ? <button aria-label={translate("workbench.shareAsLink")} title={translate("workbench.createAndCopyReadOnlyLink")} onClick={() => { setActionMode('link'); setExportDialogOpen(true); }}><Link2 data-icon="share-link" /></button>
+      : <span className="matter-thread-tools-unavailable"><button aria-label={translate("workbench.shareAsLink")} disabled><Link2 data-icon="share-link" /></button><ErrorMark kind="unavailable" message={translate('workbench.sharingNeedsRelay')} /></span>)}
+    {!hostScope && (relaySharingActive()
+      ? <button aria-label={translate("workbench.sharingPermissions")} title={translate("workbench.sharingPermissions")} onClick={() => { setActionMode('share'); setExportDialogOpen(true); }}><Users data-icon="sharing" /></button>
+      : <span className="matter-thread-tools-unavailable"><button aria-label={translate("workbench.sharingPermissions")} disabled><Users data-icon="sharing" /></button><ErrorMark kind="unavailable" message={translate('workbench.sharingNeedsRelay')} /></span>)}
     <button aria-label={translate("workbench.downloadTranscript")} title={translate("workbench.downloadTranscript")} disabled={!detail} onClick={() => { setActionMode('html'); setExportDialogOpen(true); }}><Download data-icon="download" /></button>
   </div>;
   const mobileSessionConnectionButton = useMemo(
@@ -3791,6 +3831,7 @@ export function ThreadDetailPage() {
         threadConnected: detail.thread.isLoaded,
         shellAvailable: terminalAvailable,
         disabled: Boolean(promptDisabledReason),
+        sendUnavailableReason,
         ...(promptDisabledReason
           ? { disabledPlaceholder: promptDisabledReason }
           : {}),
@@ -3821,7 +3862,10 @@ export function ThreadDetailPage() {
               } : {}),
             }
           : {}),
-        goalState,
+        // The thread already says which goal runs; show it before /goal loads.
+        goalState: !goalState.data && detail.goal
+          ? { ...goalState, data: detail.goal }
+          : goalState,
         goalHistory: monitorGoals,
         ...(relayThreadCanControl
           ? {
@@ -4084,7 +4128,7 @@ export function ThreadDetailPage() {
     <ThreadDetailSurface
       restrictedNavigation={Boolean(hostScope)}
       scopedSettings={Boolean(hostScope)}
-      deviceMonitor={hostScope ? <OpenFullPageButton /> : desktopSurface ? <TourLauncherButton /> : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
+      deviceMonitor={hostScope ? <OpenFullPageButton /> : desktopSurface || !phoneWidth ? <TourLauncherButton /> : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
       workbench={workbenchUrls({ ...workbenchNavigation, ...desktopWorkbench, ...(sidebarDevice ? { sidebarFooter: sidebarDevice } : {}), panels: {
         deviceLabel,
         workspaceLabel: detail?.workspace.label ?? workbenchNavigation.workspacePath,
@@ -4187,10 +4231,16 @@ export function ThreadDetailPage() {
         ? { onShellThemeModeChange: shellNav.setThemeMode }
         : {})}
       onShellStateChange={setShellControlState}
-      emptyContent={
+      emptyContent={error !== null && connectionErrorRef.current === error ? (
+        // The device did not answer: say so, not that the thread is broken.
+        <div className="host-muted flex flex-1 flex-col items-center justify-center gap-3 px-6 py-12 text-center">
+          <p className="flex items-center gap-1.5">{translate("workbench.deviceUnreachable")}<ErrorMark message={error} /></p>
+          <button type="button" className="relay-button-secondary rounded-lg px-4 py-2" onClick={() => void loadThreadDetail()}>{translate("workbench.retry")}</button>
+        </div>
+      ) : (
         <div className="host-muted flex flex-1 items-center justify-center px-6 py-12 text-center">
           {translate("workbench.unableToResolveThisThread")}</div>
-      }
+      )}
       dialogs={<>{dialogs}{settingsDialogVisible && dialogDetail && <HarnessSettingsDialog
         key={`${dialogDevice}:${dialogDetail.thread.id}`} thread={dialogDetail.thread}
         models={dialogUseReference ? referenceController.models : modelOptions}

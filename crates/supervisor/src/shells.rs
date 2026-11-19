@@ -451,7 +451,15 @@ impl ShellHub {
         Ok(Self::shell_value(shell, id))
     }
 
+    /// Whether a command, not the shell's prompt, owns the terminal now; `None`
+    /// when this cannot be told (a container shell).
+    pub fn command_running(&self, id: &str) -> Option<bool> {
+        let hub = self.inner.lock().unwrap();
+        hub.shells.get(id).and_then(LiveShell::command_running)
+    }
+
     fn shell_value(shell: &LiveShell, id: &str) -> Value {
+        let command_running = shell.command_running();
         let metadata = shell.metadata.lock().unwrap();
         json!({
             "id": id,
@@ -467,9 +475,48 @@ impl ShellHub {
             "updatedAt": metadata.updated_at,
             "lastActivityAt": metadata.last_activity_at,
             "cols": metadata.cols,
-            "rows": metadata.rows
+            "rows": metadata.rows,
+            "commandRunning": command_running
         })
     }
+}
+
+impl LiveShell {
+    /// A job-control shell hands the terminal's foreground process group to the
+    /// command it runs and takes it back at the prompt. The prompt belongs to the
+    /// spawned shell, or, under the host guardian, to the shell the guardian
+    /// started as its child.
+    #[cfg(not(unix))]
+    fn command_running(&self) -> Option<bool> {
+        None
+    }
+
+    #[cfg(unix)]
+    fn command_running(&self) -> Option<bool> {
+        if self.execution.is_some() {
+            // `docker exec` owns the local terminal; the container's shell is
+            // out of reach, so the caller must assume a command may be running.
+            return None;
+        }
+        let foreground = self.master.lock().unwrap().process_group_leader()?;
+        let child = i32::try_from(self.child.lock().unwrap().process_id()?).ok()?;
+        if foreground == child {
+            return Some(false);
+        }
+        if self.host_receipt.is_some() {
+            return Some(parent_pid(foreground)? != child);
+        }
+        Some(true)
+    }
+}
+
+/// The parent of a process, from `/proc` (the host guardian is Linux-only).
+#[cfg(unix)]
+fn parent_pid(pid: i32) -> Option<i32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `pid (comm) state ppid ...`; the command name may itself contain `)`.
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// The shell's terminal is xterm.js, whatever terminal (if any) started the
@@ -552,5 +599,38 @@ mod terminal_env_tests {
             (name == "LANG").then(|| OsString::from("zh_CN.UTF-8"))
         });
         assert_eq!(cmd.get_env("LANG"), Some(OsStr::new("zh_CN.UTF-8")));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod command_running_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn wait_for(hub: &ShellHub, id: &str, expected: bool) -> Option<bool> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let running = hub.command_running(id);
+            if running == Some(expected) || Instant::now() > deadline {
+                return running;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn a_running_command_is_told_apart_from_the_prompt() {
+        let hub = ShellHub::default();
+        let cwd = std::env::temp_dir();
+        let (id, _) = hub
+            .create("thread", "workspace", cwd.to_str().unwrap(), 80, 24, None)
+            .unwrap();
+        assert_eq!(wait_for(&hub, &id, false), Some(false));
+        hub.write(&id, "sleep 5\n").unwrap();
+        assert_eq!(wait_for(&hub, &id, true), Some(true));
+        assert_eq!(hub.get(&id).unwrap()["commandRunning"], true);
+        hub.write(&id, "\u{3}").unwrap();
+        assert_eq!(wait_for(&hub, &id, false), Some(false));
+        hub.terminate(&id).unwrap();
     }
 }

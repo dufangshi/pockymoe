@@ -28,7 +28,7 @@ test('DSH New Chat, native catalog, toolbox, tools and resume', async ({page, re
   // Reach the shared New Chat modal from an existing thread, as in the report.
   const seed = await (await request.post(`${base}/api/threads/start`, {data:{workspaceId:workspace.id,provider:'acp',agentId:'deepseek',model:modelId,title:'DSH seed',approvalMode:'yolo'}})).json();
   await page.goto(`/threads/${seed.id}`);
-  await page.getByRole('button',{name:'New Chat',exact:true}).first().click();
+  await page.getByRole('button',{name:'New thread',exact:true}).first().click();
   const dialog = page.getByTestId('create-thread-dialog');
   await selectControl(page, dialog.locator('[role=combobox][id$="thread-backend"]'), 'acp');
   await dialog.locator('label').filter({hasText:'DeepSeek Harness'}).click();
@@ -37,7 +37,7 @@ test('DSH New Chat, native catalog, toolbox, tools and resume', async ({page, re
   await selectControl(page, picker, modelId);
   await selectControl(page, dialog.getByLabel('Reasoning effort',{exact:true}), 'xhigh');
   await dialog.getByLabel('Title',{exact:true}).fill('DSH verified creation');
-  const submit = dialog.getByRole('button',{name:'Create Thread',exact:true});
+  const submit = dialog.getByRole('button',{name:'New thread',exact:true});
   await expect(submit).toBeInViewport();
   await expect(dialog.getByRole('heading',{name:'Create New Chat'})).toBeInViewport();
   // The dialog itself must never scroll out its header or retain a blank bottom.
@@ -48,7 +48,7 @@ test('DSH New Chat, native catalog, toolbox, tools and resume', async ({page, re
   const form = dialog.locator('form');
   expect(await form.evaluate(el=>el.scrollWidth-el.clientWidth)).toBeLessThanOrEqual(1);
   await page.screenshot({path:testInfo.outputPath('new-chat.png')});
-  await dialog.getByRole('button',{name:'Create Thread',exact:true}).click();
+  await dialog.getByRole('button',{name:'New thread',exact:true}).click();
   await expect(dialog).toHaveCount(0);
   const id = page.url().split('/threads/')[1];
   expect(id).not.toBe(seed.id);

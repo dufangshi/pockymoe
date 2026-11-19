@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowUp, Loader2 } from 'lucide-react';
+import { ArrowDownToLine, Loader2 } from 'lucide-react';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import type { PockymoeHost, UpdateState } from './host';
@@ -42,8 +42,10 @@ export function ClientUpdateButton({ host, enabled }: { host: PockymoeHost | nul
   if (!updates || !state.version || !['ready', 'installing', 'error'].includes(state.status)) return null;
   const download = releasePage(state.releaseUrl);
   return <div className="desktop-client-update" data-update-status={state.status}>
+    {/* A download glyph in an outlined ring with a short word: the filled up-arrow circle is the composer's Send. */}
     <button type="button" className="desktop-client-update-button" aria-label={label} title={label} aria-busy={busy} disabled={busy || retryDisabled} onClick={install}>
-      <span className="desktop-client-update-circle">{busy ? <Loader2 aria-hidden="true" size={16} className="composer-send-spinner static-status-arc" /> : <ArrowUp aria-hidden="true" size={16} />}</span>
+      <span className="desktop-client-update-circle">{busy ? <Loader2 aria-hidden="true" size={16} className="composer-send-spinner static-status-arc" /> : <ArrowDownToLine aria-hidden="true" size={16} />}</span>
+      <span className="desktop-client-update-label" aria-hidden="true">{translate(retryDisabled ? 'desktopShell.updateNeedsRestart' : 'desktopShell.updateLabel')}</span>
     </button>
     {state.status === 'error' ? <span className="desktop-client-update-failure"><ErrorMark className="desktop-client-update-error" message={state.error || translate('desktopShell.updateFailed')} onRetry={install} retryDisabled={retryDisabled} secondaryAction={download && host?.shell?.openExternal ? { label: translate('desktopShell.downloadUpdate'), onClick: () => host.shell.openExternal(download) } : undefined} /></span> : null}
   </div>;

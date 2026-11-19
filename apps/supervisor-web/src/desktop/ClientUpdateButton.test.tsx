@@ -23,7 +23,7 @@ it('shows nothing in browsers, older clients, disabled hosts and while downloadi
 it('installs with no arguments or confirmation and shows the existing spinner immediately', async () => {
   const f = fixture(); render(<ClientUpdateButton host={f.host} enabled />);
   const button = await screen.findByRole('button', { name: '更新到 0.3.0' });
-  expect(button).toHaveAttribute('title', '更新到 0.3.0'); expect(button.querySelector('svg.lucide-arrow-up')).not.toBeNull();
+  expect(button).toHaveAttribute('title', '更新到 0.3.0'); expect(button.querySelector('svg.lucide-arrow-down-to-line')).not.toBeNull();
   fireEvent.click(button); expect(f.install).toHaveBeenCalledWith(); expect(f.install).toHaveBeenCalledTimes(1);
   expect(button).toBeDisabled(); expect(button).toHaveAttribute('aria-busy', 'true'); expect(button.querySelector('.composer-send-spinner')).not.toBeNull();
 });

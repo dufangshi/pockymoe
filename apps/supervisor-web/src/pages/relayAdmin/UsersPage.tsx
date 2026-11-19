@@ -167,7 +167,7 @@ function UserList(props: AdminPageProps) {
     { key: 'key', label: translate('admin.accountKey'), sortable: true, width: 130, render: (user) => <AccountKeyMark user={user} /> },
     { key: 'factors', label: translate('admin.twoFactor'), sortable: true, firstDir: 'desc', width: 140, render: (user) => factorsLabel(user) },
     { key: 'devices', label: translate('admin.devicesOnline'), sortable: true, firstDir: 'desc', numeric: true, defaultHidden: true, width: 120, render: (user) => `${formatCount(user.devicesOnline)} / ${formatCount(user.devices)}` },
-    { key: 'created', label: translate('admin.registered'), sortable: true, firstDir: 'desc', width: 120, render: (user) => <time dateTime={user.createdAt} title={formatDateTime(user.createdAt)}>{formatDate(user.createdAt)}</time> },
+    { key: 'created', label: translate('admin.registered'), sortable: true, firstDir: 'desc', width: 136, render: (user) => <time dateTime={user.createdAt} title={formatDateTime(user.createdAt)}>{formatDate(user.createdAt)}</time> },
     {
       key: 'lastSignIn',
       label: translate('admin.lastSignIn'),

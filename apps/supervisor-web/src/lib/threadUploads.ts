@@ -15,6 +15,9 @@ const ONE_REQUEST_BYTES = 16 * 1024 * 1024;
 const OLD_DEVICE_FILE_BYTES = 25 * 1024 * 1024;
 const OLD_DEVICE_TOTAL_BYTES = 30 * 1024 * 1024;
 const MIN_CHUNK_BYTES = 512 * 1024;
+/** The first chunk is small so the bar moves within seconds on a slow link;
+    each good chunk doubles the next up to the device's size (slow start). */
+const START_CHUNK_BYTES = 512 * 1024;
 const RETRIES = 8;
 const GROW_AFTER = 3;
 
@@ -71,6 +74,8 @@ async function sendFile(
     sent.set(attachment.clientId, { thread, uploadId });
   }
   const max = chunk;
+  chunk = received > 0 ? chunk : Math.min(max, START_CHUNK_BYTES);
+  let rampUp = received === 0;
   let failures = 0;
   let good = 0;
   while (received < file.size) {
@@ -83,7 +88,8 @@ async function sendFile(
       });
       received = answer.received;
       failures = 0;
-      if (++good >= GROW_AFTER) { good = 0; chunk = Math.min(chunk * 2, max); }
+      if (rampUp) { chunk = Math.min(chunk * 2, max); rampUp = chunk < max; }
+      else if (++good >= GROW_AFTER) { good = 0; chunk = Math.min(chunk * 2, max); }
     } catch (error) {
       if (signal.aborted) throw new Aborted();
       if (error instanceof ApiError && error.statusCode === 409) {
@@ -94,6 +100,7 @@ async function sendFile(
       if (!retryable(error) || ++failures > RETRIES) throw error;
       // A chunk that keeps timing out on a slow link gets smaller.
       good = 0;
+      rampUp = false;
       chunk = Math.max(Math.floor(chunk / 2), MIN_CHUNK_BYTES);
       report(received, true);
       await wait(Math.min(30_000, 1000 * 2 ** (failures - 1)), signal);
@@ -123,11 +130,17 @@ export async function prepareAttachments<T extends { prompt: string; attachments
   if (attachments.some((attachment) => attachment.file.size > MAX_ATTACHMENT_BYTES)) throw new Error(t('workbench.attachmentOver1Gb'));
   if (total <= ONE_REQUEST_BYTES) return input;
   let prompt = input.prompt;
+  // What will go once the files are there, in one line: the text with each
+  // attachment named, so the reader sees what the bar is waiting to send.
+  const preview = attachments.reduce(
+    (text, attachment) => text.split(attachment.placeholder).join(` ${attachment.originalName.trim() || attachment.file.name} `),
+    input.prompt,
+  ).replace(/\s+/g, ' ').trim();
   try {
     for (const [index, attachment] of attachments.entries()) {
       const name = attachment.originalName.trim() || attachment.file.name;
       const token = await sendFile(thread, attachment, device, signal, (loaded, retrying) => onProgress({
-        name, loaded, total: attachment.file.size, index: index + 1, count: attachments.length, ...(retrying ? { retrying } : {}),
+        name, loaded, total: attachment.file.size, index: index + 1, count: attachments.length, preview, ...(retrying ? { retrying } : {}),
       }));
       prompt = prompt.split(attachment.placeholder).join(token);
     }

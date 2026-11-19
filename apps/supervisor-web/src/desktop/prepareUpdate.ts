@@ -1,6 +1,6 @@
 import { confirmAsync, getDirtyWorkspaceDocumentCount, prepareWorkspaceDocumentUnloadApproval, revokeWorkspaceDocumentUnloadApproval } from '@pockymoe/thread-ui';
 import { getLocale, translate } from '@pockymoe/thread-ui/i18n';
-import { getThreadDraftRevision, getUnsentThreadDraftCounts, getUnsentThreadDraftTitles } from '../pages/useThreadDrafts';
+import { approveThreadDraftUnload, getThreadDraftRevision, getUnsentThreadDraftCounts, getUnsentThreadDraftTitles } from '../pages/useThreadDrafts';
 import type { HostCommandResult } from './host';
 
 export interface UpdatePreparationDependencies {
@@ -21,7 +21,7 @@ window.addEventListener('beforeunload', event => {
   if (approvedDraftRevision === null) return;
   if (approvedDraftRevision.revision !== approvedDraftRevision.read()) {
     event.preventDefault(); event.returnValue = '';
-  } else if (event.isTrusted) approvedDraftRevision = null;
+  } else if (event.isTrusted) { approvedDraftRevision = null; approveThreadDraftUnload(null); }
 });
 
 /** Native asks every trusted window, including requests from the tray. The rail
@@ -31,13 +31,14 @@ export function prepareClientUpdate(cancel = false, dependencies: UpdatePreparat
     generation++;
     activeConfirmation?.abort(); activeConfirmation = null;
     approvedDraftRevision = null;
+    approveThreadDraftUnload(null);
     revokeWorkspaceDocumentUnloadApproval();
     pending = null;
     return Promise.resolve({ ok: true });
   }
   if (pending) return pending;
   const current = ++generation;
-  revokeWorkspaceDocumentUnloadApproval(); approvedDraftRevision = null;
+  revokeWorkspaceDocumentUnloadApproval(); approvedDraftRevision = null; approveThreadDraftUnload(null);
   const draftRevision = dependencies.draftRevision();
   const counts = dependencies.draftCounts();
   const documents = dependencies.documentCount();
@@ -57,6 +58,8 @@ ${translate('desktopShell.updatePendingCounts', { ...counts, documents })}`
     }
     if (current !== generation || draftRevision !== dependencies.draftRevision() || !approveDocuments()) return cancelled();
     approvedDraftRevision = { revision: draftRevision, read: dependencies.draftRevision };
+    // The drafts' own leave guard (useThreadDrafts) lets this approved update through.
+    approveThreadDraftUnload(draftRevision);
     // Older pages acknowledge unknown host commands with plain ok:true. Native
     // requires this marker so only a page with the guard can approve closing.
     return { ok: true, data: { prepared: true } };

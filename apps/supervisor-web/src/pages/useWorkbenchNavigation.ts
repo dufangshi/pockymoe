@@ -1,3 +1,4 @@
+import { getThreadDraftPreview } from './useThreadDrafts';
 import { DesktopStoreContext } from '../desktop/data/context';
 import { NOTIFICATION_CHANGE } from '../lib/notificationSettings';
 import { useBrowserStateKey } from '../lib/browserStateScope';
@@ -13,7 +14,7 @@ import type {
 import { ApiError, isInvisibleThreadError, relayModeActive, request } from '../lib/api';
 import { threadHref } from '../lib/relayRoutes';
 import { isTourDevice, tourStateKey } from '../lib/tourSandbox/tourDevice';
-import { threadThemeAgentKey } from '@pockymoe/thread-ui';
+import { displayThreadTitle, threadThemeAgentKey } from '@pockymoe/thread-ui';
 
 /** The avatar key a theme shows for a thread's harness. */
 function threadAgentField(thread: { provider?: string | null; agentId?: string | null }): { agent?: string } {
@@ -35,13 +36,20 @@ interface ThreadReference {
   readCompletedAt?: string | null;
 }
 type ThreadActivity = { closedAt?: string | null; status: string; lastTurnCompletedAt?: string | null; parentThreadId?: string | null; rootThreadId?: string | null };
-export function workbenchThreadStatus(activity: ThreadActivity | undefined, readCompletedAt?: string | null) {
+/**
+ * `readCompletedAt` is the last turn the reader saw in a thread they opened
+ * (null: opened, nothing read yet). For a thread never opened in this browser,
+ * pass `undefined` and the turn it had finished when this browser first listed
+ * it (`''`: none): only turns finished after that are unread, as on the map.
+ */
+export function workbenchThreadStatus(activity: ThreadActivity | undefined, readCompletedAt?: string | null, firstSeenCompletedAt?: string) {
   if (!activity) return 'unknown';
   if (['running', 'inProgress', 'recovering'].includes(activity.status)) return 'running';
   if (['failed', 'error', 'system_error'].includes(activity.status)) return 'failed';
   if (['unknown', 'not_loaded'].includes(activity.status)) return 'unknown';
   if (activity.status === 'interrupted') return 'interrupted';
-  if (activity.lastTurnCompletedAt && (!readCompletedAt || Date.parse(activity.lastTurnCompletedAt) > Date.parse(readCompletedAt))) return 'unread';
+  const seen = readCompletedAt !== undefined ? readCompletedAt : firstSeenCompletedAt;
+  if (activity.lastTurnCompletedAt && (!seen || Date.parse(activity.lastTurnCompletedAt) > Date.parse(seen))) return 'unread';
   return 'idle';
 }
 interface NavigationSnapshot {
@@ -65,6 +73,16 @@ function loadWorkspaceOrders(key: string): Record<string, string[]> {
     const value: unknown = JSON.parse(localStorage.getItem(key) ?? '{}');
     if (!value || typeof value !== 'object') return {};
     return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].every(item => typeof item === 'string')));
+  } catch { return {}; }
+}
+const FIRST_SEEN_KEY = 'pockymoe.thread-first-seen.v1';
+const FIRST_SEEN_LIMIT = 2000;
+/** Threads never opened here: `device:thread` -> its last finished turn when first listed. */
+function loadFirstSeen(key: string): Record<string, string> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(key) ?? '{}');
+    if (!value || typeof value !== 'object') return {};
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
   } catch { return {}; }
 }
 const referenceKey = (r: { deviceId: string | null; threadId: string }) =>
@@ -137,6 +155,28 @@ export function useWorkbenchNavigation(
   const openTabsKey = scopedKey(useBrowserStateKey(OPEN_TABS_KEY));
   const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => loadOpenTabs(openTabsKey));
   useEffect(() => { if (enabled) setOpenTabs(loadOpenTabs(openTabsKey)); }, [openTabsKey, enabled]);
+  const firstSeenKey = scopedKey(useBrowserStateKey(FIRST_SEEN_KEY));
+  const [firstSeen, setFirstSeen] = useState<Record<string, string>>(() => loadFirstSeen(firstSeenKey));
+  useEffect(() => { setFirstSeen(loadFirstSeen(firstSeenKey)); }, [firstSeenKey]);
+  // Filled while rendering, saved after: a thread first listed now counts as read.
+  const unseen = useRef<Record<string, string>>({});
+  const firstSeenOf = (key: string, activity: ThreadActivity | undefined) => {
+    const known = firstSeen[key];
+    if (known !== undefined) return known;
+    const at = activity?.lastTurnCompletedAt ?? '';
+    unseen.current[key] = at;
+    return at;
+  };
+  useEffect(() => {
+    const fresh = unseen.current;
+    unseen.current = {};
+    if (!Object.keys(fresh).length) return;
+    const next = { ...loadFirstSeen(firstSeenKey), ...fresh };
+    const entries = Object.entries(next);
+    const kept = entries.length > FIRST_SEEN_LIMIT ? Object.fromEntries(entries.slice(-FIRST_SEEN_LIMIT)) : next;
+    try { localStorage.setItem(firstSeenKey, JSON.stringify(kept)); } catch { /* Keep the in-page baseline. */ }
+    setFirstSeen(kept);
+  });
   const [workspaceOrders, setWorkspaceOrders] = useState<Record<string, string[]>>(() => loadWorkspaceOrders(orderKey));
   useEffect(() => { setWorkspaceOrders(loadWorkspaceOrders(orderKey)); }, [orderKey]);
   const sharesDeviceThreads = options.sharesDeviceThreads === true;
@@ -492,7 +532,7 @@ export function useWorkbenchNavigation(
     refs.unshift({
       deviceId,
       threadId: detail.thread.id,
-      title: detail.thread.title,
+      title: displayThreadTitle(detail.thread.title),
       workspaceLabel: detail.workspace.label,
       favorite: false,
       visitedAt: new Date().toISOString(),
@@ -505,7 +545,7 @@ export function useWorkbenchNavigation(
     const activity = local ?? statuses[referenceKey(r)];
     return {
       key: referenceKey(r),
-      title: local?.title ?? r.title,
+      title: displayThreadTitle(local?.title ?? r.title),
       subtitle: [r.deviceName, r.workspaceLabel].filter(Boolean).join(' · '),
       href: threadHref(r.threadId, r.deviceId),
       favorite: r.favorite,
@@ -513,7 +553,7 @@ export function useWorkbenchNavigation(
       ...(activity?.parentThreadId ? {parentKey: `${r.deviceId ?? 'local'}:${activity.parentThreadId}`} : {}),
       ...(activity?.rootThreadId ? {rootKey: `${r.deviceId ?? 'local'}:${activity.rootThreadId}`} : {}),
       closedAt: activity?.closedAt ?? null,
-      status: workbenchThreadStatus(activity, r.readCompletedAt),
+      status: workbenchThreadStatus(activity, r.readCompletedAt ?? null),
       ...(local ? threadAgentField(local) : {}),
     };
   });
@@ -630,11 +670,13 @@ export function useWorkbenchNavigation(
         const reference = snapshot.threads.find(r => referenceKey(r) === key);
         const renamed = localEdits.renamed[key];
         return {
-          key, title: renamed?.from === thread.title ? renamed.to : thread.title, subtitle: workspaceLabels.get(thread.workspaceId) ?? '',
+          key, title: displayThreadTitle(renamed?.from === thread.title ? renamed.to : thread.title), subtitle: workspaceLabels.get(thread.workspaceId) ?? '',
           href: threadHref(thread.id, tabContext.deviceId), favorite: reference?.favorite ?? false,
           ...(thread.parentThreadId ? {parentKey: `${tabContext.deviceId ?? 'local'}:${thread.parentThreadId}`} : {}),
           ...(thread.rootThreadId ? {rootKey: `${tabContext.deviceId ?? 'local'}:${thread.rootThreadId}`} : {}),
-          status: workbenchThreadStatus(thread.id === tabContext.detail?.thread.id ? tabContext.detail.thread : thread, reference?.readCompletedAt),
+          status: reference
+            ? workbenchThreadStatus(thread.id === tabContext.detail?.thread.id ? tabContext.detail.thread : thread, reference.readCompletedAt ?? null)
+            : workbenchThreadStatus(thread, undefined, firstSeenOf(key, thread)),
           closedAt: thread.closedAt ?? null,
           ...threadAgentField(thread),
         };
@@ -657,14 +699,15 @@ export function useWorkbenchNavigation(
       ?? snapshot.threads.find(r => (r.deviceId ?? 'local') === familyDevice && r.workspaceId === thread.workspaceId)?.workspaceLabel
       ?? (rootReference && (!rootReference.workspaceId || rootReference.workspaceId === thread.workspaceId) ? rootReference.workspaceLabel : undefined);
     return [key, {
-      key, title: activity.title,
+      key, title: displayThreadTitle(activity.title),
       subtitle: [reference?.deviceName, place].filter(Boolean).join(' · '),
       href: threadHref(thread.id, familyDevice === 'local' ? null : familyDevice),
       favorite: reference?.favorite ?? false,
       ...(thread.parentThreadId ? { parentKey: `${familyDevice}:${thread.parentThreadId}` } : {}),
       ...(thread.rootThreadId ? { rootKey: `${familyDevice}:${thread.rootThreadId}` } : {}),
       status: workbenchThreadStatus(statuses[key]?.status === 'unknown' && familyDevice !== (deviceId ?? 'local')
-        ? { ...activity, status: 'unknown' } : activity, reference?.readCompletedAt),
+        ? { ...activity, status: 'unknown' } : activity,
+        reference ? reference.readCompletedAt ?? null : undefined, reference ? undefined : firstSeenOf(key, activity)),
       closedAt: thread.closedAt ?? null,
       ...threadAgentField(thread),
     } satisfies WorkbenchThread] as const;
@@ -696,7 +739,7 @@ export function useWorkbenchNavigation(
       : minutes < 60 ? translate('workbench.runningForMinutes', { count: minutes })
         : translate('workbench.runningForHours', { hours: Math.floor(minutes / 60), minutes: minutes % 60 });
     return [{
-      key, title: activity.title,
+      key, title: displayThreadTitle(activity.title),
       subtitle: [...placeOf(device, thread), runningFor].filter(Boolean).join(' · '),
       href: threadHref(thread.id, device === 'local' ? null : device),
       favorite: reference?.favorite ?? false,
@@ -719,7 +762,7 @@ export function useWorkbenchNavigation(
     if (!thread.rootKey || activeThreads.some(active => active.key === thread.rootKey)) continue;
     const listed = listedThreads.get(thread.rootKey);
     const root = familyByKey.get(thread.rootKey) ?? (listed && {
-      key: thread.rootKey, title: listed.thread.title,
+      key: thread.rootKey, title: displayThreadTitle(listed.thread.title),
       subtitle: placeOf(listed.device, listed.thread).filter(Boolean).join(' · '),
       href: threadHref(listed.thread.id, listed.device === 'local' ? null : listed.device),
       favorite: false,
@@ -775,15 +818,21 @@ export function useWorkbenchNavigation(
     return [root, ...[...known.values()].filter(thread => thread.rootKey === tab.key && thread.key !== tab.key)];
   });
 
+  // A prompt written in a thread and not sent shows on its tab and row.
+  const withDraft = (list: WorkbenchThread[]) => list.map(thread => {
+    const draft = getThreadDraftPreview(thread.key);
+    return draft ? { ...thread, draft } : thread;
+  });
+
   return {
     navigationReady,
     /** The label of a workspace on the open thread's device, when known. */
     workspaceLabel: (id: string) => workspaceLabels.get(id),
-    threads: sidebarThreads,
+    threads: withDraft(sidebarThreads),
     activeThreads,
     workspacePath: tabContext.detail?.workspace.absPath ?? '',
-    workspaceThreads,
-    openTabs: openTabThreads,
+    workspaceThreads: withDraft(workspaceThreads),
+    openTabs: withDraft(openTabThreads),
     onCloseTab: (key: string) => storeOpenTabs(tabs => tabs.filter(tab => tab.key !== key)),
     onReorderOpenTabs: (keys: string[]) => storeOpenTabs(tabs => [...keys.flatMap(key => tabs.filter(tab => tab.key === key)), ...tabs.filter(tab => !keys.includes(tab.key))]),
     currentKey,

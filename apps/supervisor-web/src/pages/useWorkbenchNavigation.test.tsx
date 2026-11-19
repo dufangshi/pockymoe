@@ -375,6 +375,12 @@ describe('account thread navigation', () => {
     expect(workbenchThreadStatus({ status: 'idle' })).toBe('idle');
     expect(workbenchThreadStatus({ status: 'not_loaded' })).toBe('unknown');
     expect(workbenchThreadStatus(undefined)).toBe('unknown');
+    // Never opened: only a turn finished after the browser first listed it is unread.
+    expect(workbenchThreadStatus(activity, undefined, activity.lastTurnCompletedAt!)).toBe('idle');
+    expect(workbenchThreadStatus({ ...activity, lastTurnCompletedAt: '2026-09-19T15:00:00Z' }, undefined, completed)).toBe('unread');
+    expect(workbenchThreadStatus(activity, undefined, '')).toBe('unread');
+    // Opened but never read keeps counting as unread.
+    expect(workbenchThreadStatus(activity, null, completed)).toBe('unread');
   });
 
   it('acknowledges a completed turn only while the thread is focused, and never through a favorite write', async () => {

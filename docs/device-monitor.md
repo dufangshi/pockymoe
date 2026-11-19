@@ -52,12 +52,13 @@ expanded CPU row instead. An unavailable reading shows
 a small "not available" mark whose tooltip and accessible name carry the reason;
 a missing RAPL permission links the mark to the setup below.
 
-The compact monitor uses CPU/memory icons with CPU utilization and used/total
-physical memory on its first row. A second row appears when a GPU reports
-utilization or memory, showing GPU utilization and used/total VRAM. Capacities
-use one decimal in GiB (compact `G`); the tooltip spells out the unit. Missing
-or stale readings show a dash. Mobile pairs stay together at their content width;
-the narrow desktop rail stacks the same readings with slightly larger type.
+The compact monitor shows labelled percentages, never a bare figure: `CPU`
+and memory (`内存` / `Mem`) utilization on its first row and, when a GPU reports
+telemetry, `GPU` and VRAM (`显存` / `VRAM`) utilization on a second, in two
+aligned columns. Used/total capacities live in the dialog. A reading at 90% or
+more uses the theme's danger color; missing or stale readings show a dash. On a
+classic phone top bar narrower than 400px only the CPU reading stays, so the
+icon buttons keep their size.
 
 The compact readout refreshes every fifteen seconds; opening the monitor uses a
 five-second cadence. Sample age and stale-state checks share those reads without
@@ -113,8 +114,9 @@ References: [kernel powercap/RAPL](https://www.kernel.org/doc/html/latest/power/
 [sysinfo native Apple sensor implementation](https://github.com/GuillaumeGomez/sysinfo/tree/v0.36.1/src/unix/apple/macos/component),
 [Netdata macOS sensor sources and privilege requirements](https://learn.netdata.cloud/docs/collecting-metrics/collectors/operating-systems/macos).
 
-The Web button appears in the phone's status-only top bar and the desktop icon rail above Settings,
-remaining visible when the chat sidebar is collapsed. Opening it shows the sample
+On computers the thread sidebar ends with the conversation's device name and,
+below it, the compact monitor; it replaces the sidebar tagline and is not on the
+icon rail. Phones show it in the top bar (status-only or classic). Opening it shows the sample
 age and platform beside the title, then one row per resource (CPU, memory with
 swap, each GPU, container limits): an icon, the value and a meter colored from
 green to red by load, with temperature and power as small chips. The CPU row

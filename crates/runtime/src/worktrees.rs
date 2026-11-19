@@ -677,6 +677,29 @@ impl Supervisor {
                 resolved = git_text(root, &["merge-base", &commit, "HEAD"])?;
                 args.push(&resolved);
             }
+            "commit" => {
+                // What one commit changed, against its first parent (a root
+                // commit against nothing): the commit list opens this.
+                let commit = base.context("commit required")?;
+                resolved = git_text(
+                    root,
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        "--end-of-options",
+                        &format!("{commit}^{{commit}}"),
+                    ],
+                )?;
+                args = vec![
+                    "show",
+                    "--format=",
+                    "--diff-merges=first-parent",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--no-color",
+                    &resolved,
+                ];
+            }
             _ => bail!("invalid diff area"),
         }
         args.push("--");
@@ -708,60 +731,7 @@ impl Supervisor {
                     .split(|b| *b == 0)
                     .any(|name| name == path.as_bytes())
                 {
-                    let bytes = if let Some(value) = crate::execution::file_request(
-                        "diffBytes",
-                        root,
-                        path,
-                        json!({"limit":OUTPUT_LIMIT}),
-                    )? {
-                        use base64::Engine;
-                        base64::engine::general_purpose::STANDARD
-                            .decode(value["bytes"].as_str().context("invalid diff bytes")?)?
-                    } else {
-                        let target = root.join(path);
-                        let parent = target
-                            .parent()
-                            .context("file has no parent")?
-                            .canonicalize()?;
-                        ensure!(
-                            parent.starts_with(root),
-                            "file resolves outside the working copy"
-                        );
-                        let metadata = target.symlink_metadata()?;
-                        let bytes = if metadata.file_type().is_symlink() {
-                            std::fs::read_link(&target)?
-                                .to_string_lossy()
-                                .as_bytes()
-                                .to_vec()
-                        } else {
-                            ensure!(metadata.is_file(), "diff target is not a regular file");
-                            let mut bytes = Vec::new();
-                            std::fs::File::open(target)?
-                                .take(OUTPUT_LIMIT as u64 + 1)
-                                .read_to_end(&mut bytes)?;
-                            bytes
-                        };
-                        bytes
-                    };
-                    let mut truncated = bytes.len() > OUTPUT_LIMIT;
-                    let mut patch = if bytes.contains(&0) {
-                        format!("Binary file: {path}\n")
-                    } else {
-                        let content =
-                            String::from_utf8_lossy(&bytes[..bytes.len().min(OUTPUT_LIMIT)]);
-                        similar::TextDiff::from_lines("", content.as_ref())
-                            .unified_diff()
-                            .header("/dev/null", &format!("b/{path}"))
-                            .to_string()
-                    };
-                    if patch.len() > OUTPUT_LIMIT {
-                        let mut end = OUTPUT_LIMIT;
-                        while !patch.is_char_boundary(end) {
-                            end -= 1;
-                        }
-                        patch.truncate(end);
-                        truncated = true;
-                    }
+                    let (patch, truncated) = untracked_patch(root, path, OUTPUT_LIMIT)?;
                     return Ok(
                         json!({"workingCopyId":copy.id,"area":area,"patch":patch,"truncated":truncated}),
                     );
@@ -769,9 +739,34 @@ impl Supervisor {
             }
         }
         let out = git(root, &args)?;
-        Ok(
-            json!({"workingCopyId":copy.id,"area":area,"patch":String::from_utf8_lossy(&out.bytes),"truncated":out.truncated}),
-        )
+        let mut patch = String::from_utf8_lossy(&out.bytes).into_owned();
+        let mut truncated = out.truncated;
+        if area == "worktree" && path.is_none() && !truncated {
+            // `git diff` leaves untracked files out; the full view lists them too,
+            // as new files, within the same output limit.
+            let names = git(root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+            for name in names
+                .bytes
+                .split(|b| *b == 0)
+                .filter(|name| !name.is_empty())
+            {
+                let name = String::from_utf8_lossy(name);
+                let room = OUTPUT_LIMIT.saturating_sub(patch.len());
+                if room == 0 {
+                    truncated = true;
+                    break;
+                }
+                let Ok((part, cut)) = untracked_patch(root, &name, room) else {
+                    continue;
+                };
+                patch.push_str(&part);
+                if cut {
+                    truncated = true;
+                    break;
+                }
+            }
+        }
+        Ok(json!({"workingCopyId":copy.id,"area":area,"patch":patch,"truncated":truncated}))
     }
     pub fn worktree_git_commits(
         &self,
@@ -809,3 +804,59 @@ impl Supervisor {
 
 #[cfg(test)]
 mod tests;
+
+/// An untracked file as a new-file patch (`--- /dev/null`, `+++ b/path`), cut
+/// to `limit` bytes; the flag says whether it was cut.
+fn untracked_patch(root: &Path, path: &str, limit: usize) -> Result<(String, bool)> {
+    let bytes = if let Some(value) =
+        crate::execution::file_request("diffBytes", root, path, json!({"limit":OUTPUT_LIMIT}))?
+    {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .decode(value["bytes"].as_str().context("invalid diff bytes")?)?
+    } else {
+        let target = root.join(path);
+        let parent = target
+            .parent()
+            .context("file has no parent")?
+            .canonicalize()?;
+        ensure!(
+            parent.starts_with(root),
+            "file resolves outside the working copy"
+        );
+        let metadata = target.symlink_metadata()?;
+        let bytes = if metadata.file_type().is_symlink() {
+            std::fs::read_link(&target)?
+                .to_string_lossy()
+                .as_bytes()
+                .to_vec()
+        } else {
+            ensure!(metadata.is_file(), "diff target is not a regular file");
+            let mut bytes = Vec::new();
+            std::fs::File::open(target)?
+                .take(OUTPUT_LIMIT as u64 + 1)
+                .read_to_end(&mut bytes)?;
+            bytes
+        };
+        bytes
+    };
+    let mut truncated = bytes.len() > OUTPUT_LIMIT;
+    let mut patch = if bytes.contains(&0) {
+        format!("--- /dev/null\n+++ b/{path}\nBinary files /dev/null and b/{path} differ\n")
+    } else {
+        let content = String::from_utf8_lossy(&bytes[..bytes.len().min(OUTPUT_LIMIT)]);
+        similar::TextDiff::from_lines("", content.as_ref())
+            .unified_diff()
+            .header("/dev/null", &format!("b/{path}"))
+            .to_string()
+    };
+    if patch.len() > limit {
+        let mut end = limit;
+        while !patch.is_char_boundary(end) {
+            end -= 1;
+        }
+        patch.truncate(end);
+        truncated = true;
+    }
+    Ok((patch, truncated))
+}

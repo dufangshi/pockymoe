@@ -276,10 +276,11 @@ it('offers a connection to every harness whose format its upstream serves', asyn
     </MemoryRouter>,
   );
   const work = await screen.findByRole('listitem', { name: 'Work API' });
+  // The line shortens the URL in the middle; its button carries the whole line.
   expect(
-    within(work).getByText(
-      'Responses + Chat · work.test/v1 · model-a · Context window 200K',
-    ),
+    within(work).getByRole('button', {
+      name: 'Responses + Chat · work.test/v1 · model-a · Context window 200K',
+    }),
   ).toBeVisible();
   fireEvent.click(screen.getByRole('checkbox', { name: 'Show uninstalled' }));
   const harnesses = screen.getByRole('region', { name: 'Use in harnesses' });

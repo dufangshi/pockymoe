@@ -2,7 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
 import { useThemeRegistry } from '../lib/themePacks';
 import { useFontSize } from '../lib/fontSize';
-import { desktopHost, HOST_BRIDGE_VERSION } from './host';
+import { desktopHost, HOST_BRIDGE_VERSION, type DesktopCapabilities } from './host';
+import { insetStyle, useChromeInsets } from './windowControls';
 import './window-frame.css';
 
 /** Account-independent window chrome: authentication pages need the same drag
@@ -28,16 +29,20 @@ export default function DesktopWindowFrame({ children, effectiveTheme }: { child
     return () => { resize.disconnect(); changes.disconnect(); window.removeEventListener('resize', measure); if (measureFrame.current !== null) cancelAnimationFrame(measureFrame.current); };
   }, []);
   const { locale } = useI18n(); const registry = useThemeRegistry(); const [fontSize] = useFontSize();
+  const [chrome, setChrome] = useState<DesktopCapabilities['windowChrome']>();
   useEffect(() => {
     let current = true;
     void host?.capabilities().then(capabilities => {
       if (!current || !root.current || capabilities.surface !== 'desktop' || capabilities.bridgeVersion !== HOST_BRIDGE_VERSION) return;
-      const chrome = capabilities.windowChrome;
-      root.current.style.setProperty('--desktop-controls-left', chrome.controlsSide === 'left' ? `${chrome.trafficLightsWidth}px` : '0px');
-      root.current.style.setProperty('--desktop-controls-right', chrome.controlsSide === 'right' ? `${chrome.trafficLightsWidth}px` : '0px');
+      setChrome(capabilities.windowChrome);
     }).catch(() => undefined);
     return () => { current = false; };
   }, [host]);
+  const insets = useChromeInsets(chrome);
+  useEffect(() => {
+    if (!root.current || !insets) return;
+    for (const [name, value] of Object.entries(insetStyle(insets))) root.current.style.setProperty(name, value);
+  }, [insets]);
   useEffect(() => {
     if (typeof host?.appearance?.sync !== 'function') return;
     const frame = requestAnimationFrame(() => {

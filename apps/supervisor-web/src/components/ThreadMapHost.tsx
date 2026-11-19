@@ -139,17 +139,23 @@ export function mapDevice(
   };
 }
 
-async function readDevice(deviceId: string | null, name: string): Promise<ThreadMapDevice> {
+/**
+ * Reads one device's map. The thread list answers at once while activity can take
+ * seconds, so `onThreads` gets a map sized alike first and the result has activity.
+ */
+async function readDevice(deviceId: string | null, name: string, onThreads?: (device: ThreadMapDevice) => void): Promise<ThreadMapDevice> {
   const base = deviceId ? `relay/devices/${encodeURIComponent(deviceId)}/` : '';
   const read = <T,>(path: string) => request<T>(`${base}${path}`, { signal: AbortSignal.timeout(15_000), cache: 'no-store' });
   try {
-    const [workspaces, threads, activity] = await Promise.all([
+    // Older Supervisors have no activity; the map then sizes threads alike.
+    const activityRead = read<ThreadActivityResponseDto>(`api/thread-activity?hours=${THREAD_MAP_HOURS}`).catch(() => null);
+    const [workspaces, threads] = await Promise.all([
       read<WorkspaceDto[]>('api/workspaces'),
       read<ThreadDto[]>('api/threads?includeAgentThreads=true'),
-      // Older Supervisors have no activity; the map then sizes threads alike.
-      read<ThreadActivityResponseDto>(`api/thread-activity?hours=${THREAD_MAP_HOURS}`).catch(() => null),
     ]);
     if (!Array.isArray(workspaces) || !Array.isArray(threads)) throw new Error('Invalid thread list');
+    onThreads?.(mapDevice(deviceId, name, workspaces, threads, null));
+    const activity = await activityRead;
     return mapDevice(deviceId, name, workspaces, threads, activity && Array.isArray(activity.threads) ? activity : null);
   } catch (error) {
     return { id: deviceId ?? LOCAL, name, state: 'error', error: error instanceof Error ? error.message : String(error), workspaces: [] };
@@ -209,11 +215,30 @@ export function useThreadMapDevices(open: boolean) {
     const waiting: ThreadMapDevice[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
     const flush = () => { timer = undefined; settle(run, waiting.splice(0)); };
-    await Promise.all(list.filter(entry => entry.connected).map(async entry => {
-      waiting.push(await readDevice(entry.id, entry.name));
+    // Devices still loading show their threads before activity arrives; these
+    // early maps land together too, once all have answered or after the wait.
+    const connected = list.filter(entry => entry.connected);
+    const earlyWaiting: ThreadMapDevice[] = [];
+    let earlyCount = 0;
+    let earlyTimer: ReturnType<typeof setTimeout> | undefined;
+    const flushEarly = () => {
+      clearTimeout(earlyTimer); earlyTimer = undefined;
+      const answers = earlyWaiting.splice(0);
+      if (run !== generation.current || !answers.length) return;
+      setDevices(current => current.map(known => known.state === 'loading' ? answers.find(answer => answer.id === known.id) ?? known : known));
+    };
+    const early = (device: ThreadMapDevice) => {
+      earlyWaiting.push(device);
+      if (++earlyCount === connected.length) flushEarly();
+      else earlyTimer ??= setTimeout(flushEarly, SETTLE_MS);
+    };
+    await Promise.all(connected.map(async entry => {
+      waiting.push(await readDevice(entry.id, entry.name, early));
       timer ??= setTimeout(flush, SETTLE_MS);
     }));
     clearTimeout(timer);
+    clearTimeout(earlyTimer);
+    earlyWaiting.length = 0;
     flush();
   }, [settle]);
   const retry = useCallback((id: string) => {

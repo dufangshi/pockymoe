@@ -71,6 +71,23 @@ describe('combined device connection indicator', () => {
     fireEvent.click(button);
     expect(screen.getByText('Offline', { selector: '.device-connection-state' })).toBeVisible();
   });
+  it('names a lost connection after a short grace instead of drawing a ring', () => {
+    vi.useFakeTimers();
+    try {
+      render(<DeviceEncryptionStatus hideHealthy connection={{
+        loaded: true, busy: false, state: 'reconnecting', label: 'Reconnecting', onConnect: vi.fn(),
+      }} />);
+      // A socket that is still opening does not flash a warning.
+      expect(screen.queryByRole('button', { name: /Reconnecting/ })).toBeNull();
+      act(() => { vi.advanceTimersByTime(3_000); });
+      const button = screen.getByRole('button', { name: /Reconnecting/ });
+      expect(button).toHaveAttribute('data-connection', 'down');
+      expect(button).toHaveTextContent('Disconnected · reconnecting');
+      expect(button.querySelector('.static-status-arc')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('checks each online device without needing a previous thread visit', () => {
     vi.mocked(probeDeviceEncryption).mockClear();
     const { rerender } = render(<>

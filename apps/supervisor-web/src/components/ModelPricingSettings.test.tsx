@@ -25,7 +25,8 @@ beforeEach(() => {
 it('edits account prices for an unknown model, restores defaults and imports local prices', async () => {
   const refreshed = vi.fn(); window.addEventListener('model-pricing-updated', refreshed);
   render(<ModelPricingSettings scope="account" />);
-  const pending = (await screen.findByText('future-model')).closest('tr')!;
+  // Names are shortened in the middle (MiddleName), so find the row by its edit button.
+  const pending = (await screen.findByRole('button', { name: 'Edit future-model' })).closest('tr')!;
   expect(within(pending).getByText('Awaiting price')).toBeVisible();
   expect(within(pending).getAllByText('—')).toHaveLength(5);
   fireEvent.click(within(pending).getByRole('button', { name: /Edit/ }));
@@ -40,7 +41,7 @@ it('edits account prices for an unknown model, restores defaults and imports loc
   fireEvent.click(screen.getByRole('button',{name:'Reset / remove custom'}));
   await waitFor(()=>expect(models['future-model']!.custom).toBeUndefined());
   fireEvent.click(screen.getByRole('button',{name:/Import this device/}));
-  await screen.findByText('old-device-model');
+  await screen.findByRole('button', { name: 'Edit old-device-model' });
   expect(screen.queryByRole('button',{name:/Import this device/})).toBeNull();
   expect(vi.mocked(request).mock.calls.filter(([,init])=>init?.method==='PATCH').every(([path])=>path==='relay/account/model-pricing')).toBe(true);
   window.removeEventListener('model-pricing-updated', refreshed);

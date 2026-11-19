@@ -56,7 +56,7 @@ export function ActivitySection({ navigation, onOpen }: { navigation: Navigation
   const renderMenu = useCallback((key: string, favorite: boolean) => {
     const state = store.getSnapshot(); const thread = state.threads.find(row => row.key === key); if (!thread) return null;
     const workspace = state.workspaces.find(row => row.key === `${thread.deviceId}:${thread.workspaceId}`);
-    const row: WorkbenchThread = { key, title: thread.title, href: appUrl(threadHref(thread.id, thread.deviceId)), subtitle: workspace?.label ?? '', status: workbenchThreadStatus(thread, thread.lastViewedAt), favorite,
+    const row: WorkbenchThread = { key, title: thread.title, href: appUrl(threadHref(thread.id, thread.deviceId)), subtitle: workspace?.label ?? '', status: workbenchThreadStatus(thread, thread.lastViewedAt ?? thread.firstIndexedCompletedAt), favorite,
       ...(thread.parentThreadId ? { parentKey: `${thread.deviceId}:${thread.parentThreadId}` } : {}), ...(thread.rootThreadId ? { rootKey: `${thread.deviceId}:${thread.rootThreadId}` } : {}) };
     return <RecentThreadMenu thread={row} currentKey={latest.current.currentKey} onNavigate={href => onOpen(href)}
       onFavorite={target => latest.current.onToggleThreadFavorite(target)}

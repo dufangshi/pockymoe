@@ -24,7 +24,7 @@ it('keeps a background completion unread across reload, then marks it read on fo
     initialProps: { thread: base },
   });
   expect(document.title).toBe('Compiler');
-  expect(favicon()).toContain('M25 16a9');
+  expect(favicon()).toContain('M16 7a9 9');
   const completed = {
     ...base,
     status: 'idle',
@@ -32,23 +32,36 @@ it('keeps a background completion unread across reload, then marks it read on fo
   } as ThreadDto;
   hook.rerender({ thread: completed });
   expect(document.title).toBe('Compiler');
-  expect(favicon()).toContain('fill="#f85149"');
+  expect(favicon()).toContain('fill="#2fbf71"');
   hook.unmount();
   const reloaded = renderHook(() => useThreadTabStatus(completed));
   expect(document.title).toBe('Compiler');
-  expect(favicon()).toContain('fill="#f85149"');
+  expect(favicon()).toContain('fill="#2fbf71"');
   focus.mockReturnValue(true);
   act(() => {
     window.dispatchEvent(new Event('focus'));
   });
   expect(document.title).toBe('Compiler');
-  expect(favicon()).toContain('m8 16 5 5 11-11');
+  expect(favicon()).toContain('r="5.5"');
   reloaded.unmount();
   const running = renderHook(() =>
     useThreadTabStatus({ ...completed, status: 'running' }),
   );
   expect(document.title).toBe('Compiler');
-  expect(favicon()).toContain('M25 16a9');
+  expect(favicon()).toContain('M16 7a9 9');
   running.unmount();
   expect(document.querySelector('link[type="image/svg+xml"]')).toBeNull();
+});
+it('draws failed, interrupted and waiting threads with their own status shapes', () => {
+  window.history.replaceState({}, '', '/threads/thread-b');
+  vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+  vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+  const thread = { id: 'thread-b', title: 'Build', status: 'failed', lastTurnCompletedAt: '2026-09-12T00:00:00Z' } as ThreadDto;
+  const hook = renderHook(({ value, waiting }) => useThreadTabStatus(value, waiting), { initialProps: { value: thread, waiting: false } });
+  expect(favicon()).toContain('M16 7l9 9-9 9-9-9z');
+  hook.rerender({ value: { ...thread, status: 'interrupted' } as ThreadDto, waiting: false });
+  expect(favicon()).toContain('<rect x="10"');
+  hook.rerender({ value: { ...thread, status: 'running' } as ThreadDto, waiting: true });
+  expect(favicon()).toContain('fill="#edb75d"');
+  hook.unmount();
 });

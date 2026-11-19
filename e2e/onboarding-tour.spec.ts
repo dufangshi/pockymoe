@@ -63,7 +63,7 @@ async function next(page: Page) {
 async function openChapter(page: Page, title: string) {
   const hub = page.locator('#pockymoe-tour-root .pm-tour-hub');
   await expect(hub).toBeVisible();
-  await hub.getByRole('button', { name: new RegExp(title) }).click();
+  await hub.getByRole('button', { name: new RegExp(`^${title} `) }).click();
 }
 
 async function contents(page: Page) {
@@ -125,7 +125,7 @@ test('desktop guided tour walks every chapter on the sample device', async ({ pa
   await next(page);
 
   // 2. Threads.
-  await openChapter(page, '对话');
+  await openChapter(page, '线程');
   const importLink = page.getByRole('link', { name: '导入会话' });
   await showStep(page, 'import', shot('threads-import'), importLink);
   await importLink.click();
@@ -200,7 +200,7 @@ test('desktop guided tour walks every chapter on the sample device', async ({ pa
   await next(page);
 
   // 4. Split view with the sample docs thread.
-  await openChapter(page, '双会话分屏');
+  await openChapter(page, '分屏');
   // It lives in the thread tools menu: the card points at the menu first.
   const toolsToggle = page.locator('.matter-tabs-row button.matter-toolbar-toggle');
   await showStep(page, 'trigger', shot('split-tools'), toolsToggle, { prerequisite: true });
@@ -253,7 +253,7 @@ test('desktop guided tour walks every chapter on the sample device', async ({ pa
   await next(page);
 
   // 6. Agent teamwork: delegation, the wake, the helper's envelope.
-  await openChapter(page, '协作');
+  await openChapter(page, '智能体协作');
   const workLine = pane.locator('.thread-worked-toggle').first();
   await showStep(page, 'delegate', shot('agents-delegate'), workLine);
   await workLine.click();
@@ -347,7 +347,7 @@ test('phone guided tour keeps cards on screen on the sample device', async ({ pa
   await expectInViewport(page, welcome);
   await welcome.getByRole('button', { name: '开始教程' }).tap();
 
-  await openChapter(page, '对话');
+  await openChapter(page, '线程');
   await next(page);
   await showStep(page, 'import-form', shot('threads-import-form'), page.locator('form:has(#backend-provider)'));
   await next(page);
@@ -368,7 +368,7 @@ test('phone guided tour keeps cards on screen on the sample device', async ({ pa
   await showStep(page, 'touch', shot('terminal-touch'), panel.getByRole('toolbar', { name: '终端控件' }));
   await contents(page);
 
-  await openChapter(page, '协作');
+  await openChapter(page, '智能体协作');
   const pane = page.getByTestId('primary-pane');
   const workLine = pane.locator('.thread-worked-toggle').first();
   await showStep(page, 'delegate', shot('agents-delegate'), workLine);

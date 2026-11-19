@@ -1,6 +1,8 @@
 /* The same quiet green-neutral surfaces as the conversation workbench. */
 :root:root:root {
-  font-family: 'DM Sans', Inter, ui-sans-serif, system-ui, sans-serif;
+  /* Chinese text names its fonts: left to the browser, an English page falls back
+     to Japanese glyphs (centered 。and ，). */
+  font-family: 'DM Sans', Inter, ui-sans-serif, system-ui, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans SC', sans-serif;
   --app-bg: #0c0f11;
   --app-fg: #f4f7f6;
   --theme-bg: var(--app-bg);
@@ -74,6 +76,51 @@
   --action-primary-bg-hover: color-mix(in srgb, var(--theme-accent-strong) 90%, #000);
 }
 
+/* Dialogs portal outside the workbench (the new-thread dialog and others). The
+   shared UI gives them its neutral defaults; under Classic they take the page's
+   own tokens and font instead, as Plum Pocket and Terminal already do with
+   their `:is(.thread-ui-shell, .thread-graph-dialog)` tokens. */
+:root:root:root:is(:not([data-theme-preset]), [data-theme-preset='classic']) .thread-graph-dialog {
+  font-family: inherit;
+  --accent: inherit;
+  --accent-foreground: inherit;
+  --background: inherit;
+  --border: inherit;
+  --card: inherit;
+  --card-foreground: inherit;
+  --destructive: inherit;
+  --foreground: inherit;
+  --input: inherit;
+  --muted: inherit;
+  --muted-foreground: inherit;
+  --popover: inherit;
+  --popover-foreground: inherit;
+  --primary: inherit;
+  --primary-foreground: inherit;
+  --ring: inherit;
+  --secondary: inherit;
+  --secondary-foreground: inherit;
+  --theme-accent-border: inherit;
+  --theme-accent-soft: inherit;
+  --theme-accent-solid: inherit;
+  --theme-accent-solid-fg: inherit;
+  --theme-accent-solid-hover: inherit;
+  --theme-accent-strong: inherit;
+  --theme-bg: inherit;
+  --theme-border: inherit;
+  --theme-border-contrast: inherit;
+  --theme-border-strong: inherit;
+  --theme-fg: inherit;
+  --theme-fg-muted: inherit;
+  --theme-fg-soft: inherit;
+  --theme-hover: inherit;
+  --theme-muted: inherit;
+  --theme-panel: inherit;
+  --theme-shadow: inherit;
+  --theme-surface: inherit;
+  --theme-surface-strong: inherit;
+}
+
 /* Outer routes share the workbench's compact, continuous chrome. */
 .product-page.product-page { max-width: 88rem; }
 .product-topbar.product-topbar.product-navigation {
@@ -112,6 +159,8 @@
 .recent-thread-menu > button[data-copy-state='copied'] { color: var(--status-success-fg, #15803d); }
 .recent-thread-menu > button[data-copy-state='failed'] { color: var(--theme-danger, #c2410c); }
 .recent-thread-menu > .recent-thread-delete { color: var(--status-danger-fg); }
+.recent-thread-menu > .recent-thread-menu-separator { height: 1px; margin: 4px 6px; background: var(--theme-border); }
+.recent-thread-menu-spacer { flex: none; width: 15px; }
 .recent-thread-menu :focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: -2px; }
 .recent-thread-menu > p { padding: 8px; font-size: 11px; line-height: 1.5; color: var(--theme-fg-muted); }
 /* Up to two lines of the title, so threads with one prefix stay apart. */
