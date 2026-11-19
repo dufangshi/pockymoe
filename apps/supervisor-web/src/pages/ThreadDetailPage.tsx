@@ -9,7 +9,7 @@ import { SupervisorHeartbeat, SUPERVISOR_HEARTBEAT_TIMEOUT_MS } from '../lib/sup
 import { appUrl } from '../lib/webBase';
 import { workbenchUrls } from '../lib/workbenchUrls';
 import { HostFeatureGate, useHostScope, UnscopedOnly } from '../lib/hostCapabilities';
-import { useThreadDrafts, useThreadDraftTitle } from './useThreadDrafts';
+import { takeThreadAutoSend, useThreadDrafts, useThreadDraftTitle } from './useThreadDrafts';
 import { useWorkbenchReference } from './useWorkbenchReference';
 import { WorkbenchThreadPicker } from '../components/WorkbenchThreadPicker';
 import { WorkbenchTerminal, terminalTargetKey, type TerminalOpenRequest } from '../components/WorkbenchTerminal';
@@ -470,6 +470,10 @@ function writeTerminalOpen(routeKey: string, open: boolean) {
   } catch { /* Optional preference. */ }
 }
 
+
+function detailIsRouteThread(detail: { thread: { id: string } } | null, id: string | undefined) {
+  return Boolean(detail && id && detail.thread.id === id);
+}
 
 export function ThreadDetailPage() {
   const caches = getThreadCaches();
@@ -2990,6 +2994,27 @@ export function ThreadDetailPage() {
     }
   }
 
+  // The compact detail leaves the goal out; a harness with goals loads it once
+  // per opened thread, so the composer can show a running goal (§12 modes).
+  const goalsAvailable = Boolean(backendCapabilities?.controls.goals);
+  const goalLoadedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!goalsAvailable || !detailIsRouteThread(detail, id) || goalLoadedFor.current === routeKey) return;
+    goalLoadedFor.current = routeKey;
+    void handleOpenGoal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per opened thread
+  }, [goalsAvailable, detail?.thread.id, routeKey]);
+
+  // A thread created with its first prompt (the new-thread form) sends it once
+  // here, through the same path as the composer; a failure leaves it as a draft.
+  const autoSendDetailId = detail && detail.thread.id === id ? detail.thread.id : null;
+  useEffect(() => {
+    if (!autoSendDetailId || !takeThreadAutoSend(routeKey)) return;
+    const prompt = chatDraft.prompt;
+    if (prompt.trim()) void handlePrompt({ prompt });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per opened thread
+  }, [autoSendDetailId, routeKey]);
+
   async function handlePrompt(input: SendThreadPromptRequestInput) {
     if (activeRouteRef.current !== routeKey || promptSubmissionOwner.inFlight) return false;
     promptSubmissionOwner.inFlight = true;
@@ -3828,7 +3853,10 @@ export function ThreadDetailPage() {
               } : {}),
             }
           : {}),
-        goalState,
+        // The thread already says which goal runs; show it before /goal loads.
+        goalState: !goalState.data && detail.goal
+          ? { ...goalState, data: detail.goal }
+          : goalState,
         goalHistory: monitorGoals,
         ...(relayThreadCanControl
           ? {

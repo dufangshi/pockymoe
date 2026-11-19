@@ -74,6 +74,51 @@
   --action-primary-bg-hover: color-mix(in srgb, var(--theme-accent-strong) 90%, #000);
 }
 
+/* Dialogs portal outside the workbench (the new-thread dialog and others). The
+   shared UI gives them its neutral defaults; under Classic they take the page's
+   own tokens and font instead, as Plum Pocket and Terminal already do with
+   their `:is(.thread-ui-shell, .thread-graph-dialog)` tokens. */
+:root:root:root:is(:not([data-theme-preset]), [data-theme-preset='classic']) .thread-graph-dialog {
+  font-family: inherit;
+  --accent: inherit;
+  --accent-foreground: inherit;
+  --background: inherit;
+  --border: inherit;
+  --card: inherit;
+  --card-foreground: inherit;
+  --destructive: inherit;
+  --foreground: inherit;
+  --input: inherit;
+  --muted: inherit;
+  --muted-foreground: inherit;
+  --popover: inherit;
+  --popover-foreground: inherit;
+  --primary: inherit;
+  --primary-foreground: inherit;
+  --ring: inherit;
+  --secondary: inherit;
+  --secondary-foreground: inherit;
+  --theme-accent-border: inherit;
+  --theme-accent-soft: inherit;
+  --theme-accent-solid: inherit;
+  --theme-accent-solid-fg: inherit;
+  --theme-accent-solid-hover: inherit;
+  --theme-accent-strong: inherit;
+  --theme-bg: inherit;
+  --theme-border: inherit;
+  --theme-border-contrast: inherit;
+  --theme-border-strong: inherit;
+  --theme-fg: inherit;
+  --theme-fg-muted: inherit;
+  --theme-fg-soft: inherit;
+  --theme-hover: inherit;
+  --theme-muted: inherit;
+  --theme-panel: inherit;
+  --theme-shadow: inherit;
+  --theme-surface: inherit;
+  --theme-surface-strong: inherit;
+}
+
 /* Outer routes share the workbench's compact, continuous chrome. */
 .product-page.product-page { max-width: 88rem; }
 .product-topbar.product-topbar.product-navigation {
