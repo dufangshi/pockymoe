@@ -1027,7 +1027,9 @@ test('peer questions fold under task steps and hydrate only the opened work roun
   await expect(questions.first()).toHaveAttribute('aria-expanded','true');
   const group=page.locator('.thread-peer-work').first();
   await expect(group.locator('.thread-peer-question')).toContainText('完整问题：如果设备明天重新发起配对');
-  await expect(group.locator('.thread-peer-work-operations')).toContainText(first.items[1].text);
+  // What the agent answered after the wake stands outside the wake's fold.
+  await expect(group.locator('.thread-peer-work-operations')).toContainText('验证配对有效期与权限边界');
+  await expect(group.locator('.thread-peer-wake-reply')).toContainText(first.items[1].text);
   await expect(group.locator('.thread-turn-usage-price')).toHaveText('$0.25');
   expect(loads).toEqual(['peer-task','peer-first']);
   await expect(questions.nth(1)).toHaveAttribute('aria-expanded','false');
