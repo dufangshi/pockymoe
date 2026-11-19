@@ -7,6 +7,7 @@ const messages = {
   chooseDevice: ['先打开一台设备，再管理它的隔离环境。', 'Open a device to manage its isolated environments.'],
   connections: ['Dokploy 连接', 'Dokploy connections'],
   addConnection: ['添加连接', 'Add connection'],
+  add: ['添加', 'Add'],
   editConnection: ['编辑连接', 'Edit connection'],
   connection: ['连接', 'Connection'],
   executionEnvironment: ['运行环境', 'Execution environment'],
@@ -150,6 +151,8 @@ const messages = {
   egressCount: ['{n} 个出站域名', '{n} outbound hosts'],
   noEgress: ['无出站网络', 'No outbound network'],
   inspectorViews: ['侧栏视图', 'Panel views'],
+  today: ['今天 {time}', 'Today {time}'],
+  threadLabel: ['线程 {id}', 'Thread {id}'],
 } as const;
 export type EnvironmentMessage = keyof typeof messages;
 export function environmentText(key: EnvironmentMessage, vars?: Record<string, string | number>): string {

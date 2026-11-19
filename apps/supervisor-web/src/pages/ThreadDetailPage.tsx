@@ -65,6 +65,7 @@ import { OpenFullPageButton } from '../components/OpenFullPageButton';
 import { useAppShellNav } from '../components/AppShellNavContext';
 import {
   ConfirmDialog,
+  ErrorMark,
   confirmWorkspaceDocumentLeave,
   LongTextDialog,
   ThreadActionsDialog,
@@ -3678,8 +3679,13 @@ export function ThreadDetailPage() {
   );
   const threadActionsButton = <div>
     {relayThreadIsOwner && relayRouteDeviceId && <HostFeatureGate feature="previews"><button aria-label={translate("workbench.portMappings")} title={translate("workbench.portMappings")} onClick={() => setPortsOpen(true)}><Network data-icon="ports" /></button></HostFeatureGate>}
-    {!hostScope && <button aria-label={translate("workbench.shareAsLink")} title={translate("workbench.createAndCopyReadOnlyLink")} onClick={() => { setActionMode('link'); setExportDialogOpen(true); }}><Link2 data-icon="share-link" /></button>}
-    {!hostScope && <button aria-label={translate("workbench.sharingPermissions")} title={translate("workbench.sharingPermissions")} onClick={() => { setActionMode('share'); setExportDialogOpen(true); }}><Users data-icon="sharing" /></button>}
+    {/* Sharing goes through a Relay: on a local address both stay, greyed, with the reason on a mark (docs/ui-principles.md §11). */}
+    {!hostScope && (relaySharingActive()
+      ? <button aria-label={translate("workbench.shareAsLink")} title={translate("workbench.createAndCopyReadOnlyLink")} onClick={() => { setActionMode('link'); setExportDialogOpen(true); }}><Link2 data-icon="share-link" /></button>
+      : <span className="matter-thread-tools-unavailable"><button aria-label={translate("workbench.shareAsLink")} disabled><Link2 data-icon="share-link" /></button><ErrorMark kind="unavailable" message={translate('workbench.sharingNeedsRelay')} /></span>)}
+    {!hostScope && (relaySharingActive()
+      ? <button aria-label={translate("workbench.sharingPermissions")} title={translate("workbench.sharingPermissions")} onClick={() => { setActionMode('share'); setExportDialogOpen(true); }}><Users data-icon="sharing" /></button>
+      : <span className="matter-thread-tools-unavailable"><button aria-label={translate("workbench.sharingPermissions")} disabled><Users data-icon="sharing" /></button><ErrorMark kind="unavailable" message={translate('workbench.sharingNeedsRelay')} /></span>)}
     <button aria-label={translate("workbench.downloadTranscript")} title={translate("workbench.downloadTranscript")} disabled={!detail} onClick={() => { setActionMode('html'); setExportDialogOpen(true); }}><Download data-icon="download" /></button>
   </div>;
   const mobileSessionConnectionButton = useMemo(

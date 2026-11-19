@@ -1,4 +1,4 @@
-import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
+import { formatNumber, translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Download, RefreshCw, RotateCw } from 'lucide-react';
@@ -538,7 +538,7 @@ function DeviceRuntimeManagement({
   const uptime =
     seconds === undefined
       ? null
-      : `${Math.floor(seconds / 86400)}d ${Math.floor(seconds / 3600) % 24}h ${Math.floor(seconds / 60) % 60}m ${seconds % 60}s`;
+      : formatUptime(seconds);
   return (
     <section ref={setClockElement} className="py-1" aria-label={translate("devices.runtimeManagement")}>
       {view !== 'harnesses' && (
@@ -761,4 +761,12 @@ const SUPERVISOR_REASONS: Record<string, TranslationKey> = {
 function supervisorReasonText(reason: string) {
   const key = SUPERVISOR_REASONS[reason];
   return key ? translate(key) : reason;
+}
+
+/** The two largest units, in the reader's language (「3 天 4 小时」, 「25 分钟」). */
+function formatUptime(seconds: number) {
+  const days = Math.floor(seconds / 86400), hours = Math.floor(seconds / 3600) % 24, minutes = Math.floor(seconds / 60) % 60;
+  if (days > 0) return translate('devices.uptimeDaysHours', { days: formatNumber(days), hours: formatNumber(hours) });
+  if (hours > 0) return translate('devices.uptimeHoursMinutes', { hours: formatNumber(hours), minutes: formatNumber(minutes) });
+  return translate('devices.uptimeMinutes', { minutes: formatNumber(Math.max(minutes, seconds > 0 ? 1 : 0)) });
 }

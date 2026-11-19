@@ -8,6 +8,7 @@ import type { RelayRegistrationSettingsDto, RelaySessionDto } from '@pockymoe/sh
 import { RelaySecurityPanel } from '../../components/RelaySecurity';
 import { updateRelayRegistrationSettings } from '../../lib/api';
 import { adminApi } from './adminApi';
+import { formatCount } from './format';
 import type { AdminPageProps } from './RelayAdminConsole';
 import type { AdminRetention } from './types';
 import { Badge, Card, errorText, LoadFailure, Skeleton, useAdminResource } from './ui';
@@ -196,7 +197,7 @@ function RetentionSettings(props: AdminPageProps) {
             <SaveState at="metricsDays" saving={saving} />
             <Choice options={data.options.metricsDays} value={data.metricsDays} label={translate('admin.metricsRetention')} onChange={(value) => void update('metricsDays', value)} />
           </SettingRow>
-          <SettingRow description={translate('admin.securityRetentionHelp', { max: data.fixed.securityMaxEvents })} title={translate('admin.securityRetention')}>
+          <SettingRow description={translate('admin.securityRetentionHelp', { max: formatCount(data.fixed.securityMaxEvents) })} title={translate('admin.securityRetention')}>
             <SaveState at="securityDays" saving={saving} />
             <Choice options={data.options.securityDays} value={data.securityDays} label={translate('admin.securityRetention')} onChange={(value) => void update('securityDays', value)} />
           </SettingRow>
