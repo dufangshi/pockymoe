@@ -145,8 +145,10 @@ export function ThemePresetSettings() {
         <input ref={input} type="file" accept=".pockytheme,.zip,application/zip" hidden data-testid="theme-pack-file" onChange={(event) => void onImport(event)} />
       </div>
       <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
-        {translate('files.themePresetDescription')} {translate('files.themeImportHint')}
+        {translate('files.themePresetDescription')}
       </p>
+      {/* A safety warning: a note, which a theme pack may shrink but never hide. */}
+      <p className="settings-note mt-0.5 text-xs leading-5 text-[var(--theme-fg-muted)]">{translate('files.themeImportHint')}</p>
       {removed ? (
         <p role="status" className="theme-preset-status theme-preset-undo">
           <span>{translate('files.themeRemoved', { value1: removed.name })}</span>

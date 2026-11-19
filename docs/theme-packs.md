@@ -193,7 +193,10 @@ with reduced motion; only short request animations need a reduced-motion rule.
 - relay admin console: none. The console and its sign-in (`/relay-admin`)
   always show Classic, in the light or dark mode the browser chose, whatever
   pack is selected (see below);
-- settings: `settings-hint` on help text, `settings-choice-group`,
+- settings: `settings-hint` on help text a pack may hide, `settings-note` on
+  text that carries meaning (safety warnings, where a choice is saved, what a
+  plugin does), which a pack may restyle but must keep visible,
+  `settings-choice-group`,
   `settings-harness-picker`, `settings-harness-switch`, `settings-harness-row`;
   the theme cards are `theme-preset-card`, `theme-preset-option`,
   `theme-preset-name`, `theme-preset-meta`;

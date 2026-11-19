@@ -21,7 +21,8 @@ export function ComposerShortcutSettings() {
   return (
     <fieldset className="settings-shortcuts py-5">
       <legend className="text-sm font-semibold">{translate("settings.messageShortcuts")}</legend>
-      <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
+      {/* Where the choice is saved: a note, never hidden by a pack. */}
+      <p className="settings-note mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
         {translate("settings.savedToYourAccountAndAppliedAcross")}</p>
       <div className="settings-choice-group mt-3 space-y-2">
         {(

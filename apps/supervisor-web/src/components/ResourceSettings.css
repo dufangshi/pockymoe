@@ -9,11 +9,9 @@
   gap: 10px;
 }
 .pm-res-heading {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--theme-fg-muted);
+  color: var(--theme-fg);
 }
 .pm-res-card {
   border: 1px solid var(--theme-border);
@@ -74,6 +72,9 @@
   align-items: center;
   gap: 8px;
 }
+/* A row with no control (only a "saved" note that comes and goes) gives its hint the whole width. */
+.pm-res-value:empty { display: none; }
+.pm-res-row:not(:has(> .pm-res-value:not(:empty))) .pm-res-hint { grid-column: 1 / -1; }
 .pm-res-value.is-action {
   grid-template-columns: auto;
   justify-items: end;
@@ -139,6 +140,26 @@
 }
 .pm-res-button:disabled {
   opacity: 0.5;
+}
+/* Destructive actions in a card read as danger by colour and outline; the
+   card's one solid button is its Save (docs/ui-principles.md §11). */
+.pm-res-button.ui-action-danger {
+  border-color: currentColor;
+  background: transparent;
+  color: var(--status-danger-fg);
+}
+.pm-res-button.ui-action-danger:active:not(:disabled) {
+  background: var(--status-danger-bg);
+}
+@media (hover: hover) {
+  .pm-res-button.ui-action-danger:hover:not(:disabled) {
+    background: var(--status-danger-bg);
+  }
+}
+.pm-res-button.ui-action-danger:disabled {
+  border-color: currentColor;
+  background: transparent;
+  color: var(--status-danger-fg);
 }
 @keyframes pm-res-spin {
   to { transform: rotate(360deg); }
@@ -408,8 +429,24 @@
   .pm-res-stats dd {
     font-size: 15px;
   }
+  /* Phones stack a row: title, hint, then its control, so the hint keeps the full width. */
+  .pm-res-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pm-res-hint {
+    grid-column: 1;
+    grid-row: 2;
+  }
   .pm-res-value {
-    grid-template-columns: 5rem 2.5rem;
+    grid-column: 1;
+    grid-row: 3;
+    justify-self: start;
+    margin-top: 6px;
+    padding-left: 26px;
+    grid-template-columns: 5rem auto;
+  }
+  .pm-res-value.is-action {
+    justify-items: start;
   }
   .pm-res-button,
   .pm-res-primary,
