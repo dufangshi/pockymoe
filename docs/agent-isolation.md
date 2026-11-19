@@ -110,3 +110,7 @@ Arrangements made before isolation keep working: automations that watch or act
 in a now-isolated thread, `--notify-on-complete` subscriptions and `wake`
 registrations. Review a thread's automations in its settings if they should
 stop.
+
+Concurrent changes to different workspaces are saved together. If the stored
+policy cannot be read, the Supervisor refuses access that depends on it and
+reports an error when the owner tries to read or change the policy.

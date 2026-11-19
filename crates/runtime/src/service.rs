@@ -1159,7 +1159,7 @@ impl Supervisor {
     }
 
     pub fn list_workspaces(&self) -> Result<Vec<WorkspaceDto>> {
-        let isolated = self.agent_isolation().workspaces;
+        let isolated = self.agent_isolation()?.workspaces;
         self.db.with(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, host_id, label, abs_path, is_favorite, created_at, last_opened_at FROM workspaces ORDER BY created_at DESC",

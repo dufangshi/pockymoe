@@ -2,7 +2,8 @@
 //! or message through the CLI, other devices or Treer. The owner's own access and
 //! sharing are unaffected. Contract: docs/agent-isolation.md.
 use crate::Supervisor;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -34,25 +35,34 @@ pub enum AgentRequester<'a> {
     Peer,
 }
 
+fn read_isolation(conn: &Connection) -> Result<AgentIsolation> {
+    let raw: Option<String> = conn
+        .query_row("SELECT value FROM kv WHERE key=?1", [KEY], |row| row.get(0))
+        .optional()?;
+    match raw {
+        Some(raw) => serde_json::from_str(&raw).context("Invalid stored agent isolation policy"),
+        None => Ok(AgentIsolation::default()),
+    }
+}
+
 impl Supervisor {
-    pub fn agent_isolation(&self) -> AgentIsolation {
-        self.db
-            .get_kv(KEY)
-            .ok()
-            .flatten()
-            .and_then(|raw| serde_json::from_str(&raw).ok())
-            .unwrap_or_default()
+    pub fn agent_isolation(&self) -> Result<AgentIsolation> {
+        self.db.with(read_isolation)
     }
 
-    fn store_agent_isolation(&self, isolation: &AgentIsolation) -> Result<()> {
-        self.db.set_kv(KEY, &serde_json::to_string(isolation)?)
+    fn update_isolation(&self, change: impl FnOnce(&mut AgentIsolation)) -> Result<AgentIsolation> {
+        self.db.with(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let mut policy = read_isolation(&tx)?;
+            change(&mut policy);
+            tx.execute("INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![KEY, serde_json::to_string(&policy)?])?;
+            tx.commit()?;
+            Ok(policy)
+        })
     }
 
     pub fn set_device_isolation(&self, isolated: bool) -> Result<AgentIsolation> {
-        let mut isolation = self.agent_isolation();
-        isolation.device = isolated;
-        self.store_agent_isolation(&isolation)?;
-        Ok(isolation)
+        self.update_isolation(|policy| policy.device = isolated)
     }
 
     pub fn set_workspace_isolation(
@@ -61,19 +71,18 @@ impl Supervisor {
         isolated: bool,
     ) -> Result<AgentIsolation> {
         self.get_workspace(workspace_id)?;
-        let mut isolation = self.agent_isolation();
-        if isolated {
-            isolation.workspaces.insert(workspace_id.to_owned());
-        } else {
-            isolation.workspaces.remove(workspace_id);
-        }
-        self.store_agent_isolation(&isolation)?;
-        Ok(isolation)
+        self.update_isolation(|isolation| {
+            if isolated {
+                isolation.workspaces.insert(workspace_id.to_owned());
+            } else {
+                isolation.workspaces.remove(workspace_id);
+            }
+        })
     }
 
     /// Refuses requests from other devices while this device is isolated.
     pub fn ensure_peer_reaches_device(&self) -> Result<()> {
-        if self.agent_isolation().device {
+        if self.agent_isolation()?.device {
             bail!("{DEVICE_ISOLATED}");
         }
         Ok(())
@@ -84,7 +93,9 @@ impl Supervisor {
         if requester == AgentRequester::Owner {
             return true;
         }
-        let isolation = self.agent_isolation();
+        let Ok(isolation) = self.agent_isolation() else {
+            return false;
+        };
         if requester == AgentRequester::Peer && isolation.device {
             return false;
         }
@@ -128,9 +139,18 @@ impl Supervisor {
         if requester == AgentRequester::Owner {
             return Ok(());
         }
-        match self.get_thread(thread_id) {
-            Ok(thread) => self.ensure_agent_reaches_workspace(requester, &thread.workspace_id),
-            Err(_) => Ok(()),
+        let workspace: Option<String> = self.db.with(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT workspace_id FROM threads WHERE id=?1",
+                    [thread_id],
+                    |r| r.get(0),
+                )
+                .optional()?)
+        })?;
+        match workspace {
+            Some(id) => self.ensure_agent_reaches_workspace(requester, &id),
+            None => Ok(()),
         }
     }
 }
