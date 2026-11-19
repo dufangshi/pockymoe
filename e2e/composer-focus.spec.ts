@@ -110,10 +110,10 @@ test('multiline composer stays expanded across plus/slash menus and keyboard foc
   });
   await activate(plus, isMobile);
   await expect(
-    composer.getByRole('button', { name: 'Photo', exact: true }),
+    composer.getByRole('menuitem', { name: 'Photo', exact: true }),
   ).toBeVisible();
   await expect(composer).toHaveAttribute('data-composer-layout', 'expanded');
-  await composer.getByRole('button', { name: 'Photo', exact: true }).focus();
+  await composer.getByRole('menuitem', { name: 'Photo', exact: true }).focus();
   await expect(composer).toHaveAttribute('data-composer-layout', 'expanded');
   await page.keyboard.press('Escape');
   await expect(composer.locator('[data-composer-menu-surface]')).toHaveCount(0);
@@ -124,7 +124,7 @@ test('multiline composer stays expanded across plus/slash menus and keyboard foc
     exact: true,
   });
   await activate(slash, isMobile);
-  const settings = composer.getByRole('button', { name: /\/model/ });
+  const settings = composer.getByRole('menuitem', { name: /\/model/ });
   await expect(settings).toBeVisible();
   await settings.focus();
   await expect(composer).toHaveAttribute('data-composer-layout', 'expanded');
@@ -200,14 +200,14 @@ test('collapsed composer model, plus and slash controls are clickable and preser
     isMobile,
   );
   await expect(
-    composer.getByRole('button', { name: 'Photo', exact: true }),
+    composer.getByRole('menuitem', { name: 'Photo', exact: true }),
   ).toBeVisible();
   await page.keyboard.press('Escape');
   await activate(
     composer.getByRole('button', { name: 'Open slash toolbox', exact: true }),
     isMobile,
   );
-  await expect(composer.getByRole('button', { name: /\/model/ })).toBeVisible();
+  await expect(composer.getByRole('menuitem', { name: /\/model/ })).toBeVisible();
   await page.keyboard.press('Escape');
   await editor.fill('First line\nSecond line\nThird line');
   await expect(composer).toHaveAttribute('data-composer-layout', 'expanded');
@@ -349,7 +349,7 @@ test('composer image preview portal retains expansion and settings keeps model, 
     composer.getByRole('button', { name: 'Open slash toolbox', exact: true }),
     isMobile,
   );
-  await activate(composer.getByRole('button', { name: /\/model/ }), isMobile);
+  await activate(composer.getByRole('menuitem', { name: /\/model/ }), isMobile);
   const settings = page.getByRole('dialog', {
     name: 'Harness settings',
     exact: true,

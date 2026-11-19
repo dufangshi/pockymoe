@@ -28,9 +28,8 @@ export function ThreadNewPage() {
   return (
     <FloatingRoutePanel
       backLabel={requestedWorkspaceId ? translate("workbench.backToThreads") : translate("workbench.backToWorkspaces")}
-      eyebrow={translate("workbench.newThread")}
-      title={translate("workbench.startABackendSession")}
-      description={translate("workbench.chooseAWorkspaceBackendAndModel")}
+      // One name, no repeated heading or explanation (§13, compact screens).
+      title={translate("workbench.newThread")}
       maxWidthClassName="!max-w-3xl"
       onBack={handleCancel}
     >

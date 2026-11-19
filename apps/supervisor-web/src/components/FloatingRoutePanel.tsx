@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { ArrowLeft } from 'lucide-react';
 
 interface FloatingRoutePanelProps {
-  eyebrow: string;
+  eyebrow?: string;
   title: string;
   description?: string;
   children: ReactNode;
@@ -38,8 +38,8 @@ export function FloatingRoutePanel({
           </div>
         ) : null}
         <header className={`border-b border-[var(--theme-border)] pb-5 ${onBack ? 'pt-6' : ''}`}>
-          <p className="product-eyebrow">{eyebrow}</p>
-          <h1 className="product-title mt-1.5">
+          {eyebrow ? <p className="product-eyebrow">{eyebrow}</p> : null}
+          <h1 className={`product-title${eyebrow ? ' mt-1.5' : ''}`}>
             {title}
           </h1>
           {description ? (
