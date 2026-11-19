@@ -9,6 +9,7 @@ import { threadHref } from '../lib/relayRoutes';
 import { useDesktopSelector, useDesktopStore } from './data';
 import { ActivitySection } from './ActivitySection';
 import { ClientUpdateButton } from './ClientUpdateButton';
+import { chromeInsets, insetStyle, useChromeInsets } from './windowControls';
 import { DesktopSurfaceContext, hasWorkspaceContext, type NavigationActions } from './context';
 import { DesktopMapPage } from './MapPage';
 import { focusedKeyFromPath, handleHostCommand, syncActivity } from './integration';
@@ -78,7 +79,8 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
   const workspaceControlsEnabled = hasWorkspaceContext(location.pathname, location.search);
   const surface = useMemo(() => ({ routeReady, workspaceControlsEnabled, multiWindow: capabilities.features.multiWindow, openMap, revealInMap, railLeading, railBottomLeading, renderActivity: (navigation: NavigationActions) => <ActivitySection navigation={navigation} onOpen={open} /> }), [routeReady, capabilities.features.multiWindow, openMap, revealInMap, railLeading, railBottomLeading, open, workspaceControlsEnabled]);
   const chrome = capabilities.windowChrome;
-  const style = { '--desktop-title-height': `${chrome.toolbarHeight}px`, '--desktop-controls-left': chrome.controlsSide === 'left' ? `${chrome.trafficLightsWidth}px` : '0px', '--desktop-controls-right': chrome.controlsSide === 'right' ? `${chrome.trafficLightsWidth}px` : '0px' } as CSSProperties;
+  const insets = useChromeInsets(chrome) ?? chromeInsets(chrome);
+  const style = insetStyle(insets) as CSSProperties;
   const shellValue = useMemo(() => shell ? { ...shell, openThreadMap: openMap } : shell, [shell, openMap]);
   return <DesktopSurfaceContext.Provider value={surface}><AppShellNavContext.Provider value={shellValue}><div className="desktop-surface" data-desktop-surface style={style}>
     <DesktopMapPage visible={mapVisible || devicesPage} mapVisible={mapVisible} revealKey={revealKey} onOpen={open} />
