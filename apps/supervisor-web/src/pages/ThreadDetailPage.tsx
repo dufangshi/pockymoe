@@ -28,7 +28,7 @@ import { useWorkbenchNavigation } from './useWorkbenchNavigation';
 import { useThreadDirectory } from './useThreadDirectory';
 import { useScopedState } from './useScopedState';
 import { useOptimisticAttachmentPreviews } from './useOptimisticAttachmentPreviews';
-import { ErrorMark, ImageFallbackProvider, ImageRecoveryProvider, ImageDiagnosisProvider } from '@pockymoe/thread-ui';
+import { ImageFallbackProvider, ImageRecoveryProvider, ImageDiagnosisProvider } from '@pockymoe/thread-ui';
 import { diagnoseChatImage } from '../lib/chatImageDiagnosis';
 import { useSubscriptionUsage } from './useSubscriptionUsage';
 import { useThreadTabStatus } from '../lib/useThreadTabStatus';
