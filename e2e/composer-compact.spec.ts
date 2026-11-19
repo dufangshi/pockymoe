@@ -199,3 +199,34 @@ test('composition, attachment menus and an accepted send preserve the next draft
   expect(message).toMatch(/在途的新草稿\s*\n下一行/);
   expect(message).toContain(`/threads/${a.id}/next-draft-`);
 });
+
+test('a sent prompt leaves the composer at once and returns only if sending fails', async ({ page, request }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop-chromium', 'Send sequencing is layout independent.');
+  const { a } = await fixture(request, page);
+  await page.goto(`/threads/${a.id}`);
+  const pane = page.getByTestId('primary-pane'), input = editor(pane);
+  const text = '附件随消息一起发送';
+  const inTranscript = pane.locator(`xpath=.//*[not(ancestor-or-self::form)][contains(text(),"${text}")]`);
+  await input.fill(text);
+  await pane.getByRole('button', { name: '添加附件', exact: true }).click();
+  await pane.locator('input[type=file]').last().setInputFiles({ name: 'sent.txt', mimeType: 'text/plain', buffer: Buffer.from('sent attachment') });
+  await expect(input.locator('[data-segment-type=attachment]')).toHaveCount(1);
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route(`**/api/threads/${a.id}/prompt`, async route => {
+    await held;
+    await route.fulfill({ status: 503, json: { error: 'unavailable', message: 'fixture: send failed' } });
+  });
+  await input.press('Control+Enter');
+  // In flight: only the transcript shows the prompt, and the send key spins.
+  await expect(input).toHaveText('');
+  await expect(input.locator('[data-segment-type=attachment]')).toHaveCount(0);
+  await expect(pane.getByRole('button', { name: '发送提示词', exact: true })).toHaveAttribute('aria-busy', 'true');
+  await expect(inTranscript.first()).toBeVisible();
+  release();
+  // Failed: the prompt and its file go back to the composer, out of the transcript.
+  await expect(input).toContainText(text);
+  await expect(input.locator('[data-segment-type=attachment]')).toHaveCount(1);
+  await expect(inTranscript).toHaveCount(0);
+  await expect(pane.getByRole('button', { name: '发送提示词', exact: true })).not.toHaveAttribute('aria-busy', 'true');
+});
