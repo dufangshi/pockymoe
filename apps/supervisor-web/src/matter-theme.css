@@ -1,6 +1,8 @@
 /* The same quiet green-neutral surfaces as the conversation workbench. */
 :root:root:root {
-  font-family: 'DM Sans', Inter, ui-sans-serif, system-ui, sans-serif;
+  /* Chinese text names its fonts: left to the browser, an English page falls back
+     to Japanese glyphs (centered 。and ，). */
+  font-family: 'DM Sans', Inter, ui-sans-serif, system-ui, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans SC', sans-serif;
   --app-bg: #0c0f11;
   --app-fg: #f4f7f6;
   --theme-bg: var(--app-bg);
