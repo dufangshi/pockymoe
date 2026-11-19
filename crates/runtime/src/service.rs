@@ -342,6 +342,8 @@ pub struct Supervisor {
     pub context_inspection: Arc<crate::context_inspection::InspectionState>,
     pub(crate) thread_host: std::sync::OnceLock<Arc<dyn crate::host_hooks::ThreadHost>>,
     automation_gate: tokio::sync::Mutex<()>,
+    /// Last availability sweep: wake epoch and time (see `automation_tick`).
+    automation_sweep: std::sync::Mutex<Option<(i64, std::time::Instant)>>,
     pub(crate) plugins: crate::plugins::PluginHost,
     pub(crate) external_runs: crate::plugins::external::ExternalRuns,
     upstream_homes: std::collections::BTreeMap<String, PathBuf>,
@@ -474,6 +476,7 @@ impl Supervisor {
             local_access: std::sync::RwLock::new(local_access),
             thread_host: Default::default(),
             automation_gate: Default::default(),
+            automation_sweep: Default::default(),
             plugins: Default::default(),
             external_runs: Default::default(),
             upstream_homes: Default::default(),

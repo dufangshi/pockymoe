@@ -949,3 +949,215 @@ async fn command_env_keeps_basics_and_explicit_values_but_not_supervisor_secrets
         assert!(s.command_run(&t, input).await.is_err(), "{bad}");
     }
 }
+
+fn active_commands(s: &Supervisor) -> i64 {
+    s.db.with(|c| Ok(c.query_row(ACTIVE_COMMANDS, [], |r| r.get(0))?))
+        .unwrap()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn command_run_outlives_a_dropped_request_and_saves_its_outcome() {
+    let (dir, s, t) = setup().await;
+    let input: CommandRunInput = serde_json::from_value(json!({
+        "shell":"touch started; sleep 1; printf done","cwd":".","clientRequestId":"dropped"
+    }))
+    .unwrap();
+    let request = {
+        let (s, t, input) = (s.clone(), t.clone(), input.clone());
+        tokio::spawn(async move { s.command_run(&t, input).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        while !dir.path().join("started").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // A client disconnect drops the request future mid-run.
+    request.abort();
+    let _ = request.await;
+    let saved = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let saved = s.command_run(&t, input.clone()).await.unwrap();
+            if saved["state"] != "running" {
+                return saved;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(saved["state"], "completed");
+    assert_eq!(saved["stdout"], "done");
+    assert_eq!(active_commands(&s), 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn command_failing_after_it_is_marked_running_releases_its_slot() {
+    let (dir, s, t) = setup().await;
+    // A lineage cycle makes the execution context fail after `running` is saved.
+    s.db.with(|c| {
+        c.execute("UPDATE threads SET parent_thread_id=id WHERE id=?1", [&t])?;
+        Ok(())
+    })
+    .unwrap();
+    for n in 0..6 {
+        let input: CommandRunInput =
+            serde_json::from_value(json!({"shell":"touch should-not-exist","cwd":".","clientRequestId":format!("cycle-{n}")}))
+                .unwrap();
+        let result = s.command_run(&t, input).await.unwrap();
+        assert_eq!(result["state"], "failed", "{result}");
+        assert!(result["error"]
+            .as_str()
+            .unwrap()
+            .contains("execution environment unavailable before spawn"));
+        assert_eq!(result["cleanupPending"], false);
+    }
+    assert_eq!(active_commands(&s), 0);
+    assert!(!dir.path().join("should-not-exist").exists());
+    s.db.with(|c| {
+        c.execute("UPDATE threads SET parent_thread_id=NULL WHERE id=?1", [&t])?;
+        Ok(())
+    })
+    .unwrap();
+    let input: CommandRunInput =
+        serde_json::from_value(json!({"argv":["true"],"cwd":"."})).unwrap();
+    assert_eq!(
+        s.command_run(&t, input).await.unwrap()["state"],
+        "completed"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unconfirmed_command_cleanup_holds_its_slot_until_reconciled() {
+    let (_dir, s, t) = setup().await;
+    let held = (0..4)
+        .map(|n| {
+            let input: CommandRunInput = serde_json::from_value(
+                json!({"argv":["true"],"cwd":".","clientRequestId":format!("held-{n}")}),
+            )
+            .unwrap();
+            let id =
+                s.db.with(|c| insert_command(c, &t, &input, None, &[], &now_rfc3339()))
+                    .unwrap();
+            s.save_command(
+                &id,
+                "uncertain",
+                Some(0),
+                "",
+                "",
+                Some("unconfirmed"),
+                Some(&json!({"processId":format!("process-{n}")}).to_string()),
+            )
+            .unwrap();
+            id
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(s.command_show(&t, &held[0]).unwrap()["state"], "uncertain");
+    assert_eq!(
+        s.command_show(&t, &held[0]).unwrap()["cleanupPending"],
+        true
+    );
+    let next: CommandRunInput = serde_json::from_value(json!({"argv":["true"],"cwd":"."})).unwrap();
+    assert!(s
+        .command_run(&t, next.clone())
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("concurrency limit"));
+    // An unreadable guardian receipt cannot prove anything stopped.
+    let guardian = s.environments.host_process_context(&t).directory;
+    std::fs::create_dir_all(&guardian).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&guardian, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let receipt = guardian.join("broken.json");
+    std::fs::write(&receipt, b"not a receipt").unwrap();
+    s.reconcile_command_cleanup().await.unwrap();
+    assert_eq!(active_commands(&s), 4);
+    std::fs::remove_file(&receipt).unwrap();
+    s.reconcile_command_cleanup().await.unwrap();
+    assert_eq!(active_commands(&s), 0);
+    assert_eq!(
+        s.command_show(&t, &held[0]).unwrap()["cleanupPending"],
+        false
+    );
+    assert_eq!(s.command_run(&t, next).await.unwrap()["state"], "completed");
+}
+
+#[tokio::test]
+async fn idle_scheduler_probe_uses_the_queue_indexes_and_ignores_rules_not_yet_due() {
+    let (_dir, s, t) = setup().await;
+    for _ in 0..3 {
+        s.automation_create(&t, hourly(notice()), None).unwrap();
+    }
+    let watch = s
+        .automation_create(
+            &t,
+            def(json!({"kind":"threadEnded","sourceThreadId":t}), notice()),
+            None,
+        )
+        .unwrap();
+    // Unrelated events leave time rules' cursors behind; they must not count.
+    s.db.with(|c| {
+        record_event(
+            c,
+            "fixture:event",
+            &json!({"kind":"fixture"}),
+            "2030-01-01T00:00:00Z",
+        )
+    })
+    .unwrap();
+    s.automation_tick("2030-01-01T00:00:00Z").await.unwrap();
+    let watch_cursor: i64 =
+        s.db.with(|c| {
+            Ok(c.query_row(
+                "SELECT event_cursor FROM automations WHERE id=?1",
+                [watch["id"].as_str().unwrap()],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert!(watch_cursor > 0);
+    let (work, _) = s.db.with(|c| probe(c, "2030-01-01T00:30:00.000Z")).unwrap();
+    assert!(!work);
+    let (work, _) = s.db.with(|c| probe(c, "2030-01-01T01:00:00.000Z")).unwrap();
+    assert!(work);
+    let plan = s
+        .db
+        .with(|c| {
+            let mut q = c.prepare(&format!(
+                "EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM automations WHERE state='enabled' AND trigger_kind IN {TIME_KINDS} AND next_run_at<=?1), EXISTS(SELECT 1 FROM automations WHERE state='enabled' AND trigger_kind IN {EVENT_KINDS} AND event_cursor<1)"
+            ))?;
+            let rows = q
+                .query_map(["2030-01-01T00:30:00.000Z"], |r| r.get::<_, String>(3))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows.join("\n"))
+        })
+        .unwrap();
+    assert!(plan.contains("automations_time_queue"), "{plan}");
+    assert!(plan.contains("automations_event_queue"), "{plan}");
+    assert!(!plan.contains("SCAN automations"), "{plan}");
+}
+
+#[tokio::test]
+async fn closing_a_target_pauses_its_rule_before_the_rule_is_due() {
+    let (_dir, s, t) = setup().await;
+    let target = child(&s, &t).await;
+    let a = s
+        .automation_create(&target, hourly(notice()), None)
+        .unwrap();
+    let id = a["id"].as_str().unwrap();
+    s.automation_tick("2030-01-01T00:00:00Z").await.unwrap();
+    assert_eq!(s.automation_show(&target, id).unwrap()["state"], "enabled");
+    s.close_agent_thread(Some(&t), &target, false).unwrap();
+    // Not due for another hour: the close itself wakes the availability sweep.
+    s.automation_tick("2030-01-01T00:00:01Z").await.unwrap();
+    let current = s.automation_show(&target, id).unwrap();
+    assert_eq!(current["state"], "paused");
+    assert_eq!(current["error"], "targetUnavailable");
+}

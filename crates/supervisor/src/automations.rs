@@ -115,7 +115,7 @@ pub async fn command_show(
 }
 
 pub async fn cli(
-    s: &Supervisor,
+    s: &Arc<Supervisor>,
     v: &Value,
     requester: pockymoe_runtime::interaction::AgentRequester<'_>,
 ) -> anyhow::Result<Value> {

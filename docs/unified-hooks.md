@@ -139,6 +139,15 @@ seconds. The device allows at most four commands simultaneously. Unix timeout
 kills the owned process group; Windows uses taskkill /T /F (Windows execution is
 implemented but was not part of Linux validation).
 
+A command runs independently of the request that started it: a dropped connection
+only ends the wait, and `command show` (or retrying the same `clientRequestId`)
+returns the saved outcome. Every accepted command reaches a terminal state. A
+failure before spawn is `failed`; an executor error after spawn is `uncertain`.
+When the Host process guardian cannot prove a command's processes stopped, the
+command ends `uncertain` with `cleanupPending: true` and keeps its device slot.
+The Supervisor rechecks such commands every 30 seconds, including after restart,
+and releases the slot once the guardian proves they stopped.
+
 ## Definition and reliability
 
 Triggers: `interval {everySeconds, anchorAt?}`, `at {at}`, `threadEnded {sourceThreadId}`, `turnEnded
@@ -191,6 +200,12 @@ Restart changes starting/running commands without saved completion to `uncertain
 and emits a passive result. They never auto-retry. A child may continue after an
 abrupt OS/process crash; inspect external effects and process state before deciding
 to create a new execution. External side effects cannot be exactly-once guaranteed.
+
+The scheduler checks four times a second, but an idle check is one indexed query.
+Time rules wait in a `nextRunAt` queue and event rules wait until the event log
+passes their cursor; only those rules are read. Closing or deleting any thread
+wakes a sweep that pauses rules whose target or source became unavailable, with a
+60-second fallback sweep.
 
 Command and turn events carry automation ancestry; repeated automation IDs or
 ancestry depth ≥3 are skipped. Script completions have no wrapper commandKey, so

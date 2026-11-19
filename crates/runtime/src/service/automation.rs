@@ -666,10 +666,26 @@ impl Supervisor {
         {
             return Ok(());
         }
+        // An idle device answers with one indexed probe: no rule is read,
+        // deserialized or checked, and neither the live lock nor a write
+        // transaction is taken until something is due.
+        let now_key = stamp(date(now)?);
+        let (work, epoch) = self.db.with(|c| probe(c, &now_key))?;
+        let sweep = self
+            .automation_sweep
+            .lock()
+            .unwrap()
+            .is_none_or(|(seen, at)| seen != epoch || at.elapsed() >= SWEEP_FALLBACK);
+        if !work && !sweep {
+            return Ok(());
+        }
         let available = self.plugins.availability(self);
         let live = self.live.lock().await;
         let jobs = self.db.with(|c| {
             let tx = c.unchecked_transaction()?;
+            if sweep {
+                sweep_unavailable(&tx, now)?;
+            }
             prepare_runs(&tx, now, None)?;
             let jobs = dispatch_runs(
                 &tx,
@@ -682,20 +698,128 @@ impl Supervisor {
             Ok(jobs)
         })?;
         drop(live);
+        if sweep {
+            // The epoch read before the sweep: a close during it sweeps again.
+            *self.automation_sweep.lock().unwrap() = Some((epoch, std::time::Instant::now()));
+        }
         for job in jobs {
-            let s = self.clone();
-            tokio::spawn(async move {
-                let result = match job {
-                    BackgroundJob::Command(id) => s.execute_command(&id).await,
-                    BackgroundJob::Plugin(id) => s.execute_plugin_run(&id).await,
-                };
-                if let Err(error) = result {
-                    tracing::warn!(%error, "background completion could not be saved; recovery will mark uncertain");
+            match job {
+                BackgroundJob::Command(id) => {
+                    self.spawn_command(id);
                 }
-            });
+                BackgroundJob::Plugin(id) => {
+                    let s = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = s.execute_plugin_run(&id).await {
+                            tracing::warn!(%error, "background completion could not be saved; recovery will mark uncertain");
+                        }
+                    });
+                }
+            }
         }
         Ok(())
     }
+}
+
+/// Trigger kinds by queue. Time rules wait on `next_run_at`; event rules wait
+/// for the event log to pass their cursor (indexes in automation_queues.sql).
+const TIME_KINDS: &str = "('at','interval')";
+const EVENT_KINDS: &str = "('threadEnded','turnEnded','taskEnded','commandEnded')";
+/// Thread close/delete wakes the availability sweep through `automation_wake`;
+/// this slow fallback also covers a change made outside those triggers.
+const SWEEP_FALLBACK: std::time::Duration = std::time::Duration::from_secs(60);
+/// Device command slots: unfinished commands, plus finished ones whose Host
+/// guardian has not yet proven every process stopped.
+const ACTIVE_COMMANDS: &str = "SELECT count(*) FROM command_executions WHERE state IN ('starting','running') OR cleanup_json IS NOT NULL";
+
+/// Whether any scheduler work exists, and the current availability wake epoch.
+fn probe(c: &Connection, now_key: &str) -> Result<(bool, i64)> {
+    Ok(c.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM automations WHERE state='enabled' AND trigger_kind IN {TIME_KINDS} AND next_run_at<=?1)
+              OR EXISTS(SELECT 1 FROM automations WHERE state='enabled' AND trigger_kind IN {EVENT_KINDS} AND event_cursor<(SELECT coalesce(max(sequence),0) FROM automation_events))
+              OR EXISTS(SELECT 1 FROM automation_runs WHERE state='due')
+              OR EXISTS(SELECT 1 FROM automation_runs WHERE state='queued' AND pending_id NOT IN (SELECT id FROM thread_pending_steers)),
+             coalesce((SELECT epoch FROM automation_wake WHERE id=1),0)"
+        ),
+        [now_key],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?)
+}
+
+/// Pause every enabled rule whose target or source thread closed or vanished.
+fn sweep_unavailable(c: &Connection, now: &str) -> Result<()> {
+    let autos = {
+        let mut q = c.prepare(
+            "SELECT id,thread_id,definition_json FROM automations WHERE state='enabled'",
+        )?;
+        let v = q
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        v
+    };
+    for (id, thread, raw) in autos {
+        // Creation validates definitions; an unreadable one is never a candidate.
+        let Ok(d) = definition(&raw) else {
+            continue;
+        };
+        still_available(c, &id, &thread, &d, now)?;
+    }
+    Ok(())
+}
+
+/// Pause the rule and remove its unexecuted actions when its target or source
+/// is no longer available.
+fn still_available(
+    c: &Connection,
+    id: &str,
+    thread: &str,
+    d: &Definition,
+    now: &str,
+) -> Result<bool> {
+    let available: bool = c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM threads WHERE id=?1 AND closed_at IS NULL)",
+        [thread],
+        |r| r.get(0),
+    )?;
+    if !available {
+        cancelled_pending(c, id, now)?;
+        c.execute("UPDATE automations SET state='paused',error='targetUnavailable',next_run_at=NULL WHERE id=?1",[id])?;
+        return Ok(false);
+    }
+    let source = match &d.trigger {
+        Trigger::ThreadEnded { source_thread_id }
+        | Trigger::TurnEnded {
+            source_thread_id, ..
+        }
+        | Trigger::CommandEnded {
+            source_thread_id, ..
+        } => Some(source_thread_id),
+        Trigger::TaskEnded { root_thread_id, .. } => Some(root_thread_id),
+        _ => None,
+    };
+    if let Some(source) = source {
+        let exists: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM threads WHERE id=?1 AND (?2=0 OR closed_at IS NULL))",
+            params![source, matches!(d.trigger, Trigger::ThreadEnded { .. })],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            cancelled_pending(c, id, now)?;
+            c.execute(
+                "UPDATE automations SET state='paused',error='sourceUnavailable' WHERE id=?1",
+                [id],
+            )?;
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 fn definition(raw: &str) -> Result<Definition> {
@@ -777,11 +901,17 @@ fn prepare_runs(
     now: &str,
     plugin_scope: Option<(Option<&str>, &str)>,
 ) -> Result<()> {
+    let now_dt = date(now)?;
+    // Only due time rules and event rules with unseen events are candidates.
     let autos = {
-        let mut q=c.prepare("SELECT id,thread_id,definition_json,next_run_at,event_cursor FROM automations WHERE state='enabled' AND (?1 IS NULL OR thread_id=?1) AND (?2 IS NULL OR (json_extract(definition_json,'$.action.kind')='pluginAction' AND json_extract(definition_json,'$.action.pluginId')=?2))")?;
+        let mut q=c.prepare(&format!("SELECT id,thread_id,definition_json,next_run_at,event_cursor FROM automations WHERE state='enabled' AND (?1 IS NULL OR thread_id=?1) AND (?2 IS NULL OR (json_extract(definition_json,'$.action.kind')='pluginAction' AND json_extract(definition_json,'$.action.pluginId')=?2)) AND ((trigger_kind IN {TIME_KINDS} AND next_run_at<=?3) OR (trigger_kind IN {EVENT_KINDS} AND event_cursor<(SELECT coalesce(max(sequence),0) FROM automation_events)))"))?;
         let v = q
             .query_map(
-                params![plugin_scope.and_then(|s| s.0), plugin_scope.map(|s| s.1)],
+                params![
+                    plugin_scope.and_then(|s| s.0),
+                    plugin_scope.map(|s| s.1),
+                    stamp(now_dt)
+                ],
                 |r| {
                     Ok((
                         r.get::<_, String>(0)?,
@@ -795,44 +925,10 @@ fn prepare_runs(
             .collect::<rusqlite::Result<Vec<_>>>()?;
         v
     };
-    let now_dt = date(now)?;
     for (id, thread, raw, next, cursor) in autos {
         let d = definition(&raw)?;
-        let available: bool = c.query_row(
-            "SELECT EXISTS(SELECT 1 FROM threads WHERE id=?1 AND closed_at IS NULL)",
-            [&thread],
-            |r| r.get(0),
-        )?;
-        if !available {
-            cancelled_pending(c, &id, now)?;
-            c.execute("UPDATE automations SET state='paused',error='targetUnavailable',next_run_at=NULL WHERE id=?1",[&id])?;
+        if !still_available(c, &id, &thread, &d, now)? {
             continue;
-        }
-        let source = match &d.trigger {
-            Trigger::ThreadEnded { source_thread_id }
-            | Trigger::TurnEnded {
-                source_thread_id, ..
-            }
-            | Trigger::CommandEnded {
-                source_thread_id, ..
-            } => Some(source_thread_id),
-            Trigger::TaskEnded { root_thread_id, .. } => Some(root_thread_id),
-            _ => None,
-        };
-        if let Some(source) = source {
-            let exists: bool = c.query_row(
-                "SELECT EXISTS(SELECT 1 FROM threads WHERE id=?1 AND (?2=0 OR closed_at IS NULL))",
-                params![source, matches!(d.trigger, Trigger::ThreadEnded { .. })],
-                |r| r.get(0),
-            )?;
-            if !exists {
-                cancelled_pending(c, &id, now)?;
-                c.execute(
-                    "UPDATE automations SET state='paused',error='sourceUnavailable' WHERE id=?1",
-                    [&id],
-                )?;
-                continue;
-            }
         }
         if matches!(d.trigger, Trigger::At { .. } | Trigger::Interval { .. }) {
             if let Some(next) = next {
@@ -1050,11 +1146,7 @@ fn dispatch_runs(
             }
             Action::RunScript { command } => {
                 let busy:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM thread_turns WHERE thread_id=?1 AND status IN ('inProgress','recovering')) OR EXISTS(SELECT 1 FROM thread_pending_steers WHERE thread_id=?1 AND delivery='continuation') OR EXISTS(SELECT 1 FROM automation_runs WHERE automation_id=?2 AND state='running')",params![thread,id],|r|r.get(0))?;
-                let commands: i64 = c.query_row(
-                    "SELECT count(*) FROM command_executions WHERE state IN ('starting','running')",
-                    [],
-                    |r| r.get(0),
-                )?;
+                let commands: i64 = c.query_row(ACTIVE_COMMANDS, [], |r| r.get(0))?;
                 if live.contains(&thread) || status == "running" || busy || commands >= 4 {
                     continue;
                 }
@@ -1088,9 +1180,13 @@ fn insert_command(
 }
 impl Supervisor {
     pub fn command_show(&self, thread: &str, id: &str) -> Result<Value> {
-        self.db.with(|c|{Ok(c.query_row("SELECT state,command_key,started_at,completed_at,exit_code,stdout,stderr,error,automation_run_id,input_json FROM command_executions WHERE id=?1 AND thread_id=?2",params![id,thread],|r|Ok(json!({"id":id,"threadId":thread,"state":r.get::<_,String>(0)?,"commandKey":r.get::<_,Option<String>>(1)?,"startedAt":r.get::<_,String>(2)?,"completedAt":r.get::<_,Option<String>>(3)?,"exitCode":r.get::<_,Option<i32>>(4)?,"stdout":r.get::<_,Option<String>>(5)?,"stderr":r.get::<_,Option<String>>(6)?,"error":r.get::<_,Option<String>>(7)?,"automationRunId":r.get::<_,Option<String>>(8)?,"input":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap_or(Value::Null)}))).optional()?.context("command not found")?)})
+        self.db.with(|c|{Ok(c.query_row("SELECT state,command_key,started_at,completed_at,exit_code,stdout,stderr,error,automation_run_id,input_json,cleanup_json IS NOT NULL FROM command_executions WHERE id=?1 AND thread_id=?2",params![id,thread],|r|Ok(json!({"id":id,"threadId":thread,"state":r.get::<_,String>(0)?,"commandKey":r.get::<_,Option<String>>(1)?,"startedAt":r.get::<_,String>(2)?,"completedAt":r.get::<_,Option<String>>(3)?,"exitCode":r.get::<_,Option<i32>>(4)?,"stdout":r.get::<_,Option<String>>(5)?,"stderr":r.get::<_,Option<String>>(6)?,"error":r.get::<_,Option<String>>(7)?,"automationRunId":r.get::<_,Option<String>>(8)?,"input":serde_json::from_str::<Value>(&r.get::<_,String>(9)?).unwrap_or(Value::Null),"cleanupPending":r.get::<_,bool>(10)?}))).optional()?.context("command not found")?)})
     }
-    pub async fn command_run(&self, thread: &str, input: CommandRunInput) -> Result<Value> {
+    pub async fn command_run(
+        self: &Arc<Self>,
+        thread: &str,
+        input: CommandRunInput,
+    ) -> Result<Value> {
         let target = self.get_thread(thread)?;
         ensure!(
             target.closed_at.is_none(),
@@ -1115,15 +1211,78 @@ impl Supervisor {
             if let Some(key)=&input.client_request_id {
                 if let Some((id,saved))=tx.query_row("SELECT id,input_json FROM command_executions WHERE thread_id=?1 AND request_id=?2",params![thread,key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()? {ensure!(saved==raw,"conflict: command clientRequestId reused with different input");return Ok((id,false));}
             }
-            let n:i64=tx.query_row("SELECT count(*) FROM command_executions WHERE state IN ('starting','running')",[],|r|r.get(0))?;ensure!(n<4,"conflict: device command concurrency limit reached");
+            let n:i64=tx.query_row(ACTIVE_COMMANDS,[],|r|r.get(0))?;ensure!(n<4,"conflict: device command concurrency limit reached");
             let workspace:String=tx.query_row("SELECT abs_path FROM workspaces WHERE id=?1",[&target.workspace_id],|r|r.get(0))?;
             validate_command(&input.command,&workspace)?;
             let id=insert_command(&tx,thread,&input,None,&[],&now_rfc3339())?;tx.commit()?;Ok((id,true))
         })?;
         if new {
-            self.execute_command(&id).await?;
+            // The run outlives this request: a disconnect only stops the wait.
+            let _ = self.spawn_command(id.clone()).await;
         }
         self.command_show(thread, &id)
+    }
+    /// Run a command to a saved outcome independently of its caller. An error
+    /// or panic in the executor still ends the record, as `uncertain`, so it
+    /// cannot hold a device command slot for the rest of the process.
+    fn spawn_command(self: &Arc<Self>, id: String) -> tokio::task::JoinHandle<()> {
+        let s = self.clone();
+        tokio::spawn(async move {
+            let worker = {
+                let s = s.clone();
+                let id = id.clone();
+                tokio::spawn(async move { s.execute_command(&id).await })
+            };
+            let error = match worker.await {
+                Ok(Ok(())) => return,
+                Ok(Err(error)) => format!("{error:#}"),
+                Err(error) => format!("command executor stopped: {error}"),
+            };
+            let message = format!("Command outcome could not be confirmed ({error}); external effects are unknown. Inspect before retrying.");
+            if let Err(error) = s.complete_command(&id, "uncertain", None, "", "", Some(&message)) {
+                tracing::warn!(%error, command_id=%id, "command outcome could not be saved; restart recovery will mark it uncertain");
+            }
+        })
+    }
+    /// Recheck commands whose Host guardian had not proven its processes
+    /// stopped. Their device slot is released only once a check succeeds.
+    pub(crate) async fn reconcile_command_cleanup(&self) -> Result<()> {
+        let held = self.db.with(|c| {
+            let mut q = c.prepare("SELECT id,thread_id,cleanup_json FROM command_executions WHERE cleanup_json IS NOT NULL")?;
+            let v = q
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(v)
+        })?;
+        for (id, thread, raw) in held {
+            // An unreadable record cannot be verified, so its slot stays held.
+            let Some(process) = serde_json::from_str::<Value>(&raw)
+                .ok()
+                .and_then(|v| v["processId"].as_str().map(str::to_owned))
+            else {
+                continue;
+            };
+            let context = self.environments.host_process_context(&thread);
+            match context.quiesce_process(&process).await {
+                Ok(_) => self.db.with(|c| {
+                    c.execute(
+                        "UPDATE command_executions SET cleanup_json=NULL WHERE id=?1 AND cleanup_json=?2",
+                        params![id, raw],
+                    )?;
+                    Ok(())
+                })?,
+                Err(error) => {
+                    tracing::warn!(%error, command_id=%id, "command processes are still unconfirmed; its slot stays held")
+                }
+            }
+        }
+        Ok(())
     }
     pub(crate) fn recover_automation_commands(&self) -> Result<()> {
         self.db.with(|c|{let tx=c.unchecked_transaction()?;
@@ -1213,7 +1372,21 @@ impl Supervisor {
             cmd.as_std_mut().process_group(0);
         }
         crate::child_process::hide_tokio(&mut cmd);
-        let execution = self.execution_context(&thread_id)?;
+        let execution = match self.execution_context(&thread_id) {
+            Ok(execution) => execution,
+            Err(e) => {
+                return self.complete_command(
+                    id,
+                    "failed",
+                    None,
+                    "",
+                    "",
+                    Some(&format!(
+                        "execution environment unavailable before spawn: {e:#}"
+                    )),
+                )
+            }
+        };
         let host_guard = (execution.is_none() && crate::execution::host_process::is_enabled())
             .then(|| self.environments.host_process_context(&thread_id));
         let process_id = Uuid::new_v4().to_string();
@@ -1269,10 +1442,9 @@ impl Supervisor {
             None
         };
         let _transport_input = child.stdin.take();
-        let out = child.stdout.take().context("stdout unavailable")?;
-        let err = child.stderr.take().context("stderr unavailable")?;
-        let out = tokio::spawn(read_bounded(out));
-        let err = tokio::spawn(read_bounded(err));
+        // Past spawn every path saves an outcome; nothing returns early.
+        let out = tokio::spawn(read_bounded(child.stdout.take()));
+        let err = tokio::spawn(read_bounded(child.stderr.take()));
         let waited = tokio::time::timeout(
             std::time::Duration::from_secs(input.command.timeout_seconds),
             child.wait(),
@@ -1292,8 +1464,11 @@ impl Supervisor {
             let _ = context.kill(&process_id).await;
         }
         // Clean up the owned process group, including descendants retaining pipes.
+        let mut unconfirmed = None;
         if let Some(context) = &host_guard {
-            context.quiesce_process(&process_id).await?;
+            if let Err(e) = context.quiesce_process(&process_id).await {
+                unconfirmed = Some(e);
+            }
         } else if let Some(pid) = pid {
             kill_command_tree(pid).await;
         }
@@ -1303,6 +1478,23 @@ impl Supervisor {
         }
         let stdout = collect_output(out).await;
         let stderr = collect_output(err).await;
+        if let Some(e) = unconfirmed {
+            // Not proven stopped: keep the slot until reconciliation proves it.
+            let message = format!(
+                "{}Host guardian could not prove the command's processes stopped ({e:#}); its device command slot stays held until a later check confirms they stopped.",
+                error.map(|e| format!("{e}; ")).unwrap_or_default()
+            );
+            let cleanup = json!({ "processId": process_id }).to_string();
+            return self.save_command(
+                id,
+                "uncertain",
+                code,
+                &stdout,
+                &stderr,
+                Some(&message),
+                Some(&cleanup),
+            );
+        }
         self.complete_command(id, state, code, &stdout, &stderr, error.as_deref())
     }
     fn complete_command(
@@ -1314,15 +1506,37 @@ impl Supervisor {
         err: &str,
         error: Option<&str>,
     ) -> Result<()> {
+        self.save_command(id, state, code, out, err, error, None)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn save_command(
+        &self,
+        id: &str,
+        state: &str,
+        code: Option<i32>,
+        out: &str,
+        err: &str,
+        error: Option<&str>,
+        cleanup: Option<&str>,
+    ) -> Result<()> {
         self.db.with(|c| {
             let tx = c.unchecked_transaction()?;
             finish_command(&tx, id, state, code, out, err, error, &now_rfc3339())?;
+            if let Some(cleanup) = cleanup {
+                tx.execute(
+                    "UPDATE command_executions SET cleanup_json=?2 WHERE id=?1",
+                    params![id, cleanup],
+                )?;
+            }
             tx.commit()?;
             Ok(())
         })
     }
 }
-async fn read_bounded(mut input: impl tokio::io::AsyncRead + Unpin) -> String {
+async fn read_bounded(input: Option<impl tokio::io::AsyncRead + Unpin>) -> String {
+    let Some(mut input) = input else {
+        return "[output unavailable]".into();
+    };
     let mut saved = vec![];
     let mut buf = [0u8; 8192];
     let mut truncated = false;

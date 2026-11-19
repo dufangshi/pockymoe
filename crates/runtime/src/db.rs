@@ -288,6 +288,30 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
         name: "sqlite_maintenance",
         apply: maintenance::migrate,
     },
+    Migration {
+        version: 25,
+        name: "automation_queues_and_command_cleanup",
+        apply: |conn| {
+            // Idempotent, like every migration a downgrade may leave behind.
+            if !table_columns(conn, "command_executions")?.contains("cleanup_json") {
+                conn.execute(
+                    "ALTER TABLE command_executions ADD COLUMN cleanup_json TEXT",
+                    [],
+                )?;
+            }
+            let generated: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_xinfo('automations') WHERE name='trigger_kind')",
+                [],
+                |r| r.get(0),
+            )?;
+            if !generated {
+                // A malformed definition yields NULL rather than failing every read.
+                conn.execute("ALTER TABLE automations ADD COLUMN trigger_kind TEXT GENERATED ALWAYS AS (CASE WHEN json_valid(definition_json) THEN json_extract(definition_json,'$.trigger.kind') END) VIRTUAL", [])?;
+            }
+            conn.execute_batch(include_str!("automation_queues.sql"))?;
+            Ok(())
+        },
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them
