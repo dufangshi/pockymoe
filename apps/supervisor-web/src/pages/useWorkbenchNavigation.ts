@@ -1,3 +1,4 @@
+import { getThreadDraftPreview } from './useThreadDrafts';
 import { DesktopStoreContext } from '../desktop/data/context';
 import { NOTIFICATION_CHANGE } from '../lib/notificationSettings';
 import { useBrowserStateKey } from '../lib/browserStateScope';
@@ -775,15 +776,21 @@ export function useWorkbenchNavigation(
     return [root, ...[...known.values()].filter(thread => thread.rootKey === tab.key && thread.key !== tab.key)];
   });
 
+  // A prompt written in a thread and not sent shows on its tab and row.
+  const withDraft = (list: WorkbenchThread[]) => list.map(thread => {
+    const draft = getThreadDraftPreview(thread.key);
+    return draft ? { ...thread, draft } : thread;
+  });
+
   return {
     navigationReady,
     /** The label of a workspace on the open thread's device, when known. */
     workspaceLabel: (id: string) => workspaceLabels.get(id),
-    threads: sidebarThreads,
+    threads: withDraft(sidebarThreads),
     activeThreads,
     workspacePath: tabContext.detail?.workspace.absPath ?? '',
-    workspaceThreads,
-    openTabs: openTabThreads,
+    workspaceThreads: withDraft(workspaceThreads),
+    openTabs: withDraft(openTabThreads),
     onCloseTab: (key: string) => storeOpenTabs(tabs => tabs.filter(tab => tab.key !== key)),
     onReorderOpenTabs: (keys: string[]) => storeOpenTabs(tabs => [...keys.flatMap(key => tabs.filter(tab => tab.key === key)), ...tabs.filter(tab => !keys.includes(tab.key))]),
     currentKey,

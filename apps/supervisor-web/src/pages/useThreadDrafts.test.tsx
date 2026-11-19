@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, expect, it } from 'vitest';
-import { resetKeptDrafts, useThreadDrafts } from './useThreadDrafts';
+import { getThreadDraftPreview, resetKeptDrafts, seedThreadDraft, takeThreadAutoSend, useThreadDrafts } from './useThreadDrafts';
 beforeEach(() => resetKeptDrafts());
 it('keeps drafts by device and thread and ignores a departed composer callback', () => {
   const { result, rerender } = renderHook(
@@ -73,4 +73,22 @@ it('retains actual titles with pending primary/reference drafts without persisti
   expect(getUnsentThreadDraftTitles()).toEqual(['Fix login', 'Review attachment']);
   hook.unmount(); registerThreadDraftTitle('device:a', 'Renamed login task');
   expect(getUnsentThreadDraftTitles()).toEqual(['Renamed login task', 'Review attachment']); expect(getUnsentThreadDraftCounts()).toEqual({ drafts: 2, attachments: 1 });
+});
+
+it('keeps draft text for a reload of this tab and names it for tabs and rows', () => {
+  const { result } = renderHook(() => useThreadDrafts('dev:t'));
+  const file = { file: new File(['x'], 'a.txt'), kind: 'file' as const, clientId: 'f', originalName: 'a.txt', placeholder: '[FILE a.txt]' };
+  act(() => result.current[1]({ prompt: 'fix the [FILE a.txt] parser', attachments: [file] }));
+  expect(JSON.parse(sessionStorage.getItem('pockymoe.threadDrafts.v1') ?? '{}')).toEqual({ 'dev:t': 'fix the [FILE a.txt] parser' });
+  expect(getThreadDraftPreview('dev:t')).toBe('fix the parser');
+  act(() => result.current[1]({ prompt: '', attachments: [] }));
+  expect(sessionStorage.getItem('pockymoe.threadDrafts.v1')).toBeNull();
+  expect(getThreadDraftPreview('dev:t')).toBeUndefined();
+});
+
+it('sends a seeded first prompt once', () => {
+  seedThreadDraft('dev:new', 'hello', true);
+  expect(takeThreadAutoSend('dev:new')).toBe(true);
+  expect(takeThreadAutoSend('dev:new')).toBe(false);
+  expect(getThreadDraftPreview('dev:new')).toBe('hello');
 });
