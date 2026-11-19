@@ -28,8 +28,23 @@ fn instance() -> &'static str {
     INSTANCE.get_or_init(|| uuid::Uuid::new_v4().to_string())
 }
 
+// The directory spans the lifetime of the update, including the handoff to a
+// different process. This short OS lock makes checking and replacing its owner
+// atomic across concurrent status requests, launch requests, and worker exits.
+fn owner_guard(lock: &Path) -> std::io::Result<std::fs::File> {
+    let guard = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock.with_extension("guard"))?;
+    guard.lock()?;
+    Ok(guard)
+}
+
 /// Take the lock for a new job and return its ID. A stale lock is removed once.
 pub(super) fn acquire(lock: &Path, status_file: &Path) -> Result<String> {
+    let _guard = owner_guard(lock)?;
     let job_id = uuid::Uuid::new_v4().to_string();
     for attempt in 0..2 {
         match std::fs::create_dir(lock) {
@@ -65,9 +80,14 @@ pub(super) fn acquire(lock: &Path, status_file: &Path) -> Result<String> {
 
 /// Release a job's lock. A lock that another job has since taken stays.
 pub(super) fn release(lock: &Path, job_id: &str) {
+    let Ok(_guard) = owner_guard(lock) else {
+        return;
+    };
     match read::<Owner>(&lock.join(OWNER)) {
-        Ok(owner) if !job_id.is_empty() && owner.job_id != job_id => {}
-        _ => remove(lock),
+        Ok(owner) if owner.job_id == job_id => remove(lock),
+        // Workers from older releases have neither an owner record nor a job ID.
+        Err(_) if job_id.is_empty() => remove(lock),
+        _ => {}
     }
 }
 
@@ -142,6 +162,30 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_recovery_leaves_one_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let (lock, status) = paths(root.path());
+        acquire(&lock, &status).unwrap();
+        owner(&lock, |o| o.instance = "previous-process".into());
+        let barrier = std::sync::Barrier::new(8);
+        let winners = std::thread::scope(|scope| {
+            (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        acquire(&lock, &status).ok()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .filter_map(|t| t.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let remaining: Owner = read(&lock.join(OWNER)).unwrap();
+        assert_eq!(winners, [remaining.job_id]);
+    }
+
+    #[test]
     fn a_job_status_decides_once_it_is_written() {
         let root = tempfile::tempdir().unwrap();
         let (lock, status) = paths(root.path());
@@ -156,6 +200,7 @@ mod tests {
         let next = acquire(&lock, &status).unwrap();
         // The finished job's late release leaves the new lock alone.
         release(&lock, &job_id);
+        release(&lock, "");
         assert!(lock.exists());
         release(&lock, &next);
         assert!(!lock.exists());
