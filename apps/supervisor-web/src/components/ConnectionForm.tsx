@@ -400,7 +400,7 @@ export function ConnectionForm({
         discover={(signal) => api.models(draft(), signal)}
       />
       <details className="text-xs" open={form.headers !== null || undefined}>
-        <summary className="cursor-pointer py-1 text-xs text-[var(--theme-fg-muted)]">
+        <summary className="settings-summary cursor-pointer py-1 text-xs text-[var(--theme-fg-muted)]">
           {translate('settings.connAdvanced')}
         </summary>
         <label className={`mt-2 ${label}`}>

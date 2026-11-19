@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { CopyButton, ErrorMark } from '@pockymoe/thread-ui';
 import {
   Bot,
   Check,
@@ -445,11 +445,27 @@ function ConnectionRow({
   const sources = syncSources(c, deviceId);
   const canSync = !!deviceId && (state !== 'local' || sources.length > 0);
   const window = declaredContextWindow(c);
-  const meta = [
-    servedProtocols(c).map(protocolShort).join(' + '),
+  const [fullMeta, setFullMeta] = useState(false);
+  const protocols = servedProtocols(c).map(protocolShort).join(' + ');
+  const url = c.local ? c.baseUrl?.replace(/^https?:\/\//, '') : undefined;
+  // Shortened in the middle: the host's start and the last path segment stay (UI §14).
+  const cut = url ? url.lastIndexOf('/') : -1;
+  const urlTail = url ? (cut > 0 && url.length - cut <= 28 ? url.slice(cut) : url.slice(-14)) : '';
+  const urlHead = url ? url.slice(0, url.length - urlTail.length) : '';
+  const rest = [
     ...(c.local
       ? [
-          c.baseUrl?.replace(/^https?:\/\//, ''),
+          c.model,
+          window &&
+            `${translate('settings.contextWindow')} ${tokenCount(window)}`,
+        ]
+      : []),
+  ].filter(Boolean).join(' · ');
+  const meta = [
+    protocols,
+    ...(c.local
+      ? [
+          url,
           c.model,
           window &&
             `${translate('settings.contextWindow')} ${tokenCount(window)}`,
@@ -471,7 +487,7 @@ function ConnectionRow({
         <div className="min-w-0 flex-1 basis-36">
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             <h4
-              className="min-w-0 max-w-full truncate text-[13px] font-semibold leading-5"
+              className="line-clamp-2 min-w-0 max-w-full break-words text-[13px] font-semibold leading-5"
               title={c.name}
             >
               {c.name}
@@ -490,7 +506,7 @@ function ConnectionRow({
             )}
             {c.local && c.agentAccess && (
               <span
-                className="inline-flex shrink-0 items-center gap-0.5 rounded bg-[var(--theme-hover)] px-1 text-[10px] leading-[15px] text-[var(--theme-fg-soft)]"
+                className="inline-flex shrink-0 items-center gap-0.5 rounded bg-[var(--theme-hover)] px-1 text-[11px] leading-4 text-[var(--theme-fg-soft)]"
                 title={translate('settings.connAgentAccessHint')}
               >
                 <Bot size={10} aria-hidden />
@@ -501,7 +517,7 @@ function ConnectionRow({
               <span
                 key={u.harness}
                 // Small: one connection can serve several harnesses.
-                className={`inline-block min-w-0 max-w-[9rem] shrink truncate rounded px-1 text-[10px] leading-[15px] ${u.pending ? warnPill : 'bg-[var(--theme-hover)] text-[var(--theme-fg-soft)]'}`}
+                className={`inline-block min-w-0 max-w-[9rem] shrink truncate rounded px-1 text-[11px] leading-4 ${u.pending ? warnPill : 'bg-[var(--theme-hover)] text-[var(--theme-fg-soft)]'}`}
                 title={translate(
                   u.pending
                     ? 'settings.connPendingHint'
@@ -517,12 +533,32 @@ function ConnectionRow({
               </span>
             ))}
           </div>
-          <p
-            className="mt-0.5 truncate text-[11px] leading-4 text-[var(--theme-fg-muted)]"
-            title={meta}
-          >
-            {meta}
-          </p>
+          {/* Tap or click shows the whole line, with the URL's copy button (UI §2, §14). */}
+          <div className="mt-0.5 flex min-w-0 items-start gap-1">
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-baseline gap-1 text-left text-[11px] leading-4 text-[var(--theme-fg-muted)]"
+              aria-expanded={fullMeta}
+              aria-label={meta}
+              title={meta}
+              onClick={() => setFullMeta((value) => !value)}
+            >
+              {fullMeta || !url ? (
+                <span className={fullMeta ? 'min-w-0 break-all' : 'min-w-0 truncate'}>{meta}</span>
+              ) : (
+                <>
+                  <span className="shrink-0">{protocols}</span>
+                  <span className="shrink-0" aria-hidden>·</span>
+                  <span className="flex min-w-0 font-mono">
+                    <span className="min-w-0 truncate">{urlHead}</span>
+                    <span className="shrink-0">{urlTail}</span>
+                  </span>
+                  {rest && <span className="min-w-0 max-w-[40%] shrink truncate">· {rest}</span>}
+                </>
+              )}
+            </button>
+            {fullMeta && c.baseUrl && <CopyButton value={c.baseUrl} label={translate('settings.connCopyBaseUrl')} />}
+          </div>
         </div>
         <div
           className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1.5"
