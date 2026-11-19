@@ -69,7 +69,7 @@ describe('hierarchical split picker', () => {
       />,
     );
     expect(request).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Split conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Split view' }));
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
     const dialog = screen.getByRole('dialog');
     const labels = within(dialog)
@@ -108,7 +108,7 @@ describe('hierarchical split picker', () => {
     });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Split conversation' }),
+      screen.getByRole('button', { name: 'Split view' }),
     ).toHaveFocus();
   });
   it('supports local workspaces, retry, keyboard back and Escape without changing the selected route', async () => {
@@ -133,7 +133,7 @@ describe('hierarchical split picker', () => {
         onSelect={selected}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Split conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Split view' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Access denied');
     denied = false;
     // The reason and Retry sit in the failure mark's bubble.
@@ -174,13 +174,13 @@ describe('hierarchical split picker', () => {
     );
     expect(document.querySelector('.workbench-thread-picker-actions')!.querySelectorAll('button')).toHaveLength(1);
     expect(screen.queryByRole('button', { name: 'Restore split' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Split conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Split view' }));
     fireEvent.click(screen.getByRole('button', { name: 'Restore split' }));
     expect(restore).toHaveBeenCalledOnce();
     rerender(<WorkbenchThreadPicker {...props} splitActive />);
     expect(document.querySelector('.workbench-thread-picker-actions')!.querySelectorAll('button')).toHaveLength(1);
     expect(screen.queryByRole('button', { name: 'Close split' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Split conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Split view' }));
     fireEvent.click(screen.getByRole('button', { name: 'Close split' }));
     expect(close).toHaveBeenCalledOnce();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -199,7 +199,7 @@ it('keeps scoped split selection across bound workspaces and hides devices', asy
   render(<HostCapabilitiesProvider scope="local"><WorkbenchThreadPicker deviceId={null}
     workspaceId="current" threadId="root" threads={peers} onSelect={selected} />
   </HostCapabilitiesProvider>);
-  fireEvent.click(await screen.findByRole('button', { name: 'Split conversation' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Split view' }));
   expect(screen.getByText('OTHER WORKSPACES · THIS DEVICE')).toBeVisible();
   expect(screen.queryByText('OTHER DEVICES')).toBeNull();
   fireEvent.click(await screen.findByRole('button', { name: /child/ }));

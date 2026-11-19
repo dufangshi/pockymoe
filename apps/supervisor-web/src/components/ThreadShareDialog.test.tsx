@@ -55,7 +55,7 @@ it('offers Share thread to the owner of a relay device, before rename and delete
   mount();
   const menu = await openMenu();
   const labels = within(menu).getAllByRole('button').map(item => item.textContent);
-  expect(labels.indexOf('Share thread')).toBeGreaterThan(labels.indexOf('Copy Pockymoe session ID'));
+  expect(labels.indexOf('Share thread')).toBeGreaterThan(labels.indexOf('Copy thread ID'));
   expect(labels.indexOf('Share thread')).toBeLessThan(labels.indexOf('Rename thread'));
   expect(within(menu).getByRole('button', { name: 'Share thread' }).querySelector('svg')?.getAttribute('data-icon')).toBe('share');
   expect(fetchRelayAccess).toHaveBeenCalledWith({ deviceId: 'dev-1', threadId: 't-1' });

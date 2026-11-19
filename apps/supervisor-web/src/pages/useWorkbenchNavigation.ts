@@ -14,7 +14,7 @@ import type {
 import { ApiError, isInvisibleThreadError, relayModeActive, request } from '../lib/api';
 import { threadHref } from '../lib/relayRoutes';
 import { isTourDevice, tourStateKey } from '../lib/tourSandbox/tourDevice';
-import { threadThemeAgentKey } from '@pockymoe/thread-ui';
+import { displayThreadTitle, threadThemeAgentKey } from '@pockymoe/thread-ui';
 
 /** The avatar key a theme shows for a thread's harness. */
 function threadAgentField(thread: { provider?: string | null; agentId?: string | null }): { agent?: string } {
@@ -532,7 +532,7 @@ export function useWorkbenchNavigation(
     refs.unshift({
       deviceId,
       threadId: detail.thread.id,
-      title: detail.thread.title,
+      title: displayThreadTitle(detail.thread.title),
       workspaceLabel: detail.workspace.label,
       favorite: false,
       visitedAt: new Date().toISOString(),
@@ -545,7 +545,7 @@ export function useWorkbenchNavigation(
     const activity = local ?? statuses[referenceKey(r)];
     return {
       key: referenceKey(r),
-      title: local?.title ?? r.title,
+      title: displayThreadTitle(local?.title ?? r.title),
       subtitle: [r.deviceName, r.workspaceLabel].filter(Boolean).join(' · '),
       href: threadHref(r.threadId, r.deviceId),
       favorite: r.favorite,
@@ -670,7 +670,7 @@ export function useWorkbenchNavigation(
         const reference = snapshot.threads.find(r => referenceKey(r) === key);
         const renamed = localEdits.renamed[key];
         return {
-          key, title: renamed?.from === thread.title ? renamed.to : thread.title, subtitle: workspaceLabels.get(thread.workspaceId) ?? '',
+          key, title: displayThreadTitle(renamed?.from === thread.title ? renamed.to : thread.title), subtitle: workspaceLabels.get(thread.workspaceId) ?? '',
           href: threadHref(thread.id, tabContext.deviceId), favorite: reference?.favorite ?? false,
           ...(thread.parentThreadId ? {parentKey: `${tabContext.deviceId ?? 'local'}:${thread.parentThreadId}`} : {}),
           ...(thread.rootThreadId ? {rootKey: `${tabContext.deviceId ?? 'local'}:${thread.rootThreadId}`} : {}),
@@ -699,7 +699,7 @@ export function useWorkbenchNavigation(
       ?? snapshot.threads.find(r => (r.deviceId ?? 'local') === familyDevice && r.workspaceId === thread.workspaceId)?.workspaceLabel
       ?? (rootReference && (!rootReference.workspaceId || rootReference.workspaceId === thread.workspaceId) ? rootReference.workspaceLabel : undefined);
     return [key, {
-      key, title: activity.title,
+      key, title: displayThreadTitle(activity.title),
       subtitle: [reference?.deviceName, place].filter(Boolean).join(' · '),
       href: threadHref(thread.id, familyDevice === 'local' ? null : familyDevice),
       favorite: reference?.favorite ?? false,
@@ -739,7 +739,7 @@ export function useWorkbenchNavigation(
       : minutes < 60 ? translate('workbench.runningForMinutes', { count: minutes })
         : translate('workbench.runningForHours', { hours: Math.floor(minutes / 60), minutes: minutes % 60 });
     return [{
-      key, title: activity.title,
+      key, title: displayThreadTitle(activity.title),
       subtitle: [...placeOf(device, thread), runningFor].filter(Boolean).join(' · '),
       href: threadHref(thread.id, device === 'local' ? null : device),
       favorite: reference?.favorite ?? false,
@@ -762,7 +762,7 @@ export function useWorkbenchNavigation(
     if (!thread.rootKey || activeThreads.some(active => active.key === thread.rootKey)) continue;
     const listed = listedThreads.get(thread.rootKey);
     const root = familyByKey.get(thread.rootKey) ?? (listed && {
-      key: thread.rootKey, title: listed.thread.title,
+      key: thread.rootKey, title: displayThreadTitle(listed.thread.title),
       subtitle: placeOf(listed.device, listed.thread).filter(Boolean).join(' · '),
       href: threadHref(listed.thread.id, listed.device === 'local' ? null : listed.device),
       favorite: false,

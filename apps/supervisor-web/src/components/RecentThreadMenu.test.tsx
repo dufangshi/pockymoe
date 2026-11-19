@@ -59,7 +59,7 @@ it('confirms a copy on the item that copied, then closes', async () => {
   Object.assign(navigator, { clipboard: { writeText } });
   mount();
   fireEvent.click(await screen.findByRole('button',{name:'Actions for reply 1'}));
-  const item = await screen.findByRole('button',{name:'Copy Pockymoe session ID'});
+  const item = await screen.findByRole('button',{name:'Copy thread ID'});
   fireEvent.click(item);
   await waitFor(() => expect(item).toHaveAttribute('data-copy-state','copied'));
   // Labelled, so an agent knows it names a Pockymoe thread.
