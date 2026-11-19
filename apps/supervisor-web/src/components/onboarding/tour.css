@@ -308,8 +308,36 @@
     min-height: 40px;
   }
   .pm-tour-icon {
+    width: 40px;
+    height: 40px;
+  }
+  /* The welcome card and the contents rise from the bottom like other phone
+     windows (UI §4); only a step's card stays beside the control it explains.
+     They stay non-modal, as the tour never blocks the page. Inline top/left come
+     from the desktop placement. */
+  .pm-tour-card:is(.pm-tour-hub, .pm-tour-welcome) {
+    top: auto !important;
+    left: 0 !important;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    max-height: calc(100dvh - env(safe-area-inset-top) - 12px);
+    padding: 22px 16px max(16px, env(safe-area-inset-bottom));
+    border-width: 1px 0 0;
+    border-radius: 18px 18px 0 0;
+    box-shadow: 0 -10px 34px rgb(0 0 0 / 0.22);
+    transition: none;
+  }
+  .pm-tour-card:is(.pm-tour-hub, .pm-tour-welcome)::before {
+    content: '';
+    position: absolute;
+    top: 8px;
+    left: 50%;
     width: 36px;
-    height: 36px;
+    height: 4px;
+    margin-left: -18px;
+    border-radius: 2px;
+    background: var(--theme-border-strong, var(--theme-border));
   }
 }
 @media (prefers-reduced-motion: reduce) {
