@@ -570,7 +570,7 @@ right after it recent conversations elsewhere; each part scrolls on its own. The
 in the drawer: Terminal and Files in the top bar toggle back to the conversation.
 The desktop sidebar lists the same way, with the thread map on its rail. The tab bar and **This workspace**
 list the conversations started in the current workspace, each with all its agent
-threads wherever they work; each row names the workspace its own thread works in. An agent thread working here for a conversation started
+threads wherever they work. The sidebar heading names the workspace once, so its rows there carry no subtitle; a row names a workspace only when its thread works elsewhere. With no shortcuts, the Shortcuts section is one line: a star and "Starred threads appear here". Row menus are ⋯ everywhere. An agent thread working here for a conversation started
 elsewhere belongs to that workspace; while it is open it shows inside its
 conversation. Shortcuts keep the account's own order:
 drag one with the mouse, long-press and drag on touch, or press Alt+↑/↓ on a
