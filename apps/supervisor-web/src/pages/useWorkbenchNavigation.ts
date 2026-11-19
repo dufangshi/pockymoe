@@ -36,13 +36,20 @@ interface ThreadReference {
   readCompletedAt?: string | null;
 }
 type ThreadActivity = { closedAt?: string | null; status: string; lastTurnCompletedAt?: string | null; parentThreadId?: string | null; rootThreadId?: string | null };
-export function workbenchThreadStatus(activity: ThreadActivity | undefined, readCompletedAt?: string | null) {
+/**
+ * `readCompletedAt` is the last turn the reader saw in a thread they opened
+ * (null: opened, nothing read yet). For a thread never opened in this browser,
+ * pass `undefined` and the turn it had finished when this browser first listed
+ * it (`''`: none): only turns finished after that are unread, as on the map.
+ */
+export function workbenchThreadStatus(activity: ThreadActivity | undefined, readCompletedAt?: string | null, firstSeenCompletedAt?: string) {
   if (!activity) return 'unknown';
   if (['running', 'inProgress', 'recovering'].includes(activity.status)) return 'running';
   if (['failed', 'error', 'system_error'].includes(activity.status)) return 'failed';
   if (['unknown', 'not_loaded'].includes(activity.status)) return 'unknown';
   if (activity.status === 'interrupted') return 'interrupted';
-  if (activity.lastTurnCompletedAt && (!readCompletedAt || Date.parse(activity.lastTurnCompletedAt) > Date.parse(readCompletedAt))) return 'unread';
+  const seen = readCompletedAt !== undefined ? readCompletedAt : firstSeenCompletedAt;
+  if (activity.lastTurnCompletedAt && (!seen || Date.parse(activity.lastTurnCompletedAt) > Date.parse(seen))) return 'unread';
   return 'idle';
 }
 interface NavigationSnapshot {
@@ -66,6 +73,16 @@ function loadWorkspaceOrders(key: string): Record<string, string[]> {
     const value: unknown = JSON.parse(localStorage.getItem(key) ?? '{}');
     if (!value || typeof value !== 'object') return {};
     return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].every(item => typeof item === 'string')));
+  } catch { return {}; }
+}
+const FIRST_SEEN_KEY = 'pockymoe.thread-first-seen.v1';
+const FIRST_SEEN_LIMIT = 2000;
+/** Threads never opened here: `device:thread` -> its last finished turn when first listed. */
+function loadFirstSeen(key: string): Record<string, string> {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(key) ?? '{}');
+    if (!value || typeof value !== 'object') return {};
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
   } catch { return {}; }
 }
 const referenceKey = (r: { deviceId: string | null; threadId: string }) =>
@@ -138,6 +155,28 @@ export function useWorkbenchNavigation(
   const openTabsKey = scopedKey(useBrowserStateKey(OPEN_TABS_KEY));
   const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => loadOpenTabs(openTabsKey));
   useEffect(() => { if (enabled) setOpenTabs(loadOpenTabs(openTabsKey)); }, [openTabsKey, enabled]);
+  const firstSeenKey = scopedKey(useBrowserStateKey(FIRST_SEEN_KEY));
+  const [firstSeen, setFirstSeen] = useState<Record<string, string>>(() => loadFirstSeen(firstSeenKey));
+  useEffect(() => { setFirstSeen(loadFirstSeen(firstSeenKey)); }, [firstSeenKey]);
+  // Filled while rendering, saved after: a thread first listed now counts as read.
+  const unseen = useRef<Record<string, string>>({});
+  const firstSeenOf = (key: string, activity: ThreadActivity | undefined) => {
+    const known = firstSeen[key];
+    if (known !== undefined) return known;
+    const at = activity?.lastTurnCompletedAt ?? '';
+    unseen.current[key] = at;
+    return at;
+  };
+  useEffect(() => {
+    const fresh = unseen.current;
+    unseen.current = {};
+    if (!Object.keys(fresh).length) return;
+    const next = { ...loadFirstSeen(firstSeenKey), ...fresh };
+    const entries = Object.entries(next);
+    const kept = entries.length > FIRST_SEEN_LIMIT ? Object.fromEntries(entries.slice(-FIRST_SEEN_LIMIT)) : next;
+    try { localStorage.setItem(firstSeenKey, JSON.stringify(kept)); } catch { /* Keep the in-page baseline. */ }
+    setFirstSeen(kept);
+  });
   const [workspaceOrders, setWorkspaceOrders] = useState<Record<string, string[]>>(() => loadWorkspaceOrders(orderKey));
   useEffect(() => { setWorkspaceOrders(loadWorkspaceOrders(orderKey)); }, [orderKey]);
   const sharesDeviceThreads = options.sharesDeviceThreads === true;
@@ -514,7 +553,7 @@ export function useWorkbenchNavigation(
       ...(activity?.parentThreadId ? {parentKey: `${r.deviceId ?? 'local'}:${activity.parentThreadId}`} : {}),
       ...(activity?.rootThreadId ? {rootKey: `${r.deviceId ?? 'local'}:${activity.rootThreadId}`} : {}),
       closedAt: activity?.closedAt ?? null,
-      status: workbenchThreadStatus(activity, r.readCompletedAt),
+      status: workbenchThreadStatus(activity, r.readCompletedAt ?? null),
       ...(local ? threadAgentField(local) : {}),
     };
   });
@@ -635,7 +674,9 @@ export function useWorkbenchNavigation(
           href: threadHref(thread.id, tabContext.deviceId), favorite: reference?.favorite ?? false,
           ...(thread.parentThreadId ? {parentKey: `${tabContext.deviceId ?? 'local'}:${thread.parentThreadId}`} : {}),
           ...(thread.rootThreadId ? {rootKey: `${tabContext.deviceId ?? 'local'}:${thread.rootThreadId}`} : {}),
-          status: workbenchThreadStatus(thread.id === tabContext.detail?.thread.id ? tabContext.detail.thread : thread, reference?.readCompletedAt),
+          status: reference
+            ? workbenchThreadStatus(thread.id === tabContext.detail?.thread.id ? tabContext.detail.thread : thread, reference.readCompletedAt ?? null)
+            : workbenchThreadStatus(thread, undefined, firstSeenOf(key, thread)),
           closedAt: thread.closedAt ?? null,
           ...threadAgentField(thread),
         };
@@ -665,7 +706,8 @@ export function useWorkbenchNavigation(
       ...(thread.parentThreadId ? { parentKey: `${familyDevice}:${thread.parentThreadId}` } : {}),
       ...(thread.rootThreadId ? { rootKey: `${familyDevice}:${thread.rootThreadId}` } : {}),
       status: workbenchThreadStatus(statuses[key]?.status === 'unknown' && familyDevice !== (deviceId ?? 'local')
-        ? { ...activity, status: 'unknown' } : activity, reference?.readCompletedAt),
+        ? { ...activity, status: 'unknown' } : activity,
+        reference ? reference.readCompletedAt ?? null : undefined, reference ? undefined : firstSeenOf(key, activity)),
       closedAt: thread.closedAt ?? null,
       ...threadAgentField(thread),
     } satisfies WorkbenchThread] as const;

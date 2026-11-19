@@ -36,6 +36,13 @@ export function useThreadTabStatus(thread: ThreadDto | null) {
     icon.type = 'image/svg+xml';
     icons.forEach((old) => old.remove());
     document.head.append(icon);
+    // A thread first opened here (say, in a background tab) starts as read:
+    // only turns finished after that make it unread, as in the sidebar.
+    try {
+      if (localStorage.getItem(key) === null) localStorage.setItem(key, String(completed));
+    } catch {
+      memorySeen = completed;
+    }
     function update() {
       let seen = memorySeen;
       try {
