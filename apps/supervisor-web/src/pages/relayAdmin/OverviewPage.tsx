@@ -173,7 +173,7 @@ function Attention({ data, go }: { data: AdminOverview; go: AdminPageProps['go']
       icon: <UserPlus aria-hidden className="h-5 w-5" />,
       value: data.attention.pendingRegistrations,
       text: translate('admin.attentionRegistrations'),
-      detail: data.attention.oldestPendingAt ? translate('admin.oldestWaiting', { time: formatRelative(data.attention.oldestPendingAt) }) : null,
+      detail: data.attention.oldestPendingAt ? <NoBreak text={translate('admin.oldestWaiting', { time: '\u0000' })} value={formatRelative(data.attention.oldestPendingAt)} /> : null,
       action: translate('admin.review'),
       onGo: () => go('users', { sub: 'registrations' }),
     },
@@ -204,7 +204,7 @@ function Attention({ data, go }: { data: AdminOverview; go: AdminPageProps['go']
       action: translate('admin.viewLinks'),
       onGo: () => go('shares', { sub: 'links', filter: 'legacy' }),
     },
-  ].filter(Boolean) as Array<{ key: string; icon: React.ReactNode; value: number; text: string; detail: string | null; action: string; onGo: () => void }>;
+  ].filter(Boolean) as Array<{ key: string; icon: React.ReactNode; value: number; text: string; detail: React.ReactNode; action: string; onGo: () => void }>;
   return (
     <Card className="admin-attention" subtitle={translate('admin.attentionSubtitle')} title={translate('admin.attention')}>
       {items.length ? (
@@ -215,7 +215,7 @@ function Attention({ data, go }: { data: AdminOverview; go: AdminPageProps['go']
                 <span className="admin-attention-icon">{item.icon}</span>
                 <span className="admin-attention-text">
                   <b>{formatCount(item.value)}</b>
-                  <span>{item.text}{item.detail ? ` · ${item.detail}` : ''}</span>
+                  <span>{item.text}{item.detail ? <> · {item.detail}</> : null}</span>
                   <span className="admin-attention-action">
                     {item.action}
                     <ArrowRight aria-hidden className="h-3.5 w-3.5" />
@@ -401,4 +401,10 @@ function TunnelsCard({ data, go }: { data: AdminOverview; go: AdminPageProps['go
       </ul>
     </ChartCard>
   );
+}
+
+/** A sentence whose value (a date) never breaks across lines; `\u0000` in `text` marks where it goes. */
+function NoBreak({ text, value }: { text: string; value: string }) {
+  const [before, after = ''] = text.split('\u0000');
+  return <>{before}<span className="whitespace-nowrap">{value}</span>{after}</>;
 }
