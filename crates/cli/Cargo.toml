@@ -25,5 +25,9 @@ tracing-subscriber.workspace = true
 
 uuid.workspace = true
 
+[dev-dependencies]
+# Paused (virtual) time for the attach wait's minute-long cadence.
+tokio = { workspace = true, features = ["test-util"] }
+
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 libc = "0.2"
