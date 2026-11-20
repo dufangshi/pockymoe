@@ -91,12 +91,13 @@ it('requires an explicit legacy upgrade, then requires account setup', async () 
   expect(await auth.finishAccountLogin(v.userId)).toEqual({ setup: true, recovery: false });
   expect(state.derive).not.toHaveBeenCalled();
 });
-it('supports OAuth-only setup without transmitting an authKey', async () => {
+it('sends the login authKey with OAuth setup so the password also signs in', async () => {
   await auth.setAccountSession(v.userId, true);
   expect(await auth.isOAuthAccount()).toBe(true);
-  await auth.setupAccount({ vault: v, authKey: 'local-only', recoveryAuthKey: vectors.derivation.recoveryAuthKey, recoveryCode: vectors.derivation.recoveryCodeDisplay }, true);
+  await auth.setupAccount({ vault: v, authKey: 'derived-auth-key', recoveryAuthKey: vectors.derivation.recoveryAuthKey, recoveryCode: vectors.derivation.recoveryCodeDisplay });
   const body = JSON.parse(state.fetch.mock.calls.at(-1)![1].body);
-  expect(body!.expectedRevision).toBe(0); expect(body).not.toHaveProperty('authKey');
+  expect(body!.expectedRevision).toBe(0); expect(body.authKey).toBe('derived-auth-key');
+  expect(await auth.isOAuthAccount()).toBe(false); expect(await auth.accountSessionState()).toMatchObject({ mode: 'account' });
 });
 it('recovers locally but delays browser registration until the password reset', async () => {
   await auth.startAccountRecovery('user', vectors.derivation.recoveryCodeDisplay);
@@ -181,18 +182,55 @@ it('regenerates recovery authentication with currentAuthKey while preserving acc
   expect(update.currentAuthKey).toBe(vectors.derivation.authKey); expect(update).toHaveProperty('recoveryAuthKey');
   expect(update.vault.accountKeyId).toBe(v.accountKeyId); expect(await vault.boundDevices()).toEqual(before);
 });
-it('keeps OAuth password changes and later recovery-code changes free of relay auth keys', async () => {
+const loginKeyCalls = () => state.fetch.mock.calls.filter(([url]) => url.endsWith('/relay/account/login-key'));
+const signedLoginKey = (body: { authKey: string; signature?: string; loginKeySignature?: string }, kdfSalt: string) =>
+  c.verify(v.accountPublicKey, body.signature ?? body.loginKeySignature!, c.inputs.loginKey({ userId: v.userId, accountKeyId: v.accountKeyId, kdfSalt, authKey: body.authKey }));
+it('adds the signed login key when an OAuth account opens its vault with its password', async () => {
   await auth.setAccountSession(v.userId, true);
   await vault.openVault(v, 'local password');
-  await vault.changeAccountPassword('a new sufficiently long password', true);
+  const [call] = loginKeyCalls(); expect(call![1].method).toBe('POST');
+  const body = JSON.parse(call![1].body);
+  expect(body.authKey).toBe(vectors.derivation.authKey); expect(await signedLoginKey(body, v.kdf.salt)).toBe(true);
+  expect(await auth.isOAuthAccount()).toBe(false);
+  // From now on vault writes prove the password like any password account.
   await vault.regenerateRecoveryCode();
-  const updates = state.fetch.mock.calls.filter(([, init]) => init.method === 'PUT').map(([, init]) => JSON.parse(init.body));
-  expect(updates).toHaveLength(2);
-  for (const update of updates) {
-    expect(update).not.toHaveProperty('authKey');
-    expect(update).not.toHaveProperty('currentAuthKey');
-  }
-  expect(updates[1]).toHaveProperty('recoveryAuthKey');
+  const update = JSON.parse(state.fetch.mock.calls.find(([, init]) => init.method === 'PUT')![1].body);
+  expect(update.currentAuthKey).toBe(vectors.derivation.authKey);
+});
+it('stays an OAuth account and asks again at the next unlock without a recent sign-in', async () => {
+  await auth.setAccountSession(v.userId, true);
+  const base = state.fetch.getMockImplementation()!;
+  state.fetch.mockImplementation(async (url: string, init?: RequestInit) => url.endsWith('/login-key')
+    ? Response.json({ code: 'reauthentication_required' }, { status: 403 }) : base(url, init));
+  await vault.openVault(v, 'local password');
+  expect(vault.isAccountUnlocked()).toBe(true); expect(await auth.isOAuthAccount()).toBe(true);
+  await vault.openVault(v, 'local password');
+  expect(loginKeyCalls()).toHaveLength(2);
+  // A recovery-code unlock has no password-derived key to add.
+  await vault.openVault(v, vectors.derivation.recoveryCodeDisplay, true);
+  expect(loginKeyCalls()).toHaveLength(2);
+});
+it('treats an account that already signs in with a password as converted', async () => {
+  await auth.setAccountSession(v.userId, true);
+  const base = state.fetch.getMockImplementation()!;
+  state.fetch.mockImplementation(async (url: string, init?: RequestInit) => url.endsWith('/login-key')
+    ? Response.json({ code: 'login_key_exists' }, { status: 409 }) : base(url, init));
+  await vault.openVault(v, 'local password');
+  expect(await auth.isOAuthAccount()).toBe(false);
+});
+it('turns on password sign-in when an OAuth account changes its password', async () => {
+  await auth.setAccountSession(v.userId, true);
+  const base = state.fetch.getMockImplementation()!;
+  state.fetch.mockImplementation(async (url: string, init?: RequestInit) => url.endsWith('/login-key')
+    ? Response.json({ code: 'reauthentication_required' }, { status: 403 }) : base(url, init));
+  await vault.openVault(v, 'local password');
+  state.derive.mockImplementation(async () => ({ authKey: vectors.derivation.recoveryAuthKey, wrapKey: c.decode64(vectors.derivation.wrapKey) }));
+  await vault.changeAccountPassword('a new sufficiently long password');
+  const update = JSON.parse(state.fetch.mock.calls.find(([, init]) => init.method === 'PUT')![1].body);
+  expect(update.authKey).toBe(vectors.derivation.recoveryAuthKey);
+  expect(update.vault.kdf.salt).not.toBe(v.kdf.salt);
+  expect(await signedLoginKey(update, update.vault.kdf.salt)).toBe(true);
+  expect(await auth.isOAuthAccount()).toBe(false);
 });
 it('persists the authoritative account session state and refuses a changed account key hint', async () => {
   await auth.startAccountLogin('user', 'local'); await auth.finishAccountLogin(v.userId);
@@ -393,6 +431,9 @@ it('does not delete a vault or browser when the confirmed password is wrong', as
   expect(await vault.currentBrowser()).not.toBeNull();
 });
 it('keeps an OAuth-only Start over password local while verifying it before deletion', async () => {
+  const base = state.fetch.getMockImplementation()!;
+  state.fetch.mockImplementation(async (url: string, init?: RequestInit) => url.endsWith('/login-key')
+    ? Response.json({ code: 'reauthentication_required' }, { status: 403 }) : base(url, init));
   await auth.setAccountSession(v.userId, true); await vault.openVault(v, 'local');
   await vault.startAccountOver('confirmed local password');
   expect(state.derive).toHaveBeenLastCalledWith('confirmed local password', v.kdf);

@@ -132,10 +132,35 @@ export async function openVault(v: Vault, secret: string, recovery = false, expe
   const slotKey = 'wrapKey' in keys ? keys.wrapKey : keys.recoveryKey;
   try {
     const data = await decryptVault(v, slotKey, recovery ? 'recovery' : 'password', expectedUserId);
-    await installUnlockedVault(v, data, 'authKey' in keys && !await accountStore(`oauth:${v.userId}`) ? keys.authKey : undefined,
+    // An OAuth-only account has no login key to prove until it adds this one.
+    const oauth = 'authKey' in keys && !!await accountStore(`oauth:${v.userId}`);
+    await installUnlockedVault(v, data, 'authKey' in keys && !oauth ? keys.authKey : undefined,
       'recoveryAuthKey' in keys ? keys.recoveryAuthKey : undefined);
+    if ('authKey' in keys && oauth) await addLoginKey(keys.authKey);
     return windowHandle();
   } finally { slotKey.fill(0); }
+}
+const loginKeySignature = (w: WindowState, kdfSalt: string, authKey: string) =>
+  c.sign(w.key!, c.inputs.loginKey({ userId: w.vault.userId, accountKeyId: w.vault.accountKeyId, kdfSalt, authKey }));
+async function markPasswordAccount(userId: string) {
+  await accountStore(`oauth:${userId}`, false);
+  const session = await accountStore<{ mode?: string }>(`session:${userId}`);
+  if (session?.mode === 'oauth') await accountStore(`session:${userId}`, { ...session, mode: 'account' });
+}
+/**
+ * An OAuth-only account that just opened its vault with its password also signs
+ * in with that password from now on. The relay needs a recent OAuth sign-in or
+ * second factor; without one this quietly waits for the next unlock.
+ */
+async function addLoginKey(authKey: string) {
+  const w = windowState();
+  try {
+    await accountRequest('relay/account/login-key', 'POST', { authKey, signature: await loginKeySignature(w, w.vault.kdf.salt, authKey) });
+  } catch (e) {
+    if (!(e instanceof AccountTrustError && e.code === 'login_key_exists')) return;
+  }
+  if (windowState() === w) w.authKey = authKey;
+  await markPasswordAccount(w.vault.userId);
 }
 export async function installUnlockedVault(v: Vault, data: Awaited<ReturnType<typeof decryptVault>>, authKey?: string, recoveryAuthKey?: string) {
   await setActiveAccount(v.userId); closeUnlockWindow();
@@ -260,17 +285,18 @@ export async function revokeAccountSubject(kind: 'browser' | 'device', subjectId
   if ((await currentBrowser())?.browserId === subjectId && kind === 'browser') await clearBrowser(subjectId);
   return revocation;
 }
-export async function changeAccountPassword(password: string, oauthOnly = false) {
+/** Also turns on password sign-in for an OAuth-only account (the relay checks the signature only there). */
+export async function changeAccountPassword(password: string) {
   await requireUnlock('change-password'); const w = windowState();
   if ([...password.normalize('NFC')].length < 12) throw new AccountTrustError('accountPasswordShort');
   const kdf = c.newKdf(), keys = await c.passwordKeys(password, kdf);
   try {
     const slots = { ...w.vault.slots, password: await c.seal(keys.wrapKey, w.vdk, slotAad(w.vault, 'password')) };
-    await saveWindow(w, { ...w.body, updatedAt: Date.now() }, oauthOnly ? {} : {
-      authKey: keys.authKey }, { kdf, slots });
-    if (oauthOnly) delete w.authKey;
-    else w.authKey = keys.authKey;
+    await saveWindow(w, { ...w.body, updatedAt: Date.now() }, {
+      authKey: keys.authKey, loginKeySignature: await loginKeySignature(w, kdf.salt, keys.authKey) }, { kdf, slots });
+    w.authKey = keys.authKey;
     delete w.recoveryAuthKey;
+    await markPasswordAccount(w.vault.userId);
   } finally { keys.wrapKey.fill(0); }
 }
 export async function regenerateRecoveryCode() {

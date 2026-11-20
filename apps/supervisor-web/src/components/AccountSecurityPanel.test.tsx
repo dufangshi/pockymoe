@@ -48,7 +48,7 @@ it('uses the shared unlock-backed password change for an OAuth-only vault', asyn
   fireEvent.click(screen.getByRole('button', { name: translate('auth.changePassword') }));
   fireEvent.change(screen.getByLabelText(translate('auth.newPassword')), { target: { value: 'a sufficiently long new password' } });
   fireEvent.click(screen.getByRole('button', { name: translate('auth.continue') }));
-  await waitFor(() => expect(state.change).toHaveBeenCalledWith('a sufficiently long new password', true));
+  await waitFor(() => expect(state.change).toHaveBeenCalledWith('a sufficiently long new password'));
 });
 it('requires explicit confirmation to remove a browser and shows a regenerated recovery code once', async () => {
   render(<AccountSecurityPanel />); await screen.findByText('My laptop');
@@ -72,7 +72,7 @@ it('retries an OAuth-sensitive change after a real second-factor confirmation', 
   fireEvent.click(screen.getByRole('button', { name: translate('auth.continue') }));
   fireEvent.click(await screen.findByText('Verify factor'));
   await waitFor(() => expect(state.change).toHaveBeenCalledTimes(2));
-  expect(state.change).toHaveBeenLastCalledWith('a sufficiently long new password', true);
+  expect(state.change).toHaveBeenLastCalledWith('a sufficiently long new password');
 });
 
 it.each(['en', 'zh-CN'] as const)('requires a current password to confirm normal-session Start over in %s', async locale => {

@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import { currentAccount, currentBrowser, safetyCode, type BrowserCertificate } from '../lib/accountVault';
 import { accountRequest, accountRevocations, changeAccountPassword, regenerateRecoveryCode, revokeAccountSubject,
   startAccountOver } from '../lib/accountVaultState';
-import { accountSessionState, isOAuthAccount } from '../lib/accountAuth';
+import { accountSessionState } from '../lib/accountAuth';
 import { verifyBrowserCertificate } from '../lib/accountCrypto';
 import { FormDialog } from './FormDialog';
 import { RecoveryConfirmation } from './AccountUnlockPrompt';
@@ -22,12 +22,11 @@ export function AccountSecurityPanel() {
   const [action, setAction] = useState<'password' | 'reset' | 'recovery'>(), [password, setPassword] = useState('');
   const [recovery, setRecovery] = useState<string>(), [message, setMessage] = useState<string>();
   const [recoverySession, setRecoverySession] = useState(false);
-  const [oauth, setOauth] = useState(false);
   // Only a failed first read has nothing to show; its Retry reads again.
   const [loadFailed, setLoadFailed] = useState(false);
   async function load() {
-    const [session, oauthOnly] = await Promise.all([accountSessionState(), isOAuthAccount()]);
-    setRecoverySession(!!session?.recovery); setOauth(oauthOnly);
+    const session = await accountSessionState();
+    setRecoverySession(!!session?.recovery);
     const account = await currentAccount(); if (!account) throw new Error(translate('auth.accountUnlockRequired'));
     const data = await accountRequest<{ browsers: BrowserRow[] }>('relay/account/browsers');
     if (!Array.isArray(data.browsers)) throw new Error(translate('auth.accountCertificateInvalid'));
@@ -60,7 +59,7 @@ export function AccountSecurityPanel() {
     <AccountRow title={translate('auth.loginSecurity')} description={translate('auth.accountPasswordHelp')}>
       {error && (!action || verification) && <ErrorMark message={error} onRetry={loadFailed ? reload : undefined} />}
       {message && <p role="status">{message}</p>}
-      <div className="flex flex-wrap items-center justify-between gap-3"><h3>{translate('auth.password')}</h3><span className="flex items-center gap-2"><button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('password')}>{translate('auth.changePassword')}</button>{oauth && <ErrorMark kind="unavailable" message={translate('auth.oauthUnlockPasswordHelp')} />}</span></div>
+      <div className="flex flex-wrap items-center justify-between gap-3"><h3>{translate('auth.password')}</h3><span className="flex items-center gap-2"><button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('password')}>{translate('auth.changePassword')}</button></span></div>
       <div className="flex flex-wrap items-center justify-between gap-3"><h3>{translate('auth.accountRecoveryCode')}</h3><button className="relay-button-secondary min-h-11 px-3" disabled={busy} onClick={() => setAction('recovery')}>{translate('auth.accountRegenerateRecovery')}</button></div>
       <RelaySecurityPanel embedded />
     </AccountRow>
@@ -90,7 +89,7 @@ export function AccountSecurityPanel() {
       <p>{translate(action === 'reset' ? 'auth.accountResetWarning' : 'auth.accountPasswordHelp')}</p>
       {action !== 'reset' && <p className="text-sm text-[var(--theme-fg-muted)]">{translate('auth.accountSecretRotationWarning')}</p>}
       <form className="space-y-4" onSubmit={e => { e.preventDefault(); void run(async () => {
-        if (action === 'password') { await changeAccountPassword(password, await isOAuthAccount()); setMessage(translate('auth.passwordChanged')); }
+        if (action === 'password') { await changeAccountPassword(password); setMessage(translate('auth.passwordChanged')); }
         else if (action === 'reset') { await startAccountOver(recoverySession ? undefined : password); location.assign(appUrl('relay-portal')); }
         else setRecovery(await regenerateRecoveryCode());
         setAction(undefined);

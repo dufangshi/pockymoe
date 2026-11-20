@@ -86,15 +86,14 @@ test('real Electron: rail account menu and reachable working security controls',
     console.log('Electron OAuth fixture ready');
     await page.reload();
     await expect(page.getByRole('heading', { name: 'Sign-in and security' })).toBeVisible();
-    await page.getByRole('button', { name: 'Why it is unavailable', exact: true }).first().click();
-    await expect(page.getByText(/OAuth accounts have no sign-in password/)).toBeVisible();
-    await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Change password', exact: true }).click();
     await page.getByLabel('New password', { exact: true }).fill(changedPassword + 'oauth');
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await expect.poll(async () => await page.getByRole('dialog', { name: UNLOCK_DIALOG }).isVisible() || await page.getByText('Password changed.', { exact: true }).isVisible()).toBe(true);
     if (await page.getByRole('dialog', { name: UNLOCK_DIALOG }).isVisible()) await unlock(page, changedPassword);
     await expect(page.getByText('Password changed.', { exact: true })).toBeVisible();
+    // Changing it also turned on password sign-in for the OAuth account.
+    expect(await f.sql('print(json.dumps(c.execute("SELECT oauth_only, auth_hash IS NOT NULL FROM relay_account_auth WHERE user_id=?", (p["user"],)).fetchone()))', { user: owner.userId })).toEqual([0, 1]);
     for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const mode of ['light', 'dark']) {
       await page.evaluate(({pack,mode}) => { localStorage.setItem('pockymoe-theme-preset', pack); localStorage.setItem('remote-codex-theme-mode', mode); }, {pack,mode});
       await page.reload();

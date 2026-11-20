@@ -153,7 +153,8 @@ Until then the relay allows only the session, sign-out and device requests;
 sessions from before the upgrade are restricted the same way and are asked to
 sign in again.
 Creating the vault deletes the relay's old password hash. Accounts that use
-Google or GitHub sign in as usual and choose an unlock password. The relay
+Google or GitHub sign in as usual and choose a password, which then also signs in
+with their email or username. The relay
 administrator account signs in at `/relay-admin` with its configured password and
 has no account key.
 

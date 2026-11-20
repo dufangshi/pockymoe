@@ -76,7 +76,7 @@ it('stores the vault before showing the recovery code and retries only the brows
   fireEvent.change(screen.getByLabelText(translate('auth.ui.confirmPassword')), { target: { value: 'a long unlock password' } });
   fireEvent.click(screen.getByRole('button', { name: translate('auth.continue') }));
   expect(await screen.findByRole('alert')).toHaveTextContent('offline');
-  expect(state.setup).toHaveBeenCalledWith({ vault: { userId: 'user' }, recoveryCode: CODE }, true);
+  expect(state.setup).toHaveBeenCalledWith({ vault: { userId: 'user' }, recoveryCode: CODE });
   fireEvent.click(screen.getByRole('button', { name: translate('auth.retryConnection') }));
   const confirm = await screen.findByLabelText(translate('auth.ui.recoveryConfirm'));
   expect(state.create).toHaveBeenCalledOnce(); expect(state.setup).toHaveBeenCalledOnce();
@@ -153,7 +153,7 @@ it('asks for a new password after a recovery-code unlock', async () => {
   fireEvent.change(screen.getByLabelText(translate('auth.ui.confirmPassword')), { target: { value: 'a brand new password' } });
   fireEvent.click(screen.getByRole('button', { name: translate('auth.continue') }));
   expect(await screen.findByText('Device content')).toBeVisible();
-  expect(state.change).toHaveBeenCalledWith('a brand new password', false);
+  expect(state.change).toHaveBeenCalledWith('a brand new password');
 });
 
 it('finishes an administrator reset with the recovery code, or starts over', async () => {

@@ -118,7 +118,7 @@ function UnlockCard({ oauth, removed, footer, onDone, onKeyLost }: { oauth: bool
   const [secret, setSecret] = useState(''), [recovery, setRecovery] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState<string>();
   const [newPassword, setNewPassword] = useState<'ask' | null>(null);
-  if (newPassword) return <NewPasswordCard footer={footer} oauth={oauth} onDone={onDone} subtitle={translate('auth.ui.afterRecoveryBody')} />;
+  if (newPassword) return <NewPasswordCard footer={footer} onDone={onDone} subtitle={translate('auth.ui.afterRecoveryBody')} />;
   async function submit(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(undefined);
     try {
@@ -159,7 +159,7 @@ function UnlockCard({ oauth, removed, footer, onDone, onKeyLost }: { oauth: bool
 }
 
 /** Choose a new password once the vault is open (after a recovery-code unlock). */
-function NewPasswordCard({ oauth, footer, subtitle, onDone }: { oauth: boolean; footer: ReactNode; subtitle: string; onDone: () => void }) {
+function NewPasswordCard({ footer, subtitle, onDone }: { footer: ReactNode; subtitle: string; onDone: () => void }) {
   useI18n();
   const [password, setPassword] = useState(''), [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false), [error, setError] = useState<string>();
@@ -168,7 +168,7 @@ function NewPasswordCard({ oauth, footer, subtitle, onDone }: { oauth: boolean; 
     if (password !== confirm) { setError(translate('auth.ui.passwordMismatch')); return; }
     setBusy(true);
     try {
-      await changeAccountPassword(password, oauth);
+      await changeAccountPassword(password);
       await registerBrowser(undefined, 'session-gate'); onDone();
     } catch (caught) { setError(message(caught)); }
     finally { setBusy(false); }
@@ -195,8 +195,8 @@ function ResetCard({ oauth, footer, onDone, onStartedOver }: { oauth: boolean; f
     setBusy(true);
     try {
       const account = await unlockAccount(code, true);
-      await changeAccountPassword(password, oauth);
-      await setAccountSession(account.userId, { mode: oauth ? 'oauth' : 'account', setupRequired: false, recovery: false, hasVault: true, accountKeyId: account.accountKeyId });
+      await changeAccountPassword(password);
+      await setAccountSession(account.userId, { mode: 'account', setupRequired: false, recovery: false, hasVault: true, accountKeyId: account.accountKeyId });
       await registerBrowser(undefined, 'session-gate'); onDone();
     } catch (caught) { setError(message(caught)); }
     finally { setBusy(false); }

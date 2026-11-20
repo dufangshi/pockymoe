@@ -462,7 +462,7 @@ function ResetPasswordCard({ onBack, onAuthenticated, onChallenge }: {
       const session = await fetchRelaySession();
       if (!session.user) throw new Error(translate('auth.accountUnlockRequired'));
       await finishAccountLogin(session.user.id, session.user);
-      await changeAccountPassword(password, await isOAuthAccount());
+      await changeAccountPassword(password);
       await registerBrowser(undefined, 'sign-in');
       await onAuthenticated();
     } catch (caught) { setError(errorMessage(caught)); }

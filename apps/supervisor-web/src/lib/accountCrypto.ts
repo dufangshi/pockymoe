@@ -79,6 +79,8 @@ export const inputs = {
   browser: (c: Omit<BrowserCertificate, 'version' | 'signature'>) => `pockymoe-acct-browser-v1\n${c.accountKeyId}\n${c.browserId}\n${c.publicKey}\n${c.createdAt}`,
   device: (c: Omit<DeviceCertificate, 'version' | 'signature'>) => `pockymoe-acct-device-v1\n${c.accountKeyId}\n${c.deviceId}\n${c.identityKey}\n${c.createdAt}`,
   revocation: (r: Omit<Revocation, 'version' | 'signature'>) => `pockymoe-acct-revoke-v1\n${r.accountKeyId}\n${r.kind}\n${r.subjectId}\n${r.revokedAt}`,
+  /** Adds password sign-in to an OAuth-only account: the authKey of the vault password with this KDF salt. */
+  loginKey: (k: { userId: string; accountKeyId: string; kdfSalt: string; authKey: string }) => `pockymoe-acct-login-key-v1\n${k.userId}\n${k.accountKeyId}\n${k.kdfSalt}\n${k.authKey}`,
 };
 export async function verifyBrowserCertificate(c: BrowserCertificate, a: AccountKeyInfo) {
   try { return c.version === 1 && c.accountKeyId === a.accountKeyId && Number.isSafeInteger(c.createdAt) && c.createdAt >= 0 &&

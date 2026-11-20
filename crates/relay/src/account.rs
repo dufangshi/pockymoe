@@ -416,6 +416,7 @@ pub(crate) fn routes() -> Router<Arc<AppState>> {
                 .delete(delete_vault)
                 .layer(DefaultBodyLimit::max(MAX_VAULT_BYTES + 4096)),
         )
+        .route("/relay/account/login-key", post(add_login_key))
         .route(
             "/relay/account/browsers",
             get(browsers).post(register_browser),
@@ -492,6 +493,9 @@ struct VaultWrite {
     current_auth_key: Option<String>,
     current_recovery_auth_key: Option<String>,
     recovery_auth_key: Option<String>,
+    /// For an OAuth-only account adding a login `authKey` to an existing vault:
+    /// the account key's signature of `login_key_input` over the new vault.
+    login_key_signature: Option<String>,
 }
 async fn write_vault(
     State(state): State<Arc<AppState>>,
@@ -628,8 +632,24 @@ async fn write_vault(
             "Changed slots require their new authentication keys",
         ));
     }
-    if oauth && body.auth_key.is_some() {
-        return Err(invalid("OAuth-only accounts have no login authKey"));
+    // An OAuth-only account that sends an authKey becomes a password account.
+    // Recent OAuth authentication alone could set any key, so for an existing
+    // vault the account key (only an unlocked vault has it) must also sign it.
+    if oauth && old.is_some() {
+        if let Some(key) = body.auth_key.as_deref() {
+            if !login_key_signed(
+                &body.vault,
+                &user.id,
+                key,
+                body.login_key_signature.as_deref(),
+            ) {
+                return Err(failure(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    "The account key must sign a new login authKey",
+                ));
+            }
+        }
     }
     let auth_key = body.auth_key.clone();
     let recovery_key = body.recovery_auth_key.clone().filter(|_| recovery_changed);
@@ -670,11 +690,15 @@ async fn write_vault(
     )
     .map_err(internal)?;
     if let Some((salt, hash)) = auth_hash {
+        // A login key makes any account, including an OAuth one, a password account.
         tx.execute(
-            "UPDATE relay_account_auth SET auth_salt=?2,auth_hash=?3 WHERE user_id=?1",
+            "UPDATE relay_account_auth SET auth_salt=?2,auth_hash=?3,oauth_only=0 WHERE user_id=?1",
             params![user.id, salt, hash],
         )
         .map_err(internal)?;
+        if oauth {
+            security::audit(&tx, Some(&user.id), LOGIN_KEY_ADDED, None);
+        }
     }
     if let Some((salt, hash)) = recovery_hash {
         tx.execute(
@@ -706,6 +730,113 @@ async fn write_vault(
     mark_session(&tx, &token, FULL)?;
     tx.commit().map_err(internal)?;
     Ok(Json(body.vault))
+}
+pub(crate) const LOGIN_KEY_ADDED: &str = "account.login_key_added";
+/// What the account key signs to add a login `authKey` to an OAuth-only account:
+/// the key derived from the password slot of the vault whose KDF salt is named.
+fn login_key_input(vault: &Value, user: &str, auth_key: &str) -> Option<String> {
+    signing_input(
+        &json!({"version":1,"userId":user,"accountKeyId":vault["accountKeyId"],
+            "kdfSalt":vault["kdf"]["salt"],"authKey":auth_key}),
+        "pockymoe-acct-login-key-v1",
+        &["userId", "accountKeyId", "kdfSalt", "authKey"],
+    )
+}
+fn login_key_signed(vault: &Value, user: &str, auth_key: &str, signature: Option<&str>) -> bool {
+    match (login_key_input(vault, user, auth_key), signature) {
+        (Some(input), Some(signature)) => verify_signed(
+            vault["accountPublicKey"].as_str().unwrap_or_default(),
+            &input,
+            &json!(signature),
+        ),
+        _ => false,
+    }
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddLoginKey {
+    auth_key: String,
+    signature: String,
+}
+/// Lets an OAuth-only account that already has a vault also sign in with its
+/// password: the browser that just opened the vault with that password sends
+/// the matching `authKey`, signed by the account key. Nothing else changes, so
+/// no session or trusted browser is signed out.
+async fn add_login_key(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<AddLoginKey>,
+) -> ApiResult {
+    let conn = state.store.conn.lock().await;
+    let (user, token) = auth(&conn, &state, &headers)?;
+    admit_vault_mutation(&state, &user.id)?;
+    if !valid_key(&body.auth_key) {
+        return Err(invalid("Authentication keys must be B64 of 32 bytes"));
+    }
+    let before = VaultState::load(&conn, &user.id, &token)?;
+    if before.mode != FULL {
+        return Err(failure(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Unlock your account first",
+        ));
+    }
+    let vault = before.vault.clone().ok_or_else(|| {
+        failure(
+            StatusCode::NOT_FOUND,
+            "vault_missing",
+            "Secure your account first",
+        )
+    })?;
+    if !before.oauth
+        || before
+            .credentials
+            .as_ref()
+            .is_some_and(|c| c.auth_hash.is_some())
+    {
+        return Err(failure(
+            StatusCode::CONFLICT,
+            "login_key_exists",
+            "This account already signs in with a password",
+        ));
+    }
+    if !before.recent {
+        return Err(failure(
+            StatusCode::FORBIDDEN,
+            "reauthentication_required",
+            "Authenticate again before adding password sign-in",
+        ));
+    }
+    if !login_key_signed(&vault, &user.id, &body.auth_key, Some(&body.signature)) {
+        return Err(failure(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "The account key must sign a new login authKey",
+        ));
+    }
+    drop(conn);
+    let permit = VAULT_PASSWORD_WORK.acquire().await.map_err(internal)?;
+    let key = body.auth_key.clone();
+    let (salt, hash) = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        crate::hash_password(&key)
+    })
+    .await
+    .map_err(internal)?
+    .map_err(internal)?;
+    let conn = state.store.conn.lock().await;
+    before.recheck(&conn, &state, &headers, &user.id, &token, true)?;
+    let tx = conn.unchecked_transaction().map_err(internal)?;
+    tx.execute(
+        "INSERT INTO relay_account_auth(user_id,auth_salt,auth_hash,oauth_only) VALUES (?1,?2,?3,0)
+         ON CONFLICT(user_id) DO UPDATE SET auth_salt=excluded.auth_salt,auth_hash=excluded.auth_hash,oauth_only=0",
+        params![user.id, salt, hash],
+    )
+    .map_err(internal)?;
+    security::audit(&tx, Some(&user.id), LOGIN_KEY_ADDED, None);
+    let account = session_json(&tx, &user, &state.oauth, &token)["account"].clone();
+    tx.commit().map_err(internal)?;
+    Ok(Json(json!({ "account": account })))
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
