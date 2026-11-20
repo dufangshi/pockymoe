@@ -585,3 +585,111 @@ it('uses the shell index for owned sidebar threads without another device read',
   expect(vi.mocked(request).mock.calls.every(([url]) => url === 'relay/account/workbench')).toBe(true);
   unmount();
 });
+
+describe('open tabs of deleted threads', () => {
+  const OPEN_TABS = 'pockymoe.open-tabs.v1';
+  const thread = (id: string, extra: Partial<ThreadDto> = {}) => ({ id, workspaceId: 'research', title: id, status: 'idle', createdAt: `2026-10-0${id.length}`, ...extra }) as ThreadDto;
+  const tab = (device: string, id: string) => ({ key: `${device}:${id}`, title: id, subtitle: 'Research', href: `/devices/${device}/threads/${id}` });
+  const stored = () => (JSON.parse(localStorage.getItem(OPEN_TABS) ?? '[]') as { key: string }[]).map(entry => entry.key);
+  const answer = (summary: (url: string) => unknown) => vi.mocked(request).mockImplementation(async url => {
+    if (url === 'relay/account/workbench') return { threads: [], notifications: [] };
+    return summary(String(url));
+  });
+
+  it('closes a deleted thread\'s tab at once, also when its page unmounts right after (it left the deleted thread)', async () => {
+    localStorage.removeItem(OPEN_TABS);
+    answer(() => { throw new Error('no device reads'); });
+    const list = [thread('a1'), thread('b1')];
+    const page = renderHook(({ route }) => useWorkbenchNavigation(null, list, 'wsl', route), { initialProps: { route: 'a1' } });
+    page.rerender({ route: 'b1' });
+    await waitFor(() => expect(stored()).toEqual(['wsl:a1', 'wsl:b1']));
+    // The menu deletes the open thread, navigates away, and the page unmounts.
+    act(() => { void page.result.current.onThreadRemoved('wsl:b1'); page.unmount(); });
+    expect(stored()).toEqual(['wsl:a1']);
+    const next = renderHook(() => useWorkbenchNavigation(null, [list[0]!], 'wsl', 'a1'));
+    expect(next.result.current.openTabs.map(entry => entry.key)).toEqual(['wsl:a1']);
+    next.unmount();
+  });
+
+  it('removes the tab in every navigation on the page and never adds it back while a stale list names it', async () => {
+    localStorage.setItem(OPEN_TABS, JSON.stringify([tab('wsl', 'a2'), tab('wsl', 'b2')]));
+    answer(() => { throw new Error('no device reads'); });
+    const list = [thread('a2'), thread('b2'), thread('b2-agent', { parentThreadId: 'b2', rootThreadId: 'b2' })];
+    const page = renderHook(() => useWorkbenchNavigation(null, list, 'wsl', 'b2'));
+    const frame = renderHook(() => useWorkbenchNavigation(null, list, 'wsl'));
+    expect(frame.result.current.openTabs.map(entry => entry.key)).toEqual(['wsl:a2', 'wsl:b2', 'wsl:b2-agent']);
+    await act(async () => { await frame.result.current.onThreadRemoved('wsl:b2'); });
+    // Its agent threads go with the conversation's tab.
+    expect(page.result.current.openTabs.map(entry => entry.key)).toEqual(['wsl:a2']);
+    expect(frame.result.current.openTabs.map(entry => entry.key)).toEqual(['wsl:a2']);
+    page.rerender();
+    expect(stored()).toEqual(['wsl:a2']);
+    page.unmount(); frame.unmount();
+  });
+
+  it('says where deleting the open thread leads, as closing its tab does', async () => {
+    localStorage.setItem(OPEN_TABS, JSON.stringify([tab('wsl', 'a3'), tab('wsl', 'b3'), tab('wsl', 'c3')]));
+    answer(() => { throw new Error('no device reads'); });
+    const list = [thread('a3'), thread('b3'), thread('c3'), thread('b3-agent', { parentThreadId: 'b3', rootThreadId: 'b3' })];
+    const { result, rerender, unmount } = renderHook(({ route }) => useWorkbenchNavigation(null, list, 'wsl', route), { initialProps: { route: 'b3' } });
+    expect(result.current.hrefAfterRemoving('wsl:b3')).toBe('/devices/wsl/threads/c3');
+    expect(result.current.hrefAfterRemoving('wsl:a3')).toBeNull();
+    rerender({ route: 'c3' });
+    expect(result.current.hrefAfterRemoving('wsl:c3')).toBe('/devices/wsl/threads/b3');
+    // Inside a conversation: deleting the agent thread returns to it; deleting the
+    // conversation leaves for the next tab.
+    rerender({ route: 'b3-agent' });
+    expect(result.current.hrefAfterRemoving('wsl:b3-agent')).toBe('/devices/wsl/threads/b3');
+    expect(result.current.hrefAfterRemoving('wsl:b3')).toBe('/devices/wsl/threads/c3');
+    unmount();
+    localStorage.setItem(OPEN_TABS, JSON.stringify([tab('wsl', 'a3')]));
+    const only = renderHook(() => useWorkbenchNavigation(null, list, 'wsl', 'a3'));
+    expect(only.result.current.hrefAfterRemoving('wsl:a3')).toBe('/devices/wsl/threads?workspaceId=research');
+    only.unmount();
+    const workspace = renderHook(() => useWorkbenchNavigation(null, list, 'wsl'));
+    expect(workspace.result.current.hrefAfterRemoving('wsl:a3')).toBeNull();
+    workspace.unmount();
+  });
+
+  it('drops tabs of threads deleted elsewhere once their device confirms, keeping unreachable ones and the open one', async () => {
+    localStorage.setItem(OPEN_TABS, JSON.stringify([tab('wsl', 'live4'), tab('wsl', 'gone4'), tab('wsl', 'offline4'), tab('wsl', 'open4'), tab('away', 'unlisted4')]));
+    const reads: string[] = [];
+    answer(url => {
+      reads.push(url);
+      if (url.includes('/gone4') || url.includes('/open4')) throw new ApiError(404, { code: 'not_found', message: 'thread not found' });
+      if (url.includes('/offline4')) throw new ApiError(503, { code: 'service_unavailable', message: 'Device offline' });
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    // The device's live list no longer names the deleted thread, the unreachable one or the open one.
+    const { result, unmount } = renderHook(() => useWorkbenchNavigation(null, [thread('live4')], 'wsl', 'open4'));
+    await waitFor(() => expect(result.current.openTabs.map(entry => entry.key)).toEqual(['wsl:live4', 'wsl:offline4', 'wsl:open4', 'away:unlisted4']), { timeout: 3000 });
+    expect(stored()).toEqual(['wsl:live4', 'wsl:offline4', 'wsl:open4', 'away:unlisted4']);
+    // Only the tabs missing from a list are asked about; a device with no list is left alone.
+    expect(reads.filter(url => url.startsWith('relay/devices/')).sort()).toEqual([
+      'relay/devices/wsl/api/threads/gone4?view=summary&limit=1&compact=1',
+      'relay/devices/wsl/api/threads/offline4?view=summary&limit=1&compact=1',
+    ]);
+    unmount();
+  });
+
+  it('drops local recents and tabs of threads deleted elsewhere, asking only about the ones the list leaves out', async () => {
+    vi.mocked(relayModeActive).mockReturnValue(false);
+    const reference = (threadId: string) => ({ deviceId: null, threadId, title: threadId, workspaceLabel: 'Research', favorite: false, visitedAt: '2026-11-19T00:00:00Z' });
+    localStorage.setItem('remote-codex.local-workbench.v1', JSON.stringify({ threads: [reference('live5'), reference('gone5')], notifications: [] }));
+    localStorage.setItem(OPEN_TABS, JSON.stringify([tab('local', 'live5'), tab('local', 'gone5')]));
+    const reads: string[] = [];
+    vi.mocked(request).mockImplementation(async url => {
+      if (url === 'api/account/notifications/events') return [];
+      reads.push(String(url));
+      if (String(url).startsWith('api/threads/gone5?')) throw new ApiError(404, { code: 'not_found', message: 'thread not found' });
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const { result, unmount } = renderHook(() => useWorkbenchNavigation(null, [thread('live5')], null, undefined, { sharesDeviceThreads: true }));
+    await waitFor(() => expect(result.current.threads.map(entry => entry.key)).toEqual(['local:live5']));
+    expect(JSON.parse(localStorage.getItem('remote-codex.local-workbench.v1')!).threads.map((r: { threadId: string }) => r.threadId)).toEqual(['live5']);
+    await waitFor(() => expect(result.current.openTabs.map(entry => entry.key)).toEqual(['local:live5']), { timeout: 3000 });
+    expect(reads.every(url => url.startsWith('api/threads/gone5?'))).toBe(true);
+    unmount();
+    vi.mocked(relayModeActive).mockReturnValue(true);
+  });
+});

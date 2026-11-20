@@ -14,13 +14,16 @@ import { threadsHref } from '../lib/relayRoutes';
 
 /** A thread's menu. With `context` it opens where the thread was right-clicked
     (a tab or a row), has no ⋯ button of its own, and reports when it is done. */
-export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onNavigate, currentKey, context }: {
+export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onNavigate, currentKey, hrefAfterRemoving, context }: {
   thread: WorkbenchThread;
   context?: ThreadMenuContext | undefined;
   onFavorite: (key: string) => Promise<void>;
   onRenamed: (key: string, title: string) => Promise<void>;
   onRemoved: (key: string) => Promise<void>;
   currentKey: string;
+  /** Where to go when deleting this thread takes away the open page (null: stay);
+      without it, deleting the open thread goes to its workspace's list. */
+  hrefAfterRemoving?: ((key: string) => string | null) | undefined;
   onNavigate: (href: string, options?: { replace?: boolean }) => void;
 }) {
   useI18n();
@@ -161,7 +164,9 @@ export function RecentThreadMenu({ thread, onFavorite, onRenamed, onRemoved, onN
       setBusy(true); setNotice('');
       try {
         await request(base, { method: 'DELETE' });
-        if (thread.key === currentKey) onNavigate(threadsHref(detail?.thread.workspaceId, device === 'local' ? null : device), { replace: true });
+        const leave = hrefAfterRemoving ? hrefAfterRemoving(thread.key)
+          : thread.key === currentKey ? threadsHref(detail?.thread.workspaceId, device === 'local' ? null : device) : null;
+        if (leave) onNavigate(leave, { replace: true });
         await onRemoved(thread.key);
         setDeleting(false);
       } catch (error) { setNotice(error instanceof Error ? error.message : translate("workbench.couldNotDeleteThread")); }

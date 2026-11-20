@@ -96,3 +96,19 @@ it('is a menu, and from an editor tab it closes the tab or its neighbours apart 
   expect(closeOthers).toHaveBeenCalledTimes(1);
   expect(close).not.toHaveBeenCalled();
 });
+it.each([
+  ['/threads/next-tab', '/threads/next-tab'],
+  [null, null],
+])('after deleting, goes where the navigation says (%s), before the tab list changes', async (target, expected) => {
+  const order: string[] = [];
+  const navigate = vi.fn(() => { order.push('navigate'); }), removed = vi.fn(async () => { order.push('removed'); });
+  const hrefAfterRemoving = vi.fn(() => target);
+  render(<HostCapabilitiesProvider scope="local"><RecentThreadMenu thread={thread} currentKey={thread.key} onFavorite={vi.fn()} onRenamed={vi.fn()} onRemoved={removed} onNavigate={navigate} hrefAfterRemoving={hrefAfterRemoving} /></HostCapabilitiesProvider>);
+  fireEvent.click(await screen.findByRole('button', { name: 'Actions for reply 1' }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Delete thread' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+  await waitFor(() => expect(removed).toHaveBeenCalledWith('local:reply-1'));
+  expect(hrefAfterRemoving).toHaveBeenCalledWith('local:reply-1');
+  if (expected) { expect(navigate).toHaveBeenCalledWith(expected, { replace: true }); expect(order).toEqual(['navigate', 'removed']); }
+  else expect(navigate).not.toHaveBeenCalled();
+});

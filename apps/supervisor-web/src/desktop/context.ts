@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import type { MatterWorkbenchOptions } from '@pockymoe/thread-ui';
-export interface NavigationActions { currentKey: string; threads?: readonly import('@pockymoe/thread-ui').WorkbenchThread[]; onToggleThreadFavorite(key: string): Promise<void>; onThreadRenamed(key: string, title: string): Promise<void>; onThreadRemoved(key: string): Promise<void> }
+export interface NavigationActions { currentKey: string; threads?: readonly import('@pockymoe/thread-ui').WorkbenchThread[]; onToggleThreadFavorite(key: string): Promise<void>; onThreadRenamed(key: string, title: string): Promise<void>; onThreadRemoved(key: string): Promise<void>; hrefAfterRemoving?(key: string): string | null }
 export interface DesktopSurfaceContextValue {
   multiWindow: boolean;
   routeReady(path: string): void;

@@ -5,14 +5,14 @@ import { useBrowserStateKey } from '../lib/browserStateScope';
 import { narrationQuery } from '../lib/transcriptPreferences';
 import { useHostScope } from '../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ThreadDetailDto, ThreadDto, WorkspaceDto } from '@pockymoe/shared';
 import type {
   WorkbenchNotification,
   WorkbenchThread,
 } from '@pockymoe/thread-ui';
 import { ApiError, isInvisibleThreadError, relayModeActive, request } from '../lib/api';
-import { threadHref } from '../lib/relayRoutes';
+import { threadHref, threadsHref } from '../lib/relayRoutes';
 import { isTourDevice, tourStateKey } from '../lib/tourSandbox/tourDevice';
 import { displayThreadTitle, threadThemeAgentKey } from '@pockymoe/thread-ui';
 
@@ -68,6 +68,41 @@ function loadOpenTabs(key: string): OpenTab[] {
     return Array.isArray(value) ? value.filter((tab): tab is OpenTab => !!tab && typeof tab.key === 'string' && typeof tab.href === 'string' && typeof tab.title === 'string').slice(0, OPEN_TABS_LIMIT) : [];
   } catch { return []; }
 }
+/**
+ * The open tabs of one browser scope, shared by every navigation on the page (the
+ * thread page, the workspace list, the map) and saved the moment they change: a
+ * page that unmounts right after a deletion, or a list that is not on screen,
+ * cannot keep or bring back a tab another one removed.
+ */
+const openTabLists = new Map<string, { tabs: OpenTab[]; listeners: Set<() => void> }>();
+function openTabList(key: string) {
+  let list = openTabLists.get(key);
+  if (!list) { list = { tabs: loadOpenTabs(key), listeners: new Set() }; openTabLists.set(key, list); }
+  return list;
+}
+function setOpenTabList(key: string, update: (tabs: OpenTab[]) => OpenTab[], save = true) {
+  const list = openTabList(key);
+  const next = update(list.tabs);
+  if (next === list.tabs) return;
+  list.tabs = next;
+  if (save) { try { localStorage.setItem(key, JSON.stringify(next)); } catch { /* Tabs still hold for this visit. */ } }
+  list.listeners.forEach(listener => listener());
+}
+/** Picks up what another window of this browser saved, as a page opening did. */
+function reloadOpenTabList(key: string) {
+  const loaded = loadOpenTabs(key);
+  setOpenTabList(key, tabs => JSON.stringify(tabs) === JSON.stringify(loaded) ? tabs : loaded, false);
+}
+/** Threads deleted in this page: their tabs never come back, even while a stale list still names them. */
+const removedThreadKeys = new Set<string>();
+/** A definitive answer from the thread's device that it no longer exists (or, scoped, is out of reach). */
+function threadGone(error: unknown, hostScope: boolean) {
+  if (hostScope) return isInvisibleThreadError(error);
+  return error instanceof ApiError && error.statusCode === 404 && /thread.*not found/i.test(error.message);
+}
+/** A tab whose thread is missing from its device's live list is checked again at most this often. */
+const OPEN_TAB_CHECK_MS = 5 * 60_000;
+const OPEN_TAB_CHECK_DELAY_MS = 1000;
 function loadWorkspaceOrders(key: string): Record<string, string[]> {
   try {
     const value: unknown = JSON.parse(localStorage.getItem(key) ?? '{}');
@@ -153,8 +188,13 @@ export function useWorkbenchNavigation(
   // this browser: `device:workspace` -> root thread keys, first to last.
   const orderKey = scopedKey(useBrowserStateKey(WORKSPACE_ORDER_KEY));
   const openTabsKey = scopedKey(useBrowserStateKey(OPEN_TABS_KEY));
-  const [openTabs, setOpenTabs] = useState<OpenTab[]>(() => loadOpenTabs(openTabsKey));
-  useEffect(() => { if (enabled) setOpenTabs(loadOpenTabs(openTabsKey)); }, [openTabsKey, enabled]);
+  const subscribeOpenTabs = useCallback((listener: () => void) => {
+    const list = openTabList(openTabsKey);
+    list.listeners.add(listener);
+    return () => { list.listeners.delete(listener); };
+  }, [openTabsKey]);
+  const openTabs = useSyncExternalStore(subscribeOpenTabs, () => openTabList(openTabsKey).tabs);
+  useEffect(() => { if (enabled) reloadOpenTabList(openTabsKey); }, [openTabsKey, enabled]);
   const firstSeenKey = scopedKey(useBrowserStateKey(FIRST_SEEN_KEY));
   const [firstSeen, setFirstSeen] = useState<Record<string, string>>(() => loadFirstSeen(firstSeenKey));
   useEffect(() => { setFirstSeen(loadFirstSeen(firstSeenKey)); }, [firstSeenKey]);
@@ -183,6 +223,8 @@ export function useWorkbenchNavigation(
   const threadsRef = useRef(threads);
   // Per page: devices the poll could not reach and when to try them again.
   const unreachableRef = useRef<Unreachable>(new Map());
+  // Local recents missing from this device's list: when each was last asked about.
+  const referenceChecks = useRef(new Map<string, number>());
   threadsRef.current = threads;
   useI18n();
   const relay = !hostScope && !tour && relayModeActive();
@@ -278,6 +320,24 @@ export function useWorkbenchNavigation(
           if (alive && startedAtRevision === revision.current && missing.size) {
             next.threads = next.threads.filter(r => !missing.has(referenceKey(r)));
             localStorage.setItem(storageKey, JSON.stringify(next));
+          }
+        }
+        // Local recents of threads deleted elsewhere (the CLI, an agent, another
+        // browser): once this device's list leaves one out, it is asked about at
+        // most every few minutes, and a definitive "not found" drops it.
+        if (!relay && !hostScope && sharesDeviceThreads && threadsRef.current.length) {
+          const missing = new Set<string>();
+          const checks = referenceChecks.current;
+          const unlisted = next.threads.filter(r => r.deviceId === null && !threadsRef.current.some(t => t.id === r.threadId)
+            && Date.now() - (checks.get(r.threadId) ?? -Infinity) >= OPEN_TAB_CHECK_MS);
+          for (const r of unlisted.slice(0, 6)) {
+            checks.set(r.threadId, Date.now());
+            try { await request(`api/threads/${encodeURIComponent(r.threadId)}?view=summary&limit=1&compact=1`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]), cache: 'no-store' }); }
+            catch (error) { if (threadGone(error, false)) missing.add(referenceKey(r)); }
+          }
+          if (alive && startedAtRevision === revision.current && missing.size) {
+            next.threads = next.threads.filter(r => !missing.has(referenceKey(r)));
+            try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch { /* The list still holds for this visit. */ }
           }
         }
         if (!alive) return;
@@ -788,9 +848,9 @@ export function useWorkbenchNavigation(
   const currentRoot = known.get(currentRootKey) ?? (currentRootKey === currentKey ? openThread : undefined);
   const lastActiveTab = useRef<string | null>(null);
   useEffect(() => {
-    if (!currentRoot || !routeThreadId) return;
+    if (!currentRoot || !routeThreadId || removedThreadKeys.has(currentRoot.key)) return;
     const entry: OpenTab = { key: currentRoot.key, title: currentRoot.title, subtitle: currentRoot.subtitle, href: currentRoot.href, ...(currentRoot.agent ? { agent: currentRoot.agent } : {}) };
-    setOpenTabs(tabs => {
+    setOpenTabList(openTabsKey, tabs => {
       const at = tabs.findIndex(tab => tab.key === entry.key);
       let next: OpenTab[];
       if (at >= 0) {
@@ -802,21 +862,86 @@ export function useWorkbenchNavigation(
         next = after >= 0 ? [...tabs.slice(0, after + 1), entry, ...tabs.slice(after + 1)] : [...tabs, entry];
         if (next.length > OPEN_TABS_LIMIT) next = next.filter(tab => tab.key !== next.find(other => other.key !== entry.key)?.key);
       }
-      try { localStorage.setItem(openTabsKey, JSON.stringify(next)); } catch { /* Tabs still hold for this visit. */ }
       return next;
     });
     lastActiveTab.current = entry.key;
   }, [currentRoot?.key, currentRoot?.title, currentRoot?.subtitle, currentRoot?.href, currentRoot?.agent, routeThreadId, openTabsKey]);
-  const storeOpenTabs = (update: (tabs: OpenTab[]) => OpenTab[]) => setOpenTabs(tabs => {
-    const next = update(tabs);
-    try { localStorage.setItem(openTabsKey, JSON.stringify(next)); } catch { /* Tabs still hold for this visit. */ }
-    return next;
-  });
+  const storeOpenTabs = (update: (tabs: OpenTab[]) => OpenTab[]) => setOpenTabList(openTabsKey, update);
   // Each tab shows the conversation as known now, with its agent threads.
   const openTabThreads: WorkbenchThread[] = openTabs.flatMap(tab => {
     const root = known.get(tab.key) ?? { ...tab, favorite: false, status: 'idle' };
-    return [root, ...[...known.values()].filter(thread => thread.rootKey === tab.key && thread.key !== tab.key)];
+    return [root, ...[...known.values()].filter(thread => thread.rootKey === tab.key && thread.key !== tab.key && !removedThreadKeys.has(thread.key))];
   });
+  // A conversation deleted elsewhere (another browser, the CLI, an agent) leaves the
+  // tabs once its device says so. Only tabs missing from their device's live list
+  // are asked about, each at most every few minutes; an offline device, a timeout
+  // or a refusal keeps the tab, and so does the open conversation's own tab.
+  const liveLists: [string, readonly ThreadDto[]][] = [
+    ...Object.entries(deviceLists).filter(([device]) => device !== ownDevice),
+    ...(threads.length ? [[ownDevice, threads] as [string, ThreadDto[]]] : []),
+  ];
+  const liveKeys = new Set(liveLists.flatMap(([device, list]) => list.map(thread => `${device}:${thread.id}`)));
+  const listedDevices = new Set(liveLists.map(([device]) => device));
+  const tabChecks = useRef(new Map<string, number>());
+  const currentTabRef = useRef(currentRootKey);
+  currentTabRef.current = currentRootKey;
+  const unlistedTabs = tour || !enabled ? '' : openTabs
+    .filter(tab => tab.key !== currentRootKey && !liveKeys.has(tab.key) && listedDevices.has(tab.key.slice(0, tab.key.indexOf(':'))))
+    .map(tab => tab.key).join('\n');
+  useEffect(() => {
+    if (!unlistedTabs) return;
+    const now = Date.now();
+    const pending = unlistedTabs.split('\n').filter(key => now - (tabChecks.current.get(key) ?? -Infinity) >= OPEN_TAB_CHECK_MS
+      && (key.startsWith('local:') || reachable(unreachableRef.current, key.slice(0, key.indexOf(':')))));
+    if (!pending.length || document.visibilityState === 'hidden') return;
+    const controller = new AbortController();
+    const gone: string[] = [];
+    // Once the page settles: a list that is still loading or a switch in progress
+    // replaces this pass before it asks anything.
+    const timer = window.setTimeout(() => {
+      for (const key of pending) tabChecks.current.set(key, now);
+      void Promise.all(Array.from({ length: Math.min(3, pending.length) }, async () => {
+        while (!controller.signal.aborted && pending.length) {
+          const key = pending.shift()!;
+          const at = key.indexOf(':');
+          const device = key.slice(0, at), id = key.slice(at + 1);
+          const base = device === 'local' ? 'api' : `relay/devices/${encodeURIComponent(device)}/api`;
+          try {
+            await request(`${base}/threads/${encodeURIComponent(id)}?view=summary&limit=1&compact=1`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]), cache: 'no-store' });
+          } catch (error) {
+            // Left for the next pass when this one was replaced.
+            if (controller.signal.aborted) tabChecks.current.delete(key);
+            else if (threadGone(error, !!hostScope)) gone.push(key);
+          }
+        }
+      })).then(() => {
+        for (const key of pending) tabChecks.current.delete(key);
+        if (!gone.length) return;
+        // The tab may have become the open one while its device answered.
+        const keep = currentTabRef.current;
+        setOpenTabList(openTabsKey, tabs => tabs.some(tab => gone.includes(tab.key) && tab.key !== keep)
+          ? tabs.filter(tab => !gone.includes(tab.key) || tab.key === keep) : tabs);
+      });
+    }, OPEN_TAB_CHECK_DELAY_MS);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [unlistedTabs, openTabsKey, hostScope]);
+  /**
+   * Where to go when deleting `key` takes away what is open, as closing its tab
+   * does: the tab after it, else the one before, else the workspace's list. An
+   * agent thread deleted from inside its conversation goes back to that
+   * conversation. Null when the open page stays.
+   */
+  const hrefAfterRemoving = (key: string): string | null => {
+    if (!routeThreadId && !detail) return null;
+    if (key === currentKey && currentRootKey !== currentKey && !removedThreadKeys.has(currentRootKey)) {
+      return known.get(currentRootKey)?.href ?? null;
+    }
+    if (key !== currentKey && key !== currentRootKey) return null;
+    const tabs = openTabList(openTabsKey).tabs;
+    const at = tabs.findIndex(tab => tab.key === currentRootKey);
+    const neighbour = at >= 0 ? tabs[at + 1] ?? tabs[at - 1] : undefined;
+    return neighbour?.href ?? threadsHref(workspaceId, tabContext.deviceId);
+  };
 
   // A prompt written in a thread and not sent shows on its tab and row.
   const withDraft = (list: WorkbenchThread[]) => list.map(thread => {
@@ -855,9 +980,11 @@ export function useWorkbenchNavigation(
       const target = snapshot.threads.find(t => referenceKey(t) === key);
       if (target) await save(undefined, false, { ...target, title });
     },
+    hrefAfterRemoving,
     onThreadRemoved: async (key: string) => {
+      removedThreadKeys.add(key);
       setLocalEdits(edits => ({ ...edits, removed: [...edits.removed, key] }));
-      storeOpenTabs(tabs => tabs.filter(tab => tab.key !== key));
+      storeOpenTabs(tabs => tabs.some(tab => tab.key === key) ? tabs.filter(tab => tab.key !== key) : tabs);
       const target = snapshot.threads.find(t => referenceKey(t) === key);
       if (relay && !target) return;
       ++revision.current;
