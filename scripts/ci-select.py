@@ -61,7 +61,7 @@ def select(paths, version=False):
         return result
     patterns = {
         "rust": ["crates/**", "migrations/**", ".cargo/**", "Cargo.*", "rust-toolchain*", "*rustfmt*"],
-        "web": ["apps/supervisor-web/**", "themes/**", "packages/**", "package.json", "pnpm*", "tsconfig*", "thread-ui.sha"],
+        "web": ["apps/supervisor-web/**", "themes/**", "packages/**", "package.json", "pnpm*", "tsconfig*", "thread-ui.sha", ".github/workflows/ci.yml", ".github/actions/web-setup/**"],
         "npm": ["npm/**", "scripts/*", "package.json"],
         "workflows": [".github/**"],
         "windows_harness": ["crates/runtime/src/acp/rpc.rs", "crates/runtime/src/acp/dependencies.rs", "crates/runtime/src/management.rs"],
