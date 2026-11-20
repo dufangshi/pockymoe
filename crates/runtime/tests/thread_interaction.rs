@@ -9,6 +9,11 @@ use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
 
 fn setup() -> (tempfile::TempDir, Arc<Supervisor>) {
+    setup_with(|runtime| runtime)
+}
+fn setup_with(
+    runtime: impl Fn(FakeRuntime) -> FakeRuntime,
+) -> (tempfile::TempDir, Arc<Supervisor>) {
     let dir = tempfile::tempdir().unwrap();
     let config = RuntimeConfig {
         treer_enabled: false,
@@ -39,8 +44,8 @@ fn setup() -> (tempfile::TempDir, Arc<Supervisor>) {
         config,
         db,
         vec![
-            Arc::new(FakeRuntime::new(Provider::Codex)),
-            Arc::new(FakeRuntime::new(Provider::Acp)),
+            Arc::new(runtime(FakeRuntime::new(Provider::Codex))),
+            Arc::new(runtime(FakeRuntime::new(Provider::Acp))),
         ],
     ));
     state.spawn_live_item_persister();
@@ -1191,7 +1196,9 @@ async fn inbox_reminder_does_not_reopen_closed_threads_or_replay_legacy_mail() {
 
 #[tokio::test]
 async fn inbox_reminder_worker_starts_a_recorded_turn_for_due_mail() {
-    let (_dir, state) = setup();
+    // The reminder is a long prompt; the fake harness need not work on it for
+    // its default 25 seconds for the worker's recorded turn to be checked.
+    let (_dir, state) = setup_with(|runtime| runtime.with_slow_turn(Duration::from_millis(200)));
     let a = thread(&state, Provider::Codex).await;
     let b = thread(&state, Provider::Acp).await;
     let id = reminder_mail(&state, &a, &b, "worker-question");
@@ -1200,8 +1207,7 @@ async fn inbox_reminder_worker_starts_a_recorded_turn_for_due_mail() {
         Ok(())
     }).unwrap();
     state.start_interaction_worker();
-    // FakeRuntime deliberately waits 25 seconds for long prompts.
-    tokio::time::timeout(Duration::from_secs(35), async {
+    tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let completed = state
                 .db

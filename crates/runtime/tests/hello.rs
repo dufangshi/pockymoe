@@ -96,6 +96,18 @@ async fn seeded_thread(
     pockymoe_protocol::WorkspaceDto,
     pockymoe_protocol::ThreadDto,
 ) {
+    seeded_thread_with(Arc::new(FakeRuntime::new(provider)), provider).await
+}
+
+async fn seeded_thread_with(
+    runtime: Arc<FakeRuntime>,
+    provider: Provider,
+) -> (
+    tempfile::TempDir,
+    Supervisor,
+    pockymoe_protocol::WorkspaceDto,
+    pockymoe_protocol::ThreadDto,
+) {
     let dir = tempdir().unwrap();
     let ws_path = dir.path().join("proj");
     std::fs::create_dir_all(&ws_path).unwrap();
@@ -103,7 +115,7 @@ async fn seeded_thread(
     let mut config = test_config(dir.path());
     config.enabled_providers = vec![provider];
     let db = Database::open(&config.database_url).unwrap();
-    let runtime: SharedRuntime = Arc::new(FakeRuntime::new(provider));
+    let runtime: SharedRuntime = runtime;
     let supervisor = Supervisor::new(config, db, vec![runtime]);
     let workspace = supervisor
         .create_workspace(CreateWorkspaceInput {
@@ -280,8 +292,14 @@ async fn update_intent_survives_crash_before_cancellation_and_failed_reconnect()
         0
     );
 }
+/// The maintenance resume prompt is long, so the fake harness would work on
+/// it for its default 25 seconds; recovery only needs it to finish.
+const RESUMED_TURN: std::time::Duration = std::time::Duration::from_millis(200);
+
 async fn verify_update_recovery(restart: bool, strategy: pockymoe_runtime::RestartStrategy) {
-    let (_dir, mut supervisor, _workspace, thread) = seeded_thread(Provider::Codex).await;
+    let fake = Arc::new(FakeRuntime::new(Provider::Codex));
+    let (_dir, mut supervisor, _workspace, thread) =
+        seeded_thread_with(fake.clone(), Provider::Codex).await;
     supervisor.config.supervisor_restart_strategy = strategy;
     let supervisor = Arc::new(supervisor);
     supervisor.spawn_live_item_persister();
@@ -342,6 +360,8 @@ async fn verify_update_recovery(restart: bool, strategy: pockymoe_runtime::Resta
     );
     assert_eq!(paused.turns.len(), 1);
     drop(guard);
+    // The interrupted turn was long; only the resumed one is shortened.
+    fake.set_slow_turn(RESUMED_TURN);
     let state = if restart {
         let config = supervisor.config.clone();
         drop(supervisor);
@@ -349,7 +369,9 @@ async fn verify_update_recovery(restart: bool, strategy: pockymoe_runtime::Resta
         Arc::new(Supervisor::new(
             config,
             db,
-            vec![Arc::new(FakeRuntime::new(Provider::Codex))],
+            vec![Arc::new(
+                FakeRuntime::new(Provider::Codex).with_slow_turn(RESUMED_TURN),
+            )],
         ))
     } else {
         supervisor
@@ -368,7 +390,7 @@ async fn verify_update_recovery(restart: bool, strategy: pockymoe_runtime::Resta
         .contains("updating"));
     state.finish_update_attempt();
     state.spawn_update_recovery(); // Repeated startup notification must not duplicate a turn.
-    tokio::time::timeout(std::time::Duration::from_secs(35), async {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let detail = state.get_thread_detail(&thread.id, None).await.unwrap();
             if detail.turns.len() == 3 && detail.thread.status == "idle" {
