@@ -76,7 +76,7 @@ export function ThreadsPage() {
     <MatterWorkbench
       title={workspace?.label ?? translate("workbench.workspace")} homeHref={hostScope ? undefined : appUrl(desktopSurface ? '/' : currentWorkspacesHref())}
       options={workbenchUrls({ ...navigation, ...desktopWorkbench, emptyWorkspace: true, workspacePath: workspace?.absPath ?? '', activeView: 'chat', terminalEnabled: false, onViewChange: () => {}, onSearch: () => {}, onNavigate: navigate,
-        renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={navigation.currentKey} onFavorite={navigation.onToggleThreadFavorite} onRenamed={navigation.onThreadRenamed} onRemoved={navigation.onThreadRemoved} onNavigate={navigate} /> })}
+        renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={navigation.currentKey} onFavorite={navigation.onToggleThreadFavorite} onRenamed={navigation.onThreadRenamed} onRemoved={navigation.onThreadRemoved} hrefAfterRemoving={navigation.hrefAfterRemoving} onNavigate={navigate} /> })}
       deviceMonitor={hostScope ? null : <TourLauncherButton />}
       settings={!hostScope && (relayModeActive() && showAccountRail ? <RelayUserMenu rail /> : <button aria-label={translate("workbench.openSettings")} onClick={shell?.openSettings}><Settings data-icon="settings" /></button>)}
       newThread={!loading && !error && canCreate && (!hostScope || workspace) && <Link to={createHref} aria-label={translate("workbench.newThread_02057e")}><Plus data-icon="new-thread" /></Link>}

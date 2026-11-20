@@ -595,7 +595,15 @@ On the desktop the tabs are the conversations the reader opened, like an
 editor's files: opening one adds its tab after the active one; ✕ (or a middle
 click) closes it, and closing the open one moves to its neighbour (or home when
 it was the last). They are kept in this browser (`pockymoe.open-tabs.v1`, up to
-40) and can be dragged into another order. A tab held and pulled down onto the
+40) and can be dragged into another order. Deleting a conversation closes its
+tab, with its agent threads, everywhere on the page at once; deleting the open
+one moves on as closing its tab does (to the workspace's list when it was the
+last), and deleting an agent thread from inside its conversation returns to the
+conversation. A conversation deleted elsewhere (another browser, the CLI, an
+agent) leaves the tabs when its device confirms it is gone: a tab missing from
+its device's thread list is asked about at most every five minutes, and an
+offline device, a timeout or a refusal keeps it. Recent chats kept in this
+browser (local mode) drop a deleted thread the same way. A tab held and pulled down onto the
 conversation opens split: while it is held, both halves say what a drop there
 does (the half under the pointer deepens); on the right it opens as the split, on
 the left it becomes the conversation and the open one moves to the right. Esc

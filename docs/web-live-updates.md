@@ -35,6 +35,9 @@ is not polled while the tab is hidden.
 
 Thread renames and deletions made elsewhere emit no event; they appear on the
 list fallback or on return to the tab. A rename in this browser updates locally.
+An open desktop tab, or a local-mode recent, whose thread the device's list no
+longer names is read once (`?view=summary&limit=1`, at most every 5 min each,
+never the open tab); a `thread not found` answer removes it.
 
 Socket pings run every 2 s while visible; an unanswered foreground probe gets
 30 s before the socket is replaced. Returning from a hidden or suspended tab

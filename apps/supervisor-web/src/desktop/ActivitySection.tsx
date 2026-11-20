@@ -59,6 +59,7 @@ export function ActivitySection({ navigation, onOpen }: { navigation: Navigation
     const row: WorkbenchThread = { key, title: thread.title, href: appUrl(threadHref(thread.id, thread.deviceId)), subtitle: workspace?.label ?? '', status: workbenchThreadStatus(thread, thread.lastViewedAt ?? thread.firstIndexedCompletedAt), favorite,
       ...(thread.parentThreadId ? { parentKey: `${thread.deviceId}:${thread.parentThreadId}` } : {}), ...(thread.rootThreadId ? { rootKey: `${thread.deviceId}:${thread.rootThreadId}` } : {}) };
     return <RecentThreadMenu thread={row} currentKey={latest.current.currentKey} onNavigate={href => onOpen(href)}
+      hrefAfterRemoving={target => latest.current.hrefAfterRemoving?.(target) ?? null}
       onFavorite={target => latest.current.onToggleThreadFavorite(target)}
       onRenamed={async (target, title) => { await latest.current.onThreadRenamed(target, title); await store.refreshDevice(thread.deviceId); }}
       onRemoved={async target => { await latest.current.onThreadRemoved(target); await store.refreshDevice(thread.deviceId); }} />;
