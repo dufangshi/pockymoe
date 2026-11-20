@@ -1,0 +1,6 @@
+# actionlint 1.7.7's bundled action metadata predates rust-cache's
+# `add-rust-environment-hash-key` input (the action itself reads it).
+paths:
+  .github/workflows/**/*.yml:
+    ignore:
+      - 'input "add-rust-environment-hash-key" is not defined in action "Swatinem/rust-cache@'

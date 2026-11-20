@@ -153,8 +153,10 @@ repository has no workflow and must not be given a required check.
 Web PR, runtime Web and explicit full jobs cache the pnpm store using both the
 root and published shared UI lockfiles. Client Windows jobs separately cache
 public Electron and electron-builder downloads by OS, architecture and lockfile;
-PR merge-ref caches do not become trusted main release artifacts. Existing cargo
-caches remain in place. No signing key, account profile, injected fixture package
+PR merge-ref caches do not become trusted main release artifacts. Cargo caches
+are keyed on the pinned `RUST_VERSION`, not on the toolchains the runner image
+happens to carry, so an image update does not force a full rebuild (it turned a
+10-minute Windows release build into 17). No signing key, account profile, injected fixture package
 or signed release artifact is cached or promoted across trust boundaries.
 
 Pages skips deployments for proven version-field-only pushes. Its earlier-asset
