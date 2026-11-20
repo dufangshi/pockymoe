@@ -4024,3 +4024,398 @@ async fn session_reports_whether_setup_can_proceed_without_signing_in_again() {
         .await;
     assert_eq!(v["account"]["recentAuth"], true);
 }
+
+// OAuth accounts that set a password can also sign in with it.
+fn sign_with_account_key(input: &str) -> String {
+    let der = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(
+            vectors()["account"]["accountPrivateKeyPkcs8"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+    let key = openssl::pkey::PKey::private_key_from_pkcs8(&der).unwrap();
+    let mut signer =
+        openssl::sign::Signer::new(openssl::hash::MessageDigest::sha256(), &key).unwrap();
+    signer.update(input.as_bytes()).unwrap();
+    let sig = openssl::ecdsa::EcdsaSig::from_der(&signer.sign_to_vec().unwrap()).unwrap();
+    let mut raw = sig.r().to_vec_padded(32).unwrap();
+    raw.extend(sig.s().to_vec_padded(32).unwrap());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
+}
+fn login_key_signature(user: &str, vault: &Value, key: &str) -> String {
+    sign_with_account_key(&format!(
+        "pockymoe-acct-login-key-v1\n{user}\n{}\n{}\n{key}",
+        vault["accountKeyId"].as_str().unwrap(),
+        vault["kdf"]["salt"].as_str().unwrap()
+    ))
+}
+fn oauth_identity(subject: &str, name: &str) -> ExternalIdentity {
+    ExternalIdentity {
+        provider: OAuthProvider::Google,
+        subject: subject.into(),
+        email: format!("{name}@example.test"),
+        username: name.into(),
+    }
+}
+/// An OAuth sign-in as the callback makes it: a new session with recent authentication.
+async fn oauth_sign_in(f: &Fixture, identity: &ExternalIdentity) -> (String, String) {
+    let conn = f.state.store.conn.lock().await;
+    let OAuthOutcome::Login(token) =
+        authenticate_external_identity(&conn, &f.state.store.session_secret, identity, None)
+            .unwrap()
+    else {
+        panic!("Unexpected approval");
+    };
+    let user = load_user_by_session(&conn, &f.state.store.session_secret, &token).unwrap();
+    account::mark_session(&conn, &token, account::login_mode(&conn, &user)).unwrap();
+    auth_factors::mark_strong(&conn, &token).unwrap();
+    (user.id, token)
+}
+async fn is_oauth_only(f: &Fixture, user: &str) -> bool {
+    account::oauth_only(&*f.state.store.conn.lock().await, user)
+}
+async fn key_login(f: &Fixture, login: &str, key: &str) -> StatusCode {
+    f.json(
+        Method::POST,
+        "/relay/auth/login",
+        None,
+        json!({"identifier":login,"authKey":key}),
+    )
+    .await
+    .0
+}
+async fn session_alive(f: &Fixture, token: &str) -> bool {
+    let conn = f.state.store.conn.lock().await;
+    load_user_by_session(&conn, &f.state.store.session_secret, token).is_some()
+}
+async fn expire_recent(f: &Fixture, token: &str) {
+    let conn = f.state.store.conn.lock().await;
+    conn.execute(
+        "UPDATE relay_auth_sessions SET strong_auth_at=?1 WHERE token_hash=?2",
+        params![auth_factors::now() - 600_001, security::token_hash(token)],
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn oauth_setup_with_auth_key_makes_a_password_account_that_still_signs_in_with_oauth() {
+    let f = Fixture::new("oauth-login-key-setup").await;
+    let identity = oauth_identity("setup-subject", "oauth-setup");
+    let (user, token) = oauth_sign_in(&f, &identity).await;
+    assert!(is_oauth_only(&f, &user).await);
+    assert_eq!(
+        key_login(&f, "oauth-setup@example.test", &auth_key()).await,
+        StatusCode::UNAUTHORIZED
+    );
+    // Creating the vault still needs recent authentication.
+    expire_recent(&f, &token).await;
+    let create = json!({"vault":test_vault(&user,1),"expectedRevision":0,"authKey":auth_key(),"recoveryAuthKey":recovery_key()});
+    let (s, v) = f
+        .json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(&token),
+            create.clone(),
+        )
+        .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("reauthentication_required"))
+    );
+    let (_, token) = oauth_sign_in(&f, &identity).await;
+    let (s, _) = f
+        .json(Method::PUT, "/relay/account/vault", Some(&token), create)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(!is_oauth_only(&f, &user).await);
+    let (_, v) = f
+        .json(
+            Method::GET,
+            "/relay/auth/session",
+            Some(&token),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(v["account"]["mode"], "account");
+    // Email or username with the password-derived key, and OAuth, both sign in.
+    assert_eq!(
+        key_login(&f, "oauth-setup@example.test", &auth_key()).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        key_login(&f, "oauth-setup", &auth_key()).await,
+        StatusCode::OK
+    );
+    let (again, oauth_token) = oauth_sign_in(&f, &identity).await;
+    assert_eq!(again, user);
+    // Password-account rules now apply: a recent OAuth sign-in is not a vault proof.
+    let (s, v) = f
+        .json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(&oauth_token),
+            json!({"vault":test_vault(&user,2),"expectedRevision":1}),
+        )
+        .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("forbidden"))
+    );
+    assert_eq!(
+        f.json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(&oauth_token),
+            json!({"vault":test_vault(&user,2),"expectedRevision":1,"currentAuthKey":auth_key()}),
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(f.state.store.conn.lock().await.query_row(
+        "SELECT EXISTS(SELECT 1 FROM relay_security_events WHERE user_id=?1 AND event='account.login_key_added')",
+        [&user],
+        |r| r.get::<_, bool>(0)
+    ).unwrap());
+}
+
+#[tokio::test]
+async fn oauth_account_with_vault_adds_its_login_key_only_with_recent_auth_and_account_signature() {
+    let f = Fixture::new("oauth-login-key-add").await;
+    let identity = oauth_identity("add-subject", "oauth-add");
+    let (user, token) = oauth_sign_in(&f, &identity).await;
+    let vault = test_vault(&user, 1);
+    // Created the way OAuth accounts did before: no authKey.
+    assert_eq!(
+        f.json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(&token),
+            json!({"vault":vault,"expectedRevision":0,"recoveryAuthKey":recovery_key()}),
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(is_oauth_only(&f, &user).await);
+    let (_, other_session) = oauth_sign_in(&f, &identity).await;
+    let signature = login_key_signature(&user, &vault, &auth_key());
+    let add = json!({"authKey":auth_key(),"signature":signature});
+    expire_recent(&f, &token).await;
+    let (s, v) = f
+        .json(
+            Method::POST,
+            "/relay/account/login-key",
+            Some(&token),
+            add.clone(),
+        )
+        .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("reauthentication_required"))
+    );
+    let (_, token) = oauth_sign_in(&f, &identity).await;
+    for bad in [
+        json!({"authKey":auth_key(),"signature":login_key_signature(&user, &vault, &recovery_key())}),
+        json!({"authKey":auth_key(),"signature":login_key_signature("b45aed3e-2f46-4b9c-93c1-e6f9d80c51e4", &vault, &auth_key())}),
+        json!({"authKey":auth_key(),"signature":"AAAA"}),
+    ] {
+        let (s, v) = f
+            .json(Method::POST, "/relay/account/login-key", Some(&token), bad)
+            .await;
+        assert_eq!(
+            (s, v["code"].as_str()),
+            (StatusCode::FORBIDDEN, Some("forbidden"))
+        );
+    }
+    assert!(is_oauth_only(&f, &user).await);
+    let (s, v) = f
+        .json(
+            Method::POST,
+            "/relay/account/login-key",
+            Some(&token),
+            add.clone(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["account"]["mode"], "account");
+    assert!(!is_oauth_only(&f, &user).await);
+    // Nothing secret changed, so no session is signed out.
+    assert!(session_alive(&f, &token).await && session_alive(&f, &other_session).await);
+    assert_eq!(
+        key_login(&f, "oauth-add@example.test", &auth_key()).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        key_login(&f, "oauth-add", &recovery_key()).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let (s, v) = f
+        .json(Method::POST, "/relay/account/login-key", Some(&token), add)
+        .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::CONFLICT, Some("login_key_exists"))
+    );
+    assert_eq!(oauth_sign_in(&f, &identity).await.0, user);
+}
+
+#[tokio::test]
+async fn login_key_is_added_only_to_the_sessions_own_oauth_only_account() {
+    let f = Fixture::new("oauth-login-key-owner").await;
+    let (victim, victim_token) = oauth_sign_in(&f, &oauth_identity("victim", "victim")).await;
+    let victim_vault = test_vault(&victim, 1);
+    assert_eq!(
+        f.json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(&victim_token),
+            json!({"vault":victim_vault,"expectedRevision":0,"recoveryAuthKey":recovery_key()})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let add = json!({"authKey":auth_key(),"signature":login_key_signature(&victim, &victim_vault, &auth_key())});
+    // A password account's session: already has a login key.
+    let password_token = f.register().await;
+    let (s, v) = f
+        .json(
+            Method::POST,
+            "/relay/account/login-key",
+            Some(&password_token),
+            add.clone(),
+        )
+        .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::CONFLICT, Some("login_key_exists"))
+    );
+    // Another OAuth account (same test key pair) cannot reuse the victim's signature.
+    let (other, other_token) = oauth_sign_in(&f, &oauth_identity("other", "other")).await;
+    assert_eq!(
+        f.json(Method::PUT, "/relay/account/vault", Some(&other_token),
+            json!({"vault":test_vault(&other,1),"expectedRevision":0,"recoveryAuthKey":recovery_key()})).await.0,
+        StatusCode::OK
+    );
+    let (s, _) = f
+        .json(
+            Method::POST,
+            "/relay/account/login-key",
+            Some(&other_token),
+            add.clone(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // An OAuth account without a vault is a setup session.
+    let (_, setup_token) = oauth_sign_in(&f, &oauth_identity("novault", "novault")).await;
+    let (s, _) = f
+        .json(
+            Method::POST,
+            "/relay/account/login-key",
+            Some(&setup_token),
+            add.clone(),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = f
+        .json(Method::POST, "/relay/account/login-key", None, add)
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert!(is_oauth_only(&f, &victim).await && is_oauth_only(&f, &other).await);
+    assert_eq!(
+        key_login(&f, "victim", &auth_key()).await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn oauth_password_change_with_auth_key_needs_the_account_signature_and_converts() {
+    let f = Fixture::new("oauth-login-key-change").await;
+    let identity = oauth_identity("change-subject", "oauth-change");
+    let (user, token) = oauth_sign_in(&f, &identity).await;
+    let mut vault = test_vault(&user, 1);
+    assert_eq!(
+        f.json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(&token),
+            json!({"vault":vault,"expectedRevision":0,"recoveryAuthKey":recovery_key()})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (_, other_session) = oauth_sign_in(&f, &identity).await;
+    vault["revision"] = json!(2);
+    vault["slots"]["password"]["iv"] = json!("AAAAAAAAAAAAAAAA");
+    vault["kdf"]["salt"] = json!("AAAAAAAAAAAAAAAAAAAAAA");
+    // Recent OAuth alone cannot pick a login key for a vault it may not have opened.
+    let (s, v) = f
+        .json(
+            Method::PUT,
+            "/relay/account/vault",
+            Some(&token),
+            json!({"vault":vault,"expectedRevision":1,"authKey":auth_key()}),
+        )
+        .await;
+    assert_eq!(
+        (s, v["code"].as_str()),
+        (StatusCode::FORBIDDEN, Some("forbidden"))
+    );
+    // Signed for the old KDF salt: refused.
+    let stale = login_key_signature(&user, &test_vault(&user, 1), &auth_key());
+    let (s, _) = f
+        .json(Method::PUT, "/relay/account/vault", Some(&token),
+            json!({"vault":vault,"expectedRevision":1,"authKey":auth_key(),"loginKeySignature":stale}))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert!(is_oauth_only(&f, &user).await);
+    let signature = login_key_signature(&user, &vault, &auth_key());
+    let (s, v) = f
+        .json(Method::PUT, "/relay/account/vault", Some(&token),
+            json!({"vault":vault,"expectedRevision":1,"authKey":auth_key(),"loginKeySignature":signature}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(!is_oauth_only(&f, &user).await);
+    // A password change signs out the other sessions, as for any password account.
+    assert!(session_alive(&f, &token).await && !session_alive(&f, &other_session).await);
+    assert_eq!(
+        key_login(&f, "oauth-change", &auth_key()).await,
+        StatusCode::OK
+    );
+    assert_eq!(oauth_sign_in(&f, &identity).await.0, user);
+}
+
+#[tokio::test]
+async fn legacy_oauth_identity_without_auth_profile_also_adds_a_login_key() {
+    let f = Fixture::new("oauth-login-key-legacy").await;
+    let user = "c45aed3e-2f46-4b9c-93c1-e6f9d80c51e4";
+    let vault = test_vault(user, 1);
+    let token = {
+        let conn = f.state.store.conn.lock().await;
+        conn.execute("INSERT INTO relay_users(id,email,username,role,enabled,created_at,password_salt,password_hash) VALUES (?1,'legacy-oauth@example.test','legacy-oauth','user',1,'now','','')",[user]).unwrap();
+        conn.execute("INSERT INTO relay_user_identities VALUES ('legacy-id',?1,'github','legacy-subject','legacy-oauth@example.test','now')",[user]).unwrap();
+        account::store_vault(&conn, user, &vault).unwrap();
+        assert!(account::oauth_only(&conn, user));
+        let token = create_session(&conn, &f.state.store.session_secret, user).unwrap();
+        account::mark_session(&conn, &token, FULL).unwrap();
+        auth_factors::mark_strong(&conn, &token).unwrap();
+        token
+    };
+    assert_eq!(
+        key_login(&f, "legacy-oauth", &auth_key()).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let (s, v) = f
+        .json(Method::POST, "/relay/account/login-key", Some(&token),
+            json!({"authKey":auth_key(),"signature":login_key_signature(user, &vault, &auth_key())}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(!is_oauth_only(&f, user).await);
+    assert_eq!(
+        key_login(&f, "legacy-oauth@example.test", &auth_key()).await,
+        StatusCode::OK
+    );
+}

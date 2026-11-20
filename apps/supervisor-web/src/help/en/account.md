@@ -14,7 +14,7 @@ When you share, the recipient's code is displayed in the share's details on **De
 
 ## Unlock this browser {#unlock}
 
-This browser has no browser key for you yet: you are signing in here for the first time, or the key was deleted. Enter your account password. Accounts that sign in with Google or GitHub enter the unlock password they chose.
+This browser has no browser key for you yet: you are signing in here for the first time, or the key was deleted. Enter your account password. Accounts that sign in with Google or GitHub enter the password they chose; it also signs in with their email or username.
 
 ## Sign in again {#sign-in-again}
 

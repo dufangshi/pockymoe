@@ -41,7 +41,7 @@ export function AccountSetupFlow({ oauth, initialPassword, footer, onDone, onRea
       const userId = await accountStore<string>('active');
       if (!userId) throw new AccountTrustError('accountUnlockRequired');
       if (!step.prepared) { step.secret = secret; step.prepared = await createVault(userId, secret); }
-      if (!step.stored) { await setupAccount(step.prepared, oauth); step.stored = true; setStored(true); }
+      if (!step.stored) { await setupAccount(step.prepared); step.stored = true; setStored(true); }
       await openVault(step.prepared.vault, step.secret!);
       await registerBrowser(undefined, 'account-setup');
       setRecoveryCode(step.prepared.recoveryCode);

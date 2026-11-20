@@ -101,13 +101,14 @@ export async function registerAccount(input: { email: string; username: string; 
   for (const identifier of [input.email, input.username]) await accountStore(loginCacheKey(identifier), prepared.vault.userId);
   return result;
 }
-export async function setupAccount(prepared: PreparedRegistration, oauthOnly: boolean) {
+/** OAuth accounts send the login key too, so their password also signs in. */
+export async function setupAccount(prepared: PreparedRegistration) {
   const id = await accountStore<string>('active'); if (!id || prepared.vault.userId !== id) throw new AccountTrustError('accountVaultInvalid');
   await checkVault(prepared.vault, id);
   await accountRequest('relay/account/vault', 'PUT', { vault: prepared.vault, expectedRevision: 0,
-    ...(!oauthOnly ? { authKey: prepared.authKey } : {}), recoveryAuthKey: prepared.recoveryAuthKey });
+    authKey: prepared.authKey, recoveryAuthKey: prepared.recoveryAuthKey });
   if (pendingIdentifier) await accountStore(loginCacheKey(pendingIdentifier), prepared.vault.userId);
-  await setAccountSession(prepared.vault.userId, { mode: oauthOnly ? 'oauth' : 'account', setupRequired: false, recovery: false, hasVault: true, accountKeyId: prepared.vault.accountKeyId });
+  await setAccountSession(prepared.vault.userId, { mode: 'account', setupRequired: false, recovery: false, hasVault: true, accountKeyId: prepared.vault.accountKeyId });
 }
 export async function setAccountSession(userId: string | null, state: AccountSessionState | boolean = false) {
   await setActiveAccount(userId);

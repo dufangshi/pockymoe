@@ -27,6 +27,7 @@ export function eventLabel(event: string) {
     case 'grant.created': return translate('admin.eventShareCreated');
     case 'grant.revoked': return translate('admin.eventShareRevoked');
     case 'registration.submitted': return translate('admin.eventRegistrationSubmitted');
+    case 'account.login_key_added': return translate('admin.eventLoginKeyAdded');
     default: return event;
   }
 }

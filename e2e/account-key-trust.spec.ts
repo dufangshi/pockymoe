@@ -410,3 +410,27 @@ test('account key registration, enrollment, browser trust and recovery', async (
 
   } finally { await f.close(); }
 });
+
+test('an OAuth-only account that opens its vault with its password also signs in with it', async ({ browser }, info) => {
+  test.skip(info.project.name !== 'desktop-chromium', 'Account protocol coverage runs on desktop only');
+  test.setTimeout(180_000);
+  const f = await fixture(browser, info);
+  try {
+    const owner = await f.account('oauth-convert');
+    // Model an account created with Google or GitHub before password sign-in
+    // existed: its real vault stays, the login key goes.
+    await f.sql('c.execute("UPDATE relay_account_auth SET oauth_only=1,auth_hash=NULL,auth_salt=NULL WHERE user_id=?", (p["user"],))', { user: owner.userId });
+    const loginKey = () => f.sql('print(json.dumps(c.execute("SELECT oauth_only, auth_hash IS NOT NULL FROM relay_account_auth WHERE user_id=?", (p["user"],)).fetchone()))', { user: owner.userId });
+    expect(await loginKey()).toEqual([1, 0]);
+    // A reload closes the unlock window; the next account-key action asks for the password.
+    await owner.page.reload();
+    await owner.page.getByRole('button', { name: 'Regenerate recovery code', exact: true }).click();
+    await owner.page.getByRole('button', { name: 'Continue', exact: true }).click();
+    await unlock(owner.page, owner.password);
+    const recovery = await readRecoveryCode(owner.page); f.secrets.push(recovery);
+    await confirmRecoveryCode(owner.page, recovery);
+    expect(await loginKey()).toEqual([0, 1]);
+    // The relay stored the key the sign-in form derives from that password.
+    await f.login({ ...owner, userId: `${owner.username}@example.test` });
+  } finally { await f.close(); }
+});

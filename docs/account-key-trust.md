@@ -132,9 +132,8 @@ frame as Workspaces. Browser and phone pages expose the same rows (stacked on
 phones): Profile, Sharing, Sign-in and security, Account keys, Browsers with device
 access, and Danger zone last. The security row includes the vault password and
 recovery code plus authenticator/passkey, trusted-browser and session management.
-OAuth accounts can change their local vault unlock password here; this does not
-enable password sign-in. The unavailable sign-in-password capability is explained
-beside the control. Start over has a danger entry and an explicit confirmation
+For an OAuth-only account, changing the password here also turns on sign-in with
+the email or username and that password ([OAuth account](#account-flows)). Start over has a danger entry and an explicit confirmation
 with Cancel focused in the password/recovery-session confirmation form.
 
 ## Password, vault and recovery code
@@ -152,7 +151,7 @@ receives the password.
   of `B64(authKey)`.
 - `wrapKey = HKDF-SHA256(master, empty, "pockymoe-vault-wrap-v1")` encrypts the
   password slot of the vault.
-- New and changed passwords, including OAuth unlock passwords, need at least 12
+- New and changed passwords, including those of OAuth accounts, need at least 12
   characters (Unicode code points after NFC).
 
 `GET /relay/auth/kdf` returns the vault's real parameters for every sign-in name
@@ -664,9 +663,9 @@ after which their certificates no longer verify.
 | Register | The browser generates the user ID (canonical UUID v4), account key, VDK, salt and recovery code, shows the code for confirmation, then sends `POST /relay/auth/register` with `authKey`, `recoveryAuthKey` and the vault. With registration approval, the vault waits with the request and is stored on approval; a second registration for a name with a pending request answers 409 `conflict`. A user ID collision answers 409 `user_id_taken`; registering again generates new keys. |
 | Sign in | One form: fetch the KDF parameters for the sign-in name, derive, sign in with `authKey`, complete the second factor, fetch and open the vault, register the browser. The unlock window opens without a separate step. |
 | Security upgrade | For an account without a vault. After a sign-in fails with "Incorrect login or password.", the sign-in page offers **Continue with this password**, which posts `{login, password, upgrade: true}`; the relay accepts it only for password accounts without a vault that have not used an admin reset password. Browsers never offer it for names they have opened a vault for; a browser that has opened any vault warns and requires the box "I am upgrading a different account that has never been secured." Web builds with `VITE_POCKYMOE_LEGACY_UPGRADE=0` do not offer it. A stored SHA-256 password hash is upgraded to scrypt at this sign-in. The session stays restricted until **Secure your account** creates the vault, which needs this sign-in to be less than 10 minutes old. A password of at least 12 characters is reused right away; a shorter one asks for a new password. The vault is stored before the recovery code is shown, and the code must be confirmed by typing its last 4 characters. Creating the vault deletes the relay's login password hash, signs out the account's other sessions and forgets its trusted (two-step) browsers. A setup session whose sign-in is older than 10 minutes, such as one from before the update, shows **Please sign in again** instead of the setup form. |
-| OAuth account | No login password. At the first sign-in the user chooses an **unlock password**, which only encrypts the vault; no `authKey` is sent. A browser without a browser key asks for it after OAuth sign-in. Every vault write (including recording a bound device) and starting over need an OAuth sign-in or second factor within 10 minutes (otherwise 403 `reauthentication_required`). An account with both a password and an OAuth identity is a password account. |
+| OAuth account | An account created with Google or GitHub starts OAuth-only, without a login password. At the first sign-in the user chooses a password (**Create a password**); the browser sends its `authKey` with the new vault, so from then on the account is a password account with an OAuth identity: it signs in with the email or username and that password, or with OAuth. An account that is still OAuth-only (its vault was created before password sign-in existed, or by an older Web) becomes one the same way when its password changes, or silently the first time a browser opens its vault with the password within 10 minutes of an OAuth sign-in or second factor (`POST /relay/account/login-key`, the `authKey` signed by the account key); without such a sign-in the browser tries again at the next unlock. Adding the key that way signs nothing out: no secret changed. While OAuth-only, every vault write (including recording a bound device) and starting over need an OAuth sign-in or second factor within 10 minutes (otherwise 403 `reauthentication_required`); after that, the rules of password accounts apply. |
 | Forgot password | **Forgot password?** on the sign-in page, **Recovery code** tab: the recovery code and a new password. The relay checks `recoveryAuthKey` (10 attempts per 5 minutes per name) and always asks for the configured second factor, even on trusted browsers. The browser opens the recovery slot, writes a new password slot and `authKey`, and registers itself. |
-| Admin reset | **Forgot password?**, **Admin password** tab, with a temporary password from the relay administrator (one use; the configured second factor is asked even on trusted browsers). For an account with a vault, **Set a new password** then asks for the recovery code and a new password; **I don't have my recovery code** leads to **Start over**. For an account without a vault (including OAuth-only accounts), the sign-in opens a setup session that leads to **Secure your account** (or the unlock password); this works in every Web build. |
+| Admin reset | **Forgot password?**, **Admin password** tab, with a temporary password from the relay administrator (one use; the configured second factor is asked even on trusted browsers). For an account with a vault, **Set a new password** then asks for the recovery code and a new password; **I don't have my recovery code** leads to **Start over**. For an account without a vault (including OAuth-only accounts), the sign-in opens a setup session that leads to **Secure your account** (or **Create a password**); this works in every Web build. |
 | Change password | Account settings, unlock window. Proves the current `authKey`, or the recovery code when the window was opened with it. New random salt. Signs out other sessions and forgets trusted browsers; browser keys and device registrations stay valid. |
 | Regenerate recovery code | Shows a new code once; the old one stops working. Signs out other sessions and forgets trusted browsers. |
 | Start over | In Account settings; outside a recovery or reset session it first asks for the current password ("Confirm your current password to start over."). Deletes the vault, the account's browser certificates and the relay copies of its device certificates, and signs out other sessions. The session becomes a setup session, and the browser asks for a new password and shows a new recovery code to create a new account key. Until the new vault exists, the old recovery code still signs in (into a setup session); the password does not work in the Web, because the relay then answers fake KDF parameters. Every bound device refuses the new key until `pockymoe bind --reset` on that device, which then shows **Protect this device**. The account's safety code changes, and a recipient browser that pinned the old owner key blocks the owner's devices until it uses **Forget pinned owner account**. |
@@ -702,7 +701,7 @@ working as **Not protected**.
    receives it) and complete the second factor. **Secure your account** then
    stores the vault: a password of at least 12 characters is kept, a shorter one
    must be replaced. Save the recovery code. Users who sign in with Google or
-   GitHub sign in as usual and choose an unlock password.
+   GitHub sign in as usual and choose a password.
 2. Other browsers then sign in with the ordinary form.
 3. Recipients of shares secure their accounts before a protected device can honor
    those shares.
@@ -1356,6 +1355,7 @@ encoded as raw 64-byte `r||s`. Public keys are B64 SPKI DER unless noted.
 | Browser certificate | Account | `pockymoe-acct-browser-v1\n{accountKeyId}\n{browserId}\n{publicKey}\n{createdAt}` |
 | Device certificate | Account | `pockymoe-acct-device-v1\n{accountKeyId}\n{deviceId}\n{identityKey}\n{createdAt}` |
 | Revocation | Account | `pockymoe-acct-revoke-v1\n{accountKeyId}\n{kind}\n{subjectId}\n{revokedAt}` |
+| Login key of an OAuth-only account | Account | `pockymoe-acct-login-key-v1\n{userId}\n{accountKeyId}\n{kdf.salt}\n{authKey}`, with the salt of the vault whose password derived `authKey` |
 | Enrollment MAC | HMAC-SHA256, enrollment secret | `pockymoe-acct-enroll-v1\n{deviceId}\n{identityKey}\n{accountKeyId}` |
 | Request | Browser | `pockymoe-request-v1\n{aad}\n{B64(SHA256(sealed))}` |
 | Peer request | Caller's device identity | `pockymoe-peer-request-v1\n{callerDeviceId}\n{aad}\n{B64(SHA256(sealed))}` |
@@ -1410,7 +1410,8 @@ senders).
 | `POST /relay/auth/recover` | Public | `{login, recoveryAuthKey}` → recovery session (setup session for an account without a vault) or challenge |
 | `GET /relay/auth/session` | Any | Session with the `account` field |
 | `GET /relay/account/vault` | Signed in | → vault; 404 `vault_missing` |
-| `PUT /relay/account/vault` | Signed in | `{vault, expectedRevision, currentAuthKey?, currentRecoveryAuthKey?, authKey?, recoveryAuthKey?}` → vault; 409 `vault_conflict`; 429 `rate_limited` (with `DELETE`, 10 per 5 minutes) |
+| `PUT /relay/account/vault` | Signed in | `{vault, expectedRevision, currentAuthKey?, currentRecoveryAuthKey?, authKey?, recoveryAuthKey?, loginKeySignature?}` → vault; 409 `vault_conflict`; 429 `rate_limited` (with `DELETE` and `login-key`, 10 per 5 minutes) |
+| `POST /relay/account/login-key` | Full session of an OAuth-only account with a vault and no login key, recent authentication | `{authKey, signature}` (signature: [login key](#signing-inputs) over the stored vault) → `{account}`; the account becomes a password account; no session or trusted browser is signed out; 403 `reauthentication_required`, 403 `forbidden` (bad signature or restricted session), 404 `vault_missing`, 409 `login_key_exists` |
 | `DELETE /relay/account/vault` | Signed in | `{currentAuthKey?}` → `{}` |
 | `GET /relay/account/browsers` | Signed in | → `{browsers: [{certificate, label, createdAt, lastSeenAt}], revocations}` (revocations of the current key only) |
 | `POST /relay/account/browsers` | Signed in | `{certificate, label}` (label at most 80 characters) → `{}`; binds the session to the browser; at the limit drops the least recently seen other row; 401 `browser_revoked`; 403 `forbidden` for a session bound to another browser; 429 `browser_limit` only when no row can go |
@@ -1441,14 +1442,18 @@ setup session; an OAuth sign-in counts.
 never change. Every write needs a proof: `currentAuthKey` (the current password)
 or `currentRecoveryAuthKey` (the current recovery code), or a recovery or reset
 session, which must write a new password slot (and, for password accounts, a new
-`authKey`); OAuth-only accounts need recent authentication instead and never send
-`authKey`. `authKey` and `recoveryAuthKey` carry new values: changing the password
+`authKey`); OAuth-only accounts need recent authentication instead. An OAuth-only
+account may send `authKey` with a changed password slot (or the first vault); for
+an existing vault it also sends `loginKeySignature`, the account key's
+[login key](#signing-inputs) signature over the new vault, because recent OAuth
+authentication alone does not prove that the caller opened the vault. Storing an
+`authKey` makes the account a password account (`oauth_only` = 0). `authKey` and `recoveryAuthKey` carry new values: changing the password
 slot or KDF needs the new `authKey`, changing the recovery slot needs the new
 `recoveryAuthKey`, and either sent with an unchanged slot is refused (400). For
 compatibility, a write that changes only the body may prove the current recovery
 code as `recoveryAuthKey`. Creating the first vault needs a setup session (or an
 OAuth-only account), recent authentication and, for password accounts, the new
-`authKey`; it deletes the account's login password hash. Slot changes sign out
+`authKey` (the Web also sends it for OAuth-only accounts); it deletes the account's login password hash. Slot changes sign out
 the account's other sessions and forget its trusted browsers. A successful write
 makes the session a full session, and a new password slot completes a pending
 admin reset. `DELETE` needs `currentAuthKey`, a recovery or reset session, or
@@ -1465,8 +1470,9 @@ Login, register and recover answers include `{token, account, session}`, and
   "recentAuth": true, "browserBound": true }
 ```
 
-`mode` is `oauth` for an OAuth-only account (with or without a vault), `account`
-for any other account with a vault and `legacy` otherwise, including the
+`mode` is `oauth` for an OAuth-only account (with or without a vault: it has no
+login `authKey` yet), `account` for any other account with a vault, including an
+OAuth account that added its password, and `legacy` otherwise, including the
 administrator. `recentAuth` is true when the session signed in or confirmed a
 second factor within the last 10 minutes, so vault creation and OAuth slot
 changes will not answer `reauthentication_required`; the Web asks a setup
