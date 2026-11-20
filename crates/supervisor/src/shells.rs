@@ -163,6 +163,8 @@ impl ShellHub {
         if execution.is_none() {
             cmd.cwd(cwd);
             terminal_env(&mut cmd, |name| std::env::var_os(name));
+            // `codex`, `claude` and their Node right after a first install.
+            cmd.env("PATH", pockymoe_runtime::acp::child_path());
         }
         let child = pair.slave.spawn_command(cmd)?;
         let host_receipt = guardian.map(|(_, path)| path);

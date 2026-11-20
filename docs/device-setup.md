@@ -158,6 +158,14 @@ preserve the detected installation owner, and a global npm installation of
 managed installation. npm installs use Node `^22.19 || >=24`; without one, the
 Supervisor installs a private Node 22.
 
+Every process that may run a harness gets the managed harness, adapter and
+private Node directories in front of its PATH, computed when it starts: ACP
+processes and the tools they run, Pockymoe terminals, automation commands and
+plugins. A first install therefore works without restarting the Supervisor,
+and `codex`, `claude` and the other managed CLIs work in a Pockymoe terminal.
+When an adapter exits before answering, the thread error names its exit status
+and its last stderr lines (for example `env: node: No such file or directory`).
+
 Upstream profiles support OpenAI Codex Responses, Claude Agent Messages, Gemini
 GenerateContent, Grok Responses/Chat Completions, and DSH DeepSeek official /
 OpenAI-compatible (Chat Completions or Responses) APIs. Profiles, keys and exact

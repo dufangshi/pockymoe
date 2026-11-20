@@ -43,4 +43,5 @@ pub use runtime::AcpRuntime;
 
 mod usage;
 
-pub(crate) use catalog::{child_path, resolve_executable};
+pub(crate) use catalog::resolve_executable;
+pub use catalog::{child_path, child_path_with};

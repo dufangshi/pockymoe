@@ -352,8 +352,10 @@ message disclosure state and keep the scroll position anchored. Attachments
 remain visible in the preview, and Copy always copies the complete prompt.
 A message's time and Copy appear on hover, or when it is tapped on a phone, at
 its bottom right edge (a prompt's row end in the Terminal pack, never over its
-❯). They float over a fade of the message's surface, so they stay readable over
-the text they cover, and nothing moves.
+❯). They sit on a translucent, lightly blurred chip of the message's surface,
+so they stay readable while the text under them still shows, and nothing moves.
+A file path in a message becomes a link once the file is found in the
+workspace; a found path stays linked while the page re-renders.
 
 When a turn fails, its prompt carries a red mark, and tapping the mark shows the
 error under the prompt (the readable message first, then the raw text). The

@@ -235,8 +235,19 @@ pub fn augment_path() {
     }
 }
 
+/// PATH for every child that may run a harness, its adapter or their Node:
+/// ACP processes and the thread environment their tools inherit, terminals,
+/// automation commands and plugins. Computed at each spawn, because the
+/// process PATH (`augment_path`) only holds the managed directories that
+/// existed at startup, and a first harness install adds its Node later.
 pub fn child_path() -> std::ffi::OsString {
-    let mut dirs = super::dependencies::managed_bin_dirs();
+    child_path_with(&[])
+}
+
+/// `child_path` behind `front`, without repeated directories.
+pub fn child_path_with(front: &[PathBuf]) -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = front.to_vec();
+    dirs.extend(super::dependencies::managed_bin_dirs());
     dirs.extend([
         super::dependencies::bin_dir(),
         crate::management::harness_bin(),
@@ -246,6 +257,8 @@ pub fn child_path() -> std::ffi::OsString {
         dirs.extend(std::env::split_paths(&path));
     }
     dirs.extend(extra_bin_dirs());
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|dir| !dir.as_os_str().is_empty() && seen.insert(dir.clone()));
     std::env::join_paths(dirs).unwrap_or_default()
 }
 
@@ -338,6 +351,18 @@ pub fn parse_command_models(output: &str) -> Vec<(String, bool)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn child_path_keeps_the_front_and_the_managed_node_once() {
+        let front = std::path::PathBuf::from("/tmp/pockymoe-cli-bin");
+        let path = super::child_path_with(&[front.clone(), front.clone()]);
+        let dirs: Vec<_> = std::env::split_paths(&path).collect();
+        assert_eq!(dirs.first(), Some(&front));
+        assert_eq!(dirs.iter().filter(|dir| **dir == front).count(), 1);
+        let node = crate::node_runtime::bin_dir();
+        assert_eq!(dirs.iter().filter(|dir| **dir == node).count(), 1);
+        assert!(dirs.contains(&crate::management::harness_bin()));
+    }
+
     use super::*;
 
     #[test]
