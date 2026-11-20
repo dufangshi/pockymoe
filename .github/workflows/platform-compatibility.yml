@@ -42,7 +42,12 @@ jobs:
         shell: bash
         run: rustup toolchain install "${RUST_VERSION}" --profile minimal --component rustfmt,clippy
 
+      # Key on the pinned toolchain only: a change of the runner image's own
+      # default Rust would otherwise invalidate every cache (a full rebuild).
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: rust${{ env.RUST_VERSION }}
+          add-rust-environment-hash-key: false
 
       - name: Check formatting
         if: runner.os == 'Linux'
@@ -70,10 +75,14 @@ jobs:
         shell: bash
         run: rustup toolchain install "${RUST_VERSION}" --profile minimal
 
+      # Key on the pinned toolchain only: a change of the runner image's own
+      # default Rust would otherwise invalidate every cache (a full rebuild).
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-device-manager
           cache-on-failure: true
+          key: rust${{ env.RUST_VERSION }}
+          add-rust-environment-hash-key: false
 
       - name: Build and verify Device Manager
         shell: pwsh

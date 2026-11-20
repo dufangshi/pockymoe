@@ -80,10 +80,13 @@ jobs:
       - name: Install pinned Rust toolchain
         shell: bash
         run: rustup toolchain install "${RUST_VERSION}" --profile minimal
+      # Key on the pinned toolchain only: a change of the runner image's own
+      # default Rust would otherwise invalidate every cache (a full rebuild).
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
-          key: release-test
+          key: release-test-rust${{ env.RUST_VERSION }}
           cmd-format: rustup run ${{ env.RUST_VERSION }} {0}
+          add-rust-environment-hash-key: false
 
       - name: Validate affected-package selection
         run: python3 scripts/runtime-validation.test.py
@@ -138,10 +141,13 @@ jobs:
           set -euo pipefail
           rustup toolchain install "${RUST_VERSION}" --profile minimal --target '${{ matrix.cargo_target }}'
 
+      # Key on the pinned toolchain only: a change of the runner image's own
+      # default Rust would otherwise invalidate every cache (a full rebuild).
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
-          key: release-${{ matrix.key }}-${{ matrix.target }}-zigbuild-0.23.4-macos-12.0
+          key: release-${{ matrix.key }}-${{ matrix.target }}-zigbuild-0.23.4-macos-12.0-rust${{ env.RUST_VERSION }}
           cmd-format: rustup run ${{ env.RUST_VERSION }} {0}
+          add-rust-environment-hash-key: false
 
       - name: Install Linux Zig linker
         if: matrix.linux
