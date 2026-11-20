@@ -294,7 +294,9 @@ impl AcpProcess {
             .stdout
             .take()
             .ok_or_else(|| anyhow!("missing stdout"))?;
+        let stderr_tail = Arc::new(std::sync::Mutex::new(StderrTail::default()));
         if let Some(mut stderr) = child.stderr.take() {
+            let tail = stderr_tail.clone();
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 4096];
                 loop {
@@ -302,6 +304,7 @@ impl AcpProcess {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             tracing::debug!(target: "acp.stderr", "{}", String::from_utf8_lossy(&buf[..n]));
+                            tail.lock().unwrap().push(&buf[..n]);
                         }
                     }
                 }
@@ -325,9 +328,15 @@ impl AcpProcess {
         let reader_execution = execution.clone();
         let reader_process_id = process_id.clone();
         let reader_guard = host_guard.clone();
+        let reader_tail = stderr_tail.clone();
         tokio::spawn(async move {
             let reason = match read_loop(stdout, reader_state.clone(), updates_tx, req_tx).await {
-                Ok(()) => "ACP stdout closed".to_string(),
+                Ok(()) => {
+                    // An adapter that cannot start (no Node, a crash) closes stdout as
+                    // it exits; name the exit and its last stderr instead of only this.
+                    let status = settle_exit(&reader_child).await;
+                    exit_reason("ACP stdout closed", status, &reader_tail)
+                }
                 Err(err) => {
                     tracing::warn!(error = %err, "ACP reader exited");
                     format!("ACP reader failed: {err}")
@@ -342,7 +351,7 @@ impl AcpProcess {
             )
             .await;
         });
-        spawn_exit_monitor(child.clone(), state.clone());
+        spawn_exit_monitor(child.clone(), state.clone(), stderr_tail);
         Ok((
             Self {
                 host_guard,
@@ -658,7 +667,77 @@ async fn close_rpc_state(state: &Arc<Mutex<RpcState>>, reason: String) {
     }
 }
 
-fn spawn_exit_monitor(child: Arc<Mutex<Child>>, state: Arc<Mutex<RpcState>>) {
+/// The last few lines an ACP process wrote to stderr, for the error shown when
+/// it stops before answering.
+#[derive(Default)]
+struct StderrTail(Vec<u8>);
+
+impl StderrTail {
+    const KEEP: usize = 2048;
+
+    fn push(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+        if self.0.len() > Self::KEEP {
+            let cut = self.0.len() - Self::KEEP;
+            self.0.drain(..cut);
+        }
+    }
+
+    fn summary(&self) -> Option<String> {
+        let text = String::from_utf8_lossy(&self.0);
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim_end)
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        let start = lines.len().saturating_sub(5);
+        let joined = lines[start..].join(" | ");
+        if joined.is_empty() {
+            return None;
+        }
+        let mut chars = joined.chars();
+        let short: String = chars.by_ref().take(600).collect();
+        Some(if chars.next().is_some() {
+            format!("{short}…")
+        } else {
+            short
+        })
+    }
+}
+
+/// Wait briefly for a process whose stdout closed to report its exit.
+async fn settle_exit(child: &Arc<Mutex<Child>>) -> Option<std::process::ExitStatus> {
+    for _ in 0..20 {
+        if let Ok(Some(status)) = child.lock().await.try_wait() {
+            // Let the stderr reader take the last bytes the process wrote.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            return Some(status);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    None
+}
+
+fn exit_reason(
+    head: &str,
+    status: Option<std::process::ExitStatus>,
+    tail: &std::sync::Mutex<StderrTail>,
+) -> String {
+    let mut reason = head.to_string();
+    if let Some(status) = status {
+        reason.push_str(&format!(" (process exited, {status})"));
+    }
+    if let Some(stderr) = tail.lock().unwrap().summary() {
+        reason.push_str(&format!(": {stderr}"));
+    }
+    reason
+}
+
+fn spawn_exit_monitor(
+    child: Arc<Mutex<Child>>,
+    state: Arc<Mutex<RpcState>>,
+    stderr_tail: Arc<std::sync::Mutex<StderrTail>>,
+) {
     tokio::spawn(async move {
         loop {
             let status = {
@@ -669,7 +748,8 @@ fn spawn_exit_monitor(child: Arc<Mutex<Child>>, state: Arc<Mutex<RpcState>>) {
                 Ok(Some(status)) => {
                     // Let the reader dispatch any response already buffered before the exit.
                     tokio::time::sleep(Duration::from_millis(100)).await;
-                    close_rpc_state(&state, format!("ACP process exited ({status})")).await;
+                    let head = format!("ACP process exited ({status})");
+                    close_rpc_state(&state, exit_reason(&head, None, &stderr_tail)).await;
                     break;
                 }
                 Ok(None) => tokio::time::sleep(Duration::from_millis(100)).await,
@@ -986,7 +1066,14 @@ mod tests {
         }
         let state = process.state.lock().await;
         assert!(state.pending.is_empty());
-        assert_eq!(state.closed_reason.as_deref(), Some("ACP stdout closed"));
+        assert!(
+            state
+                .closed_reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("ACP stdout closed")),
+            "{:?}",
+            state.closed_reason
+        );
         drop(state);
 
         let next_error = process
@@ -994,6 +1081,35 @@ mod tests {
             .await
             .expect_err("requests after EOF must fail immediately");
         assert!(next_error.to_string().contains("stdout closed"));
+    }
+
+    #[tokio::test]
+    async fn an_adapter_that_cannot_start_reports_its_exit_and_stderr() {
+        let dir = std::env::temp_dir().join(format!("acp-rpc-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("no_node.py");
+        std::fs::write(
+            &script,
+            "import sys\nsys.stderr.write('starting\\nenv: node: No such file or directory\\n')\nsys.stderr.flush()\nsys.exit(127)\n",
+        )
+        .unwrap();
+        let (process, _updates, _requests) =
+            AcpProcess::spawn(&python_command(&script), dir.to_str().unwrap(), &[])
+                .await
+                .expect("spawn exiting process");
+        let error = timeout(
+            Duration::from_secs(5),
+            process.request("initialize", json!({})),
+        )
+        .await
+        .expect("an exited adapter must fail the request")
+        .expect_err("initialize must fail");
+        let text = format!("{error:#}");
+        assert!(text.contains("127"), "{text}");
+        assert!(
+            text.contains("env: node: No such file or directory"),
+            "{text}"
+        );
     }
 
     #[tokio::test]

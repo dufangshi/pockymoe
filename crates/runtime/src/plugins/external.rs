@@ -255,7 +255,7 @@ impl ExternalPlugin {
             path.push(bin);
             path.push(if cfg!(windows) { ";" } else { ":" });
         }
-        path.push(std::env::var_os("PATH").unwrap_or_default());
+        path.push(crate::acp::child_path());
 
         let program = resolve_program(&self.dir, &self.manifest.entry[0]);
         let mut cmd = tokio::process::Command::new(program);
@@ -746,7 +746,7 @@ async fn run_setup(manifest: &Manifest, dir: &Path) -> Result<()> {
         .current_dir(dir)
         .env_clear()
         .envs(crate::service::automation::inherited_command_env())
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("PATH", crate::acp::child_path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

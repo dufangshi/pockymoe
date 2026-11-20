@@ -1355,7 +1355,7 @@ impl Supervisor {
         };
         cmd.current_dir(&cwd)
             .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("PATH", crate::acp::child_path())
             .envs(inherited_command_env())
             .envs(&input.command.env)
             .env("POCKYMOE_COMMAND_ID", id)

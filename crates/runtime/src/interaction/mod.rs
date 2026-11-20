@@ -147,19 +147,17 @@ impl Supervisor {
                     ("REMOTE_CODEX_TOKEN".into(), token),
                     ("REMOTE_CODEX_THREAD_ID".into(), thread_id.into()),
                 ];
+                // This PATH replaces the one the ACP spawn sets, so it must keep
+                // the managed harness and Node directories (`child_path`).
                 if let Ok(exe) = std::env::current_exe() {
                     if let Some(dir) = exe.parent() {
-                        let paths = c
+                        let front = c
                             .bin_dir
                             .into_iter()
                             .chain(std::iter::once(dir.to_path_buf()))
-                            .chain(std::env::split_paths(
-                                &std::env::var_os("PATH").unwrap_or_default(),
-                            ))
                             .collect::<Vec<_>>();
-                        if let Ok(path) = std::env::join_paths(paths) {
-                            env.push(("PATH".into(), path.to_string_lossy().into()));
-                        }
+                        let path = crate::acp::child_path_with(&front);
+                        env.push(("PATH".into(), path.to_string_lossy().into()));
                     }
                 }
                 env
