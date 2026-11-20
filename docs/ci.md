@@ -121,6 +121,11 @@ and scanning, then immutable GitHub publication. The diff is computed from the
 latest trusted runtime release SHA to the final SHA, including changes before the
 version bump. Database, migration, authentication and update paths select their
 affected packages like every other change; none forces a workspace run.
+The gate runs the selected tests with `cargo nextest run` (all test binaries in
+one pool, `.config/nextest.toml`), builds them with line-table debug info only,
+and optimizes the crypto crates in the dev profile, because unoptimized scrypt
+made each account test take 20-65 s. nextest reports a test past 10 s as slow
+and stops it at 60 s; keep timer-bound tests on short, injectable durations.
 `validation=full` explicitly selects the full workspace. `channel=dry-run` builds
 and verifies the complete artifacts without publishing. The Windows worker smoke
 compiles a tiny harness with rustc using the exact production launcher source;

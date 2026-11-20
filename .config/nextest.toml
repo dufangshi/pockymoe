@@ -1,0 +1,8 @@
+# Release gate and local runs with `cargo nextest run`.
+[profile.default]
+# A test running past 10 s is reported as SLOW; past 60 s it is stopped and
+# fails, so a new wait-bound test cannot quietly stretch the gate again.
+slow-timeout = { period = "10s", terminate-after = 6 }
+# One test per core across all selected test binaries.
+test-threads = "num-cpus"
+failure-output = "immediate-final"

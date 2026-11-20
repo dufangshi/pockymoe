@@ -60,3 +60,25 @@ unsafe_code = "forbid"
 codegen-units = 1
 lto = "thin"
 strip = "symbols"
+
+# Tests hash passwords and sign with production parameters. Unoptimized,
+# scrypt alone took 20-65 s per account test; optimizing only the crypto
+# crates keeps debug builds quick and the tests unchanged.
+[profile.dev.package.scrypt]
+opt-level = 3
+[profile.dev.package.salsa20]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.hmac]
+opt-level = 3
+[profile.dev.package.p256]
+opt-level = 3
+[profile.dev.package.primeorder]
+opt-level = 3
+[profile.dev.package.elliptic-curve]
+opt-level = 3
+[profile.dev.package.crypto-bigint]
+opt-level = 3
