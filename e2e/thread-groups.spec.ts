@@ -37,7 +37,7 @@ test('agent tabs stay grouped after list refreshes and navigate through an uncli
   page.on('request', request => { if (request.url().includes('/api/threads?includeAgentThreads=true')) snapshots += 1; });
   await page.goto(`/threads/${root.id}`);
   const tabs = page.getByRole('navigation', { name: 'Workspace threads' });
-  const toggle = tabs.getByRole('button', { name: 'Research root: 2 agent threads' });
+  const toggle = tabs.getByRole('button', { name: /^Research root: 2 agent threads/ });
   await expect(toggle).toBeVisible();
   await expect(tabs.locator('a.matter-group-tab')).toHaveCount(1);
   // Another thread's turn events make the page re-read the list.

@@ -12,5 +12,7 @@ Harnesses work right after their first install, and accounts created with Google
 - File paths in messages no longer blink while you type.
 - A message's time, copy and fork buttons sit on a translucent chip, so the text under them stays readable.
 - Tab titles stay on one line; the unsent-draft mark shows only on tabs that are not open.
+- The thread map shows the same conversations as the sidebar, each with all its agent threads folded in, and its header totals follow the level shown.
+- The agent-thread badge counts every agent thread of a conversation, including stopped and closed ones, says how many are running, and is easier to see in every theme.
 
 Update a device from Settings → Check/Update. The Web app and the relay are already updated.

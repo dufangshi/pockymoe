@@ -28,7 +28,8 @@ describe('mapDevice', () => {
         tokenUsage: { totalTokens: 200, inputTokens: 150, cachedInputTokens: 0, outputTokens: 50, reasoningOutputTokens: 10 },
         priceEstimate: { currency: 'USD', totalUsd: 0.5, inputUsd: 0.2, cachedInputUsd: 0, outputUsd: 0.3 }, pricePartial: true },
     ] });
-    expect(device.workspaces.map(workspace => workspace.label)).toEqual(['app', 'w2']);
+    // The orphan (its conversation was deleted) has no tile, as it has no sidebar row.
+    expect(device.workspaces.map(workspace => workspace.label)).toEqual(['app']);
     expect(device.href).toBe('/devices/laptop/workspaces');
     expect(device.workspaces[0]?.href).toBe('/devices/laptop/threads?workspaceId=w1');
     expect(device.workspaces[0]!.threads).toEqual([expect.objectContaining({
@@ -45,18 +46,17 @@ describe('mapDevice', () => {
     expect(device.workspaces[0]!.threads[0]!.children!.map(child => [child.key, child.turns, child.priceEstimate?.totalUsd])).toEqual([
       ['laptop:child', 3, 0.5], ['laptop:grandchild', 0, undefined],
     ]);
-    // An agent thread whose root is gone still shows.
-    expect(device.workspaces[1]!.threads[0]).toMatchObject({ key: 'laptop:orphan', turns: 0, activeMs: 0 });
   });
 
-  it('gives an agent thread working in another workspace a tile of its own there', () => {
+  it('folds agent threads working in another workspace into their conversation, like the sidebar', () => {
     const device = mapDevice(null, 'This device', [...workspaces, { id: 'w2', label: 'docs', absPath: '/src/docs' }] as WorkspaceDto[], [
       thread('root', { title: 'Rebuild the home page' }),
       thread('beside', { parentThreadId: 'root', rootThreadId: 'root' }),
       thread('docs', { parentThreadId: 'root', rootThreadId: 'root', workspaceId: 'w2', title: 'Update docs' }),
-      // Its own agent thread in the same workspace folds into it; one back home folds into the root.
       thread('docs-helper', { parentThreadId: 'docs', rootThreadId: 'root', workspaceId: 'w2' }),
       thread('back-home', { parentThreadId: 'docs', rootThreadId: 'root' }),
+      // A conversation started in docs is that workspace's only tile.
+      thread('docs-root', { workspaceId: 'w2', title: 'Proofread' }),
     ], { since: '', hours: 24, threads: [
       { threadId: 'root', turns: 2, activeMs: 1000, totalMs: 1000 },
       { threadId: 'docs', turns: 5, activeMs: 50_000, totalMs: 50_000 },
@@ -65,14 +65,29 @@ describe('mapDevice', () => {
     ] });
     const [app, docs] = device.workspaces;
     expect(app!.threads.map(tile => [tile.key, tile.turns, tile.activeMs, tile.agentThreads, tile.from])).toEqual([
-      ['local:root', 3, 4000, 2, undefined],
+      ['local:root', 9, 61_000, 4, undefined],
     ]);
-    expect(app!.threads[0]!.children!.map(child => child.key)).toEqual(['local:beside', 'local:back-home']);
-    expect(docs).toMatchObject({ id: 'w2', label: 'docs' });
-    expect(docs!.threads.map(tile => [tile.key, tile.turns, tile.activeMs, tile.agentThreads, tile.from])).toEqual([
-      ['local:docs', 6, 57_000, 1, 'Rebuild the home page'],
-    ]);
-    expect(docs!.threads[0]!.children!.map(child => child.key)).toEqual(['local:docs-helper']);
+    expect(app!.threads[0]!.children!.map(child => child.key)).toEqual(['local:beside', 'local:docs', 'local:docs-helper', 'local:back-home']);
+    expect(docs!.threads.map(tile => tile.key)).toEqual(['local:docs-root']);
+  });
+
+  it('lists the same conversations as the sidebar: roots of the workspace, never agent threads', () => {
+    const list = [
+      ...Array.from({ length: 8 }, (_, index) => thread(`root-${index}`)),
+      // A busy conversation, its agent threads mostly closed, two working elsewhere.
+      ...Array.from({ length: 30 }, (_, index) => thread(`agent-${index}`, { parentThreadId: 'root-0', rootThreadId: 'root-0',
+        workspaceId: index < 2 ? 'w2' : 'w1', closedAt: index % 3 ? '2026-11-01' : null })),
+      // Agent threads of a deleted conversation and of one started in another workspace.
+      ...Array.from({ length: 12 }, (_, index) => thread(`left-${index}`, { parentThreadId: 'deleted', rootThreadId: 'deleted' })),
+      thread('elsewhere'), thread('visitor', { parentThreadId: 'elsewhere', rootThreadId: 'elsewhere', workspaceId: 'w1' }),
+    ].map(item => item.id === 'elsewhere' ? { ...item, workspaceId: 'w2' } : item);
+    const device = mapDevice(null, 'This device', workspaces, list, null);
+    const app = device.workspaces.find(workspace => workspace.id === 'w1')!;
+    expect(app.threads.map(tile => tile.key)).toEqual(Array.from({ length: 8 }, (_, index) => `local:root-${index}`));
+    // Every agent thread of the conversation counts, closed ones and those working elsewhere included.
+    expect(app.threads[0]).toMatchObject({ agentThreads: 30 });
+    expect(app.threads[0]!.children).toHaveLength(30);
+    expect(device.workspaces.find(workspace => workspace.id === 'w2')!.threads.map(tile => [tile.key, tile.agentThreads])).toEqual([['local:elsewhere', 1]]);
   });
 
   it('leaves turns and run time unknown without activity', () => {
@@ -201,10 +216,10 @@ describe('useThreadMapDevices', () => {
   });
 });
 
-it('map agent counts exclude closed threads without losing their history or usage', () => {
+it('map agent counts include closed threads with their history and usage', () => {
   const device = mapDevice(null, 'Mac', workspaces, [thread('root'), thread('open', { rootThreadId: 'root' }), thread('closed', { rootThreadId: 'root', closedAt: '2026-11-01' })], null);
   const root = device.workspaces[0]!.threads[0]!;
-  expect(root.agentThreads).toBe(1);
+  expect(root.agentThreads).toBe(2);
   expect(root.children!.map(child => child.key)).toEqual(['local:open', 'local:closed']);
 });
 
