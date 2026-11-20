@@ -319,7 +319,7 @@
 /* A conversation's agent threads: a soft plum pill in its row, opening a
    smaller-avatar list below on a plum guide line. */
 :theme .thread-ui-shell .matter-workbench .matter-thread-entry.matter-thread-entry:has(> .matter-agent-toggle) > .matter-thread-row { padding-right: 72px; }
-:theme .thread-ui-shell .matter-workbench .matter-agent-toggle { right: 36px; color: var(--plum-chrome-muted); }
+:theme .thread-ui-shell .matter-workbench .matter-agent-toggle { right: 36px; color: var(--plum-chrome-soft); font-weight: 700; }
 :theme .thread-ui-shell .matter-workbench .matter-agent-toggle:is(:active, [aria-expanded='true']) { background: rgb(199 166 255 / 20%); color: var(--plum-chrome-fg); }
 @media (hover: hover) {
   :theme .thread-ui-shell .matter-workbench .matter-agent-toggle:is(:hover, [aria-expanded='true']) { background: rgb(199 166 255 / 20%); color: var(--plum-chrome-fg); }
@@ -981,6 +981,9 @@
   :theme .thread-ui-shell .matter-workbench .matter-phone-sheet .matter-thread-row:not([aria-current='page']):has(> .matter-status-dot[data-status='unread']) .matter-thread-copy > span { color: var(--theme-fg); }
   :theme .thread-ui-shell .matter-workbench .matter-phone-sheet .matter-agent-threads-summary { background: var(--theme-accent-soft); color: var(--theme-fg-soft) !important; }
   :theme .thread-ui-shell .matter-workbench .matter-phone-sheet .matter-thread-entry > .recent-thread-actions { color: var(--theme-fg-muted); }
+  /* The agent count beside a cream row takes the row's ink; on the plum pocket it keeps the chrome's. */
+  :theme .thread-ui-shell .matter-workbench .matter-phone-sheet .matter-thread-entry:not(:has(> .matter-thread-row[aria-current='page'])) > .matter-agent-toggle { color: var(--theme-fg-soft); }
+  :theme .thread-ui-shell .matter-workbench .matter-phone-sheet .matter-thread-entry:not(:has(> .matter-thread-row[aria-current='page'])) > .matter-agent-toggle:is(:active, [aria-expanded='true']) { color: var(--theme-fg); }
 }
 @media (max-width: 639px) and (hover: hover) {
   :theme .thread-ui-shell .matter-workbench .matter-phone-sheet .matter-thread-row:not([aria-current='page']):hover { --plum-badge-ring: var(--theme-accent-soft); background: var(--theme-accent-soft); color: var(--theme-fg); }

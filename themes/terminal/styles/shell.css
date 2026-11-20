@@ -52,6 +52,9 @@
 }
 :theme .thread-ui-shell .matter-workbench .matter-thread-row[aria-current='page'] :is(span, small) { color: var(--theme-bg); }
 :theme .thread-ui-shell .matter-workbench .matter-thread-row[aria-current='page'] small { opacity: 0.75; }
+/* The row's agent count and menu sit beside the inverted row, on its fill: they
+   take its inverted text colour so they stay readable. */
+:theme .thread-ui-shell .matter-workbench .matter-thread-entry:has(> .matter-thread-row[aria-current='page']) > :is(.matter-agent-toggle, .recent-thread-actions) { color: var(--theme-bg); }
 :theme .thread-ui-shell .matter-workbench .matter-thread-copy > span { font-size: 12.5px; }
 :theme .thread-ui-shell .matter-workbench .matter-thread-copy small { font-size: 11px; }
 

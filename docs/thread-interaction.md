@@ -613,7 +613,9 @@ and capabilities swap in, from what it answered last) and shows the conversation
 shown as last read and refreshed quietly, and once a conversation shows, the
 other open tabs (up to 11, any workspace) are read one by one in the background.
 Each tab's agent threads are a small robot and count right after its icon, on
-the tab's own background. Recent chats in the sidebar therefore
+the tab's own background. The count is every agent thread of the conversation,
+closed ones included; its name says how many run ("8 agent threads, 2 running"),
+and the robot takes the running colour while any does. Recent chats in the sidebar therefore
 start folded; shortcuts and **This workspace** start open, and every fold is
 remembered (`pockymoe.sidebar-sections.v1`). The sidebar's width follows a drag
 on its edge (200–420px, Arrow keys on the focused edge, double-click resets;
@@ -628,7 +630,8 @@ deepening tint, then lifts; the sheet does not slide away meanwhile). An agent
 thread stays with its conversation. The order is kept in this browser per device
 and workspace (`pockymoe.workspace-order.v1`); new conversations follow it by age.
 A conversation's agent threads are a small robot and count inside its row that
-opens them below it; the row keeps its place, and the thread sheet keeps its height
+opens them below it (the same count and name as the tab's, in the row's soft text
+colour); the row keeps its place, and the thread sheet keeps its height
 and scrolls rather than growing upward. Both sections of the thread sheet fold.
 
 On the desktop the tabs row is the only bar: search at its left (Ctrl/⌘+F opens
@@ -681,12 +684,12 @@ Esc or a press outside closes it, and an action closes it before opening its win
 
 ## Thread map
 
-The thread map shows every thread on the account's devices at once: devices hold
-workspaces, workspaces hold threads, and agent threads are folded into their
-conversation's root thread. An agent thread working in another workspace than that
-root has a tile of its own under the workspace it works in, with the agent threads
-it started there folded in, so its time and tokens count where the work happened;
-a wide tile says which thread started it ("from …"). A thread's area grows with
+The thread map shows every conversation on the account's devices at once: devices
+hold workspaces, and each workspace holds the conversations started in it, the same
+set its sidebar's **This workspace** lists. Every agent thread is folded into its
+conversation's root thread, closed ones and ones working in another workspace
+included, and its time and tokens count on that conversation's tile. An agent
+thread whose conversation was deleted has no sidebar row and no tile. A thread's area grows with
 its turns (as 1 + √turns, so a long thread does not crowd out the rest). Its fill takes one of five light steps toward
 the accent by how long its turns ran in the last 24 hours (none, up to 10 minutes,
 an hour, three hours, more), light enough to read the title on; themes may set
@@ -710,9 +713,12 @@ tile, or "69 turns · 25 h total" on one line); the tokens and API price of all 
 turns, the price opening the same breakdown as a turn's; and the last 24 hours hour
 by hour as bars, each full when the thread ran the whole hour. Small tiles keep the
 agent mark and title, the smallest only their color. Device and workspace bars and
-the map's summary add up the API price.
+the map's summary add up the API price. The summary (threads, running, price)
+counts the level shown: all devices at the top, else the device or workspace in
+view; a thread opened up into its agent threads counts as its workspace.
 
-A tile with agent threads folded in has a small button with their count; it opens
+A tile with agent threads folded in has a small robot button with their count (all
+of them, as in the sidebar and the tabs); it opens
 the tile up: the thread keeps a bar on top (tapping it folds them back, its arrow
 opens the thread) and its agent threads
 fill the rest, each a tile of its own. The map zooms, and every level answers:

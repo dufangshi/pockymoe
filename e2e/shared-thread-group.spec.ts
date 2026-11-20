@@ -283,12 +283,12 @@ test('shared Claude families keep provider models, effort controls and consisten
       .toBe('medium');
     const tabs = page.getByRole('navigation', { name: 'Workspace threads' });
     await expect(
-      tabs.getByRole('button', { name: 'Claude coordinator: 3 agent threads' }),
+      tabs.getByRole('button', { name: /^Claude coordinator: 3 agent threads/ }),
     ).toBeVisible();
     const recent = page.getByTestId('workspace-threads');
     await expect(recent.locator('summary')).toContainText('3 agent threads');
     await tabs
-      .getByRole('button', { name: 'Claude coordinator: 3 agent threads' })
+      .getByRole('button', { name: /^Claude coordinator: 3 agent threads/ })
       .click();
     await page
       .getByRole('region', { name: 'Claude coordinator agent threads' })
@@ -296,7 +296,7 @@ test('shared Claude families keep provider models, effort controls and consisten
       .click();
     await expect(page).toHaveURL(new RegExp(`/threads/${crossId}$`));
     await expect(
-      tabs.getByRole('button', { name: 'Claude coordinator: 3 agent threads' }),
+      tabs.getByRole('button', { name: /^Claude coordinator: 3 agent threads/ }),
     ).toBeVisible();
     await expect(settings).toBeEnabled();
     await page.screenshot({
