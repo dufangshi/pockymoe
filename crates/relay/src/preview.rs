@@ -111,8 +111,18 @@ struct IdlePool {
     warming: Vec<WarmingClient>,
     closing: Vec<ClosingClient>,
     reaping: bool,
+    /// A shorter idle lifetime, so a unit test can watch the reaper work.
+    #[cfg(test)]
+    idle_timeout: Option<Duration>,
 }
 impl IdlePool {
+    fn idle_timeout(&self) -> Duration {
+        #[cfg(test)]
+        if let Some(timeout) = self.idle_timeout {
+            return timeout;
+        }
+        HTTP_IDLE_TIMEOUT
+    }
     fn discard(&mut self, client: HttpClient) {
         // Dropping the sender begins asynchronous bridge shutdown. Keep only
         // its routing/completion tokens so full-capacity requests can await the
@@ -250,10 +260,8 @@ fn return_http_client(state: &Arc<AppState>, client: HttpClient) {
         pool.discard(client);
         return;
     }
-    pool.clients.push(IdleClient {
-        client,
-        expires: std::time::Instant::now() + HTTP_IDLE_TIMEOUT,
-    });
+    let expires = std::time::Instant::now() + pool.idle_timeout();
+    pool.clients.push(IdleClient { client, expires });
     if !pool.reaping {
         pool.reaping = true;
         let weak = Arc::downgrade(state);
@@ -3347,6 +3355,10 @@ mod tests {
             }
         })
         .await;
+        // The reaper runs the same way with a 2 second idle lifetime as with
+        // the production 10 seconds; the bursts below finish well within it.
+        let idle_timeout = Duration::from_secs(2);
+        fixture.state.preview.idle.lock().unwrap().idle_timeout = Some(idle_timeout);
         let responses = futures_util::future::join_all((0..8).map(|_| async {
             fixture
                 .request(Method::GET, "/parallel")
@@ -3410,7 +3422,7 @@ mod tests {
             "idle streams leave 24 of 32 device slots available"
         );
         let start = std::time::Instant::now();
-        tokio::time::timeout(HTTP_IDLE_TIMEOUT + Duration::from_secs(2), async {
+        tokio::time::timeout(idle_timeout + Duration::from_secs(2), async {
             loop {
                 if fixture
                     .state

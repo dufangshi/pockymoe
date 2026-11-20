@@ -33,6 +33,16 @@ const REFRESH_BEFORE_MS: i64 = 300_000;
 const MAX_STREAM_CHUNKS: usize = LIMIT / (1024 * 1024) + 1;
 const RESPONSE_PACKET_LIMIT: usize = LIMIT + 64 * 1024 + 4 + 16;
 
+/// The most a streamed peer response may add up to: `LIMIT`, unless a unit
+/// test checks the same enforcement against a smaller total.
+fn aggregate_limit() -> usize {
+    #[cfg(test)]
+    if let Ok(limit) = tests::AGGREGATE_LIMIT.try_with(|limit| *limit) {
+        return limit;
+    }
+    LIMIT
+}
+
 #[derive(Clone)]
 struct Descriptor {
     key_id: String,
@@ -288,7 +298,7 @@ impl Client {
                 return Err(handler_error(&chunk.response).into());
             }
             ensure!(
-                chunk.response.body.len() <= LIMIT - reply.response.body.len(),
+                chunk.response.body.len() <= aggregate_limit() - reply.response.body.len(),
                 "peer response exceeds the 64 MiB limit"
             );
             reply.response.body.extend_from_slice(&chunk.response.body);
@@ -525,6 +535,11 @@ mod tests {
     use axum::body::{Body, Bytes};
     use p256::ecdsa::signature::Signer;
     use tower::ServiceExt;
+
+    tokio::task_local! {
+        /// A smaller aggregate limit for the calls made inside its scope.
+        pub(super) static AGGREGATE_LIMIT: usize;
+    }
 
     #[derive(Default)]
     struct Service {
@@ -891,15 +906,20 @@ mod tests {
         let (_target_dir, target) = state_with_relay_url("http://127.0.0.1:1");
         caller.set_peer_access(true).unwrap();
         target.set_peer_access(true).unwrap();
+        // Streaming 64 MiB through encryption takes most of a debug test run.
+        // The same continuation path enforces a 4 MiB total here: one byte over
+        // it fails after four full 1 MiB chunks.
+        let limit = 4 * 1024 * 1024;
         let (task, _) = serve(
             &caller,
             target.clone(),
             Service {
-                download_size: Some(LIMIT + 1),
+                download_size: Some(limit + 1),
                 ..Service::default()
             },
         );
-        assert!(call(&caller)
+        assert!(AGGREGATE_LIMIT
+            .scope(limit, call(&caller))
             .await
             .unwrap_err()
             .to_string()
