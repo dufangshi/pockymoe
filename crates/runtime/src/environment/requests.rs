@@ -1035,7 +1035,7 @@ mod tests {
         assert!(lab.manager.request_blocks_turn("thread").unwrap());
         let database = lab.root.path().join("supervisor.sqlite");
         drop(lab.manager);
-        let manager = EnvironmentManager::new(&database);
+        let manager = EnvironmentManager::reopen(&database);
         let restored = manager.get_request(&request.id).unwrap();
         assert_eq!(restored.state, "waitingIdle");
         assert!(!restored.continuation_queued);

@@ -225,7 +225,7 @@ mod tests {
                 Ok(())
             })?;
         }
-        let db = Database::open(&path)?;
+        let db = Database::reopen(&path)?;
         db.with(|c| {
             while !retain_slice(c, now)? {}
             assert_eq!(

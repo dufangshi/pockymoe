@@ -209,9 +209,27 @@ pub struct FakeRuntime {
     goal: Mutex<Option<GoalState>>,
     import_sessions: Mutex<Vec<ImportSessionMeta>>,
     pending: Mutex<HashMap<String, Vec<ThreadActionRequestDto>>>,
+    /// How long a long prompt ("inspect this repository" or over 180 typed
+    /// characters) works before replying, unless interrupted.
+    slow_turn: Mutex<Duration>,
 }
 
+/// The default work time of a long fake prompt, which E2E suites rely on to
+/// interrupt, steer or queue behind a running turn.
+const SLOW_TURN: Duration = Duration::from_secs(25);
+
 impl FakeRuntime {
+    /// Change how long later long prompts work, so a test that only needs a
+    /// long prompt to finish does not wait the default 25 seconds.
+    pub fn set_slow_turn(&self, duration: Duration) {
+        *self.slow_turn.lock().unwrap() = duration;
+    }
+
+    pub fn with_slow_turn(self, duration: Duration) -> Self {
+        self.set_slow_turn(duration);
+        self
+    }
+
     pub fn new(provider: Provider) -> Self {
         Self {
             provider,
@@ -224,6 +242,7 @@ impl FakeRuntime {
             goal: Mutex::new(None),
             import_sessions: Mutex::new(Vec::new()),
             pending: Default::default(),
+            slow_turn: Mutex::new(SLOW_TURN),
         }
     }
 
@@ -671,6 +690,7 @@ impl AgentRuntime for FakeRuntime {
         }
         let slow = typed.len() > 180 || typed.to_lowercase().contains("inspect this repository");
         if slow {
+            let slow_turn = *self.slow_turn.lock().unwrap();
             tokio::select! {
                 _ = cancel.cancelled() => {
                     emit(&bus, &input.thread_id, pockymoe_protocol::ThreadEventType::ThreadTurnCompleted, json!({
@@ -680,7 +700,7 @@ impl AgentRuntime for FakeRuntime {
                     }));
                     return Ok(vec![item(&item_id, "", Some("interrupted"))]);
                 }
-                _ = sleep(Duration::from_secs(25)) => {}
+                _ = sleep(slow_turn) => {}
             }
         } else {
             for (i, ch) in reply.chars().enumerate() {

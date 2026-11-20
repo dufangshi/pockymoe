@@ -318,7 +318,11 @@ impl Session {
             println!(
                 "Pockymoe attach: waiting for hub reply (thread setup may take a few minutes)."
             );
-            let text = match first_reply(&mut socket, REPLY_LIMIT).await {
+            let text = match hub_first_reply(&mut socket, || {
+                println!("Pockymoe attach: still waiting for hub reply.")
+            })
+            .await
+            {
                 FirstReply::Text(text) => text,
                 FirstReply::TimedOut => {
                     // The retry keeps this instance ID, so the hub replaces the
@@ -522,6 +526,8 @@ fn diagnostic(value: &str, secrets: &[Option<&str>], limit: usize) -> String {
 /// Thread setup can legitimately take minutes; a hub that keeps the socket
 /// open without ever replying must still reach the retry and recovery path.
 const REPLY_LIMIT: Duration = Duration::from_secs(5 * 60);
+/// How often a long first-reply wait says it is still waiting.
+const REPLY_PROGRESS: Duration = Duration::from_secs(30);
 
 enum FirstReply {
     Text(String),
@@ -529,9 +535,25 @@ enum FirstReply {
     TimedOut,
 }
 
+/// The attach loop's wait for the hub's first reply, with its real limit and
+/// progress cadence.
+async fn hub_first_reply<S>(socket: &mut S, progress: impl FnMut()) -> FirstReply
+where
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + futures_util::Sink<Message>
+        + Unpin,
+{
+    first_reply(socket, REPLY_LIMIT, REPLY_PROGRESS, progress).await
+}
+
 /// Wait for the hub's first business reply within `limit`, answering pings and
-/// printing a progress line every 30 seconds.
-async fn first_reply<S>(socket: &mut S, limit: Duration) -> FirstReply
+/// calling `progress` every `every` while it waits.
+async fn first_reply<S>(
+    socket: &mut S,
+    limit: Duration,
+    every: Duration,
+    mut progress: impl FnMut(),
+) -> FirstReply
 where
     S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
         + futures_util::Sink<Message>
@@ -539,17 +561,14 @@ where
 {
     let deadline = time::sleep(limit);
     tokio::pin!(deadline);
-    let mut progress = time::interval_at(
-        time::Instant::now() + Duration::from_secs(30),
-        Duration::from_secs(30),
-    );
-    progress.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    let mut ticks = time::interval_at(time::Instant::now() + every, every);
+    ticks.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
     loop {
         let frame = tokio::select! {
             frame = socket.next() => frame,
             _ = &mut deadline => return FirstReply::TimedOut,
-            _ = progress.tick() => {
-                println!("Pockymoe attach: still waiting for hub reply.");
+            _ = ticks.tick() => {
+                progress();
                 continue;
             }
         };
@@ -833,11 +852,70 @@ mod tests {
         });
         let started = time::Instant::now();
         assert!(matches!(
-            first_reply(&mut client, Duration::from_millis(300)).await,
+            first_reply(
+                &mut client,
+                Duration::from_millis(300),
+                REPLY_PROGRESS,
+                || {}
+            )
+            .await,
             FirstReply::TimedOut
         ));
         assert!(started.elapsed() < Duration::from_secs(5));
         pinger.abort();
+    }
+
+    // Virtual time runs the attach loop's real limit and progress cadence: a
+    // hub that answers after a minute is still waited for on the same socket.
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_hub_reply_reports_progress_and_keeps_the_socket() {
+        let (mut client, mut hub) = socket_pair().await;
+        let started = time::Instant::now();
+        let hub = tokio::spawn(async move {
+            // Past the old 15-second timeout and the first progress tick, the
+            // hub checks the socket is alive before it finally binds.
+            time::sleep(Duration::from_secs(40)).await;
+            hub.send(Message::Ping(b"delayed-setup".to_vec().into()))
+                .await
+                .unwrap();
+            let pong = hub.next().await.unwrap().unwrap();
+            assert_eq!(pong, Message::Pong(b"delayed-setup".to_vec().into()));
+            time::sleep(Duration::from_secs(21)).await;
+            hub.send(Message::Text("{\"type\":\"bound\"}".into()))
+                .await
+                .unwrap();
+            hub
+        });
+        let mut progress = Vec::new();
+        let reply = hub_first_reply(&mut client, || progress.push(started.elapsed())).await;
+        assert!(matches!(reply, FirstReply::Text(text) if text == "{\"type\":\"bound\"}"));
+        assert_eq!(
+            progress,
+            [REPLY_PROGRESS, REPLY_PROGRESS * 2],
+            "one progress line per 30 seconds"
+        );
+        assert!(started.elapsed() >= Duration::from_secs(61));
+        hub.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_hub_is_waited_for_the_full_reply_limit() {
+        let (mut client, _hub) = socket_pair().await;
+        let started = time::Instant::now();
+        let mut progress = 0;
+        assert!(matches!(
+            hub_first_reply(&mut client, || progress += 1).await,
+            FirstReply::TimedOut
+        ));
+        assert!(
+            started.elapsed() >= REPLY_LIMIT && started.elapsed() < REPLY_LIMIT + REPLY_PROGRESS
+        );
+        // The last tick and the limit coincide; either may be reported first.
+        let ticks = REPLY_LIMIT.as_secs() / REPLY_PROGRESS.as_secs();
+        assert!(
+            (ticks - 1..=ticks).contains(&progress),
+            "{progress} progress lines"
+        );
     }
 
     #[tokio::test]
@@ -847,11 +925,11 @@ mod tests {
         hub.send(Message::Text("{\"type\":\"bound\"}".into()))
             .await
             .unwrap();
-        let reply = first_reply(&mut client, Duration::from_secs(5)).await;
+        let reply = first_reply(&mut client, Duration::from_secs(5), REPLY_PROGRESS, || {}).await;
         assert!(matches!(reply, FirstReply::Text(text) if text == "{\"type\":\"bound\"}"));
         hub.close(None).await.unwrap();
         assert!(matches!(
-            first_reply(&mut client, Duration::from_secs(5)).await,
+            first_reply(&mut client, Duration::from_secs(5), REPLY_PROGRESS, || {}).await,
             FirstReply::Closed
         ));
     }

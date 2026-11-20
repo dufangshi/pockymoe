@@ -75,6 +75,18 @@ mod isolated_claude;
 #[path = "isolated_capabilities.rs"]
 mod isolated_capabilities;
 
+/// How often a turn polls native transcripts (usage, background tasks and
+/// completed queued commands). Every loop wake re-arms the turn's 250 ms
+/// settle and 500 ms process checks, so this must stay well above both.
+const NATIVE_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How long a Claude command must stay proven complete in an autonomous SDK
+/// cycle before its stranded ACP prompt is drained. Shortened for unit tests only.
+#[cfg(not(test))]
+const COALESCED_DRAIN_DELAY: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const COALESCED_DRAIN_DELAY: Duration = Duration::from_millis(300);
+
 // Startup and cancelled probes must not leave the notification mux holding a child alive.
 struct StartupProcess(Option<Arc<AcpProcess>>);
 impl Drop for StartupProcess {
@@ -2759,7 +2771,7 @@ impl AgentRuntime for AcpRuntime {
         {
             reader.expect_prompt(&prompt);
         }
-        let mut usage_tick = tokio::time::interval(Duration::from_secs(1));
+        let mut usage_tick = tokio::time::interval(NATIVE_POLL_INTERVAL);
         // Claude only says what its context consists of when asked: ask after each
         // model request, so every step of the turn has a composition.
         let context_busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -3003,7 +3015,7 @@ impl AgentRuntime for AcpRuntime {
                             };
                             if ready {
                                 let since = coalesced_ready_since.get_or_insert_with(tokio::time::Instant::now);
-                                if since.elapsed() >= Duration::from_secs(3) {
+                                if since.elapsed() >= COALESCED_DRAIN_DELAY {
                                     // This command already ran in an autonomous SDK cycle.
                                     // Drain the stranded ACP request and await its response;
                                     // never resubmit work or cancel a live background task.

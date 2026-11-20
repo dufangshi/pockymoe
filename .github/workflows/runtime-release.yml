@@ -88,12 +88,20 @@ jobs:
           cmd-format: rustup run ${{ env.RUST_VERSION }} {0}
           add-rust-environment-hash-key: false
 
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
       - name: Validate affected-package selection
         run: python3 scripts/runtime-validation.test.py
+      # nextest runs every selected test binary in one pool; line tables keep
+      # panic locations while halving the debug build of the test binaries.
       - name: Test affected packages from the trusted release
         env:
           BASE_SHA: ${{ steps.baseline.outputs.sha }}
           VALIDATION: ${{ inputs.validation }}
+          POCKYMOE_TEST_RUNNER: nextest
+          CARGO_PROFILE_DEV_DEBUG: line-tables-only
         run: python3 scripts/runtime-validation.py --base "$BASE_SHA" --head "$GITHUB_SHA" --validation "$VALIDATION"
 
   native:

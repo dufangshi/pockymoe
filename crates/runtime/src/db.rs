@@ -483,9 +483,44 @@ pub fn secure_database_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// How many 50 ms probes must find the owner lock held before an unowned
+/// preparation treats the database as owned by a running Supervisor (about
+/// one second). A process forked meanwhile holds an inherited copy only until
+/// it execs, which takes milliseconds.
+static OWNED_LOCK_PROBES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(20);
+
+/// Confirm a running owner with fewer probes. For test processes that run
+/// command-line database work next to their own in-process Supervisor, which
+/// would otherwise wait the full second on every call. Production never
+/// changes it.
+#[doc(hidden)]
+pub fn set_owned_lock_probes_for_tests(probes: u32) {
+    OWNED_LOCK_PROBES.store(probes.max(1), std::sync::atomic::Ordering::Relaxed);
+}
+
 impl Database {
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_as_owner(path, true)?.context("database owner lock was not acquired")
+    }
+
+    /// Open the database again after this process dropped its previous owner.
+    /// Other tests in the process spawn children; one forked before the drop
+    /// holds a copy of the owner lock's open file, and so its `flock`, until it
+    /// execs. Wait that out rather than report another Supervisor.
+    #[cfg(test)]
+    pub(crate) fn reopen(path: &Path) -> Result<Self> {
+        let started = std::time::Instant::now();
+        loop {
+            match Self::open(path) {
+                Err(error)
+                    if error.to_string().contains("already owned")
+                        && started.elapsed() < Duration::from_secs(5) =>
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                result => return result,
+            }
+        }
     }
 
     /// Create or migrate the database unless a running Supervisor owns it (that
@@ -528,7 +563,7 @@ impl Database {
                 // so only a lock that stays held means the database is owned.
                 Err(std::fs::TryLockError::WouldBlock) if !required => {
                     attempts += 1;
-                    if attempts == 20 {
+                    if attempts >= OWNED_LOCK_PROBES.load(std::sync::atomic::Ordering::Relaxed) {
                         return Ok(None);
                     }
                     std::thread::sleep(Duration::from_millis(50));

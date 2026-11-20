@@ -332,7 +332,7 @@ async fn unknown_contract_fails_before_connecting() {
 }
 
 #[tokio::test]
-async fn delayed_hub_reply_reports_progress_and_stays_on_the_same_socket() {
+async fn delayed_hub_reply_keeps_waiting_on_the_same_socket() {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let mut f = Fixture::new(&["--provider", "codex"], None).await;
     let (mut ws, _) = f.accept().await;
@@ -349,21 +349,20 @@ async fn delayed_hub_reply_reports_progress_and_stays_on_the_same_socket() {
     })
     .await
     .unwrap();
-    // This spans the old 15-second timeout and the first 30-second progress tick.
-    time::timeout(Duration::from_secs(35), async {
-        loop {
-            let line = lines
-                .next_line()
-                .await
-                .unwrap()
-                .expect("attach must keep waiting");
-            if line.contains("still waiting for hub reply") {
-                break;
-            }
+    // The hub stays silent for a while. The 30-second progress cadence and the
+    // absence of the old 15-second timeout are checked in virtual time by the
+    // unit tests of the same wait (`attach::tests::a_slow_hub_reply_*`); here
+    // the real process must keep its socket and print nothing alarming.
+    let quiet = time::timeout(Duration::from_millis(1500), async {
+        while let Some(line) = lines.next_line().await.unwrap() {
+            assert!(
+                !line.contains("reconnecting"),
+                "attach gave up on a silent hub: {line}"
+            );
         }
     })
-    .await
-    .unwrap();
+    .await;
+    assert!(quiet.is_err(), "attach exited while waiting for the hub");
     assert!(f.child.try_wait().unwrap().is_none());
     assert!(
         time::timeout(Duration::from_millis(100), f.listener.accept())

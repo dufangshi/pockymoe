@@ -35,6 +35,27 @@ fn test_config(dir: &std::path::Path) -> RuntimeConfig {
     }
 }
 
+/// Open the database again after this process dropped its previous owner.
+/// Other tests here spawn child processes (this binary itself, for the lock
+/// test). On Unix a child forked before the drop holds a copy of the owner
+/// lock's open file until it execs; wait for the actual release instead of
+/// assuming no fork/exec overlaps the drop.
+async fn reopen(path: &std::path::Path) -> Database {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match Database::open(path) {
+                Ok(db) => break db,
+                Err(error) => {
+                    assert!(error.to_string().contains("already owned"), "{error:#}");
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            }
+        }
+    })
+    .await
+    .expect("old Supervisor database ownership must be released")
+}
+
 fn prompt_input(prompt: &str) -> SendThreadPromptInput {
     SendThreadPromptInput {
         prompt: prompt.into(),
@@ -75,6 +96,18 @@ async fn seeded_thread(
     pockymoe_protocol::WorkspaceDto,
     pockymoe_protocol::ThreadDto,
 ) {
+    seeded_thread_with(Arc::new(FakeRuntime::new(provider)), provider).await
+}
+
+async fn seeded_thread_with(
+    runtime: Arc<FakeRuntime>,
+    provider: Provider,
+) -> (
+    tempfile::TempDir,
+    Supervisor,
+    pockymoe_protocol::WorkspaceDto,
+    pockymoe_protocol::ThreadDto,
+) {
     let dir = tempdir().unwrap();
     let ws_path = dir.path().join("proj");
     std::fs::create_dir_all(&ws_path).unwrap();
@@ -82,7 +115,7 @@ async fn seeded_thread(
     let mut config = test_config(dir.path());
     config.enabled_providers = vec![provider];
     let db = Database::open(&config.database_url).unwrap();
-    let runtime: SharedRuntime = Arc::new(FakeRuntime::new(provider));
+    let runtime: SharedRuntime = runtime;
     let supervisor = Supervisor::new(config, db, vec![runtime]);
     let workspace = supervisor
         .create_workspace(CreateWorkspaceInput {
@@ -191,7 +224,7 @@ async fn update_intent_survives_crash_before_cancellation_and_failed_reconnect()
     // survive and must not be silently turned into success or discarded.
     let state = Arc::new(Supervisor::new(
         config.clone(),
-        Database::open(&config.database_url).unwrap(),
+        reopen(&config.database_url).await,
         vec![],
     ));
     state.finish_update_attempt();
@@ -229,7 +262,7 @@ async fn update_intent_survives_crash_before_cancellation_and_failed_reconnect()
     drop(state);
     let state = Arc::new(Supervisor::new(
         config.clone(),
-        Database::open(&config.database_url).unwrap(),
+        reopen(&config.database_url).await,
         vec![Arc::new(FakeRuntime::new(Provider::Codex))],
     ));
     assert!(state.defer_update_recovery());
@@ -259,8 +292,14 @@ async fn update_intent_survives_crash_before_cancellation_and_failed_reconnect()
         0
     );
 }
+/// The maintenance resume prompt is long, so the fake harness would work on
+/// it for its default 25 seconds; recovery only needs it to finish.
+const RESUMED_TURN: std::time::Duration = std::time::Duration::from_millis(200);
+
 async fn verify_update_recovery(restart: bool, strategy: pockymoe_runtime::RestartStrategy) {
-    let (_dir, mut supervisor, _workspace, thread) = seeded_thread(Provider::Codex).await;
+    let fake = Arc::new(FakeRuntime::new(Provider::Codex));
+    let (_dir, mut supervisor, _workspace, thread) =
+        seeded_thread_with(fake.clone(), Provider::Codex).await;
     supervisor.config.supervisor_restart_strategy = strategy;
     let supervisor = Arc::new(supervisor);
     supervisor.spawn_live_item_persister();
@@ -321,14 +360,18 @@ async fn verify_update_recovery(restart: bool, strategy: pockymoe_runtime::Resta
     );
     assert_eq!(paused.turns.len(), 1);
     drop(guard);
+    // The interrupted turn was long; only the resumed one is shortened.
+    fake.set_slow_turn(RESUMED_TURN);
     let state = if restart {
         let config = supervisor.config.clone();
         drop(supervisor);
-        let db = Database::open(&config.database_url).unwrap();
+        let db = reopen(&config.database_url).await;
         Arc::new(Supervisor::new(
             config,
             db,
-            vec![Arc::new(FakeRuntime::new(Provider::Codex))],
+            vec![Arc::new(
+                FakeRuntime::new(Provider::Codex).with_slow_turn(RESUMED_TURN),
+            )],
         ))
     } else {
         supervisor
@@ -347,7 +390,7 @@ async fn verify_update_recovery(restart: bool, strategy: pockymoe_runtime::Resta
         .contains("updating"));
     state.finish_update_attempt();
     state.spawn_update_recovery(); // Repeated startup notification must not duplicate a turn.
-    tokio::time::timeout(std::time::Duration::from_secs(35), async {
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let detail = state.get_thread_detail(&thread.id, None).await.unwrap();
             if detail.turns.len() == 3 && detail.thread.status == "idle" {
@@ -423,7 +466,7 @@ async fn supervisor_update_recovery_respects_user_stop_and_ordinary_crashes() {
     }).unwrap();
     let config = supervisor.config.clone();
     drop(supervisor);
-    let db = Database::open(&config.database_url).unwrap();
+    let db = reopen(&config.database_url).await;
     let state = Arc::new(Supervisor::new(
         config,
         db,
@@ -502,22 +545,7 @@ async fn acknowledged_input_survives_restart_before_dispatch() {
         .turns
         .is_empty());
     drop(state);
-    // Other tests spawn ACP child processes concurrently. On Unix a fork can
-    // briefly inherit the lock descriptor until exec closes it. Wait for actual
-    // lock release instead of assuming no concurrent fork/exec overlaps the drop.
-    let reopened = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        loop {
-            match Database::open(&config.database_url) {
-                Ok(db) => break db,
-                Err(error) => {
-                    assert!(error.to_string().contains("already owned"), "{error:#}");
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            }
-        }
-    })
-    .await
-    .expect("old Supervisor database ownership must be released");
+    let reopened = reopen(&config.database_url).await;
     let restarted = Supervisor::new(
         config.clone(),
         reopened,

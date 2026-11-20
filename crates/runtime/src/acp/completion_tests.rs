@@ -23,7 +23,9 @@ async fn claude_background_wake_output_stays_live_and_persists_after_foreground_
         return;
     }
 
-    for scenario in [
+    // Every scenario owns its directory, fixture process, runtime and
+    // Supervisor, so they run concurrently; each keeps its own step order.
+    let scenarios = [
         "normal",
         "idle-steer",
         "idle-native",
@@ -34,7 +36,8 @@ async fn claude_background_wake_output_stays_live_and_persists_after_foreground_
         "disconnect",
         "native",
         "monitor",
-    ] {
+    ]
+    .map(|scenario| async move {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("background.py");
         std::fs::write(
@@ -359,7 +362,8 @@ async fn claude_background_wake_output_stays_live_and_persists_after_foreground_
             1,
             "no duplicate synthetic turn"
         );
-    }
+    });
+    futures_util::future::join_all(scenarios).await;
 }
 
 #[tokio::test]
@@ -369,6 +373,12 @@ async fn claude_coalesced_prompt_drains_only_proven_completed_work() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "acp::runtime::completion_tests::claude_coalesced_prompt_drains_only_proven_completed_work", "--nocapture"])
             .env("POCKYMOE_COALESCED_TEST_CHILD", "1")
+            // The fixture keeps the old completion proof visible after steering
+            // past the latest moment a drain could start (see `unproven_wait`).
+            .env(
+                "POCKYMOE_COALESCED_STEER_HOLD_SECS",
+                unproven_wait().as_secs_f64().to_string(),
+            )
             .env("CLAUDE_CONFIG_DIR", dir.path()).output().unwrap();
         assert!(
             output.status.success(),
@@ -397,7 +407,9 @@ async fn claude_coalesced_prompt_drains_only_proven_completed_work() {
         model_list_command: None,
     };
     let runtime = AcpRuntime::bound(Provider::Acp, "claude", 5_000);
-    for scenario in [
+    // Each scenario has its own session, native transcript and event bus, so
+    // they run concurrently on the shared runtime; each one keeps its own order.
+    let scenarios = [
         "coalesced",
         "cancel-error",
         "background",
@@ -407,153 +419,178 @@ async fn claude_coalesced_prompt_drains_only_proven_completed_work() {
         "provider-error",
         "user-cancel",
         "steer-before-drain",
-    ] {
-        if std::env::var("POCKYMOE_COALESCED_TEST_SCENARIO")
-            .is_ok_and(|selected| selected != scenario)
-        {
-            continue;
-        }
-        let (session, live) = runtime
-            .spawn_session(
-                &def,
-                dir.path().to_str().unwrap(),
-                ProductSessionPolicy::default(),
-                None,
-                None,
-                None,
-            )
+    ]
+    .into_iter()
+    .filter(|scenario| {
+        std::env::var("POCKYMOE_COALESCED_TEST_SCENARIO")
+            .map_or(true, |selected| selected == *scenario)
+    })
+    .map(|scenario| coalesced_scenario(&runtime, &def, dir.path(), scenario));
+    futures_util::future::join_all(scenarios).await;
+}
+
+/// The completed command is first seen by the poll after the fixture writes
+/// it (at most two polls in), and a drain starts on the first poll at least
+/// `COALESCED_DRAIN_DELAY` later. With the production 3 s delay this was 5 s;
+/// the unit-test delay is under one poll, so a drain starts one poll later.
+fn unproven_wait() -> Duration {
+    NATIVE_POLL_INTERVAL * 2 + COALESCED_DRAIN_DELAY
+}
+
+async fn coalesced_scenario(
+    runtime: &AcpRuntime,
+    def: &AcpAgentDef,
+    dir: &std::path::Path,
+    scenario: &'static str,
+) {
+    let (session, live) = runtime
+        .spawn_session(
+            def,
+            dir.to_str().unwrap(),
+            ProductSessionPolicy::default(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let cleanup = StartupProcess(Some(live.process.clone()));
+    let native_session = live.session_id.clone();
+    runtime
+        .inner
+        .sessions
+        .lock()
+        .await
+        .insert(session.clone(), live);
+    let cancel = CancellationToken::new();
+    let bus = EventBus::new();
+    let mut events = bus.subscribe();
+    let input = |prompt: &str| StartTurnInput {
+        provider_session_id: session.clone(),
+        prompt: prompt.into(),
+        model: None,
+        reasoning_effort: None,
+        sandbox_mode: None,
+        collaboration_mode: None,
+        approval_mode: None,
+        performance_mode: None,
+        thread_id: "fixture".into(),
+        turn_id: prompt.into(),
+        hidden: false,
+        images: Vec::new(),
+        title: None,
+        context_delivered: false,
+    };
+    let turn = runtime.start_turn(input(scenario), bus.clone(), cancel.clone());
+    tokio::pin!(turn);
+    let marker = PathBuf::from(std::env::var_os("CLAUDE_CONFIG_DIR").unwrap())
+        .join("projects/fixture")
+        .join(native_session);
+    let success = matches!(
+        scenario,
+        "coalesced" | "cancel-error" | "background" | "steer-before-drain"
+    );
+    if matches!(scenario, "steer-before-drain" | "user-cancel") {
+        // The fixture has its prompt once it streams "done". A cancel sent
+        // before the prompt arrives would leave the prompt unanswered, and the
+        // turn would discard the session after its 5 s cancel deadline.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = tokio::select! {
+                    result = &mut turn => panic!("{scenario}: turn ended before its reply: {result:?}"),
+                    event = events.recv() => event.unwrap(),
+                };
+                if event.event_type == "thread.output.delta" && event.payload["delta"] == "done" {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+    if scenario == "steer-before-drain" {
+        runtime
+            .send_input(&session, scenario, "change direction")
             .await
             .unwrap();
-        let cleanup = StartupProcess(Some(live.process.clone()));
-        let native_session = live.session_id.clone();
+    }
+    if !success || scenario == "background" {
+        // A user cancel arrives before any drain could; the other scenarios
+        // wait past the latest moment a wrong drain would have started.
+        let wait = if scenario == "user-cancel" {
+            COALESCED_DRAIN_DELAY / 3
+        } else {
+            unproven_wait()
+        };
+        assert!(
+            tokio::time::timeout(wait, &mut turn).await.is_err(),
+            "{scenario} settled without proof"
+        );
+        assert!(
+            !marker.with_extension("cancelled").exists(),
+            "{scenario} cancelled real/unproven work"
+        );
+        if scenario == "background" {
+            std::fs::write(marker.with_extension("release"), "").unwrap();
+        } else {
+            cancel.cancel();
+        }
+    }
+    let result = tokio::time::timeout(Duration::from_secs(8), &mut turn)
+        .await
+        .expect(scenario)
+        .unwrap();
+    let completed = std::iter::from_fn(|| events.try_recv().ok())
+        .find(|event| event.event_type == "thread.turn.completed")
+        .unwrap();
+    assert_eq!(
+        completed.payload["status"],
+        if success { "completed" } else { "interrupted" },
+        "{scenario}"
+    );
+    assert_eq!(
+        cancel.is_cancelled(),
+        !success,
+        "housekeeping must not cancel the user turn"
+    );
+    if success {
+        assert!(result.iter().any(
+            |item| item.text.starts_with("done") && item.status.as_deref() == Some("completed")
+        ));
+        assert_eq!(
+            marker.with_extension("cancelled").exists(),
+            scenario != "steer-before-drain",
+            "{scenario}"
+        );
+        if scenario == "steer-before-drain" {
+            assert!(result
+                .iter()
+                .any(|item| item.text.contains("steering processed")));
+        }
+        let next = runtime
+            .start_turn(input("follow-up"), bus, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            next.iter()
+                .filter(|item| item.text == "follow-up completed once")
+                .count(),
+            1
+        );
+    }
+    assert!(
         runtime
             .inner
             .sessions
             .lock()
             .await
-            .insert(session.clone(), live);
-        let cancel = CancellationToken::new();
-        let bus = EventBus::new();
-        let mut events = bus.subscribe();
-        let input = |prompt: &str| StartTurnInput {
-            provider_session_id: session.clone(),
-            prompt: prompt.into(),
-            model: None,
-            reasoning_effort: None,
-            sandbox_mode: None,
-            collaboration_mode: None,
-            approval_mode: None,
-            performance_mode: None,
-            thread_id: "fixture".into(),
-            turn_id: prompt.into(),
-            hidden: false,
-            images: Vec::new(),
-            title: None,
-            context_delivered: false,
-        };
-        let turn = runtime.start_turn(input(scenario), bus.clone(), cancel.clone());
-        tokio::pin!(turn);
-        let marker = PathBuf::from(std::env::var_os("CLAUDE_CONFIG_DIR").unwrap())
-            .join("projects/fixture")
-            .join(native_session);
-        let success = matches!(
-            scenario,
-            "coalesced" | "cancel-error" | "background" | "steer-before-drain"
-        );
-        if scenario == "steer-before-drain" {
-            tokio::time::timeout(Duration::from_secs(2), async {
-                loop {
-                    let event = tokio::select! {
-                        result = &mut turn => panic!("turn ended before steering: {result:?}"),
-                        event = events.recv() => event.unwrap(),
-                    };
-                    if event.event_type == "thread.output.delta" && event.payload["delta"] == "done"
-                    {
-                        break;
-                    }
-                }
-            })
-            .await
-            .unwrap();
-            runtime
-                .send_input(&session, scenario, "change direction")
-                .await
-                .unwrap();
-        }
-        if !success || scenario == "background" {
-            let wait = if scenario == "user-cancel" {
-                Duration::from_secs(1)
-            } else {
-                Duration::from_secs(5)
-            };
-            assert!(
-                tokio::time::timeout(wait, &mut turn).await.is_err(),
-                "{scenario} settled without proof"
-            );
-            assert!(
-                !marker.with_extension("cancelled").exists(),
-                "{scenario} cancelled real/unproven work"
-            );
-            if scenario == "background" {
-                std::fs::write(marker.with_extension("release"), "").unwrap();
-            } else {
-                cancel.cancel();
-            }
-        }
-        let result = tokio::time::timeout(Duration::from_secs(8), &mut turn)
-            .await
-            .expect(scenario)
-            .unwrap();
-        let completed = std::iter::from_fn(|| events.try_recv().ok())
-            .find(|event| event.event_type == "thread.turn.completed")
-            .unwrap();
-        assert_eq!(
-            completed.payload["status"],
-            if success { "completed" } else { "interrupted" },
-            "{scenario}"
-        );
-        assert_eq!(
-            cancel.is_cancelled(),
-            !success,
-            "housekeeping must not cancel the user turn"
-        );
-        if success {
-            assert!(result
-                .iter()
-                .any(|item| item.text.starts_with("done")
-                    && item.status.as_deref() == Some("completed")));
-            assert_eq!(
-                marker.with_extension("cancelled").exists(),
-                scenario != "steer-before-drain",
-                "{scenario}"
-            );
-            if scenario == "steer-before-drain" {
-                assert!(result
-                    .iter()
-                    .any(|item| item.text.contains("steering processed")));
-            }
-            let next = runtime
-                .start_turn(input("follow-up"), bus, CancellationToken::new())
-                .await
-                .unwrap();
-            assert_eq!(
-                next.iter()
-                    .filter(|item| item.text == "follow-up completed once")
-                    .count(),
-                1
-            );
-        }
-        assert!(runtime
-            .inner
-            .sessions
-            .lock()
-            .await
             .get(&session)
-            .unwrap()
+            .unwrap_or_else(|| panic!("{scenario}: the session was discarded"))
             .active
-            .is_none());
-        drop(cleanup);
-    }
+            .is_none(),
+        "{scenario}"
+    );
+    drop(cleanup);
 }
 
 #[tokio::test]

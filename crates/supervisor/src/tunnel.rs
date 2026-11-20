@@ -56,7 +56,29 @@ impl Drop for RelayClientSession {
     }
 }
 
+/// The tunnel's silence limit and first retry delay. Tests run the same
+/// reconnect and back-off paths with shorter values.
+#[derive(Clone, Copy)]
+pub(crate) struct RelayTimers {
+    pub(crate) receive_timeout: Duration,
+    pub(crate) retry_delay: Duration,
+}
+
+impl RelayTimers {
+    pub(crate) const PRODUCTION: Self = Self {
+        receive_timeout: RELAY_RECEIVE_TIMEOUT,
+        retry_delay: RELAY_RECONNECT_INITIAL_DELAY,
+    };
+}
+
 pub async fn run_relay_tunnel(state: Arc<Supervisor>) -> Result<()> {
+    run_relay_tunnel_with(state, RelayTimers::PRODUCTION).await
+}
+
+pub(crate) async fn run_relay_tunnel_with(
+    state: Arc<Supervisor>,
+    timers: RelayTimers,
+) -> Result<()> {
     pockymoe_runtime::host_mode::require_feature(state.host_capabilities.relay, "relay")?;
     let server_url = state
         .config
@@ -69,8 +91,8 @@ pub async fn run_relay_tunnel(state: Arc<Supervisor>) -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow!("POCKYMOE_RELAY_AGENT_TOKEN is required"))?;
     let tunnel_url = relay_tunnel_url(server_url)?;
-    let mut reconnect_delay = RELAY_RECONNECT_INITIAL_DELAY;
-    let mut mismatch_delay = RELAY_RECONNECT_INITIAL_DELAY;
+    let mut reconnect_delay = timers.retry_delay;
+    let mut mismatch_delay = timers.retry_delay;
 
     loop {
         let mut handshake = tunnel_url.as_str().into_client_request()?;
@@ -88,8 +110,14 @@ pub async fn run_relay_tunnel(state: Arc<Supervisor>) -> Result<()> {
         {
             Ok(Ok((socket, _))) => {
                 tracing::info!(relay_origin = %tunnel_url.origin().ascii_serialization(), "relay tunnel connected");
-                reconnect_delay = RELAY_RECONNECT_INITIAL_DELAY;
-                if let Err(error) = run_connected_tunnel(state.clone(), socket).await {
+                reconnect_delay = timers.retry_delay;
+                if let Err(error) = run_connected_tunnel_with_deadline(
+                    state.clone(),
+                    socket,
+                    timers.receive_timeout,
+                )
+                .await
+                {
                     tracing::warn!(%error, "relay tunnel connection ended");
                     if error.is::<crate::owner_trust::DeviceIdMismatch>() {
                         if let Err(error) =
@@ -102,7 +130,7 @@ pub async fn run_relay_tunnel(state: Arc<Supervisor>) -> Result<()> {
                         continue;
                     }
                 }
-                mismatch_delay = RELAY_RECONNECT_INITIAL_DELAY;
+                mismatch_delay = timers.retry_delay;
                 // Reconnect an established tunnel immediately. Only failed
                 // connection attempts back off; the runtime remains alive.
                 continue;
@@ -152,15 +180,6 @@ fn relay_tunnel_url(server_url: &str) -> Result<Url> {
     url.set_path("/supervisor/tunnel");
     url.set_query(None);
     Ok(url)
-}
-
-async fn run_connected_tunnel(
-    state: Arc<Supervisor>,
-    socket: tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
-) -> Result<()> {
-    run_connected_tunnel_with_deadline(state, socket, RELAY_RECEIVE_TIMEOUT).await
 }
 
 async fn run_connected_tunnel_with_deadline(
@@ -1247,7 +1266,34 @@ pub(crate) mod tests {
     use pockymoe_runtime::fake::FakeRuntime;
     use tempfile::TempDir;
 
+    /// Account and device commands in these tests open the database beside the
+    /// test's own Supervisor; confirm that owner in about 100 ms, not a second.
+    pub(crate) fn quick_owner_probes() {
+        pockymoe_runtime::db::set_owned_lock_probes_for_tests(3);
+    }
+
+    /// Open a database again after this process dropped its previous owner.
+    /// Other tests here spawn child processes; on Unix a child forked before
+    /// the drop holds a copy of the owner lock's open file until it execs.
+    pub(crate) fn reopen_database(path: &std::path::Path) -> pockymoe_runtime::Database {
+        let started = std::time::Instant::now();
+        loop {
+            match pockymoe_runtime::Database::open(path) {
+                Ok(db) => return db,
+                Err(error) => {
+                    assert!(error.to_string().contains("already owned"), "{error:#}");
+                    assert!(
+                        started.elapsed() < Duration::from_secs(5),
+                        "the dropped owner's lock was never released"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+    }
+
     pub(crate) fn state_with_relay_url(relay_url: &str) -> (TempDir, Arc<Supervisor>) {
+        quick_owner_probes();
         let directory = tempfile::tempdir().unwrap();
         let config = RuntimeConfig {
             treer_enabled: false,
@@ -1652,17 +1698,28 @@ pub(crate) mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let relay_url = format!("ws://{}", listener.local_addr().unwrap());
         let (_directory, state) = state_with_relay_url(&relay_url);
-        let tunnel = tokio::spawn(run_relay_tunnel(state.clone()));
+        // The production silence limit is 15 seconds; the same reconnect path
+        // runs with a shorter one.
+        let timers = RelayTimers {
+            receive_timeout: Duration::from_millis(500),
+            ..RelayTimers::PRODUCTION
+        };
+        let tunnel = tokio::spawn(run_relay_tunnel_with(state.clone(), timers));
         let (tcp, _) = listener.accept().await.unwrap();
         let _silent = tokio_tungstenite::accept_async(tcp).await.unwrap();
+        let silent_since = tokio::time::Instant::now();
         // TCP remains open and writable. No return frames reach the supervisor.
         let (tcp, _) = tokio::time::timeout(
-            RELAY_RECEIVE_TIMEOUT + Duration::from_secs(2),
+            timers.receive_timeout + Duration::from_secs(2),
             listener.accept(),
         )
         .await
         .expect("reconnect without user intervention or process restart")
         .unwrap();
+        assert!(
+            silent_since.elapsed() >= timers.receive_timeout,
+            "a quiet relay is given its full silence limit"
+        );
         let mut replacement = tokio_tungstenite::accept_async(tcp).await.unwrap();
         assert!(!state
             .relay_connected

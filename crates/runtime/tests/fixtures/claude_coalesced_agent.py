@@ -47,7 +47,9 @@ def finish_steering():
     global pending
     # Keep the old native completion/idle proof visible after steering is
     # accepted, reproducing the race before the SDK echoes the new input.
-    time.sleep(5)
+    # The hold must outlast the runtime's drain delay; tests that shorten that
+    # delay shorten the hold to match.
+    time.sleep(float(os.environ.get("POCKYMOE_COALESCED_STEER_HOLD_SECS", "5")))
     native({"type": "user", "uuid": str(uuid.uuid4()), "message": {"content": "change direction"}})
     reply("steering processed")
     if pending is not None:

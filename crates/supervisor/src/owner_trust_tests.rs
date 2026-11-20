@@ -1341,6 +1341,13 @@ fn binding_restricts_existing_database_permissions() {
         0o600
     );
 }
+/// The production back-off starts at one second and doubles; these tests
+/// check the same doubling from a shorter first delay.
+const MISMATCH_TIMERS: crate::tunnel::RelayTimers = crate::tunnel::RelayTimers {
+    retry_delay: std::time::Duration::from_millis(200),
+    ..crate::tunnel::RelayTimers::PRODUCTION
+};
+
 #[tokio::test]
 async fn second_review_mismatch_status_write_failure_keeps_tunnel_retrying() {
     use futures_util::SinkExt;
@@ -1354,7 +1361,10 @@ async fn second_review_mismatch_status_write_failure_keeps_tunnel_retrying() {
         c.execute_batch("CREATE TRIGGER fail_retry_status BEFORE UPDATE ON kv WHEN NEW.key='relayTrustStatus' AND json_extract(NEW.value,'$.retryAt') IS NOT NULL BEGIN SELECT RAISE(FAIL,'synthetic retry status write failure'); END;")?;
         Ok(())
     }).unwrap();
-    let tunnel = tokio::spawn(crate::tunnel::run_relay_tunnel(state.clone()));
+    let tunnel = tokio::spawn(crate::tunnel::run_relay_tunnel_with(
+        state.clone(),
+        MISMATCH_TIMERS,
+    ));
     let mut times = Vec::new();
     for _ in 0..3 {
         let accepted =
@@ -1376,8 +1386,9 @@ async fn second_review_mismatch_status_write_failure_keeps_tunnel_retrying() {
             .unwrap();
     }
     tunnel.abort();
-    assert!(times[1].duration_since(times[0]) >= std::time::Duration::from_secs(1));
-    assert!(times[2].duration_since(times[1]) >= std::time::Duration::from_secs(2));
+    let first = MISMATCH_TIMERS.retry_delay;
+    assert!(times[1].duration_since(times[0]) >= first);
+    assert!(times[2].duration_since(times[1]) >= first * 2);
 }
 
 #[tokio::test]
@@ -1389,7 +1400,10 @@ async fn relay_device_id_mismatch_backs_off_and_reports_status() {
         listener.local_addr().unwrap()
     ));
     live_owner(&state);
-    let tunnel = tokio::spawn(crate::tunnel::run_relay_tunnel(state.clone()));
+    let tunnel = tokio::spawn(crate::tunnel::run_relay_tunnel_with(
+        state.clone(),
+        MISMATCH_TIMERS,
+    ));
     let mut times = Vec::new();
     for _ in 0..3 {
         let (socket, _) =
@@ -1424,8 +1438,9 @@ async fn relay_device_id_mismatch_backs_off_and_reports_status() {
             .unwrap(),
     )
     .unwrap();
-    assert!(times[1].duration_since(times[0]) >= std::time::Duration::from_secs(1));
-    assert!(times[2].duration_since(times[1]) >= std::time::Duration::from_secs(2));
+    let first = MISMATCH_TIMERS.retry_delay;
+    assert!(times[1].duration_since(times[0]) >= first);
+    assert!(times[2].duration_since(times[1]) >= first * 2);
     assert_eq!(status["relayStatus"]["code"], "device_id_mismatch");
     assert!(status["relayStatus"]["retryAt"].as_i64().unwrap() > now());
     assert!(!state
