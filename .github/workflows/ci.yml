@@ -128,52 +128,72 @@ jobs:
           cargo +"${RUST_VERSION}" fmt --all --check
           cargo +"${RUST_VERSION}" check --workspace --locked
 
-  node:
-    name: Relevant TypeScript packages
+  # The Web checks run as three parallel jobs; the slowest sets the wall time.
+  web_typecheck:
+    name: Web typecheck
     needs: changes
     if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v6
-      - uses: pnpm/action-setup@v4
+      - uses: ./.github/actions/web-setup
         with:
-          version: 10.11.1
-      - name: Validate and check out the published thread UI pin
-        shell: bash
-        run: |
-          set -euo pipefail
-          pin="$(cat thread-ui.sha)"
-          [[ "$pin" =~ ^[0-9a-f]{40}$ ]]
-          git init pockymoe-thread-ui
-          git -C pockymoe-thread-ui remote add origin https://github.com/dufangshi/pockymoe-thread-ui-rust.git
-          git -C pockymoe-thread-ui fetch --no-tags origin main
-          git -C pockymoe-thread-ui cat-file -e "$pin^{commit}"
-          git -C pockymoe-thread-ui merge-base --is-ancestor "$pin" FETCH_HEAD
-          git -C pockymoe-thread-ui checkout --detach "$pin"
-      - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          cache: pnpm
-          cache-dependency-path: |
-            pnpm-lock.yaml
-            pockymoe-thread-ui/pnpm-lock.yaml
-      - name: Install thread UI dependencies
-        run: pnpm --dir ./pockymoe-thread-ui install --frozen-lockfile
-      - name: Install workspace dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Typecheck and test Web
+          build-shared-ui: 'false'
+      - name: Typecheck Web and the tracked shared status indicators
         run: |
           node scripts/check-built-status.mjs --shared-only
           pnpm --dir ./pockymoe-thread-ui --filter @pockymoe/thread-ui build
           pnpm --filter @pockymoe/supervisor-web typecheck
-          pnpm --filter @pockymoe/supervisor-web test
-      - name: Verify built status indicators in production Web
+
+  web_test:
+    name: Web unit tests (${{ matrix.shard }}/2)
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/web-setup
+      - name: Test Web
+        run: pnpm --filter @pockymoe/supervisor-web exec vitest run --passWithNoTests --shard=${{ matrix.shard }}/2
+
+  web_built:
+    name: Web production build and status indicators
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/web-setup
+      - name: Build production Web
         run: |
           POCKYMOE_STATUS_AUDIT=1 pnpm --filter @pockymoe/supervisor-web build
           node scripts/check-built-status.mjs
-          pnpm exec playwright install --with-deps chromium
-          pnpm exec playwright test --config e2e/built-status.config.ts e2e/built-status.spec.ts --project=desktop-chromium
+      # The runner image already has Chrome's system libraries; only the
+      # headless shell is downloaded, and it is cached by Playwright version.
+      - name: Resolve Playwright version
+        id: playwright
+        run: echo "version=$(pnpm exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-shell-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - name: Install Chromium headless shell
+        timeout-minutes: 6
+        run: |
+          for attempt in 1 2; do
+            timeout 150 pnpm exec playwright install --only-shell chromium && break
+            [ "$attempt" = 2 ] && exit 1
+          done
+      - name: Verify built status indicators in production Web
+        timeout-minutes: 5
+        run: pnpm exec playwright test --config e2e/built-status.config.ts e2e/built-status.spec.ts --project=desktop-chromium
 
   npm:
     name: npm launcher and updater unit tests
@@ -205,7 +225,7 @@ jobs:
 
   result:
     name: PR checks complete
-    needs: [production_address, changes, workflows, rust, node, npm, windows_harness, thread_contract, treer_packaging, full]
+    needs: [production_address, changes, workflows, rust, web_typecheck, web_test, web_built, npm, windows_harness, thread_contract, treer_packaging, full]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

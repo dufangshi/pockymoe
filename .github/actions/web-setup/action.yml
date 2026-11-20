@@ -1,0 +1,48 @@
+name: Web setup
+description: Check out the pinned shared UI, install Web dependencies and build the shared UI.
+inputs:
+  build-shared-ui:
+    description: Build the shared UI dist (false to inspect the tracked dist first)
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - uses: pnpm/action-setup@v4
+      with:
+        version: 10.11.1
+    - name: Validate and check out the published thread UI pin
+      shell: bash
+      run: |
+        set -euo pipefail
+        pin="$(cat thread-ui.sha)"
+        [[ "$pin" =~ ^[0-9a-f]{40}$ ]]
+        git init -q pockymoe-thread-ui
+        git -C pockymoe-thread-ui remote add origin https://github.com/dufangshi/pockymoe-thread-ui-rust.git
+        for attempt in 1 2 3; do
+          timeout 120 git -C pockymoe-thread-ui fetch -q --no-tags origin main && break
+          [ "$attempt" = 3 ] && exit 1; sleep 5
+        done
+        git -C pockymoe-thread-ui cat-file -e "$pin^{commit}"
+        git -C pockymoe-thread-ui merge-base --is-ancestor "$pin" FETCH_HEAD
+        git -C pockymoe-thread-ui checkout -q --detach "$pin"
+    - uses: actions/setup-node@v6
+      with:
+        node-version: '24'
+        cache: pnpm
+        cache-dependency-path: |
+          pnpm-lock.yaml
+          pockymoe-thread-ui/pnpm-lock.yaml
+    # A stalled registry download fails in minutes and is tried once more,
+    # instead of holding the job until its own timeout.
+    - name: Install dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        for attempt in 1 2; do
+          timeout 300 pnpm --dir ./pockymoe-thread-ui install --frozen-lockfile && timeout 300 pnpm install --frozen-lockfile && break
+          [ "$attempt" = 2 ] && exit 1
+        done
+    - name: Build the shared UI
+      if: inputs.build-shared-ui == 'true'
+      shell: bash
+      run: pnpm --dir ./pockymoe-thread-ui --filter @pockymoe/thread-ui build

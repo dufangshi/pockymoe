@@ -12,7 +12,7 @@ The shared UI repository has no required check; `thread-ui.sha` is checked here.
 | --- | --- |
 | Rust, Cargo configuration, migrations | Linux formatting and `cargo check --workspace --locked` |
 | Protocol crate, shared package, Cargo manifests/lockfile | Protocol wire tests and Rust/TS thread discriminant contract tests |
-| Supervisor Web, shared/plugin packages, `thread-ui.sha` | Web typecheck and Vitest; build the external thread UI dependency, inspect delivered status styles and run the focused production Chromium check |
+| Supervisor Web, shared/plugin packages, `thread-ui.sha`, `ci.yml`, `.github/actions/web-setup` | Three parallel jobs, each set up by `.github/actions/web-setup` (pinned shared UI, dependencies, shared UI build): Web typecheck; Vitest in two shards; production build, delivered status styles and the focused production Chromium check |
 | Native bootstrap, legacy npm launcher or Node scripts | Native SH/legacy launcher, updater, and historical publishing-script unit tests; no product installation or release build |
 | Treer integration packaging | Bundled setup freshness, shell syntax and offline Python installer/configuration tests |
 | GitHub Actions workflows | actionlint; ShellCheck warnings/errors (not style or informational suggestions) |
@@ -40,8 +40,11 @@ it belongs to the published shared UI main history, matching deployment. Relevan
 tests remain part of implementing changes; passing compilation is not a substitute
 for a test of a changed behavior.
 
-The Web job checks the tracked shared UI `dist` before rebuilding it, then builds
-production Web with an audit-only HTML entry. `scripts/check-built-status.mjs`
+The Web typecheck job checks the tracked shared UI `dist`. The build job builds
+production Web with an audit-only HTML entry. Dependency installs and the browser
+download are bounded and retried once, so a stalled download fails in minutes;
+the Chromium headless shell is cached by Playwright version and installed without
+system packages (the runner image already has them). `scripts/check-built-status.mjs`
 requires the static running rings, lit badge and request-only animation rules in
 both delivered bundles and rejects the removed status clock. A focused Chromium
 Playwright check consumes the production fixture, without shared source CSS or a
