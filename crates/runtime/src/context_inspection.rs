@@ -1275,7 +1275,7 @@ mod tests {
             assert!(!state.enabled());
             save_settings(&db, true).unwrap();
         }
-        let db = Database::open(&path).unwrap();
+        let db = Database::reopen(&path).unwrap();
         assert!(InspectionState::new(&db, &path).enabled());
     }
     #[test]

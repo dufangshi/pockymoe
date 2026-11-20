@@ -150,7 +150,7 @@ mod tests {
         drop(state);
         let reopened = Arc::new(Supervisor::new(
             config.clone(),
-            Database::open(&config.database_url).unwrap(),
+            crate::tunnel::tests::reopen_database(&config.database_url),
             vec![],
         ));
         assert_eq!(

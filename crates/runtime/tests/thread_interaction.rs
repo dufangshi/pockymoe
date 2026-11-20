@@ -46,6 +46,25 @@ fn setup() -> (tempfile::TempDir, Arc<Supervisor>) {
     state.spawn_live_item_persister();
     (dir, state)
 }
+/// Open the database again after this process dropped its previous owner.
+/// Other tests here spawn child processes; on Unix a child forked before the
+/// drop holds a copy of the owner lock's open file until it execs. Wait for
+/// the actual release instead of assuming no fork/exec overlaps the drop.
+async fn reopen(path: &std::path::Path) -> Database {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match Database::open(path) {
+                Ok(db) => break db,
+                Err(error) => {
+                    assert!(error.to_string().contains("already owned"), "{error:#}");
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            }
+        }
+    })
+    .await
+    .expect("old Supervisor database ownership must be released")
+}
 async fn thread(s: &Supervisor, p: Provider) -> String {
     let ws = s
         .list_workspaces()
@@ -910,7 +929,7 @@ async fn direct_rejects_unavailable_state_and_unsupported_steering_without_queue
     drop(state);
     let state = Supervisor::new(
         config.clone(),
-        Database::open(&config.database_url).unwrap(),
+        reopen(&config.database_url).await,
         vec![Arc::new(pockymoe_runtime::acp::AcpRuntime::catalog(
             None, 1000,
         ))],
@@ -1000,7 +1019,7 @@ async fn inbox_reminder_batches_after_ten_minutes_and_survives_restart_once() {
     drop(state);
     let state = Supervisor::new(
         config.clone(),
-        Database::open(&config.database_url).unwrap(),
+        reopen(&config.database_url).await,
         vec![
             Arc::new(FakeRuntime::new(Provider::Codex)),
             Arc::new(FakeRuntime::new(Provider::Acp)),
@@ -1504,7 +1523,7 @@ async fn local_notification_subscription_survives_recovery_and_is_cleared_on_sto
     // A restarted runtime has no in-memory turn and marks persisted work recovering.
     let restarted = Supervisor::new(
         config.clone(),
-        Database::open(&config.database_url).unwrap(),
+        reopen(&config.database_url).await,
         vec![Arc::new(FakeRuntime::new(Provider::Codex))],
     );
     assert!(restarted.local_notifications().unwrap().is_empty());

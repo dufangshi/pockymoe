@@ -126,6 +126,30 @@ impl EnvironmentManager {
         }
     }
 
+    /// Open the manager again after the previous one was dropped, as a
+    /// restarted Supervisor would. Other tests in the same process spawn child
+    /// processes: a child forked before the drop shares the sidecar lock's open
+    /// file description, and so its `flock`, until it execs. Wait that out
+    /// instead of reporting the sidecar as owned by another Supervisor.
+    #[cfg(test)]
+    pub(crate) fn reopen(database_path: &Path) -> Self {
+        let started = std::time::Instant::now();
+        loop {
+            let manager = Self::new(database_path);
+            match manager.read(|_| Ok(())) {
+                Ok(()) => return manager,
+                Err(error) => {
+                    assert!(error.to_string().contains("already owned"), "{error:#}");
+                    assert!(
+                        started.elapsed() < Duration::from_secs(5),
+                        "the dropped manager's sidecar lock was never released"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        }
+    }
+
     pub fn set_docker_driver(&self, driver: Arc<dyn EnvironmentDocker>) -> Result<()> {
         *self
             .docker

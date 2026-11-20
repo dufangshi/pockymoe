@@ -488,6 +488,26 @@ impl Database {
         Self::open_as_owner(path, true)?.context("database owner lock was not acquired")
     }
 
+    /// Open the database again after this process dropped its previous owner.
+    /// Other tests in the process spawn children; one forked before the drop
+    /// holds a copy of the owner lock's open file, and so its `flock`, until it
+    /// execs. Wait that out rather than report another Supervisor.
+    #[cfg(test)]
+    pub(crate) fn reopen(path: &Path) -> Result<Self> {
+        let started = std::time::Instant::now();
+        loop {
+            match Self::open(path) {
+                Err(error)
+                    if error.to_string().contains("already owned")
+                        && started.elapsed() < Duration::from_secs(5) =>
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                result => return result,
+            }
+        }
+    }
+
     /// Create or migrate the database unless a running Supervisor owns it (that
     /// owner has migrated it already). Returns whether this call opened it.
     pub fn prepare_unowned(path: &Path) -> Result<bool> {
