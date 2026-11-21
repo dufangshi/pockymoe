@@ -1272,26 +1272,6 @@ pub(crate) mod tests {
         pockymoe_runtime::db::set_owned_lock_probes_for_tests(3);
     }
 
-    /// Open a database again after this process dropped its previous owner.
-    /// Other tests here spawn child processes; on Unix a child forked before
-    /// the drop holds a copy of the owner lock's open file until it execs.
-    pub(crate) fn reopen_database(path: &std::path::Path) -> pockymoe_runtime::Database {
-        let started = std::time::Instant::now();
-        loop {
-            match pockymoe_runtime::Database::open(path) {
-                Ok(db) => return db,
-                Err(error) => {
-                    assert!(error.to_string().contains("already owned"), "{error:#}");
-                    assert!(
-                        started.elapsed() < Duration::from_secs(5),
-                        "the dropped owner's lock was never released"
-                    );
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-            }
-        }
-    }
-
     pub(crate) fn state_with_relay_url(relay_url: &str) -> (TempDir, Arc<Supervisor>) {
         quick_owner_probes();
         let directory = tempfile::tempdir().unwrap();

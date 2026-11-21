@@ -35,27 +35,6 @@ fn test_config(dir: &std::path::Path) -> RuntimeConfig {
     }
 }
 
-/// Open the database again after this process dropped its previous owner.
-/// Other tests here spawn child processes (this binary itself, for the lock
-/// test). On Unix a child forked before the drop holds a copy of the owner
-/// lock's open file until it execs; wait for the actual release instead of
-/// assuming no fork/exec overlaps the drop.
-async fn reopen(path: &std::path::Path) -> Database {
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            match Database::open(path) {
-                Ok(db) => break db,
-                Err(error) => {
-                    assert!(error.to_string().contains("already owned"), "{error:#}");
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                }
-            }
-        }
-    })
-    .await
-    .expect("old Supervisor database ownership must be released")
-}
-
 fn prompt_input(prompt: &str) -> SendThreadPromptInput {
     SendThreadPromptInput {
         prompt: prompt.into(),
@@ -224,7 +203,7 @@ async fn update_intent_survives_crash_before_cancellation_and_failed_reconnect()
     // survive and must not be silently turned into success or discarded.
     let state = Arc::new(Supervisor::new(
         config.clone(),
-        reopen(&config.database_url).await,
+        Database::open(&config.database_url).unwrap(),
         vec![],
     ));
     state.finish_update_attempt();
@@ -262,7 +241,7 @@ async fn update_intent_survives_crash_before_cancellation_and_failed_reconnect()
     drop(state);
     let state = Arc::new(Supervisor::new(
         config.clone(),
-        reopen(&config.database_url).await,
+        Database::open(&config.database_url).unwrap(),
         vec![Arc::new(FakeRuntime::new(Provider::Codex))],
     ));
     assert!(state.defer_update_recovery());
@@ -365,7 +344,7 @@ async fn verify_update_recovery(restart: bool, strategy: pockymoe_runtime::Resta
     let state = if restart {
         let config = supervisor.config.clone();
         drop(supervisor);
-        let db = reopen(&config.database_url).await;
+        let db = Database::open(&config.database_url).unwrap();
         Arc::new(Supervisor::new(
             config,
             db,
@@ -466,7 +445,7 @@ async fn supervisor_update_recovery_respects_user_stop_and_ordinary_crashes() {
     }).unwrap();
     let config = supervisor.config.clone();
     drop(supervisor);
-    let db = reopen(&config.database_url).await;
+    let db = Database::open(&config.database_url).unwrap();
     let state = Arc::new(Supervisor::new(
         config,
         db,
@@ -545,7 +524,7 @@ async fn acknowledged_input_survives_restart_before_dispatch() {
         .turns
         .is_empty());
     drop(state);
-    let reopened = reopen(&config.database_url).await;
+    let reopened = Database::open(&config.database_url).unwrap();
     let restarted = Supervisor::new(
         config.clone(),
         reopened,

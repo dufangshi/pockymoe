@@ -413,7 +413,7 @@ pub struct Database {
     conn: Mutex<Connection>,
     pub host_id: String,
     // Keep the OS lock until all SQLite use has ended; never unlink its inode.
-    _owner: std::fs::File,
+    _owner: crate::owner_lock::OwnerLock,
 }
 
 pub fn validate_database_path(path: &Path) -> Result<()> {
@@ -503,26 +503,6 @@ impl Database {
         Self::open_as_owner(path, true)?.context("database owner lock was not acquired")
     }
 
-    /// Open the database again after this process dropped its previous owner.
-    /// Other tests in the process spawn children; one forked before the drop
-    /// holds a copy of the owner lock's open file, and so its `flock`, until it
-    /// execs. Wait that out rather than report another Supervisor.
-    #[cfg(test)]
-    pub(crate) fn reopen(path: &Path) -> Result<Self> {
-        let started = std::time::Instant::now();
-        loop {
-            match Self::open(path) {
-                Err(error)
-                    if error.to_string().contains("already owned")
-                        && started.elapsed() < Duration::from_secs(5) =>
-                {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                result => return result,
-            }
-        }
-    }
-
     /// Create or migrate the database unless a running Supervisor owns it (that
     /// owner has migrated it already). Returns whether this call opened it.
     pub fn prepare_unowned(path: &Path) -> Result<bool> {
@@ -548,31 +528,33 @@ impl Database {
         };
         let mut lock_path = absolute.as_os_str().to_os_string();
         lock_path.push(".supervisor.lock");
-        let owner = std::fs::OpenOptions::new()
+        let lock_path = std::path::PathBuf::from(lock_path);
+        let mut file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(std::path::PathBuf::from(lock_path))?;
+            .open(&lock_path)?;
         let mut attempts = 0;
-        loop {
-            match owner.try_lock() {
-                Ok(()) => break,
+        let owner = loop {
+            match crate::owner_lock::OwnerLock::try_acquire(file, &lock_path) {
+                Ok(owner) => break owner,
                 // A running Supervisor holds the lock for its lifetime. A process
                 // forked meanwhile can briefly hold an inherited copy until it execs,
                 // so only a lock that stays held means the database is owned.
-                Err(std::fs::TryLockError::WouldBlock) if !required => {
+                Err((again, std::fs::TryLockError::WouldBlock)) if !required => {
                     attempts += 1;
                     if attempts >= OWNED_LOCK_PROBES.load(std::sync::atomic::Ordering::Relaxed) {
                         return Ok(None);
                     }
                     std::thread::sleep(Duration::from_millis(50));
+                    file = again;
                 }
                 Err(_) => bail!(
                     "This database is already owned by another Supervisor. Use an isolated database or stop its owner before starting another instance."
                 ),
             }
-        }
+        };
         secure_database_file(path)?;
         let mut conn =
             Connection::open(path).with_context(|| format!("open sqlite {}", path.display()))?;
