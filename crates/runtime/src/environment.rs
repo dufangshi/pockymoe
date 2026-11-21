@@ -93,7 +93,7 @@ impl Default for Store {
 pub struct EnvironmentManager {
     directory: PathBuf,
     store: Mutex<std::result::Result<Store, String>>,
-    _process_lock: Option<File>,
+    _process_lock: Option<crate::owner_lock::OwnerLock>,
     operation: tokio::sync::Mutex<()>,
     docker: RwLock<Arc<dyn EnvironmentDocker>>,
 }
@@ -123,30 +123,6 @@ impl EnvironmentManager {
             _process_lock: process_lock,
             operation: tokio::sync::Mutex::new(()),
             docker: RwLock::new(Arc::new(CliEnvironmentDocker::default())),
-        }
-    }
-
-    /// Open the manager again after the previous one was dropped, as a
-    /// restarted Supervisor would. Other tests in the same process spawn child
-    /// processes: a child forked before the drop shares the sidecar lock's open
-    /// file description, and so its `flock`, until it execs. Wait that out
-    /// instead of reporting the sidecar as owned by another Supervisor.
-    #[cfg(test)]
-    pub(crate) fn reopen(database_path: &Path) -> Self {
-        let started = std::time::Instant::now();
-        loop {
-            let manager = Self::new(database_path);
-            match manager.read(|_| Ok(())) {
-                Ok(()) => return manager,
-                Err(error) => {
-                    assert!(error.to_string().contains("already owned"), "{error:#}");
-                    assert!(
-                        started.elapsed() < Duration::from_secs(5),
-                        "the dropped manager's sidecar lock was never released"
-                    );
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-            }
         }
     }
 
@@ -1571,7 +1547,7 @@ fn private_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn open_store(directory: &Path) -> Result<(Store, File)> {
+fn open_store(directory: &Path) -> Result<(Store, crate::owner_lock::OwnerLock)> {
     private_dir(directory)?;
     let lock_path = directory.join("owner.lock");
     let mut options = OpenOptions::new();
@@ -1581,8 +1557,8 @@ fn open_store(directory: &Path) -> Result<(Store, File)> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
-    let lock = options.open(lock_path)?;
-    lock.try_lock()?;
+    let lock = crate::owner_lock::OwnerLock::try_acquire(options.open(&lock_path)?, &lock_path)
+        .map_err(|(_, error)| error)?;
     let path = directory.join("resources.json");
     let mut store: Store = if path.exists() {
         ensure!(

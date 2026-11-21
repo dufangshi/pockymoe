@@ -26,6 +26,7 @@ pub mod local_sessions;
 pub mod management;
 mod node_runtime;
 pub mod open_files;
+mod owner_lock;
 pub mod plugins;
 pub mod publications;
 pub mod restart;

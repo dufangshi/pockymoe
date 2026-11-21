@@ -41,7 +41,7 @@ pub(crate) fn supervisor(dir: &Path) -> Arc<Supervisor> {
     };
     // Tests restart on the same directory; wait out a forked child's copy of
     // the previous owner's lock.
-    let db = Database::reopen(&config.database_url).unwrap();
+    let db = Database::open(&config.database_url).unwrap();
     let s = Arc::new(Supervisor::new(
         config,
         db,

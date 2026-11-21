@@ -435,7 +435,7 @@ async fn lifecycle_is_persistent_generation_fenced_and_retains_data() {
     let snapshot = serde_json::to_string(&manager.snapshot().await.unwrap()).unwrap();
     assert!(!snapshot.contains("fixture-secret"));
     drop(manager);
-    let manager = EnvironmentManager::reopen(&database);
+    let manager = EnvironmentManager::new(&database);
     manager
         .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
         .unwrap();
@@ -521,7 +521,7 @@ async fn lost_create_response_recovers_exact_suffixed_identity_without_recreatin
         .is_err());
     assert!(manager.record(&created.id).unwrap().create_pending);
     drop(manager);
-    let manager = EnvironmentManager::reopen(&root.path().join("db"));
+    let manager = EnvironmentManager::new(&root.path().join("db"));
     manager
         .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
         .unwrap();
@@ -903,7 +903,7 @@ async fn restart_quiescence_is_durable_blocks_new_writers_and_preserves_the_orig
         .unwrap();
     drop(manager);
 
-    let manager = EnvironmentManager::reopen(&database);
+    let manager = EnvironmentManager::new(&database);
     manager
         .set_docker_driver(Arc::new(UnavailableDocker))
         .unwrap();
@@ -932,7 +932,7 @@ async fn restart_quiescence_is_durable_blocks_new_writers_and_preserves_the_orig
     assert!(fixture.lock().unwrap().container.as_ref().unwrap()["State"]["Running"] == true);
     drop(manager);
 
-    let manager = EnvironmentManager::reopen(&database);
+    let manager = EnvironmentManager::new(&database);
     manager
         .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
         .unwrap();
@@ -974,7 +974,7 @@ async fn restart_quiescence_is_durable_blocks_new_writers_and_preserves_the_orig
     );
     drop(manager);
 
-    let manager = EnvironmentManager::reopen(&database);
+    let manager = EnvironmentManager::new(&database);
     manager
         .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
         .unwrap();
@@ -1041,7 +1041,7 @@ async fn crash_after_deploy_before_container_id_requires_verified_owned_cleanup(
     assert!(start.await.unwrap_err().is_cancelled());
     drop(manager);
 
-    let manager = EnvironmentManager::reopen(&database);
+    let manager = EnvironmentManager::new(&database);
     manager
         .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
         .unwrap();
@@ -1127,7 +1127,7 @@ async fn legacy_lost_writer_identity_requires_an_explicit_owned_stop() {
     record["dto"]["generation"] = json!(running.generation + 1);
     record["dto"]["lastError"] = json!("legacy restart lost the writer ID");
     std::fs::write(&path, serde_json::to_vec(&store).unwrap()).unwrap();
-    let manager = EnvironmentManager::reopen(&database);
+    let manager = EnvironmentManager::new(&database);
     manager
         .set_docker_driver(Arc::new(FixtureDocker(fixture.clone())))
         .unwrap();
