@@ -381,6 +381,19 @@ async fn run_as(
             threads.iter().try_for_each(|thread| reach(thread))?;
             state.register_wake(from.context("wake needs the caller's identity")?, &threads)
         }
+        "wakes" => {
+            // A thread lists and cancels only its own wakes.
+            let me = caller.as_deref().or(from).context(
+                "wakes needs the caller's identity; run it from a managed thread or pass --from ID",
+            )?;
+            anyhow::ensure!(
+                caller
+                    .as_deref()
+                    .is_none_or(|c| from.is_none_or(|f| f == c)),
+                "forbidden: --from cannot override the authenticated caller for wakes"
+            );
+            state.manage_wakes(me, &strings(&input["cancel"]), input["cancelAll"] == true)
+        }
         "close" => {
             // Like delete: a managed thread's own credential decides who is closing.
             anyhow::ensure!(
@@ -419,7 +432,13 @@ async fn run_as(
                 me == id && from.is_none_or(|from| from == me),
                 "forbidden: a mail wake watches only your own inbox"
             );
-            state.register_mail_wake(me, &filter)
+            state.register_mail_wake(
+                me,
+                &filter,
+                input["lifetimeSeconds"]
+                    .as_u64()
+                    .map(std::time::Duration::from_secs),
+            )
         }
         "ask" => {
             reach(id)?;

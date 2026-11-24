@@ -569,6 +569,74 @@ async fn ask_delivers_the_question_to_an_idle_parent_and_returns_the_answer() {
 }
 
 #[tokio::test]
+async fn an_ask_to_a_parent_with_a_wake_is_told_once_in_the_wake_with_the_question() {
+    let (_dir, s, _) = setup();
+    let ws = workspace(&s);
+    let lead = root(&s, &ws).await;
+    let q = named(&s, &ws, &lead, "asker").await;
+    s.register_wake(&lead, std::slice::from_ref(&q)).unwrap();
+    // The asker works on a turn while it asks, as a real delegate does.
+    add_turn(&s, &q, 1, "inProgress", None);
+    s.db.with(|c| {
+        c.execute("UPDATE threads SET status='running' WHERE id=?1", [&q])?;
+        Ok(())
+    })
+    .unwrap();
+    s.start_interaction_worker();
+
+    let asking = {
+        let s = s.clone();
+        let (lead, q) = (lead.clone(), q.clone());
+        tokio::spawn(async move {
+            s.ask_thread(
+                &lead,
+                &q,
+                "Which port?",
+                "8080 or 9090?".into(),
+                None,
+                Duration::from_secs(5),
+                true,
+            )
+            .await
+            .unwrap()
+        })
+    };
+    until(|| settled_turns(&s, &lead) == 1).await;
+    let (_, _, prompt) = turns(&s, &lead)[0].clone();
+    assert!(
+        prompt.starts_with("[Pockymoe wake: a delegate you registered a wake for is blocked]"),
+        "{prompt}"
+    );
+    let inbox = s.inbox_list(&lead, &json!({})).unwrap();
+    let question = inbox["messages"][0]["id"].as_str().unwrap().to_owned();
+    // The wake quotes the question and how to answer it, in plain text.
+    assert!(
+        prompt.contains(&format!(
+            "question {question} | Which port?:\n  8080 or 9090?"
+        )),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains(&format!(
+            "pockymoe thread send asker --kind result --in-reply-to {question}"
+        )),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("String("), "{prompt}");
+    // No second turn repeats it as a prompt of its own.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(turns(&s, &lead).len(), 1, "{:?}", turns(&s, &lead));
+
+    let mut answer = mail(&lead, "inbox", "result", "Use 9090");
+    answer.in_reply_to = Some(question);
+    s.send_to_thread(&q, answer).unwrap();
+    let answered = asking.await.unwrap();
+    assert_eq!(answered["answered"], true, "{answered}");
+    assert_eq!(answered["promptDelivery"], "wake");
+    assert_eq!(answered["reply"]["text"], "Use 9090");
+}
+
+#[tokio::test]
 async fn an_unanswered_ask_times_out_open_and_limits_further_prompt_questions() {
     let (_dir, s, _) = setup();
     let ws = workspace(&s);
@@ -673,7 +741,7 @@ async fn a_mail_wake_fires_once_on_matching_new_mail_and_shares_the_cap() {
         kinds: vec!["result".into(), "question".into()],
         in_reply_to: None,
     };
-    let registered = s.register_mail_wake(&lead, &filter).unwrap();
+    let registered = s.register_mail_wake(&lead, &filter, None).unwrap();
     assert_eq!(registered["kind"], "mail");
     let pending = s
         .get_thread_detail(&lead, None)
@@ -694,9 +762,10 @@ async fn a_mail_wake_fires_once_on_matching_new_mail_and_shares_the_cap() {
 
     // The cap counts both kinds.
     s.register_wake(&lead, &[a.clone()]).unwrap();
-    s.register_mail_wake(&lead, &MailFilter::default()).unwrap();
+    s.register_mail_wake(&lead, &MailFilter::default(), None)
+        .unwrap();
     let capped = s
-        .register_mail_wake(&lead, &filter)
+        .register_mail_wake(&lead, &filter, None)
         .unwrap_err()
         .to_string();
     assert!(capped.contains("limit"), "{capped}");
@@ -757,6 +826,7 @@ async fn a_mail_wake_survives_a_restart() {
                 from_thread_ids: vec![a.clone()],
                 ..Default::default()
             },
+            None,
         )
         .unwrap();
         (lead, a)
@@ -771,4 +841,60 @@ async fn a_mail_wake_survives_a_restart() {
     s.start_interaction_worker();
     until(|| settled_turns(&s, &lead) == 1).await;
     assert!(turns(&s, &lead)[0].2.contains("after restart"));
+}
+
+#[tokio::test]
+async fn a_mail_wake_expires_with_a_status_note_and_wakes_can_be_listed_and_cancelled() {
+    let (_dir, s, _) = setup();
+    let ws = workspace(&s);
+    let lead = root(&s, &ws).await;
+    let helper = named(&s, &ws, &lead, "helper").await;
+    let filter = MailFilter {
+        kinds: vec!["result".into()],
+        ..MailFilter::default()
+    };
+    // One that expires at once, one long-lived, one on a delegate.
+    let short = s
+        .register_mail_wake(&lead, &filter, Some(Duration::from_secs(1)))
+        .unwrap();
+    assert!(short["expiresAt"].is_string(), "{short}");
+    let long = s.register_mail_wake(&lead, &filter, None).unwrap();
+    // The delegate is still working, so its wake stays pending.
+    add_turn(&s, &helper, 1, "inProgress", None);
+    s.db.with(|c| {
+        c.execute("UPDATE threads SET status='running' WHERE id=?1", [&helper])?;
+        Ok(())
+    })
+    .unwrap();
+    s.register_wake(&lead, std::slice::from_ref(&helper))
+        .unwrap();
+    let listed = s.manage_wakes(&lead, &[], false).unwrap();
+    assert_eq!(listed["pendingWakes"].as_array().unwrap().len(), 3);
+    assert_eq!(wake_count(&s), 3);
+
+    s.start_interaction_worker();
+    until(|| wake_count(&s) == 2).await;
+    // Expiry is passive: a status note, no turn of its own.
+    let inbox = s.inbox_list(&lead, &json!({})).unwrap();
+    let note = &inbox["messages"][0];
+    assert_eq!(note["kind"], "status");
+    assert_eq!(note["subject"], "Mail wake expired");
+    assert!(turns(&s, &lead).is_empty(), "{:?}", turns(&s, &lead));
+
+    // A thread cancels its own wakes by id, or all of them; cancelled wakes never fire.
+    let id = long["wakeId"].as_str().unwrap().to_owned();
+    let cancelled = s
+        .manage_wakes(&lead, std::slice::from_ref(&id), false)
+        .unwrap();
+    assert_eq!(cancelled["cancelled"], json!([id]));
+    assert_eq!(wake_count(&s), 1);
+    assert_eq!(
+        s.manage_wakes(&helper, &[id], false).unwrap()["cancelled"],
+        json!([]),
+        "another thread's id cancels nothing"
+    );
+    let rest = s.manage_wakes(&lead, &[], true).unwrap();
+    assert_eq!(rest["cancelled"].as_array().unwrap().len(), 1);
+    assert_eq!(wake_count(&s), 0);
+    assert!(s.manage_wakes(&lead, &["../x".into()], false).is_err());
 }

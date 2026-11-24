@@ -758,6 +758,7 @@ mod tests {
         for operation in [
             "wait",
             "wake",
+            "wakes",
             "tree",
             "taskAdd",
             "close",

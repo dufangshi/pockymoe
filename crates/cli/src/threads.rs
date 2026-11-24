@@ -236,6 +236,17 @@ More: pockymoe guide delegate"#)]
         #[arg(long, conflicts_with_all = ["any", "timeout"])]
         wake: bool,
     },
+    /// The wakes you registered that have not fired (`thread wait --wake`,
+    /// `inbox wait --wake`); at most 3 wait at a time. Cancel ones you no longer
+    /// need so they do not hold a slot or start a turn later.
+    Wakes {
+        /// Cancel these wake ids (`wakeId` in the registration receipt).
+        #[arg(long, value_name = "WAKE_ID", num_args = 1..)]
+        cancel: Vec<String>,
+        /// Cancel every pending wake of yours.
+        #[arg(long, conflicts_with = "cancel")]
+        cancel_all: bool,
+    },
     /// Your lineage at a glance: every delegate's state, unread mail, current task
     /// and worktree, plus task counts.
     Tree {
@@ -297,7 +308,8 @@ More: pockymoe guide messaging"#)]
     --text 'The task names two keys; which one may I use for the smoke test?'
 The answer comes back in `reply` (marked read; `inbox ack` it once handled).
 An idle ancestor gets the question as a turn right away; a busy one at its next
-idle moment, or through the wake it registered on you. Other recipients read it
+idle moment. An ancestor that registered a wake on you hears it in that wake, with
+the question quoted (`promptDelivery: wake`). Other recipients read it
 from their inbox. One unanswered prompt question per recipient at a time: a
 second ask while the first is open waits in the inbox (`promptDelivery: passive`).
 
@@ -744,6 +756,9 @@ impl Client {
                 }
                 self.request_for(json!({"operation":"wait","threadIds":resolved,"any":any,"timeoutSeconds":timeout,"fromThreadId":self.from}), timeout).await
             }
+            ThreadCommand::Wakes { cancel, cancel_all } => {
+                self.request(json!({"operation":"wakes","cancel":cancel,"cancelAll":cancel_all,"fromThreadId":self.from})).await
+            }
             ThreadCommand::Tree { root, all } => {
                 let root = match root { Some(r) => Some(self.id(&r).await?), None => None };
                 self.request(json!({"operation":"tree","rootThreadId":root,"all":all,"fromThreadId":self.from})).await
@@ -947,6 +962,10 @@ More: pockymoe guide inbox"#)]
         /// so you can end your turn now.
         #[arg(long, conflicts_with = "timeout")]
         wake: bool,
+        /// With --wake: how long the wake waits before it is dropped with a status
+        /// note in your inbox (default 86400, max 604800).
+        #[arg(long, value_name = "SECONDS", requires = "wake")]
+        expires_in: Option<u64>,
     },
 }
 impl Client {
@@ -1034,6 +1053,7 @@ impl Client {
                 new,
                 timeout,
                 wake,
+                expires_in,
             } => {
                 let mut from = Vec::new();
                 for id in &from_threads {
@@ -1041,7 +1061,7 @@ impl Client {
                     from.push(self.target(id, None).await?.thread_id);
                 }
                 if wake {
-                    return self.request(json!({"operation":"inboxWake","threadId":thread,"fromThreadIds":from,"kinds":kind,"inReplyTo":in_reply_to,"fromThreadId":self.from})).await;
+                    return self.request(json!({"operation":"inboxWake","threadId":thread,"fromThreadIds":from,"kinds":kind,"inReplyTo":in_reply_to,"lifetimeSeconds":expires_in,"fromThreadId":self.from})).await;
                 }
                 let input = json!({"operation":"inboxWait","threadId":thread,"fromThreadIds":from,"kinds":kind,"inReplyTo":in_reply_to,"onlyNew":new,"timeoutSeconds":timeout});
                 return self.request_for(input, timeout).await;

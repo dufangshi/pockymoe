@@ -53,6 +53,24 @@ pub(super) fn register(
             Some("the recipient is not your ancestor, so the question waits in its inbox"),
         ));
     }
+    // A delegate wake covering the asker fires as blocked and quotes the
+    // question, so a prompt turn of its own would say it twice.
+    let covered: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM kv w, json_each(json_extract(w.value,'$.members')) m
+         WHERE w.key GLOB ?1 AND m.value=?2)",
+        params![format!("cli:wake:{recipient}:*"), asker],
+        |r| r.get(0),
+    )?;
+    if covered {
+        tx.execute(
+            "UPDATE kv SET value=json_set(value,'$.askDelivery','wake') WHERE key=?1",
+            [&key],
+        )?;
+        return Ok((
+            "wake",
+            Some("the recipient registered a wake that covers you and hears the question there"),
+        ));
+    }
     let open: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM kv q WHERE q.key GLOB ?1
            AND json_extract(q.value,'$.id') != ?3

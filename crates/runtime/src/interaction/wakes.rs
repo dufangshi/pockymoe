@@ -16,6 +16,7 @@ use pockymoe_protocol::{
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+use std::time::Duration;
 use uuid::Uuid;
 
 /// Pending wakes of either kind per caller.
@@ -64,6 +65,44 @@ fn sender_name(conn: &Connection, caller: &str, thread: &str) -> Result<Option<S
             |r| r.get(0),
         )
         .optional()?)
+}
+
+/// How long a mail wake waits unless its caller says otherwise, and at most.
+const MAIL_WAKE_LIFETIME: Duration = Duration::from_secs(24 * 3600);
+const MAIL_WAKE_MAX_LIFETIME: Duration = Duration::from_secs(7 * 24 * 3600);
+
+/// How much of a question a wake report quotes.
+const QUESTION_EXCERPT: usize = 1500;
+
+/// Unanswered, unacknowledged questions `member` mailed to `caller`: id,
+/// subject and text, oldest first.
+fn open_questions_to(
+    conn: &Connection,
+    caller: &str,
+    member: &str,
+) -> Result<Vec<(String, String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT json_extract(q.value,'$.id'), COALESCE(json_extract(q.value,'$.subject'),''),
+                COALESCE(json_extract(q.value,'$.text'),'')
+         FROM kv q WHERE q.key GLOB ?1
+           AND json_extract(q.value,'$.fromThreadId')=?2
+           AND json_extract(q.value,'$.kind')='question'
+           AND json_extract(q.value,'$.acknowledgedAt') IS NULL
+           AND NOT EXISTS (SELECT 1 FROM kv r WHERE r.key GLOB ?3
+               AND json_extract(r.value,'$.inReplyTo')=json_extract(q.value,'$.id'))
+         ORDER BY json_extract(q.value,'$.createdAt') LIMIT 5",
+    )?;
+    let rows = stmt
+        .query_map(
+            params![
+                format!("cli:inbox:{caller}:*"),
+                member,
+                format!("cli:inbox:{member}:*")
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 fn wake_members(conn: &Connection, ids: &[String]) -> Result<Vec<ThreadWakeMemberDto>> {
@@ -125,8 +164,23 @@ impl Supervisor {
     /// arrives in the caller's inbox, deliver its previews like a delegate wake.
     /// Works for mail from any device, so it is how a caller waits for work it
     /// sent to another device.
-    pub fn register_mail_wake(&self, caller: &str, filter: &MailFilter) -> Result<Value> {
+    ///
+    /// A mail wake expires (24 hours unless `lifetime` says otherwise, at most
+    /// 7 days): mail that never comes must not hold one of the caller's three
+    /// wakes forever. Expiry leaves a passive status note in the caller's inbox.
+    pub fn register_mail_wake(
+        &self,
+        caller: &str,
+        filter: &MailFilter,
+        lifetime: Option<Duration>,
+    ) -> Result<Value> {
         filter.validate()?;
+        let lifetime = lifetime
+            .unwrap_or(MAIL_WAKE_LIFETIME)
+            .clamp(Duration::from_secs(1), MAIL_WAKE_MAX_LIFETIME);
+        let expires = (chrono::Utc::now()
+            + chrono::Duration::from_std(lifetime).unwrap_or(chrono::Duration::days(1)))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let caller_thread = self.get_thread(caller)?;
         self.ensure_prompt_allowed(&caller_thread)?;
         let id = Uuid::new_v4().to_string();
@@ -138,16 +192,125 @@ impl Supervisor {
                 "INSERT INTO kv(key,value) VALUES(?1,?2)",
                 params![
                     format!("cli:wake:{caller}:{id}"),
-                    json!({"kind":"mail","filter":filter,"seen":seen,"createdAt":now_rfc3339(),"taskTurnId":caller_thread.active_turn_id.as_deref().map(|turn| crate::service::peer_work::root_turn(c, caller, turn)).transpose()?}).to_string()
+                    json!({"kind":"mail","filter":filter,"seen":seen,"createdAt":now_rfc3339(),"expiresAt":expires,"taskTurnId":caller_thread.active_turn_id.as_deref().map(|turn| crate::service::peer_work::root_turn(c, caller, turn)).transpose()?}).to_string()
                 ],
             )?;
             Ok(())
         })?;
         self.emit_wake_registered(caller);
         Ok(json!({
-            "wakeId": id, "threadId": caller, "kind": "mail", "filter": filter,
-            "behavior": "When new mail matching this filter arrives in your inbox, its previews join your running turn if your harness takes steers, or are queued as your next turn. Mail already waiting does not fire it. You may end your turn now.",
+            "wakeId": id, "threadId": caller, "kind": "mail", "filter": filter, "expiresAt": expires,
+            "behavior": "When new mail matching this filter arrives in your inbox, its previews join your running turn if your harness takes steers, or are queued as your next turn. Mail already waiting does not fire it. If nothing matches before expiresAt, the wake is dropped and a status note is left in your inbox. You may end your turn now.",
         }))
+    }
+
+    /// The caller's wakes that have not fired, and optionally cancels some:
+    /// `cancel` names wake ids, `all` every one. A cancelled wake never fires.
+    pub fn manage_wakes(&self, caller: &str, cancel: &[String], all: bool) -> Result<Value> {
+        let mut cancelled = Vec::new();
+        self.db.with(|c| {
+            let tx = c.unchecked_transaction()?;
+            let ids: Vec<String> = if all {
+                let mut stmt = tx.prepare("SELECT key FROM kv WHERE key GLOB ?1")?;
+                let keys = stmt
+                    .query_map([format!("cli:wake:{caller}:*")], |r| r.get::<_, String>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                keys.iter()
+                    .filter_map(|key| key.rsplit(':').next().map(str::to_owned))
+                    .collect()
+            } else {
+                cancel.to_vec()
+            };
+            for id in ids {
+                ensure!(
+                    id.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-'),
+                    "invalid wake id {id}"
+                );
+                if tx.execute(
+                    "DELETE FROM kv WHERE key=?1",
+                    [format!("cli:wake:{caller}:{id}")],
+                )? > 0
+                {
+                    cancelled.push(id);
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        })?;
+        if !cancelled.is_empty() {
+            self.emit_wake_registered(caller);
+        }
+        Ok(json!({
+            "threadId": caller,
+            "cancelled": cancelled,
+            "pendingWakes": self.pending_wakes(caller)?,
+            "limit": MAX_PENDING_WAKES,
+        }))
+    }
+
+    /// Drops mail wakes past their `expiresAt` and tells each caller in its inbox.
+    fn expire_mail_wakes(&self) -> Result<()> {
+        let now = now_rfc3339();
+        let expired = self.db.with(|c| {
+            let tx = c.unchecked_transaction()?;
+            let rows: Vec<(String, String)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT key,value FROM kv WHERE key GLOB 'cli:wake:*'
+                       AND json_extract(value,'$.kind')='mail'
+                       AND json_extract(value,'$.expiresAt') IS NOT NULL
+                       AND julianday(json_extract(value,'$.expiresAt')) <= julianday(?1)",
+                )?;
+                let rows = stmt
+                    .query_map([&now], |r| Ok((r.get(0)?, r.get(1)?)))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                rows
+            };
+            let mut callers = Vec::new();
+            for (key, raw) in rows {
+                let caller = key.split(':').nth(2).unwrap_or_default().to_string();
+                let registered: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+                let filter: MailFilter =
+                    serde_json::from_value(registered["filter"].clone()).unwrap_or_default();
+                // Mail that matches is the wake's to report, not to expire.
+                let seen: Vec<String> =
+                    serde_json::from_value(registered["seen"].clone()).unwrap_or_default();
+                if !inbox::matching(&tx, &caller, &filter, &seen, 1)?.is_empty() {
+                    continue;
+                }
+                tx.execute("DELETE FROM kv WHERE key=?1", [&key])?;
+                let exists = tx
+                    .query_row("SELECT 1 FROM threads WHERE id=?1", [&caller], |_| Ok(()))
+                    .optional()?
+                    .is_some();
+                if exists {
+                    inbox::store(
+                        &tx,
+                        &caller,
+                        &Uuid::new_v4().to_string(),
+                        None,
+                        &format!(
+                            "The mail wake you registered at {} expired: no matching mail arrived (filter: {}). If you still depend on it, check the sender (`pockymoe thread status ID`, `pockymoe outbox`) and register the wake again.",
+                            registered["createdAt"].as_str().unwrap_or("an earlier time"),
+                            registered["filter"]
+                        ),
+                        &now,
+                        inbox::Envelope {
+                            subject: Some("Mail wake expired"),
+                            kind: "status",
+                            in_reply_to: None,
+                            topic_key: None,
+                        },
+                    )?;
+                    callers.push(caller);
+                }
+            }
+            tx.commit()?;
+            Ok(callers)
+        })?;
+        for caller in expired {
+            self.emit_wake_registered(&caller);
+        }
+        Ok(())
     }
 
     fn emit_wake_registered(&self, caller: &str) {
@@ -227,13 +390,13 @@ impl Supervisor {
         })
     }
 
-    /// The report of a delegate wake that is ready to fire, and the members
-    /// whose stall it reports.
+    /// The report of a delegate wake that is ready to fire, the members whose
+    /// stall it reports and the questions to the caller it quotes.
     async fn delegate_wake_report(
         &self,
         caller: &str,
         registered: &Value,
-    ) -> Result<Option<(String, Vec<String>)>> {
+    ) -> Result<Option<(String, Vec<String>, Vec<String>)>> {
         let members: Vec<String> =
             serde_json::from_value(registered["members"].clone()).unwrap_or_default();
         let timers = self.interaction.timers();
@@ -262,6 +425,18 @@ impl Supervisor {
         if !ready {
             return Ok(None);
         }
+        // A blocked member's questions to the caller are quoted in full, with the
+        // command that answers them, so the wake turn can reply at once.
+        let mut asked = Vec::new();
+        let mut questions = std::collections::HashMap::new();
+        for s in states.iter().filter(|s| s["state"] == "blocked") {
+            let Some(member) = s["threadId"].as_str() else {
+                continue;
+            };
+            let open = self.db.with(|c| open_questions_to(c, caller, member))?;
+            asked.extend(open.iter().map(|q| q.0.clone()));
+            questions.insert(member.to_string(), open);
+        }
         let lines = states
             .iter()
             .map(|s| {
@@ -271,7 +446,35 @@ impl Supervisor {
                 );
                 let mut line = format!("- {label}: {}", s["state"].as_str().unwrap_or(""));
                 if let Some(waiting) = s["waitingOn"].as_array() {
-                    line.push_str(&format!(", waiting on: {waiting:?}"));
+                    let waiting = waiting
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    line.push_str(&format!(", waiting on: {waiting}"));
+                }
+                let target = s["name"]
+                    .as_str()
+                    .or(s["threadId"].as_str())
+                    .unwrap_or("ID");
+                for (id, subject, text) in s["threadId"]
+                    .as_str()
+                    .and_then(|member| questions.get(member))
+                    .into_iter()
+                    .flatten()
+                {
+                    let body = if text.chars().count() > QUESTION_EXCERPT {
+                        format!(
+                            "{}\n  [Truncated; read it all with `pockymoe inbox read {id}`]",
+                            clip(text, QUESTION_EXCERPT)
+                        )
+                    } else {
+                        text.clone()
+                    };
+                    line.push_str(&format!(
+                        "\n  question {id} | {subject}:\n  {}\n  answer with: pockymoe thread send {target} --kind result --in-reply-to {id} --subject \"...\" --text \"...\"",
+                        body.replace('\n', "\n  ")
+                    ));
                 }
                 if let Some(failures) = s["consecutiveFailures"].as_i64().filter(|n| *n > 0) {
                     line.push_str(&format!(", {failures} failed turns in a row"));
@@ -307,6 +510,7 @@ impl Supervisor {
                 "{header}{WAKE_NOTE}{lines}{hint}\n\nVerify results before acting on them. Full transcripts: pockymoe transcript ID --limit 1"
             ),
             fresh_stalls,
+            asked,
         )))
     }
 
@@ -365,6 +569,7 @@ impl Supervisor {
     }
 
     pub(super) async fn fire_wakes(&self) -> Result<()> {
+        self.expire_mail_wakes()?;
         let wakes: Vec<(String, String)> = self.db.with(|c| {
             let mut stmt = c.prepare("SELECT key,value FROM kv WHERE key GLOB 'cli:wake:*'")?;
             let rows = stmt
@@ -377,9 +582,9 @@ impl Supervisor {
             let Ok(registered) = serde_json::from_str::<Value>(&raw) else {
                 continue;
             };
-            let (text, stalls) = if registered["kind"] == "mail" {
+            let (text, stalls, asked) = if registered["kind"] == "mail" {
                 match self.mail_wake_report(&caller, &registered)? {
-                    Some(text) => (text, Vec::new()),
+                    Some(text) => (text, Vec::new(), Vec::new()),
                     None => continue,
                 }
             } else {
@@ -435,6 +640,14 @@ impl Supervisor {
                     }
                     for member in &stalls {
                         coordination::mark_stall_reported(&tx, member, &caller)?;
+                    }
+                    // The report quotes these questions: do not also deliver
+                    // them as prompt turns of their own (`thread ask`).
+                    for question in &asked {
+                        tx.execute(
+                            "DELETE FROM kv WHERE key=?1",
+                            [format!("cli:ask:{caller}:{question}")],
+                        )?;
                     }
                 }
                 tx.execute("DELETE FROM kv WHERE key=?1", [&key])?;

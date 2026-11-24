@@ -65,6 +65,9 @@ read now). Its report previews up to 5 messages; read, ack and reply as usual. B
 kinds of wake are receiver-owned and one-shot, share a limit of 3 pending, and are
 not subscriptions to arbitrary sibling artifacts. Only register one when you need the
 continuation.
+`pockymoe thread wakes` lists them; `--cancel WAKE_ID` or `--cancel-all` drops ones
+you no longer need. A mail wake expires after 24 hours (`--expires-in SECONDS`, up to
+7 days) and then leaves a "Mail wake expired" status note in your inbox.
 
 ### Asking and waiting for the answer
 

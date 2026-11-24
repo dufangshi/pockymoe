@@ -386,13 +386,24 @@ stored in the KV table; there is no migration.
   question is then marked read. A busy recipient gets it at its next idle moment; it
   is not steered, because a running ancestor either waits (its `thread wait` already
   returns `blocked` on the question) or registered a wake on the asker, which fires
-  as `is blocked`. The record is dropped without a turn when the question is read,
-  answered or acknowledged first, when a pending delegate wake of the recipient
-  covers the asker, or when the recipient is closed. Limits: one unanswered
+  as `is blocked`. A recipient with a pending delegate wake covering the asker hears
+  the question only there (`promptDelivery: "wake"`): the blocked report quotes each
+  open question to the caller (up to 1,500 characters) with the command that answers
+  it, and firing it drops any prompt record for those questions, so the question
+  never costs two turns. The record is also dropped without a turn when the question
+  is read, answered or acknowledged first, or when the recipient is closed. Limits: one unanswered
   prompt-delivered question per asker and recipient, and 3 waiting per asker; past
   them, and for recipients that are not ancestors or are on another device, the
   question is ordinary passive mail (`promptDelivery: "passive"` with a
   `promptDeliveryNote`).
+- **Listing and cancelling wakes.** `thread wakes` (`wakes`) lists the caller's
+  pending wakes of both kinds; `--cancel WAKE_ID...` or `--cancel-all` deletes them,
+  and a cancelled wake never fires. A thread manages only its own wakes. A mail wake
+  also expires: `--expires-in SECONDS` (`lifetimeSeconds`; default 24 hours, at most
+  7 days) is stored as `expiresAt`. When it passes with no matching mail, the worker
+  drops the wake and leaves a passive `status` note "Mail wake expired" in the
+  caller's inbox (no turn of its own; the ordinary reminder applies), so mail that
+  never comes cannot hold one of the three wakes forever.
 - **Mail wake.** `inbox wait [--kind K] [--from-thread ID|DEVICE/ID] [--in-reply-to
   ID] --wake` (`inboxWake`) registers a one-shot `cli:wake:CALLER:ID` record with
   `kind: "mail"`, the filter and the ids of matching mail already waiting (`--new`

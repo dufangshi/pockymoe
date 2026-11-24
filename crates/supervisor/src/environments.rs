@@ -408,6 +408,7 @@ async fn gateway_cli(
                 | "tree"
                 | "wait"
                 | "wake"
+                | "wakes"
                 | "close"
                 | "ask"
                 | "inboxWait"
