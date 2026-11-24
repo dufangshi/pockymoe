@@ -19,6 +19,10 @@ pockymoe thread models --provider acp --agent grok
 pockymoe thread create --provider acp --agent grok \
   --model grok-4.6 --reasoning-effort xhigh --title helper
 pockymoe thread send THREAD_ID --delivery queue --kind task --text-file task.txt --notify-on-complete
+pockymoe thread send CHILD --delivery queue --kind task --text-file retry.txt --retry-failed
+pockymoe thread ask parent --subject "Which key?" --text "May I use the staging key?"
+pockymoe inbox wait --in-reply-to QUESTION_ID
+pockymoe inbox wait --from-thread DEVICE/THREAD_ID --kind result --kind question --wake
 pockymoe model list
 pockymoe model ask CONNECTION "question" --model MODEL
 pockymoe transcript THREAD_ID --view summary
@@ -198,6 +202,12 @@ Remote creation requires a target workspace and does not inherit local lineage o
 approval mode. Remote send supports all four delivery modes; completion results
 return to the sender's local passive inbox. Incoming cross-device mail includes
 `replyTo` for replies. Wait/wake/tree/task/close/delete/inbox remain local operations.
+Because those results arrive as local mail, a sender that ends its turn registers
+`inbox wait --from-thread DEVICE/THREAD_UUID --kind result --kind question --wake`
+(a mail wake, below) instead of polling or waiting for the 10-minute reminder.
+`thread ask DEVICE/THREAD_UUID` sends the question through the relay like a send
+and waits for the `--in-reply-to` answer in the local inbox; it is not delivered
+promptly to the remote thread, which reads it from its inbox.
 
 Up to 20 attachments are staged locally, uploaded to the target thread's incoming
 directory, and listed in both the message and the receipt's `attachments`
@@ -212,7 +222,7 @@ durable outbox. Its worker scans every five seconds, retries after 5 s, 15 s, 60
 record and staged files; expiry or a permanent error mails a passive status failure
 to the local sender. See [the cross-device contract](cross-device-peer.zh.md).
 
-The JSON facade has `operation` values `info`, `skill`, `list`, `show`, `status`, `backends`, `models`, `create`, `send`, `transcript`, the inbox operations, and the coordination operations described below (`resolve`, `tree`, `wait`, `wake`, `close`, `roles`, `inboxWait`, `task*`). It delegates to the existing runtime service; it does not connect directly to a provider app-server. Request DTOs use camelCase in `crates/protocol/src/interaction.rs`.
+The JSON facade has `operation` values `info`, `skill`, `list`, `show`, `status`, `backends`, `models`, `create`, `send`, `transcript`, the inbox operations, and the coordination operations described below (`resolve`, `tree`, `wait`, `wake`, `close`, `roles`, `inboxWait`, `inboxWake`, `ask`, `task*`). It delegates to the existing runtime service; it does not connect directly to a provider app-server. Request DTOs use camelCase in `crates/protocol/src/interaction.rs`.
 
 Optional notification subscriptions and explicit retry receipts use the existing KV table. Retry records store a content hash rather than duplicate prompt text. Subscriptions bind to the consumed turn in the queue-consumption transaction; turn completion and notification enqueue commit together. A lightweight worker resumes pending continuations and checks terminal subscriptions. Harness setup failures leave the accepted prompt queued, expose `lastError` and back off before retrying. An in-progress external operation interrupted by a process crash is not automatically re-executed by this feature.
 
@@ -222,7 +232,7 @@ A Docker end-to-end check lives in [e2e/thread-interaction](../e2e/thread-intera
 
 ## 0.12.32 delivery and inbox revision
 
-This section supersedes the earlier default-delivery examples above. Ordinary `thread send` defaults to `--delivery inbox`; the create command's initial prompt defaults to `queue`. Explicit `queue` submits execution and explicit `steer` requires a running capable backend. Steering failures after durable acceptance return a held receipt; held input is excluded from background draining.
+This section supersedes the earlier default-delivery examples above. Ordinary `thread send` defaults to `--delivery inbox`; the create command's initial prompt defaults to `queue`, and so does the CLI's `thread send --kind task` (a task is work to execute; one left in an inbox never starts a turn, so mailing a task takes an explicit `--delivery inbox`). Explicit `queue` submits execution and explicit `steer` requires a running capable backend. Steering failures after durable acceptance return a held receipt; held input is excluded from background draining.
 
 `inbox` / `inbox list` returns bounded unread previews; `inbox read ID` expands one message; `inbox ack ID...` marks handled messages while retaining history for 30 days after acknowledgement. `--thread ID` selects a mailbox. Listing and reading never trigger turns or mark messages processed. `status` includes `unreadMessageCount`. Mail uses namespaced records in the existing KV store, with partial indexes for unacknowledged mail and indexed reply lookups.
 
@@ -296,13 +306,140 @@ Runtime migration 10 (`agent_coordination`) adds `agent_name`, `agent_role`, `wo
 
 - **Names.** `thread create --name N` stores an address unique among the open threads of one lineage (partial unique index on `root_thread_id, agent_name` where not closed). The CLI resolves a non-UUID target, and `self`/`parent`/`root`, through the `resolve` operation from the caller's lineage.
 - **Close.** `thread close` sets `closed_at`. The open-thread cap now counts `closed_at IS NULL` threads that are not failed or interrupted: a delegate whose turn finished is `idle` and keeps its slot until closed (previously nothing ever set a thread `completed`, so finished delegates held slots forever). Starting a turn clears `closed_at`; sending execution to a closed delegate checks the cap first. `--remove-worktree` runs `git worktree remove`, which refuses dirty checkouts. Closing also ends the delegate's harness process ([harness lifecycle](harness-lifecycle.md)). The CLI closes several targets per call and exits nonzero if any fails.
-- **Wait.** `thread wait` (`wait`) blocks server-side until the listed threads settle (no in-progress turn and no queued continuation), any one blocks - a pending approval, or a `question` it mailed that has neither an `--in-reply-to` reply in its inbox nor an acknowledgement - or the timeout (default 300 s, max 1800 s) passes. It returns each thread's state and last turn's closing message. `inbox wait` (`inboxWait`) blocks until matching unacknowledged mail exists and returns it inline; `--new` excludes, by id, mail that was already waiting. Both wake on bus `thread.updated` events with a 1 s fallback tick; the CLI extends its HTTP timeout by the wait.
-- **Wake.** `thread wait --wake` stores a one-shot `cli:wake:CALLER:ID` KV record (members must be the caller's descendants; at most 3 pending per caller). The interaction worker fires it when every member settles or one blocks; the header line says which (`have settled` or `is blocked`), followed by a line saying the report adds information to the delegated task rather than giving a new instruction, then each member's state and closing message. If the caller is running a turn and its harness takes steers (Claude also while it waits on a native subagent), the report is steered into that turn; if steering fails, or the caller is idle or its harness cannot steer, it is queued as a single continuation. Its prompt origin is `system`, so it is not counted as the user's speech. Until it fires, the caller's thread detail lists it in `pendingWakes` (members with name and thread status), shown above the composer's corner as a small bell counting the agent threads (a tap lists them with their state and says when the wake comes); a queued wake report names its source in the queue instead of its header. This is an immediate, receiver-requested continuation, not an automation; the delayed inbox reminder below is a separate fallback.
+- **Wait.** `thread wait` (`wait`) blocks server-side until the listed threads settle (no in-progress turn and no queued continuation), any one blocks - a pending approval, or a `question` it mailed that has neither an `--in-reply-to` reply in its inbox nor an acknowledgement - or stalls (below), or the timeout (default 300 s, max 1800 s) passes. It returns each thread's state, `outcome`, `consecutiveFailures` and last turn's closing message. `inboxWait` also takes `inReplyTo` (CLI `--in-reply-to`): only replies to that message. `inbox wait` (`inboxWait`) blocks until matching unacknowledged mail exists and returns it inline; `--new` excludes, by id, mail that was already waiting. Both wake on bus `thread.updated` events with a 1 s fallback tick; the CLI extends its HTTP timeout by the wait.
+- **Wake.** `thread wait --wake` stores a one-shot `cli:wake:CALLER:ID` KV record (members must be the caller's descendants; at most 3 pending per caller, mail wakes included). The interaction worker fires it when every member settles or one blocks or stalls; the header line says which (`have settled`, `is blocked` or `is stalled`), followed by a line saying the report adds information to the delegated task rather than giving a new instruction, then each member's state, outcome and closing message. If the caller is running a turn and its harness takes steers (Claude also while it waits on a native subagent), the report is steered into that turn; if steering fails, or the caller is idle or its harness cannot steer, it is queued as a single continuation. Its prompt origin is `system`, so it is not counted as the user's speech. Until it fires, the caller's thread detail lists it in `pendingWakes` (members with name and thread status), shown above the composer's corner as a small bell counting the agent threads (a tap lists them with their state and says when the wake comes); a queued wake report names its source in the queue instead of its header. This is an immediate, receiver-requested continuation, not an automation; the delayed inbox reminder below is a separate fallback.
 - **Task board.** Tasks are numbered per lineage root. `task claim` is a single transaction guarded on `status='pending'`; dependencies (`--after`) must be completed before a claim. A null claim reports `finished` (nothing pending, or nothing in progress that could unblock what is pending) and task counts; `task claim --wait` blocks while pending work is only blocked on in-progress tasks. `task done` mails the creator the result and mails assignees of newly unblocked tasks; `--assign` mails the assignee. All mail is passive.
 - **Efforts.** `thread create --reasoning-effort E` (and a role's `effort`) must be one the model lists in discovery when it lists any. Discovery learns a model's efforts from sessions on that model, so a model can list none for a while; then the effort is accepted as given, the receipt carries `reasoningEffortUnconfirmed: true`, and the harness applies or refuses it when the session starts (a refusal fails that turn visibly). Efforts are short tokens (letters, digits, `-`, `_`). A harness model list that omits a model's efforts is filled with the efforts learned from a session on it.
 - **Roles.** `--role R` reads `.pockymoe/agents/R.md` from the workspace, then `~/.pockymoe/agents/`; the pre-rename `.remote-codex/agents/` directories are still read after each. Front matter (`model`, `effort`, `agent`, `description`) supplies defaults the caller can override; the body is staged in KV and prefixed to the thread's first turn only.
 - **Worktrees.** `--worktree [--worktree-branch B]` creates `../REPO.worktrees/SLUG` on branch `agent/SLUG` (or `agent/SLUG-N` when that branch already exists; an explicit branch is checked out as is) from committed HEAD before the harness session starts (and removes it if the session fails to start). Session start, resume, goal and capability calls use the worktree as cwd. For an existing thread, `pockymoe worktree` creates and registers working copies, inspects actual cwd, and selects an idle thread's default checkout; see [worktree management](worktrees.md).
 - **Tree.** `thread tree` lists the lineage depth-first with each thread's state, unread count, current task, role and worktree, plus task counts.
+
+## Delegate outcomes, asks and mail wakes
+
+Code: `crates/runtime/src/interaction/{coordination,ask,wakes}.rs`. Everything is
+stored in the KV table; there is no migration.
+
+- **Stalled.** When the worker cannot start a thread's queued continuation (the
+  harness or provider is missing, a session cannot load; not `conflict:` errors,
+  which only mean "not now"), it stores `lastError` as before and records the
+  failure in `cli:stall:THREAD` (`since`, `lastAt`, `failures`, `error`). A failure
+  that does not follow the previous one directly (within the 5 s retry pause plus
+  5 s) starts a new period, and a record whose last failure is older than the
+  oldest queued continuation is ignored, so failures of withdrawn work cannot make
+  a fresh queue look stalled. A thread whose state would be `queued` is `stalled` once the period has
+  at least 3 failures and is at least 30 s old; a started turn deletes the record.
+  `stalled` is unsettled but needs attention like `blocked`: `thread wait` returns
+  at once with `stalled: true` and a `next` hint (fix the harness, `thread stop
+  --clear-queue`/`thread unqueue --all`, or close and recreate it). A delegate wake
+  fires as `is stalled` with the error; the record then lists the caller in
+  `reported`, so a wake that caller registers again for the same stall waits for a
+  change (a started turn, settling) instead of firing again. In fake-runtime labs,
+  a thread created with `--provider acp --agent e2e-missing-harness` has a session
+  that can never load, which stalls its queue.
+- **Outcome.** Member state (`thread wait`, wake lines, `thread tree`) and `thread
+  status` carry `outcome` and `consecutiveFailures`; `lastTurn` carries the last
+  turn's own `outcome`. `outcome.kind` is `stalled` (`error`, `failures`, `since`)
+  or `blocked` (`waitingOn`) while that holds, otherwise how the last finished turn
+  ended: `completed`, `failed` (`error`, at most 600 characters) or `interrupted`
+  with `by`: `owner` (the Web or machine-credential Stop), `thread` (a caller's
+  `thread stop`, with `byThreadId` and its `reason`), `restart` (an update restart,
+  or the lost connection that startup reconciliation records) or `unknown`. The
+  stopper is recorded in `cli:interrupted-by:TURN`; the first record wins, so a
+  `thread stop` is not overwritten by the Stop it performs. A running thread has no
+  outcome yet. `thread status` also has `state`, which adds `queued`, `blocked` and
+  `stalled` to `status`. Wake lines keep `- NAME (ID): STATE` first and add `N
+  failed turns in a row` and an `outcome:` line before the closing message.
+- **Failure breaker.** `consecutiveFailures` counts trailing failed turns, skipping
+  one in progress; an interrupted or completed turn ends the run. A send made with
+  a thread credential of an executable task (`queue`, `direct`, `steer` with kind
+  `task`) to one of its descendants with 3 or more is refused, naming the count and
+  the last error, pointing at `thread status` and `transcript`, and offering
+  `--retry-failed` (`retryFailed`) for an intended retry. The check runs after
+  request-id deduplication, so an accepted send keeps its receipt, and
+  `retryFailed` is not part of the request fingerprint. The owner (machine
+  credential, Web) is never refused; mail and questions are never refused.
+- **Delegate contract.** The first executable task a thread receives from one of
+  its ancestors stages `cli:contract:THREAD`; the next turn start prefixes it to
+  the harness prompt only (after the role, like it) and records
+  `cli:contract-sent:THREAD`, so it is sent once per delegate. It names who the
+  delegate works for, says its final message is reported automatically, asks for
+  evidence in that message (files, commit, exact test command and result), tells it
+  to use `thread ask parent` when blocked, and not to create delegates unless the
+  task asks. It is under 600 characters and holds no credentials. Like the
+  `[remoteCodex: ...]` discovery notice it is never stored as the turn's prompt, so
+  the transcript, queue listings, sender parsing (`control.rs`) and summaries see
+  only the sender's message.
+- **Ask.** `thread ask TARGET --subject S --text T` (`ask`) stores a passive
+  `question` from the caller (marked `ask: true`) and blocks, like `inbox wait
+  --in-reply-to`, until a reply to it arrives in the caller's inbox (default
+  600 s, max 1800 s). It returns the reply inline (`answered: true`, `reply`) and
+  marks it read, not acknowledged. On timeout it returns `questionId` and says the
+  question stays open and how to wait again. `--request-id` makes a rerun the same
+  question: the saved receipt is returned and the wait resumes. While the asker is
+  blocked, its own state is `blocked` on that question, as before.
+  Prompt delivery: an ask to an **ancestor** is recorded in `cli:ask:RECIPIENT:ID`
+  (`promptDelivery: "prompt"`). The interaction worker, serialized with turn
+  admission, queues it as one continuation as soon as the recipient is idle (open,
+  no turn in progress, nothing queued): the usual peer header `[Pockymoe question
+  from thread ID | subject]`, an `Immediate handling needed:` line saying the sender
+  is blocked and how to reply, then the question, with prompt origin `peer`. The
+  question is then marked read. A busy recipient gets it at its next idle moment; it
+  is not steered, because a running ancestor either waits (its `thread wait` already
+  returns `blocked` on the question) or registered a wake on the asker, which fires
+  as `is blocked`. A recipient with a pending delegate wake covering the asker hears
+  the question only there (`promptDelivery: "wake"`): the blocked report quotes each
+  open question to the caller (up to 1,500 characters) with the command that answers
+  it, firing it drops any prompt record for those questions and marks them read
+  (so the delayed reminder does not start a turn for a question already quoted),
+  and the question never costs two turns. The record is also dropped without a turn when the question
+  is read, answered or acknowledged first, or when the recipient is closed. Limits: one unanswered
+  prompt-delivered question per asker and recipient, and 3 waiting per asker; past
+  them, and for recipients that are not ancestors or are on another device, the
+  question is ordinary passive mail (`promptDelivery: "passive"` with a
+  `promptDeliveryNote`).
+- **One report per turn.** A delegate that mails its own `result` as its last act
+  and then ends its turn would be reported twice, by that mail and by the automatic
+  turn notification (`--notify-on-complete`). A notification that arrives within 60
+  seconds of a `result` from the same sender is stored with `supersededBy` naming
+  that result, so it starts no wake, no reminder and no unread count; `inbox read`
+  and `inbox list --all` still show it. A notification never supersedes another.
+- **A harness that died.** A session whose adapter process has exited (crashed or
+  killed while idle) no longer counts as loaded: the next turn resumes it in a new
+  process. Before, every later turn wrote to the dead process and failed (`Broken
+  pipe`, `Codex fork bridge closed`) until the Supervisor restarted. If the new
+  process cannot start either, the queued work stalls as described above. A stalled
+  delegate's wake line leaves out its last closing message, which belongs to an
+  earlier task.
+- **Nothing to wait for.** `thread wait --wake` on delegates that have all settled
+  already registers nothing (`registered: false`): a wake would only replay their
+  last results a moment later, so the receipt carries their states now, in the turn
+  the caller is still running. `unstartedTasks` names each member holding an unread
+  `task` from the caller in its inbox, the usual cause (the task was mailed, not
+  queued), and `next` says how to resend it.
+- **Listing and cancelling wakes.** `thread wakes` (`wakes`) lists the caller's
+  pending wakes of both kinds; `--cancel WAKE_ID...` or `--cancel-all` deletes them,
+  and a cancelled wake never fires. A thread manages only its own wakes. A mail wake
+  also expires: `--expires-in SECONDS` (`lifetimeSeconds`; default 24 hours, at most
+  7 days) is stored as `expiresAt`. When it passes with no matching mail, the worker
+  drops the wake and leaves a passive `status` note "Mail wake expired" in the
+  caller's inbox (no turn of its own; the ordinary reminder applies), so mail that
+  never comes cannot hold one of the three wakes forever.
+- **Mail wake.** `inbox wait [--kind K] [--from-thread ID|DEVICE/ID] [--in-reply-to
+  ID] --wake` (`inboxWake`) registers a one-shot `cli:wake:CALLER:ID` record with
+  `kind: "mail"`, the filter and the ids of matching mail already waiting (`--new`
+  semantics). It needs the caller's identity and watches only its own inbox. It
+  shares the 3-wake cap with delegate wakes. The worker fires it when matching
+  unacknowledged mail it has not seen arrives, from this or another device, and
+  delivers it like a delegate wake (steered into a running turn that takes steers,
+  else one queued continuation with origin `system`): `[Pockymoe wake: mail you
+  registered a wake for has arrived]`, a line saying the mail adds information,
+  then up to 5 previews (`- KIND "SUBJECT" from NAME [ADDRESS] · message ID` and 600
+  characters of text) and how to read, acknowledge and reply. It does not mark the
+  mail read. `pendingWakes` lists it with `kind: "mail"` and `mail` (`from` with
+  names, `kinds`, `inReplyTo`); `members` repeats the local senders so a Web client
+  that predates `kind` still lists them. Delegate wakes have `kind: "threads"`. The
+  composer bell counts a mail wake as one entry and lists it as "Waiting for mail
+  from NAME" (or any mail, or a reply).
 
 ## Delegate questions in task history
 

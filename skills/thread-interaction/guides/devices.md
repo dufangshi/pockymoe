@@ -45,9 +45,20 @@ direct/steer need `--interrupt-reason`. Remote creation requires an existing tar
 it does not inherit your approval mode. Remote send supports inbox/direct/queue/steer
 and `--notify-on-complete`; results return to your local passive inbox. Reply to
 cross-device mail using its `replyTo` (`DEVICE/THREAD_UUID`). Remote wait, wake, tree,
-task, close, delete and inbox operations are unavailable; inspect status/transcript
-or wait for local inbox results instead. `DEVICE/THREAD_UUID` with this device's own
-ID is a local thread, and every command accepts it.
+task, close, delete and inbox operations are unavailable; the results come to your
+local inbox instead. To end your turn while the other device works, register a mail
+wake rather than polling:
+
+```bash
+pockymoe thread send DEVICE/THREAD_UUID --delivery queue --kind task \
+  --subject 'Build on the Mac' --text-file task.txt --notify-on-complete
+pockymoe inbox wait --from-thread DEVICE/THREAD_UUID --kind result --kind question --wake
+```
+
+`thread ask DEVICE/THREAD_UUID --subject S --text T` sends a question there and waits
+for the answer in your inbox; the remote thread reads it from its inbox at its next
+checkpoint. `DEVICE/THREAD_UUID` with this device's own ID is a local thread, and
+every command accepts it.
 
 Attachments copy up to 20 local paths; directories become zip files. The receipt's
 `attachments` and the delivered message both name where each file landed on the target. `fs` reads only within a target

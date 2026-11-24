@@ -18,7 +18,7 @@ pub const THREAD_INTERACTION_GUIDES: &[(&str, &str, &str)] = &[
     ),
     (
         "delegate",
-        "Create, wait for, close and clean up delegates; lineage, roles, worktrees",
+        "Create, wait for, close and clean up delegates; outcomes, stalls, retries; lineage, roles, worktrees",
         include_str!("../../../skills/thread-interaction/guides/delegate.md"),
     ),
     (
@@ -28,7 +28,7 @@ pub const THREAD_INTERACTION_GUIDES: &[(&str, &str, &str)] = &[
     ),
     (
         "inbox",
-        "When and how to read, wait for and acknowledge mail",
+        "When and how to read, wait or wake on and acknowledge mail; thread ask",
         include_str!("../../../skills/thread-interaction/guides/inbox.md"),
     ),
     (
@@ -102,6 +102,14 @@ pub struct ThreadSendInput {
     /// topic. Never used to merge results, questions, tasks or incremental patches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topic_key: Option<String>,
+    /// Send a task to a delegate whose last turns all failed anyway. Without it
+    /// a thread credential is refused after 3 failed turns in a row.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub retry_failed: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Accepted `kind` values. `question` is the only one that implies the sender is

@@ -4259,6 +4259,10 @@ impl AgentRuntime for AcpRuntime {
                     (session_ids_match(key, session_id)
                         || session_ids_match(&live.session_id, session_id))
                         && cli_context_matches(&live.process.cli_env)
+                        // A session whose adapter process has exited (crashed or
+                        // was killed while idle) is not loaded: the next turn must
+                        // resume it in a new process, not write to the dead one.
+                        && !live.process.connection_closed_now()
                 })
             })
             .unwrap_or(false)

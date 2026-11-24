@@ -513,6 +513,7 @@ fn remove_record(state: &Supervisor, record: &OutboxRecord, failure: Option<&str
                     in_reply_to: None,
                     interrupt_reason: None,
                     topic_key: None,
+                    retry_failed: false,
                 },
             )?;
         }
@@ -757,12 +758,15 @@ mod tests {
         for operation in [
             "wait",
             "wake",
+            "wakes",
             "tree",
             "taskAdd",
             "close",
             "delete",
             "inbox",
             "inboxWait",
+            "inboxWake",
+            "ask",
             "roles",
             "resolve",
         ] {

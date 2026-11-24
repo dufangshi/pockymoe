@@ -322,6 +322,7 @@ async fn deletion_refuses_running_recovering_and_queued_children_without_removin
             in_reply_to: None,
             interrupt_reason: None,
             topic_key: None,
+            retry_failed: false,
         },
     )
     .unwrap();
@@ -428,6 +429,7 @@ async fn waiting_peer_mail_is_announced_to_the_agent_and_stays_passive() {
             in_reply_to: None,
             interrupt_reason: None,
             topic_key: None,
+            retry_failed: false,
         },
     )
     .unwrap();
@@ -457,6 +459,7 @@ async fn waiting_peer_mail_is_announced_to_the_agent_and_stays_passive() {
             in_reply_to: None,
             interrupt_reason: None,
             topic_key: None,
+            retry_failed: false,
         },
     )
     .unwrap();
@@ -484,6 +487,7 @@ fn mail(from: &str, subject: &str, kind: &str, text: &str, key: &str) -> SendInp
         in_reply_to: None,
         interrupt_reason: None,
         topic_key: None,
+        retry_failed: false,
     }
 }
 

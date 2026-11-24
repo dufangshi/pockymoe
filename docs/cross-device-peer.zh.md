@@ -9,7 +9,7 @@
 - 文件：随消息推送附件（分片上传到目标 thread 的 incoming 目录）；只读拉取远端 workspace 文件（`fs ls` / `fs get`）。
 - 上游连接：复用设备证书和加密传输，但不向 agent 开放凭据导出。必须由账户所有者浏览器额外签发短期、单次、指定目标设备及版本的授权；同步只保存连接，应用到 Harness 是另一项操作。协议与限制见[上游连接](upstream-connections.md)。
 - 传输：除密钥握手外全部端到端 HPKE 加密，relay 只见路由元数据。放开隧道 WebSocket 的 16 MiB 帧上限。
-- 不做：远端 wait / wake / tree / task / close / delete / inbox 操作；relay 存储任何消息或文件；分享设备权限映射。
+- 不做：远端 wait / wake / tree / task / close / delete / inbox 操作；relay 存储任何消息或文件；分享设备权限映射。远端的结果和回复都落到发起方本机 inbox，所以发起方用本机的邮件唤醒（`inbox wait --from-thread DEVICE/THREAD --kind result --wake`）代替轮询，见 [线程交互](thread-interaction.md#delegate-outcomes-asks-and-mail-wakes)。
 
 ## 2. 总体流程
 
@@ -122,6 +122,7 @@ relay → 目标（沿用 `relay.request`，多一个只由 relay 写入的 `pee
 - `send` 不在本机校验远程 `fromThreadId`。inbox 记录新增 `fromDeviceId`、`fromDeviceName`、`replyTo`（`"{deviceId}/{threadId}"`）。direct/queue/steer 的 prompt 头为 `[Pockymoe {kind} from {deviceId}/{threadId} (device "{deviceName}") | {subject}]`，其余（`In reply to`、正文）与本地一致。
 - 去重键命名空间：`cli:request:{id}:peer:{deviceId}:{threadId}:{key}`。
 - `notifyOnComplete`：订阅值增加 `deviceId`、`deviceName`。`finish_notification` 遇到远程订阅时不写本机 inbox，而是写一条 outbox 记录（§12），内容与本地完成通知相同（kind `result`），`fromThreadId` 为完成的本机 thread。
+- 等结果的发起方：远端完成通知和回复是本机 inbox 邮件（`fromThreadId` 为远端 thread UUID），本机邮件唤醒按它匹配，与本地邮件相同；不经过 relay，也不需要远端支持。`thread ask DEVICE/THREAD` 由 CLI 拆成一次远端 `send`（kind `question`）加本机 `inboxWait --in-reply-to`，问题在远端只是普通 inbox 邮件，不会立即投递成远端 thread 的一轮。
 
 ## 11. 本地 `/api/cli` 扩展与 CLI（A）
 

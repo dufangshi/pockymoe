@@ -200,6 +200,17 @@ impl Supervisor {
                 reason = reason.unwrap_or(""),
                 "Thread stopped through the CLI"
             );
+            if let Some(turn) = &before.active_turn_id {
+                // The delegate's outcome names who stopped it and why.
+                let mut by = json!({"by": if only_from.is_some() { "thread" } else { "owner" }, "at": pockymoe_protocol::now_rfc3339()});
+                if let Some(caller) = only_from {
+                    by["threadId"] = json!(caller);
+                }
+                if let Some(reason) = reason {
+                    by["reason"] = json!(reason);
+                }
+                self.record_interrupt(turn, by)?;
+            }
             self.interrupt(thread).await?;
         }
         let after = self.get_thread(thread)?;

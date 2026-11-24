@@ -16,7 +16,7 @@ pub struct Connection {
 }
 #[derive(Args)]
 pub struct Body {
-    /// inbox is passive (send default); queue assigns a task (create default); direct/steer require an urgent correction or unblock request plus --interrupt-reason for peer sends.
+    /// inbox is passive (send default); queue assigns a task (default for --kind task and for create); direct/steer require an urgent correction or unblock request plus --interrupt-reason for peer sends.
     #[arg(long, value_parser=["inbox","direct","queue","steer"])]
     pub delivery: Option<String>,
     /// Completion notifications are passive inbox mail; they do not immediately wake or queue the caller.
@@ -49,6 +49,10 @@ pub struct Body {
     pub notify_on_complete: bool,
     #[arg(long)]
     pub request_id: Option<String>,
+    /// Send a task to your delegate even though its last 3 or more turns failed.
+    /// Investigate first (`thread status`, `transcript`); without this the send is refused.
+    #[arg(long)]
+    pub retry_failed: bool,
 }
 impl Body {
     fn text(&self) -> Result<Option<String>> {
@@ -205,14 +209,17 @@ More: pockymoe guide delegate"#)]
         body: Body,
     },
     /// Block until the threads settle (finish, fail, or go idle), one blocks on an
-    /// approval, or the timeout passes. Returns each one's closing message.
+    /// approval or a question, one stalls, or the timeout passes. Returns each one's
+    /// outcome and closing message.
     #[command(after_long_help = r#"Rules:
   - Block here when you will act on the result; your shell may return early, so keep
     waiting on the same command.
   - With nothing else to do for a long time, use --wake and end your turn saying what you
     wait for: exactly one turn is queued on you when they settle. Unread inbox mail has a separate 10-minute idle reminder.
   - `blocked: true` means a delegate waits on an approval or your answer (`waitingOn`).
-  - Settled is not success: check the evidence in each closing message.
+  - `stalled: true` means a delegate's queued work keeps failing to start (`outcome.error`):
+    fix the harness, `thread stop NAME --clear-queue --reason ...`, or recreate it.
+  - Settled is not success: check `outcome` and the evidence in each closing message.
 
 More: pockymoe guide delegate"#)]
     Wait {
@@ -228,6 +235,17 @@ More: pockymoe guide delegate"#)]
         /// end your turn now.
         #[arg(long, conflicts_with_all = ["any", "timeout"])]
         wake: bool,
+    },
+    /// The wakes you registered that have not fired (`thread wait --wake`,
+    /// `inbox wait --wake`); at most 3 wait at a time. Cancel ones you no longer
+    /// need so they do not hold a slot or start a turn later.
+    Wakes {
+        /// Cancel these wake ids (`wakeId` in the registration receipt).
+        #[arg(long, value_name = "WAKE_ID", num_args = 1..)]
+        cancel: Vec<String>,
+        /// Cancel every pending wake of yours.
+        #[arg(long, conflicts_with = "cancel")]
+        cancel_all: bool,
     },
     /// Your lineage at a glance: every delegate's state, unread mail, current task
     /// and worktree, plus task counts.
@@ -282,6 +300,48 @@ More: pockymoe guide messaging"#)]
     },
     /// Role templates available to `thread create --role`.
     Roles,
+    /// Ask a thread (usually `parent`) a question and wait for its answer: mails a
+    /// `question`, then blocks until a reply `--in-reply-to` it arrives and prints it.
+    #[command(
+        after_long_help = r#"Use it when you are blocked and guessing would waste work:
+  pockymoe thread ask parent --subject 'Which staging key?' \
+    --text 'The task names two keys; which one may I use for the smoke test?'
+The answer comes back in `reply` (marked read; `inbox ack` it once handled).
+An idle ancestor gets the question as a turn right away; a busy one at its next
+idle moment. An ancestor that registered a wake on you hears it in that wake, with
+the question quoted (`promptDelivery: wake`). Other recipients read it
+from their inbox. One unanswered prompt question per recipient at a time: a
+second ask while the first is open waits in the inbox (`promptDelivery: passive`).
+
+On timeout (`answered: false`) the question stays open. Wait again with
+  pockymoe inbox wait --in-reply-to QUESTION_ID
+or rerun the same ask with the same --request-id; do not ask again.
+
+More: pockymoe guide messaging"#
+    )]
+    Ask {
+        /// Thread id or name (`parent`, `root`), or DEVICE/THREAD_UUID.
+        id: String,
+        /// One line naming what you need.
+        #[arg(long)]
+        subject: String,
+        /// The question: what you tried, the options and what you need decided.
+        #[arg(
+            long,
+            conflicts_with = "text_file",
+            required_unless_present = "text_file"
+        )]
+        text: Option<String>,
+        /// Read the question from a file (`-` for stdin).
+        #[arg(long)]
+        text_file: Option<PathBuf>,
+        /// Seconds to wait for the answer (default 600, max 1800).
+        #[arg(long, default_value_t = 600)]
+        timeout: u64,
+        /// Makes a rerun ask the same question and resume waiting for it.
+        #[arg(long)]
+        request_id: Option<String>,
+    },
     /// Send passive mail or request execution; direct/steer also await the steering acknowledgement when running.
     #[command(after_long_help = r#"Choosing --delivery:
   inbox (default)  results, progress, ready inputs, questions, acknowledgements
@@ -645,7 +705,17 @@ impl Client {
         let text = body
             .text()?
             .context("send requires --text or --text-file")?;
+        // A task is work to execute: unless told otherwise it is queued, not
+        // mailed. A task left in an inbox never starts a turn.
+        let default_delivery = if body.kind.as_deref() == Some("task") {
+            "queue"
+        } else {
+            default_delivery
+        };
         let mut input = json!({"operation":"send","text":text,"delivery":body.delivery.as_deref().unwrap_or(default_delivery),"notifyDelivery":body.notify_delivery,"fromThreadId":self.from,"notifyOnComplete":body.notify_on_complete,"clientRequestId":body.request_id,"subject":body.subject,"kind":body.kind,"inReplyTo":body.in_reply_to,"interruptReason":body.interrupt_reason,"topicKey":body.topic_key});
+        if body.retry_failed {
+            input["retryFailed"] = json!(true);
+        }
         target.apply(&mut input);
         if !attachments.is_empty() {
             ensure!(
@@ -693,6 +763,9 @@ impl Client {
                 }
                 self.request_for(json!({"operation":"wait","threadIds":resolved,"any":any,"timeoutSeconds":timeout,"fromThreadId":self.from}), timeout).await
             }
+            ThreadCommand::Wakes { cancel, cancel_all } => {
+                self.request(json!({"operation":"wakes","cancel":cancel,"cancelAll":cancel_all,"fromThreadId":self.from})).await
+            }
             ThreadCommand::Tree { root, all } => {
                 let root = match root { Some(r) => Some(self.id(&r).await?), None => None };
                 self.request(json!({"operation":"tree","rootThreadId":root,"all":all,"fromThreadId":self.from})).await
@@ -715,6 +788,10 @@ impl Client {
                 self.request(json!({"operation":"queueRemove","threadId":self.id(&id).await?,"messageIds":message_ids,"all":all,"fromThreadId":self.from})).await
             }
             ThreadCommand::Roles => self.request(json!({"operation":"roles","fromThreadId":self.from})).await,
+            ThreadCommand::Ask { id, subject, text, text_file, timeout, request_id } => {
+                let text = read_text(text, text_file, 262145)?.context("thread ask requires --text or --text-file")?;
+                self.ask(&id, &subject, text, timeout, request_id).await
+            }
             ThreadCommand::Create { device, workspace, title, provider, agent, model, reasoning_effort, approval_mode, name, role, worktree, worktree_branch, body } => {
                 ensure!(device.is_none() || workspace.is_some(), "cross-device create requires --workspace");
                 ensure!(!body.notify_on_complete || body.text.is_some() || body.text_file.is_some(), "notification requires an initial prompt");
@@ -857,25 +934,95 @@ pub enum InboxCommand {
         #[arg(required=true,num_args=1..)]
         ids: Vec<String>,
     },
-    /// Block until unacknowledged mail (optionally from given threads or of given
-    /// kinds) is waiting, and return it with text inline. Stays in your turn
-    /// without polling.
+    /// Block until unacknowledged mail (optionally from given threads, of given
+    /// kinds, or answering one message) is waiting, and return it with text
+    /// inline. Stays in your turn without polling. With --wake, do not block:
+    /// one turn reaches you when matching new mail arrives.
+    #[command(after_long_help = r#"Rules:
+  - Block here when you will act on the mail now; include --kind question while
+    waiting on results so a producer that needs your answer can reach you.
+  - To end your turn while you wait for mail, register --wake and say what you wait
+    for. It fires once, on mail that arrives after you register it, from any device:
+      pockymoe thread send DEVICE/THREAD_UUID --delivery queue --kind task \
+        --subject 'Build on the Mac' --text-file task.txt --notify-on-complete
+      pockymoe inbox wait --from-thread DEVICE/THREAD_UUID --kind result --kind question --wake
+  - Wakes of both kinds share a limit of 3 pending per thread. Never poll instead.
+
+More: pockymoe guide inbox"#)]
     Wait {
-        /// Only mail from these threads (ids or names). Repeatable.
+        /// Only mail from these threads (ids, names or DEVICE/THREAD_UUID). Repeatable.
         #[arg(long = "from-thread", value_name = "ID_OR_NAME")]
         from_threads: Vec<String>,
         /// Only these kinds (result, question, status, task). Repeatable.
         #[arg(long, value_parser=["result","question","status","task"])]
         kind: Vec<String>,
-        /// Ignore mail already waiting when the wait starts.
+        /// Only replies to this message (`thread ask` prints its questionId).
+        #[arg(long, value_name = "MESSAGE_ID")]
+        in_reply_to: Option<String>,
+        /// Ignore mail already waiting when the wait starts (always so with --wake).
         #[arg(long)]
         new: bool,
         /// Seconds to wait (max 1800). Keep it below your shell tool's own timeout.
         #[arg(long, default_value_t = 300)]
         timeout: u64,
+        /// Do not block: queue one turn on yourself when matching new mail arrives,
+        /// so you can end your turn now.
+        #[arg(long, conflicts_with = "timeout")]
+        wake: bool,
+        /// With --wake: how long the wake waits before it is dropped with a status
+        /// note in your inbox (default 86400, max 604800).
+        #[arg(long, value_name = "SECONDS", requires = "wake")]
+        expires_in: Option<u64>,
     },
 }
 impl Client {
+    /// `thread ask`: one call on this device; for a thread on another device,
+    /// the question goes through the relay and the answer is awaited here.
+    async fn ask(
+        &self,
+        id: &str,
+        subject: &str,
+        text: String,
+        timeout: u64,
+        request_id: Option<String>,
+    ) -> Result<Value> {
+        let from = self.from.clone().context(
+            "thread ask needs your thread identity; run it from a managed thread or pass --from ID",
+        )?;
+        let timeout = timeout.min(1800);
+        let target = self.target(id, None).await?;
+        let Some(device) = &target.device_id else {
+            return self
+                .request_for(json!({"operation":"ask","threadId":target.thread_id,"subject":subject,"text":text,"clientRequestId":request_id,"timeoutSeconds":timeout,"fromThreadId":from}), timeout)
+                .await;
+        };
+        let mut send = json!({"operation":"send","text":text,"delivery":"inbox","kind":"question","subject":subject,"clientRequestId":request_id,"fromThreadId":from});
+        target.apply(&mut send);
+        let receipt = self.request(send).await?;
+        let Some(question) = receipt["messageId"].as_str().map(str::to_owned) else {
+            // Saved in the outbox: its message id is only known once delivered.
+            return Ok(json!({"answered":false,"receipt":receipt,
+                "next":format!("The question is queued for delivery to {device}. Wait for the answer with `pockymoe inbox wait --from-thread {device}/{} --kind result --wake` and end your turn, or block on the same command without --wake.", target.thread_id)}));
+        };
+        let waited = self.request_for(json!({"operation":"inboxWait","threadId":from,"inReplyTo":question,"timeoutSeconds":timeout}), timeout).await?;
+        let reply = waited["messages"]
+            .as_array()
+            .and_then(|m| m.first())
+            .cloned();
+        let mut result = json!({"threadId":target.thread_id,"deviceId":device,"questionId":question,"promptDelivery":"passive","answered":reply.is_some(),"waitedSeconds":waited["waitedSeconds"]});
+        match reply {
+            Some(reply) => {
+                result["next"] = json!(format!("Act on the answer. It is marked read, not acknowledged: `pockymoe inbox ack {}` once handled.", reply["id"].as_str().unwrap_or("MESSAGE_ID")));
+                result["reply"] = reply;
+            }
+            None => {
+                result["timedOut"] = json!(true);
+                result["next"] = json!(format!("No answer yet; the question stays open on {device}. Wait again with `pockymoe inbox wait --in-reply-to {question}`, or register `pockymoe inbox wait --in-reply-to {question} --wake` and end your turn."));
+            }
+        }
+        Ok(result)
+    }
+
     pub async fn inbox(&self, args: Inbox) -> Result<Value> {
         let thread = args
             .thread
@@ -909,14 +1056,21 @@ impl Client {
             InboxCommand::Wait {
                 from_threads,
                 kind,
+                in_reply_to,
                 new,
                 timeout,
+                wake,
+                expires_in,
             } => {
                 let mut from = Vec::new();
                 for id in &from_threads {
-                    from.push(self.id(id).await?);
+                    // Mail from another device carries the sender's thread UUID.
+                    from.push(self.target(id, None).await?.thread_id);
                 }
-                let input = json!({"operation":"inboxWait","threadId":thread,"fromThreadIds":from,"kinds":kind,"onlyNew":new,"timeoutSeconds":timeout});
+                if wake {
+                    return self.request(json!({"operation":"inboxWake","threadId":thread,"fromThreadIds":from,"kinds":kind,"inReplyTo":in_reply_to,"lifetimeSeconds":expires_in,"fromThreadId":self.from})).await;
+                }
+                let input = json!({"operation":"inboxWait","threadId":thread,"fromThreadIds":from,"kinds":kind,"inReplyTo":in_reply_to,"onlyNew":new,"timeoutSeconds":timeout});
                 return self.request_for(input, timeout).await;
             }
         };
@@ -978,11 +1132,11 @@ pub enum TaskCommand {
     Release { number: i64 },
 }
 
-fn read_text(inline: Option<String>, file: Option<PathBuf>) -> Result<Option<String>> {
+fn read_text(inline: Option<String>, file: Option<PathBuf>, limit: u64) -> Result<Option<String>> {
     Ok(match file {
         Some(path) if path.as_os_str() == "-" => {
             let mut s = String::new();
-            std::io::stdin().take(65537).read_to_string(&mut s)?;
+            std::io::stdin().take(limit).read_to_string(&mut s)?;
             Some(s)
         }
         Some(path) => Some(std::fs::read_to_string(path)?),
@@ -1008,7 +1162,7 @@ impl Client {
                     Some(a) => Some(self.id(&a).await?),
                     None => None,
                 };
-                json!({"operation":"taskAdd","title":title,"detail":read_text(detail,detail_file)?,"after":after,"assignThreadId":assign})
+                json!({"operation":"taskAdd","title":title,"detail":read_text(detail,detail_file,65537)?,"after":after,"assignThreadId":assign})
             }
             TaskCommand::List { all } => json!({"operation":"taskList","all":all}),
             TaskCommand::Show { number } => json!({"operation":"taskShow","number":number}),
@@ -1028,7 +1182,7 @@ impl Client {
                 result_file,
                 failed,
             } => {
-                json!({"operation":"taskDone","number":number,"result":read_text(result,result_file)?,"failed":failed})
+                json!({"operation":"taskDone","number":number,"result":read_text(result,result_file,65537)?,"failed":failed})
             }
             TaskCommand::Release { number } => json!({"operation":"taskRelease","number":number}),
         };
@@ -1334,6 +1488,7 @@ mod tests {
             text_file: None,
             notify_on_complete: true,
             request_id: Some("stable".into()),
+            retry_failed: false,
         };
         let result = client
             .thread(ThreadCommand::Create {

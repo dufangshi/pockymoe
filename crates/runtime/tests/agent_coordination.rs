@@ -100,6 +100,7 @@ fn mail(from: &str, delivery: &str, kind: &str, text: &str) -> SendInput {
         in_reply_to: None,
         interrupt_reason: None,
         topic_key: None,
+        retry_failed: false,
     }
 }
 

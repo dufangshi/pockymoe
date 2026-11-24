@@ -92,6 +92,7 @@ fn send(from: &str, text: &str, notify: bool, key: &str) -> SendInput {
         in_reply_to: None,
         interrupt_reason: None,
         topic_key: None,
+        retry_failed: false,
     }
 }
 

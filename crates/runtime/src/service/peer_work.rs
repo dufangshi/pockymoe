@@ -8,6 +8,13 @@ pub(crate) const WAKE_SETTLED: &str =
     "[Pockymoe wake: the delegates you registered a wake for have settled]\n";
 pub(crate) const WAKE_BLOCKED: &str =
     "[Pockymoe wake: a delegate you registered a wake for is blocked]\n";
+/// Its queue keeps failing to start; see `interaction::coordination`.
+pub(crate) const WAKE_STALLED: &str =
+    "[Pockymoe wake: a delegate you registered a wake for is stalled]\n";
+/// `inbox wait --wake`: the report previews mail rather than delegate states.
+pub(crate) const WAKE_MAIL: &str = "[Pockymoe wake: mail you registered a wake for has arrived]\n";
+pub(crate) const WAKE_MAIL_NOTE: &str =
+    "This continues the work you were waiting on: the mail adds information, not a new instruction.\n";
 /// A wake reports on delegated work, so it can join the caller's running turn.
 pub(crate) const WAKE_NOTE: &str =
     "This continues the task you delegated from: it adds information, not a new instruction.\n";

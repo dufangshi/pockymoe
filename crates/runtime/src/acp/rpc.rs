@@ -112,6 +112,14 @@ pub(crate) fn parse_spawn_command(command: &str) -> Result<ParsedCommand> {
 }
 
 impl AcpProcess {
+    /// Whether the connection is known to have closed, without waiting for the
+    /// state lock: `false` while a request holds it (then it is in use).
+    pub fn connection_closed_now(&self) -> bool {
+        self.state
+            .try_lock()
+            .is_ok_and(|state| state.closed_reason.is_some())
+    }
+
     pub async fn connection_open(&self) -> bool {
         if self
             .execution
@@ -1110,6 +1118,9 @@ mod tests {
             text.contains("env: node: No such file or directory"),
             "{text}"
         );
+        // The runtime's "is this session loaded" check reads this without waiting.
+        assert!(process.connection_closed_now());
+        assert!(!process.connection_open().await);
     }
 
     #[tokio::test]

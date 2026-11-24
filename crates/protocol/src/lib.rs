@@ -421,13 +421,35 @@ pub struct ThreadPendingSteerDto {
 }
 
 /// A `thread wait --wake` registration: one report reaches the thread when
-/// every member settles or one blocks.
+/// every member settles or one blocks. An `inbox wait --wake` registration
+/// (`kind: "mail"`) fires when matching mail arrives; its `members` repeat the
+/// local sender threads so clients that predate `kind` still list them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadPendingWakeDto {
     pub id: String,
     pub created_at: Option<String>,
     pub members: Vec<ThreadWakeMemberDto>,
+    /// `threads` (delegates settling) or `mail`.
+    #[serde(default = "thread_wake_kind")]
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail: Option<ThreadPendingMailWakeDto>,
+}
+
+fn thread_wake_kind() -> String {
+    "threads".into()
+}
+
+/// What a mail wake waits for. Empty lists match any sender or kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadPendingMailWakeDto {
+    /// Senders, with a name when the thread is on this device.
+    pub from: Vec<ThreadWakeMemberDto>,
+    pub kinds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

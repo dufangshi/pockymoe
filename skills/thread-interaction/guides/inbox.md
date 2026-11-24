@@ -1,6 +1,6 @@
 # pockymoe guide inbox
 
-When and how to read, wait for and acknowledge mail.
+When and how to read, wait or wake on and acknowledge mail; asking with `thread ask`.
 
 ## When to read your inbox
 
@@ -23,6 +23,8 @@ pockymoe inbox list --from-thread producer --kind result
 pockymoe inbox wait --kind result --kind question   # result or an upstream blocker
 pockymoe inbox wait --from-thread reviewer --kind result --kind question
 pockymoe inbox wait --new                           # deliberately defer old mail
+pockymoe inbox wait --in-reply-to MESSAGE_ID        # the answer to your question
+pockymoe inbox wait --from-thread DEVICE/THREAD_UUID --kind result --kind question --wake
 ```
 
 `inbox wait` returns the matching messages with text inline. Unacknowledged mail
@@ -52,11 +54,37 @@ fallback when a result is required to complete your task.
 
 - **If you must act on the result, stay in your turn** and block on it:
   `thread wait NAME` or `inbox wait`. Do independent work first if you have any.
-- **If your turn must end, hand off explicitly** with `thread wait NAME... --wake`, and
-  say in your final message what you delegated and that you will resume when it lands.
+- **If your turn must end, hand off explicitly** with `thread wait NAME... --wake` for
+  your delegates, or `inbox wait ... --wake` for mail (results from another device, a
+  reply), and say in your final message what you wait for and that you will resume
+  when it lands.
 
-`--wake` is a receiver-owned, one-shot wait for your descendants, not a subscription
-to arbitrary sibling artifacts. Only register it when you need the continuation.
+`inbox wait --wake` takes the same filters as the blocking wait and fires once, on
+matching mail that arrives after you register it (mail already waiting is yours to
+read now). Its report previews up to 5 messages; read, ack and reply as usual. Both
+kinds of wake are receiver-owned and one-shot, share a limit of 3 pending, and are
+not subscriptions to arbitrary sibling artifacts. Only register one when you need the
+continuation.
+`pockymoe thread wakes` lists them; `--cancel WAKE_ID` or `--cancel-all` drops ones
+you no longer need. A mail wake expires after 24 hours (`--expires-in SECONDS`, up to
+7 days) and then leaves a "Mail wake expired" status note in your inbox.
+
+### Asking and waiting for the answer
+
+When you are blocked on a decision only another thread can make, ask instead of
+guessing or stopping:
+
+```bash
+pockymoe thread ask parent --subject 'Which staging key?' \
+  --text 'The task names two keys; which one may I use for the smoke test?' --request-id key-q
+```
+
+It mails a `question` and blocks until a reply `--in-reply-to` it arrives (default
+600 s, max 1800 s), then prints it in `reply` (marked read; `inbox ack` it once
+handled). An idle ancestor gets the question as a turn right away, a busy one at its
+next idle moment. On `answered: false` the question stays open: wait again with
+`inbox wait --in-reply-to QUESTION_ID` or rerun with the same `--request-id`; do not
+ask again. Only one prompt-delivered question to the same thread is open at a time.
 
 Do not work around this by steering the peer, polling `status` in a loop, or sending
 yourself direct messages; `wait` is cheaper than all of them.

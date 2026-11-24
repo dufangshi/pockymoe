@@ -183,6 +183,15 @@ fn record_prompt(key: &str, prompt: &str) {
 /// (`[Pockymoe: sent by …]`, before a prompt or inside a goal) only reaches the
 /// recorder.
 fn typed_prompt(prompt: &str) -> std::borrow::Cow<'_, str> {
+    // The delegate contract is the Supervisor's preamble, not what was asked,
+    // so it must not make a short task look like a long one.
+    if let Some(start) = prompt.find("[Pockymoe delegate contract]") {
+        let end = prompt[start..]
+            .find("\n\n")
+            .map_or(prompt.len(), |end| start + end + 2);
+        let rest = format!("{}{}", &prompt[..start], &prompt[end..]);
+        return typed_prompt(&rest).into_owned().into();
+    }
     let (command, rest) = match prompt.strip_prefix("/goal ") {
         Some(rest) => ("/goal ", rest),
         None => ("", prompt),
@@ -212,11 +221,16 @@ pub struct FakeRuntime {
     /// How long a long prompt ("inspect this repository" or over 180 typed
     /// characters) works before replying, unless interrupted.
     slow_turn: Mutex<Duration>,
+    /// Sessions of the `e2e-missing-harness` agent: created, but never loadable.
+    unloadable: Mutex<std::collections::HashSet<String>>,
 }
 
 /// The default work time of a long fake prompt, which E2E suites rely on to
 /// interrupt, steer or queue behind a running turn.
 const SLOW_TURN: Duration = Duration::from_secs(25);
+
+/// An ACP agent id whose sessions are created but can never be loaded.
+pub const MISSING_HARNESS: &str = "e2e-missing-harness";
 
 impl FakeRuntime {
     /// Change how long later long prompts work, so a test that only needs a
@@ -243,6 +257,7 @@ impl FakeRuntime {
             import_sessions: Mutex::new(Vec::new()),
             pending: Default::default(),
             slow_turn: Mutex::new(SLOW_TURN),
+            unloadable: Default::default(),
         }
     }
 
@@ -581,6 +596,16 @@ impl AgentRuntime for FakeRuntime {
     async fn start_session(&self, input: StartSessionInput) -> Result<StartSessionResult> {
         let id = format!("e2e-session-{}", Uuid::new_v4());
         self.starts.lock().unwrap().push(input.clone());
+        // A harness that was there when the thread was created and is gone when
+        // its queue runs, so labs can exercise a delegate that cannot start.
+        if input.agent_id.as_deref() == Some(MISSING_HARNESS) {
+            self.unloadable.lock().unwrap().insert(id.clone());
+            return Ok(StartSessionResult {
+                provider_session_id: id,
+                model: Some(input.model),
+                reasoning_effort: input.reasoning_effort,
+            });
+        }
         self.sessions.lock().unwrap().insert(id.clone(), input.cwd);
         self.record_load(&id, None);
         Ok(StartSessionResult {
@@ -596,6 +621,9 @@ impl AgentRuntime for FakeRuntime {
         cwd: Option<&str>,
         _settings: SessionSettings,
     ) -> Result<StartSessionResult> {
+        if self.unloadable.lock().unwrap().contains(session_id) {
+            bail!("fixture: the {MISSING_HARNESS} harness is not installed on this device");
+        }
         let inserted = {
             let mut sessions = self.sessions.lock().unwrap();
             sessions
