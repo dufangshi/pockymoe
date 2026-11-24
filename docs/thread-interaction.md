@@ -324,15 +324,18 @@ stored in the KV table; there is no migration.
   which only mean "not now"), it stores `lastError` as before and records the
   failure in `cli:stall:THREAD` (`since`, `lastAt`, `failures`, `error`). A failure
   that does not follow the previous one directly (within the 5 s retry pause plus
-  5 s) starts a new period, so an old failure cannot make a fresh queue look
-  stalled. A thread whose state would be `queued` is `stalled` once the period has
+  5 s) starts a new period, and a record whose last failure is older than the
+  oldest queued continuation is ignored, so failures of withdrawn work cannot make
+  a fresh queue look stalled. A thread whose state would be `queued` is `stalled` once the period has
   at least 3 failures and is at least 30 s old; a started turn deletes the record.
   `stalled` is unsettled but needs attention like `blocked`: `thread wait` returns
   at once with `stalled: true` and a `next` hint (fix the harness, `thread stop
   --clear-queue`/`thread unqueue --all`, or close and recreate it). A delegate wake
   fires as `is stalled` with the error; the record then lists the caller in
   `reported`, so a wake that caller registers again for the same stall waits for a
-  change (a started turn, settling) instead of firing again.
+  change (a started turn, settling) instead of firing again. In fake-runtime labs,
+  a thread created with `--provider acp --agent e2e-missing-harness` has a session
+  that can never load, which stalls its queue.
 - **Outcome.** Member state (`thread wait`, wake lines, `thread tree`) and `thread
   status` carry `outcome` and `consecutiveFailures`; `lastTurn` carries the last
   turn's own `outcome`. `outcome.kind` is `stalled` (`error`, `failures`, `since`)

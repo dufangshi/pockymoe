@@ -123,6 +123,20 @@ pub(crate) fn stall(
     else {
         return Ok(None);
     };
+    // Only failures while the work now queued was waiting count: an old record
+    // left after the queue was withdrawn must not mark new work stalled.
+    let oldest: Option<String> = conn.query_row(
+        "SELECT MIN(created_at) FROM thread_pending_steers WHERE thread_id=?1 AND delivery='continuation'",
+        [thread],
+        |r| r.get(0),
+    )?;
+    let current = match (oldest, record["lastAt"].as_str()) {
+        (Some(oldest), Some(last)) => seconds_between(&oldest, last).is_some_and(|gap| gap >= 0.0),
+        _ => false,
+    };
+    if !current {
+        return Ok(None);
+    }
     let long_enough = record["since"]
         .as_str()
         .and_then(|since| seconds_between(since, &now_rfc3339()))

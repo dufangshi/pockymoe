@@ -313,6 +313,7 @@ More: pockymoe guide messaging"#
         /// One line naming what you need.
         #[arg(long)]
         subject: String,
+        /// The question: what you tried, the options and what you need decided.
         #[arg(
             long,
             conflicts_with = "text_file",

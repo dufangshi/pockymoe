@@ -274,6 +274,33 @@ async fn a_delegate_whose_queue_cannot_start_stalls_and_reports_it_once() {
 }
 
 #[tokio::test]
+async fn a_withdrawn_stalled_queue_does_not_mark_new_work_stalled() {
+    let (_dir, s, _) = setup();
+    let ws = workspace(&s);
+    let lead = root(&s, &ws).await;
+    let a = named(&s, &ws, &lead, "builder").await;
+    s.db.with(|c| {
+        c.execute("UPDATE threads SET provider='claude' WHERE id=?1", [&a])?;
+        Ok(())
+    })
+    .unwrap();
+    s.send_to_thread(&a, mail(&lead, "queue", "task", "build it"))
+        .unwrap();
+    s.start_interaction_worker();
+    let waited = s
+        .wait_threads(&[a.clone()], false, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(waited["threads"][0]["state"], "stalled");
+    s.remove_queued_messages(&a, &[], true, None).await.unwrap();
+    assert_eq!(s.interaction_status(&a).await.unwrap()["state"], "idle");
+    // New work starts a new period; the old failures do not count for it.
+    s.send_to_thread(&a, mail(&lead, "queue", "task", "build it again"))
+        .unwrap();
+    assert_eq!(s.interaction_status(&a).await.unwrap()["state"], "queued");
+}
+
+#[tokio::test]
 async fn outcomes_say_how_the_last_turn_ended_and_who_stopped_it() {
     let (_dir, s, fake) = setup();
     fake.set_slow_turn(Duration::from_secs(20));

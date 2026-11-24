@@ -299,7 +299,7 @@ impl Supervisor {
                 // The peer header the receiver and the Web already read; the
                 // urgency line says why it did not wait in the inbox.
                 let prompt = format!(
-                    "[Pockymoe question from thread {asker}{subject}]\nImmediate handling needed: {} is blocked in `pockymoe thread ask` until you reply to message {message}: pockymoe thread send {asker} --kind result --in-reply-to {message} --subject \"...\" --text \"...\"\n{body}",
+                    "[Pockymoe question from thread {asker}{subject}]\nImmediate handling needed: {} is blocked in `pockymoe thread ask` until you reply with --kind result --in-reply-to {message}\n{body}",
                     name.as_deref().unwrap_or("the sender")
                 );
                 let now = now_rfc3339();
