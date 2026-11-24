@@ -183,6 +183,15 @@ fn record_prompt(key: &str, prompt: &str) {
 /// (`[Pockymoe: sent by …]`, before a prompt or inside a goal) only reaches the
 /// recorder.
 fn typed_prompt(prompt: &str) -> std::borrow::Cow<'_, str> {
+    // The delegate contract is the Supervisor's preamble, not what was asked,
+    // so it must not make a short task look like a long one.
+    if let Some(start) = prompt.find("[Pockymoe delegate contract]") {
+        let end = prompt[start..]
+            .find("\n\n")
+            .map_or(prompt.len(), |end| start + end + 2);
+        let rest = format!("{}{}", &prompt[..start], &prompt[end..]);
+        return typed_prompt(&rest).into_owned().into();
+    }
     let (command, rest) = match prompt.strip_prefix("/goal ") {
         Some(rest) => ("/goal ", rest),
         None => ("", prompt),

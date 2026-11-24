@@ -15,6 +15,10 @@ impl Supervisor {
             for (thread_id, turn) in live.iter() {
                 if turn.cancel.is_cancelled() { continue; }
                 tx.execute(
+                    "INSERT OR IGNORE INTO kv(key,value) VALUES(?1,?2)",
+                    params![crate::interaction::coordination::interrupt_key(&turn.turn_id), json!({"by":"restart","at":now_rfc3339()}).to_string()],
+                )?;
+                tx.execute(
                     "INSERT OR IGNORE INTO thread_pending_steers(id,thread_id,turn_id,display_prompt,submitted_prompt,delivery,created_at,updated_at)
                      SELECT 'update-resume:'||id,thread_id,id,?1,?1,'update-resume',?2,?2
                      FROM thread_turns WHERE thread_id=?3 AND status IN ('inProgress','recovering')",

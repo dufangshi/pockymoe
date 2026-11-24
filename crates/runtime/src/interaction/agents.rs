@@ -1,12 +1,10 @@
 //! Coordination over a lineage: names, roles, worktrees, close, tree, wait and wake.
 //! Delegate wakes here are explicitly registered by the caller. Delayed unread
 //! inbox reminders are handled separately by service::inbox_reminder.
-use super::{closing_message, enqueue};
+use super::closing_message;
 use crate::Supervisor;
 use anyhow::{anyhow, bail, ensure, Result};
-use pockymoe_protocol::{
-    now_rfc3339, ThreadEventEnvelope, ThreadPendingWakeDto, ThreadWakeMemberDto,
-};
+use pockymoe_protocol::{now_rfc3339, ThreadEventEnvelope};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::{
@@ -43,9 +41,7 @@ pub struct Worktree {
 
 /// Aliases resolved relative to the caller, so they cannot also be names.
 const ALIASES: [&str; 3] = ["self", "parent", "root"];
-const MAX_WAIT: Duration = Duration::from_secs(1800);
-const MAX_PENDING_WAKES: usize = 3;
-const WAKE_EXCERPT: usize = 1500;
+pub(super) const MAX_WAIT: Duration = Duration::from_secs(1800);
 
 pub fn validate_name(name: &str) -> Result<()> {
     let mut chars = name.chars();
@@ -254,7 +250,7 @@ pub fn remove_worktree(workspace: &Path, path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn is_descendant(conn: &Connection, ancestor: &str, id: &str) -> Result<bool> {
+pub(crate) fn is_descendant(conn: &Connection, ancestor: &str, id: &str) -> Result<bool> {
     let mut current = id.to_string();
     for _ in 0..=crate::service::MAX_LINEAGE_DEPTH {
         let parent: Option<String> = conn
@@ -410,13 +406,16 @@ impl Supervisor {
 
     /// One thread's coordination state. `queued` and `running` are unsettled;
     /// `blocked` means a running turn waits on an approval, or on an answer to a
-    /// `question` it mailed that nobody has acknowledged or replied to.
-    async fn member_state(&self, id: &str) -> Result<Value> {
+    /// `question` it mailed that nobody has acknowledged or replied to;
+    /// `stalled` means its queue keeps failing to start. `outcome` says how the
+    /// last turn ended (or why the thread needs attention now).
+    pub(crate) async fn member_state(&self, id: &str) -> Result<Value> {
         ensure!(
             self.thread_host.get().is_none_or(|h| h.visible(id)),
             "thread not found"
         );
-        let (row, last, questions) = self.db.with(|c| {
+        let timers = self.interaction.timers();
+        let (row, last, questions, stall, failures) = self.db.with(|c| {
             let row: (String, Option<String>, Option<String>, String, i64, i64, String) = c.query_row(
                 "SELECT COALESCE(t.status,'idle'), t.agent_name, t.closed_at, t.title,
                         (SELECT COUNT(*) FROM thread_turns WHERE thread_id=t.id AND status='inProgress'),
@@ -426,20 +425,27 @@ impl Supervisor {
                 [id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
             ).optional()?.ok_or_else(|| anyhow!("thread {id} not found"))?;
-            let last: Option<(String, String, Option<String>)> = c
+            let last: Option<(String, String, Option<String>, Option<String>)> = c
                 .query_row(
-                    "SELECT id,status,completed_at FROM thread_turns WHERE thread_id=?1 ORDER BY ordinal DESC LIMIT 1",
+                    "SELECT id,status,completed_at,error FROM thread_turns WHERE thread_id=?1 ORDER BY ordinal DESC LIMIT 1",
                     [id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
                 .optional()?;
             let last = match last {
-                Some((turn, status, done)) => {
+                Some((turn, status, done, error)) => {
                     let message = if status == "inProgress" { None } else { closing_message(c, id, &turn)? };
-                    Some((turn, status, done, message))
+                    let outcome = if matches!(status.as_str(), "inProgress" | "recovering") {
+                        None
+                    } else {
+                        Some(super::coordination::turn_outcome(c, &turn, &status, error.as_deref())?)
+                    };
+                    Some((turn, status, done, message, outcome))
                 }
                 None => None,
             };
+            let stall = super::coordination::stall(c, id, timers)?;
+            let failures = super::coordination::consecutive_failures(c, id)?.0;
             // A passive question is invisible to the harness, but it is exactly the
             // moment a waiting parent must act, so surface it as blocking.
             let mut stmt = c.prepare(super::inbox::OPEN_QUESTIONS)?;
@@ -453,7 +459,7 @@ impl Supervisor {
                     ))
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok((row, last, questions))
+            Ok((row, last, questions, stall, failures))
         })?;
         let (status, name, closed, title, active, queued, provider) = row;
         let mut state = if closed.is_some() {
@@ -465,6 +471,11 @@ impl Supervisor {
         } else {
             status
         };
+        // Queued work that cannot start needs attention like a blocked turn.
+        let stall = stall.filter(|_| state == "queued");
+        if stall.is_some() {
+            state = "stalled".into();
+        }
         let mut waiting_on = Vec::new();
         if state == "running" {
             let provider = serde_json::from_value(json!(provider))?;
@@ -481,7 +492,20 @@ impl Supervisor {
                 state = "blocked".into();
             }
         }
-        let settled = !matches!(state.as_str(), "running" | "queued");
+        let settled = !matches!(state.as_str(), "running" | "queued" | "stalled");
+        let last_outcome = last.as_ref().and_then(|l| l.4.clone());
+        // What needs attention now wins over how the last turn ended.
+        let outcome = match (&stall, state.as_str()) {
+            (Some(stall), _) => json!({
+                "kind": "stalled",
+                "error": stall["error"],
+                "failures": stall["failures"],
+                "since": stall["since"],
+            }),
+            (None, "blocked") => json!({"kind":"blocked","waitingOn":waiting_on}),
+            // Running: the last turn has not ended, so there is no outcome yet.
+            _ => last_outcome.clone().unwrap_or(Value::Null),
+        };
         Ok(json!({
             "threadId": id,
             "name": name,
@@ -489,8 +513,11 @@ impl Supervisor {
             "state": state,
             "settled": settled,
             "waitingOn": if waiting_on.is_empty() { Value::Null } else { json!(waiting_on) },
-            "lastTurn": last.map(|(turn, status, done, message)| json!({
+            "outcome": outcome,
+            "consecutiveFailures": failures,
+            "lastTurn": last.map(|(turn, status, done, message, outcome)| json!({
                 "turnId": turn, "status": status, "completedAt": done,
+                "outcome": outcome,
                 "closingMessage": message.map(|m| clip(&m, 4000)),
             })),
         }))
@@ -518,20 +545,24 @@ impl Supervisor {
             }
             let settled = states.iter().filter(|s| s["settled"] == true).count();
             let blocked = states.iter().any(|s| s["state"] == "blocked");
+            let stalled = states.iter().any(|s| s["state"] == "stalled");
             let done = if any {
                 settled > 0
             } else {
                 settled == ids.len()
             };
-            if done || blocked || !pause(&mut events, deadline).await {
+            if done || blocked || stalled || !pause(&mut events, deadline).await {
                 return Ok(json!({
                     "done": done,
                     "allSettled": settled == ids.len(),
                     "blocked": blocked,
-                    "timedOut": !done && !blocked,
+                    "stalled": stalled,
+                    "timedOut": !done && !blocked && !stalled,
                     "waitedSeconds": started.elapsed().as_secs(),
                     "threads": states,
-                    "next": if blocked {
+                    "next": if stalled {
+                        super::coordination::STALLED_NEXT
+                    } else if blocked {
                         "A delegate is blocked: answer its question (reply with --in-reply-to, or acknowledge it) or resolve its approval, then wait again."
                     } else if done {
                         "Read each settled thread's closingMessage; check artifacts before acting on them. Close delegates you no longer need with `pockymoe thread close NAME`."
@@ -668,226 +699,10 @@ impl Supervisor {
             json!({"threadId":id,"name":thread.agent_name,"closedAt":now,"worktreeRemoved":removed,"worktreePath":if removed {None} else {thread.worktree_path}}),
         )
     }
-
-    /// One-shot: when every listed delegate settles (or one blocks), queue a single
-    /// turn on the caller carrying their outcomes. The only path by which delegates
-    /// wake their parent, and only because the parent asked.
-    pub fn register_wake(&self, caller: &str, ids: &[String]) -> Result<Value> {
-        ensure!(
-            !ids.is_empty() && ids.len() <= 20,
-            "wake on 1 to 20 threads"
-        );
-        let caller_thread = self.get_thread(caller)?;
-        self.ensure_prompt_allowed(&caller_thread)?;
-        let id = Uuid::new_v4().to_string();
-        self.db.with(|c| {
-            for member in ids {
-                ensure!(
-                    is_descendant(c, caller, member)?,
-                    "you can only wake on your own delegates; {member} is not one"
-                );
-            }
-            let pending: i64 = c.query_row(
-                "SELECT COUNT(*) FROM kv WHERE key GLOB ?1",
-                [format!("cli:wake:{caller}:*")],
-                |r| r.get(0),
-            )?;
-            ensure!(
-                (pending as usize) < MAX_PENDING_WAKES,
-                "you already have {pending} pending wakes; that is the limit"
-            );
-            c.execute(
-                "INSERT INTO kv(key,value) VALUES(?1,?2)",
-                params![
-                    format!("cli:wake:{caller}:{id}"),
-                    json!({"members":ids,"createdAt":now_rfc3339(),"taskTurnId":caller_thread.active_turn_id.as_deref().map(|turn| crate::service::peer_work::root_turn(c, caller, turn)).transpose()?}).to_string()
-                ],
-            )?;
-            Ok(())
-        })?;
-        self.bus.emit(ThreadEventEnvelope {
-            event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
-            thread_id: caller.into(),
-            timestamp: now_rfc3339(),
-            payload: json!({"reason":"wake_registered"}),
-        });
-        Ok(
-            json!({"wakeId":id,"threadId":caller,"members":ids,"behavior":"When all of these settle or one blocks, their report joins your running turn if your harness takes steers, or is queued as your next turn. You may end your turn now."}),
-        )
-    }
-
-    /// Wakes `thread` registered that have not fired, for its detail view.
-    pub fn pending_wakes(&self, thread: &str) -> Result<Vec<ThreadPendingWakeDto>> {
-        self.db.with(|c| {
-            let mut stmt = c.prepare("SELECT key,value FROM kv WHERE key GLOB ?1 ORDER BY key")?;
-            let rows = stmt
-                .query_map([format!("cli:wake:{thread}:*")], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            let mut wakes = Vec::new();
-            for (key, raw) in rows {
-                let Ok(record) = serde_json::from_str::<Value>(&raw) else {
-                    continue;
-                };
-                let mut members = Vec::new();
-                for id in record["members"].as_array().into_iter().flatten() {
-                    let Some(id) = id.as_str() else { continue };
-                    let row: Option<(Option<String>, Option<String>)> = c
-                        .query_row(
-                            "SELECT COALESCE(agent_name,title),status FROM threads WHERE id=?1",
-                            [id],
-                            |r| Ok((r.get(0)?, r.get(1)?)),
-                        )
-                        .optional()?;
-                    let (name, status) = row.unwrap_or_default();
-                    members.push(ThreadWakeMemberDto {
-                        thread_id: id.into(),
-                        name,
-                        status,
-                    });
-                }
-                wakes.push(ThreadPendingWakeDto {
-                    id: key.rsplit(':').next().unwrap_or_default().into(),
-                    created_at: record["createdAt"].as_str().map(str::to_owned),
-                    members,
-                });
-            }
-            wakes.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-            Ok(wakes)
-        })
-    }
-
-    pub(super) async fn fire_wakes(&self) -> Result<()> {
-        let wakes: Vec<(String, String)> = self.db.with(|c| {
-            let mut stmt = c.prepare("SELECT key,value FROM kv WHERE key GLOB 'cli:wake:*'")?;
-            let rows = stmt
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            Ok(rows)
-        })?;
-        for (key, raw) in wakes {
-            let caller = key.split(':').nth(2).unwrap_or_default().to_string();
-            let registered: Value = serde_json::from_str(&raw)?;
-            let members: Vec<String> = serde_json::from_str::<Value>(&raw)
-                .ok()
-                .and_then(|v| serde_json::from_value(v["members"].clone()).ok())
-                .unwrap_or_default();
-            let mut states = Vec::new();
-            for member in &members {
-                if let Ok(state) = self.member_state(member).await {
-                    states.push(state);
-                }
-            }
-            let ready = states.iter().all(|s| s["settled"] == true)
-                || states.iter().any(|s| s["state"] == "blocked");
-            if !ready {
-                continue;
-            }
-            let lines = states
-                .iter()
-                .map(|s| {
-                    let label = s["name"].as_str().map_or_else(
-                        || s["threadId"].as_str().unwrap_or("").to_string(),
-                        |n| format!("{n} ({})", s["threadId"].as_str().unwrap_or("")),
-                    );
-                    let mut line = format!("- {label}: {}", s["state"].as_str().unwrap_or(""));
-                    if let Some(waiting) = s["waitingOn"].as_array() {
-                        line.push_str(&format!(", waiting on: {waiting:?}"));
-                    }
-                    if let Some(message) = s["lastTurn"]["closingMessage"].as_str() {
-                        line.push_str(&format!(
-                            "\n  closing message: {}",
-                            clip(message, WAKE_EXCERPT)
-                        ));
-                    }
-                    line
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            use crate::service::peer_work::{WAKE_BLOCKED, WAKE_NOTE, WAKE_SETTLED};
-            let header = if states.iter().any(|s| s["state"] == "blocked") {
-                WAKE_BLOCKED
-            } else {
-                WAKE_SETTLED
-            };
-            let text = format!(
-                "{header}{WAKE_NOTE}{lines}\n\nVerify results before acting on them. Full transcripts: pockymoe transcript ID --limit 1"
-            );
-            // A running turn that takes steers hears the report now, e.g. Claude
-            // waiting on a native subagent; otherwise it is the caller's next turn.
-            let steer_turn = self.get_thread(&caller).ok().and_then(|thread| {
-                let steer = self.runtime(thread.provider).is_ok_and(|runtime| {
-                    runtime
-                        .negotiated_caps(thread.agent_id.as_deref())
-                        .turns
-                        .steer
-                });
-                thread
-                    .active_turn_id
-                    .filter(|_| steer && thread.status == "running")
-            });
-            let now = now_rfc3339();
-            let pending = Uuid::new_v4().to_string();
-            let queued = self.db.with(|c| {
-                let tx = c.unchecked_transaction()?;
-                let exists = tx
-                    .query_row("SELECT 1 FROM threads WHERE id=?1", [&caller], |_| Ok(()))
-                    .optional()?
-                    .is_some();
-                if exists {
-                    enqueue(&tx, &pending, &caller, &text, None, &now)?;
-                    tx.execute(
-                        "INSERT INTO kv(key,value) VALUES(?1,'system')",
-                        [format!("cli:prompt-origin:{pending}")],
-                    )?;
-                    match &steer_turn {
-                        // Held for that turn, so the queue worker cannot start it too.
-                        Some(turn) => {
-                            tx.execute(
-                                "UPDATE thread_pending_steers SET delivery='cli-steer',turn_id=?2 WHERE id=?1",
-                                params![pending, turn],
-                            )?;
-                        }
-                        None => wake_task_context(&tx, &caller, &pending, &registered, &text)?,
-                    }
-                }
-                tx.execute("DELETE FROM kv WHERE key=?1", [&key])?;
-                tx.commit()?;
-                Ok(exists)
-            })?;
-            if queued && steer_turn.is_some() {
-                if let Err(error) = self.steer_pending_prompt(&caller, &pending).await {
-                    // A wake must not be lost: the turn ended or refused it, so
-                    // it becomes the next turn, nested under the original task.
-                    tracing::info!(%error, thread_id = %caller, "delegate wake queued instead of steered");
-                    self.db.with(|c| {
-                        let tx = c.unchecked_transaction()?;
-                        if tx.execute(
-                            "UPDATE thread_pending_steers SET delivery='continuation',turn_id='' WHERE id=?1 AND delivery='cli-steer'",
-                            [&pending],
-                        )? > 0
-                        {
-                            wake_task_context(&tx, &caller, &pending, &registered, &text)?;
-                        }
-                        tx.commit()?;
-                        Ok(())
-                    })?;
-                }
-            }
-            self.bus.emit(ThreadEventEnvelope {
-                event_type: pockymoe_protocol::ThreadEventType::ThreadUpdated,
-                thread_id: caller,
-                timestamp: now,
-                payload: json!({"reason":"pending_steer_updated"}),
-            });
-        }
-        Ok(())
-    }
 }
 
 /// Links a queued wake turn to the task turn that registered the wake.
-fn wake_task_context(
+pub(super) fn wake_task_context(
     tx: &Connection,
     caller: &str,
     pending: &str,

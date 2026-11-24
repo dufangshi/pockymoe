@@ -21,6 +21,7 @@ delivery state.
 | Delegate work and collect it | `thread create --name N --kind task --subject S --text-file F`, then `thread wait N`, then `thread close N` | `guide delegate` |
 | Send a peer a result, question, task or correction | `thread send ID --kind K --subject S` | `guide messaging` |
 | Read or wait for your mail | `inbox`, `inbox wait --kind result --kind question`, `inbox ack` | `guide inbox` |
+| Ask when blocked and get the answer | `thread ask parent --subject S --text T` | `guide inbox` |
 | Split ordered work across delegates | `task add`, `task claim --wait`, `task done` | `guide tasks` |
 | Create or inspect a thread's Git worktrees | `worktree create --name N`, `worktree current`, `worktree list` | `guide worktrees` |
 | Use another device's threads or files | `device list`, `thread ... --device`, `fs` | `guide devices` |
@@ -57,10 +58,17 @@ Collaborating:
   10 minutes if you are idle. To act promptly on a required result,
   stay in your turn and block with `thread wait NAME...` or
   `inbox wait --kind result --kind question`; to end your turn, first register
-  `thread wait NAME... --wake` and say what you are waiting for. Never poll `status` in a
-  loop or message yourself.
-- A settled delegate finished executing, which is not success. Ask for evidence (files,
-  commit, exact test command and result) and check it before merging or closing.
+  `thread wait NAME... --wake` (delegates) or `inbox wait ... --wake` (mail, including
+  results from another device) and say what you are waiting for. Never poll `status`
+  in a loop or message yourself.
+- Blocked on a decision another thread must make: `thread ask parent --subject S --text
+  T` waits for the answer; do not guess or stop. On a timeout, wait again for the same
+  question (`inbox wait --in-reply-to ID`) instead of asking again.
+- A settled delegate finished executing, which is not success. Check `outcome` and the
+  evidence (files, commit, exact test command and result) before merging or closing. A
+  `stalled` delegate cannot start its work: fix the cause or withdraw it. A delegate
+  that failed 3 turns in a row refuses more tasks until you investigate
+  (`--retry-failed` overrides).
 - Lineage limits are depth 3 and 20 open threads per root. Close delegates once
   collected; on a refusal, do not repeat the same call. Prefer 3-5 concurrent delegates.
   Give delegates editing the same files their own `--worktree` (it starts from

@@ -1,6 +1,6 @@
 # pockymoe guide delegate
 
-Create, wait for, close and clean up delegates; lineage, roles, worktrees.
+Create, wait for, close and clean up delegates; outcomes, stalls and retries; lineage, roles, worktrees.
 
 ## The orchestration loop
 
@@ -33,12 +33,30 @@ pockymoe thread wait tests docs --timeout 600 # 3. block until both settle
 pockymoe thread close tests docs              # 4. free their slots once collected
 ```
 
-`thread wait` returns each delegate's state and its **closing message** inline, so you
-usually need no transcript call. It returns early with `blocked: true` when a delegate
-waits on an approval, or has mailed you a `--kind question` that nobody has answered
-(`--in-reply-to`) or acknowledged - `waitingOn` names the message; answer it, then wait
-again. `--any` returns as soon as one settles (`allSettled` tells you whether the rest
-did), so you can handle results as they land. `--any` and `--wake` cannot be combined.
+`thread wait` returns each delegate's state, `outcome` and **closing message** inline,
+so you usually need no transcript call. It returns early with `blocked: true` when a
+delegate waits on an approval, or has mailed you a `--kind question` that nobody has
+answered (`--in-reply-to`) or acknowledged - `waitingOn` names the message; answer it,
+then wait again. It also returns early with `stalled: true` when a delegate's queued
+work keeps failing to start (missing harness or model; `outcome.error` says why):
+fix the cause, withdraw the work with `thread stop NAME --clear-queue --reason ...`,
+or close it and create one on a harness that works. `--any` returns as soon as one
+settles (`allSettled` tells you whether the rest did), so you can handle results as
+they land. `--any` and `--wake` cannot be combined.
+
+`outcome.kind` is how the last turn ended: `completed`, `failed` (with `error`),
+`interrupted` (`by`: `owner`, `thread` with its `reason`, `restart`), or `blocked` /
+`stalled` while that holds. `consecutiveFailures` counts failed turns in a row. After
+3, a task you send that delegate is refused: read `thread status NAME` and `transcript
+NAME --limit 1`, fix the cause or use another delegate, and pass `--retry-failed`
+only for a retry you really intend.
+
+A delegate's first task from you starts with a short contract it reads: who it works
+for, that its final message reaches you automatically (so no separate "done" mail),
+that the final message carries the evidence, that it asks you with `pockymoe thread
+ask parent` when blocked, and that it creates no delegates unless the task says so.
+When it asks, an idle you gets the question as a turn; answer with `thread send NAME
+--kind result --in-reply-to MESSAGE_ID`, and its `ask` returns your answer.
 
 Choose by how long you expect to wait:
 
@@ -47,7 +65,8 @@ Choose by how long you expect to wait:
   every 30 s); just keep waiting on the same command. Each of those returns costs you
   a model call, so a long blocking wait is not free.
 - **Long, and nothing else to do:** `pockymoe thread wait tests docs --wake`, then
-  end your turn saying what you are waiting for. When they all settle (or one blocks),
+  end your turn saying what you are waiting for. When they all settle (or one blocks
+  or stalls),
   one report carrying their closing messages reaches you: it joins your turn if that
   turn is still running and your harness takes steers (for example while you wait on
   a native subagent), otherwise it is queued as your next turn. It costs nothing

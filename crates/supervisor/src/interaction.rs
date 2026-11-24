@@ -4,7 +4,8 @@ use axum::{extract::State, Extension, Json};
 use pockymoe_protocol::{CreateThreadInput, Provider, ThreadDto};
 use pockymoe_runtime::{
     interaction::{
-        clamp_wait, list_roles, load_role, AgentOptions, AgentRequester, SendInput, TranscriptQuery,
+        clamp_ask_wait, clamp_wait, list_roles, load_role, AgentOptions, AgentRequester,
+        MailFilter, SendInput, TranscriptQuery,
     },
     Supervisor,
 };
@@ -277,14 +278,24 @@ async fn run_as(
                 // Omitting attribution must not bypass the peer delivery policy.
                 body.from_thread_id = Some(caller.clone());
             }
+            // A thread's own credential is subject to the failure breaker; the
+            // owner (machine credential, Web) never is.
+            let agent = caller.is_some();
+            let send = move |state: &Supervisor, id: &str, body| {
+                if agent {
+                    state.send_to_thread_as_agent(id, body)
+                } else {
+                    state.send_to_thread(id, body)
+                }
+            };
             let mut receipt = if state.config.treer_enabled {
                 let state = state.clone();
                 let id = id.to_owned();
                 // A Treer prompt can return through this hub's AIS endpoint. Keep
                 // the HTTP executor free while the synchronous transport waits.
-                tokio::task::spawn_blocking(move || state.send_to_thread(&id, body)).await??
+                tokio::task::spawn_blocking(move || send(&state, &id, body)).await??
             } else {
-                state.send_to_thread(id, body)?
+                send(state, id, body)?
             };
             if receipt["delivery"] == "steer" {
                 let pending = receipt["pendingSteerId"].as_str().unwrap();
@@ -388,15 +399,53 @@ async fn run_as(
                 .await
         }
         "roles" => Ok(list_roles(Path::new(&caller_cwd(state, from)?))),
-        "inboxWait" => {
+        "inboxWait" | "inboxWake" => {
             reach(id)?;
+            let filter = MailFilter {
+                from_thread_ids: strings(&input["fromThreadIds"]),
+                kinds: strings(&input["kinds"]),
+                in_reply_to: input["inReplyTo"].as_str().map(str::to_owned),
+            };
+            if input["operation"] == "inboxWait" {
+                return state
+                    .inbox_wait_matching(id, &filter, input["onlyNew"] == true, wait)
+                    .await;
+            }
+            // A wake continues the thread that registers it, in its own inbox.
+            let me = caller.as_deref().or(from).context(
+                "a mail wake needs the caller's identity; run it from a managed thread or pass --from ID",
+            )?;
+            anyhow::ensure!(
+                me == id && from.is_none_or(|from| from == me),
+                "forbidden: a mail wake watches only your own inbox"
+            );
+            state.register_mail_wake(me, &filter)
+        }
+        "ask" => {
+            reach(id)?;
+            let asker = caller.as_deref().or(from).context(
+                "thread ask needs the asking thread's identity; run it from a managed thread or pass --from ID",
+            )?;
+            anyhow::ensure!(
+                from.is_none_or(|from| from == asker),
+                "forbidden: --from cannot override the authenticated caller"
+            );
+            let subject = input["subject"]
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .context("thread ask requires --subject")?;
+            let text = input["text"]
+                .as_str()
+                .context("thread ask requires --text or --text-file")?;
             state
-                .inbox_wait(
+                .ask_thread(
                     id,
-                    &strings(&input["fromThreadIds"]),
-                    &strings(&input["kinds"]),
-                    input["onlyNew"] == true,
-                    wait,
+                    asker,
+                    subject,
+                    text.to_owned(),
+                    input["clientRequestId"].as_str().map(str::to_owned),
+                    clamp_ask_wait(input["timeoutSeconds"].as_u64()),
+                    caller.is_some(),
                 )
                 .await
         }
@@ -621,6 +670,88 @@ mod tests {
         let refused = cli(&f, Some(&parent), json!({"operation":"create","workspaceId":f.open,"provider":"codex","model":"ios-e2e-stream","reasoningEffort":"ultra"})).await.unwrap_err().to_string();
         assert!(refused.contains("low, medium, high"), "{refused}");
         assert!(cli(&f, Some(&parent), json!({"operation":"create","workspaceId":f.open,"provider":"codex","model":"default","reasoningEffort":"high; rm"})).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_failure_breaker_applies_to_thread_credentials_only_and_new_operations_need_the_caller(
+    ) {
+        let f = setup().await;
+        let lead = thread(&f.state, &f.open).await;
+        let worker = child(&f.state, &f.open, &lead).await;
+        f.state
+            .db
+            .with(|c| {
+                for n in 1..=3 {
+                    c.execute(
+                        "INSERT INTO thread_turns(id,thread_id,status,ordinal,error) VALUES(?1,?2,'failed',?3,'boom')",
+                        rusqlite::params![format!("t{n}"), worker, n],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let task = json!({"operation":"send","threadId":worker,"delivery":"queue","kind":"task","subject":"again","text":"try again"});
+        let refused = cli(&f, Some(&lead), task.clone())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("--retry-failed"), "{refused}");
+        let mut retry = task.clone();
+        retry["retryFailed"] = json!(true);
+        cli(&f, Some(&lead), retry).await.unwrap();
+        // The machine credential acts for the owner, even naming the thread.
+        let mut owner = task.clone();
+        owner["fromThreadId"] = json!(lead);
+        cli(&f, None, owner).await.unwrap();
+        let status = cli(
+            &f,
+            Some(&lead),
+            json!({"operation":"status","threadId":worker}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status["consecutiveFailures"], 3);
+        assert_eq!(status["outcome"]["kind"], "failed");
+
+        // A mail wake watches only the caller's own inbox; ask needs a subject.
+        let wake = cli(
+            &f,
+            Some(&lead),
+            json!({"operation":"inboxWake","threadId":lead,"kinds":["result"]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(wake["kind"], "mail");
+        let elsewhere = cli(
+            &f,
+            Some(&lead),
+            json!({"operation":"inboxWake","threadId":worker}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(elsewhere.starts_with("forbidden:"), "{elsewhere}");
+        let unnamed = cli(
+            &f,
+            Some(&worker),
+            json!({"operation":"ask","threadId":lead,"text":"?"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(unnamed.contains("--subject"), "{unnamed}");
+        let asked = cli(&f, Some(&worker), json!({"operation":"ask","threadId":lead,"subject":"Key?","text":"Which key?","timeoutSeconds":0}))
+            .await
+            .unwrap();
+        assert_eq!(asked["answered"], false);
+        assert_eq!(asked["promptDelivery"], "prompt");
+        let filtered = cli(&f, Some(&lead), json!({"operation":"inboxWait","threadId":lead,"inReplyTo":"nothing","timeoutSeconds":0}))
+            .await
+            .unwrap();
+        assert_eq!(
+            filtered["timedOut"], true,
+            "only replies to that message count"
+        );
     }
 
     fn sorted<const N: usize>(ids: [&String; N]) -> Vec<String> {

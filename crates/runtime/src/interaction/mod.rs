@@ -1,15 +1,21 @@
 //! Provider-independent local thread operations. Uses the existing prompt queue and KV store.
 mod agents;
+mod ask;
 pub(crate) mod control;
+pub(crate) mod coordination;
 pub(crate) mod inbox;
 mod isolation;
 mod peer;
 mod tasks;
 mod transcript;
+mod wakes;
 pub use agents::{
     clamp_wait, create_worktree, list_roles, load_role, remove_worktree, AgentOptions, RoleTemplate,
 };
 pub(crate) use agents::{stage_role, take_role, validate_name};
+pub use ask::clamp_ask_wait;
+pub use coordination::CoordinationTimers;
+pub use inbox::MailFilter;
 pub use isolation::{AgentIsolation, AgentRequester};
 pub use peer::RemoteSender;
 pub use transcript::TranscriptQuery;
@@ -91,6 +97,17 @@ pub struct InteractionState {
     started: AtomicBool,
     paused_threads: std::sync::RwLock<HashSet<String>>,
     thread_env: std::sync::RwLock<std::collections::HashMap<String, Vec<(String, String)>>>,
+    timers: std::sync::RwLock<CoordinationTimers>,
+}
+
+impl InteractionState {
+    /// Shortens the stall and retry durations, for tests and labs.
+    pub fn set_timers(&self, timers: CoordinationTimers) {
+        *self.timers.write().unwrap() = timers;
+    }
+    pub fn timers(&self) -> CoordinationTimers {
+        *self.timers.read().unwrap()
+    }
 }
 
 pub use pockymoe_protocol::ThreadSendInput as SendInput;
@@ -247,10 +264,24 @@ impl Supervisor {
         self.send_to_thread_inner(id, input, None)
     }
 
+    /// A send made with the sender thread's own credential. Unlike the owner's
+    /// sends, it is subject to the failure breaker (`retryFailed`).
+    pub fn send_to_thread_as_agent(&self, id: &str, input: SendInput) -> Result<Value> {
+        self.send_to_thread_impl(
+            id,
+            input,
+            SendMode {
+                consult_host: true,
+                agent: true,
+                ..Default::default()
+            },
+        )
+    }
+
     /// Delivery already accepted by the host, or generated locally by its inbox worker.
     /// Never routes back through the outbound host transport.
     pub fn send_to_thread_locally(&self, id: &str, input: SendInput) -> Result<Value> {
-        self.send_to_thread_impl(id, input, None, false)
+        self.send_to_thread_impl(id, input, SendMode::default())
     }
 
     fn send_to_thread_inner(
@@ -259,16 +290,29 @@ impl Supervisor {
         input: SendInput,
         remote: Option<RemoteSender>,
     ) -> Result<Value> {
-        self.send_to_thread_impl(id, input, remote, true)
+        self.send_to_thread_impl(
+            id,
+            input,
+            SendMode {
+                remote,
+                consult_host: true,
+                ..Default::default()
+            },
+        )
     }
 
-    fn send_to_thread_impl(
+    pub(super) fn send_to_thread_impl(
         &self,
         id: &str,
         input: SendInput,
-        remote: Option<RemoteSender>,
-        consult_host: bool,
+        mode: SendMode,
     ) -> Result<Value> {
+        let SendMode {
+            remote,
+            consult_host,
+            agent,
+            ask,
+        } = mode;
         let host_hook = consult_host
             .then(|| self.interaction.host_messaging.read().unwrap().clone())
             .flatten();
@@ -409,9 +453,16 @@ impl Supervisor {
             }
             None => input.text.clone(),
         };
-        let encoded = match &remote {
-            Some(sender) => serde_json::to_vec(&(&input, sender))?,
-            None => serde_json::to_vec(&input)?,
+        // `retryFailed` overrides a refusal; it is not part of what was sent,
+        // so a retry that adds it still matches the original request.
+        let hashed = SendInput {
+            retry_failed: false,
+            ..input.clone()
+        };
+        let encoded = match (&remote, ask) {
+            (Some(sender), _) => serde_json::to_vec(&(&hashed, sender))?,
+            (None, true) => serde_json::to_vec(&(&hashed, "ask"))?,
+            (None, false) => serde_json::to_vec(&hashed)?,
         };
         let fingerprint = hex::encode(Sha256::digest(encoded));
         let result = self.db.with(|conn| {
@@ -463,6 +514,14 @@ impl Supervisor {
                         );
                     }
                     _ => {}
+                }
+            }
+            // A thread credential that keeps sending work to a delegate whose
+            // turns all fail is stopped until it investigates (`retryFailed`).
+            // After deduplication, so an accepted retry keeps its receipt.
+            if agent && !input.retry_failed && input.delivery != "inbox" && kind == "task" {
+                if let Some(from) = &input.from_thread_id {
+                    Supervisor::ensure_breaker_allows(&tx, from, id)?;
                 }
             }
             // Resolve only after deduplication, inside the acceptance transaction.
@@ -519,6 +578,13 @@ impl Supervisor {
                         &tx, id, &pending_id, input.from_thread_id.as_deref(), topic,
                     )?);
                 }
+                if let (true, None, Some(from)) = (ask, &remote, &input.from_thread_id) {
+                    let (delivery, note) = ask::register(&tx, id, from, &pending_id)?;
+                    receipt["promptDelivery"] = json!(delivery);
+                    if let Some(note) = note {
+                        receipt["promptDeliveryNote"] = json!(note);
+                    }
+                }
             } else {
                 enqueue(
                     &tx,
@@ -538,6 +604,17 @@ impl Supervisor {
                 if peer_prompt {
                     tx.execute("INSERT INTO kv(key,value) VALUES(?1,'peer')",
                         [format!("cli:prompt-origin:{pending_id}")])?;
+                }
+                // The first task from an ancestor carries the delegate contract.
+                if let (None, "task", Some(from)) = (&remote, kind, &input.from_thread_id) {
+                    if agents::is_descendant(&tx, from, id)? {
+                        coordination::stage_contract(
+                            &tx,
+                            id,
+                            from,
+                            thread.parent_thread_id.as_deref() == Some(from.as_str()),
+                        )?;
+                    }
                 }
                 if delivery == "steer" {
                     tx.execute(
@@ -595,9 +672,15 @@ impl Supervisor {
                 |r| r.get(0),
             )?)
         })?;
-        Ok(
-            json!({"threadId":id,"name":thread.agent_name,"role":thread.agent_role,"parentThreadId":thread.parent_thread_id,"rootThreadId":thread.root_thread_id,"worktreePath":thread.worktree_path,"closedAt":thread.closed_at,"title":thread.title,"workspaceId":thread.workspace_id,"provider":thread.provider,"agentId":thread.agent_id,"model":thread.model,"reasoningEffort":thread.reasoning_effort,"status":thread.status,"activeTurnId":thread.active_turn_id,"updatedAt":thread.updated_at,"lastError":thread.last_error,"waitingForInput":!pending.is_empty(),"queuedCount":queued,"unreadMessageCount":self.inbox_unread_count(id)?}),
-        )
+        let mut status = json!({"threadId":id,"name":thread.agent_name,"role":thread.agent_role,"parentThreadId":thread.parent_thread_id,"rootThreadId":thread.root_thread_id,"worktreePath":thread.worktree_path,"closedAt":thread.closed_at,"title":thread.title,"workspaceId":thread.workspace_id,"provider":thread.provider,"agentId":thread.agent_id,"model":thread.model,"reasoningEffort":thread.reasoning_effort,"status":thread.status,"activeTurnId":thread.active_turn_id,"updatedAt":thread.updated_at,"lastError":thread.last_error,"waitingForInput":!pending.is_empty(),"queuedCount":queued,"unreadMessageCount":self.inbox_unread_count(id)?});
+        // The coordination view `thread wait` reports: `state` adds stalled and
+        // blocked to `status`, `outcome` says how the last turn ended.
+        if let Ok(member) = self.member_state(id).await {
+            for field in ["state", "outcome", "consecutiveFailures"] {
+                status[field] = member[field].clone();
+            }
+        }
+        Ok(status)
     }
 
     pub fn start_interaction_worker(self: &Arc<Self>) {
@@ -626,6 +709,9 @@ impl Supervisor {
                 }
                 if let Err(error) = state.fire_wakes().await {
                     tracing::warn!(%error,"delegate wake failed");
+                }
+                if let Err(error) = state.deliver_asks().await {
+                    tracing::warn!(%error, "thread ask delivery failed");
                 }
                 if std::time::Instant::now() >= next_inbox_reminder {
                     if let Err(error) = state.inbox_reminder_tick(&now_rfc3339()).await {
@@ -671,18 +757,29 @@ impl Supervisor {
                     let state = state.clone();
                     let running = running.clone();
                     tokio::spawn(async move {
+                        let attempt_started = now_rfc3339();
                         if let Err(error) = state.drain_steers(&id).await {
                             tracing::warn!(%error,thread_id=%id,"queued prompt deferred");
                             if !error.to_string().starts_with("conflict:") {
+                                let timers = state.interaction.timers();
                                 let _ = state.db.with(|c| {
                                     c.execute(
                                         "UPDATE threads SET last_error=?1 WHERE id=?2",
                                         params![format!("{error:#}"), id],
                                     )?;
-                                    Ok(())
+                                    // Durable, so a waiting coordinator learns the
+                                    // queue cannot start (`stalled`) instead of
+                                    // waiting for a turn that never comes.
+                                    coordination::record_start_failure(
+                                        c,
+                                        &id,
+                                        &attempt_started,
+                                        &format!("{error:#}"),
+                                        timers,
+                                    )
                                 });
                                 // A missing/unavailable harness should not be restarted four times per second.
-                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                tokio::time::sleep(timers.start_retry).await;
                             }
                         }
                         running.lock().unwrap().remove(&id);
@@ -709,6 +806,18 @@ impl Supervisor {
             Ok(())
         })
     }
+}
+
+/// How a send was made, beyond its input.
+#[derive(Default)]
+pub(super) struct SendMode {
+    remote: Option<RemoteSender>,
+    /// Route through a host's messaging (Treer) when one is installed.
+    consult_host: bool,
+    /// Made with a thread credential, so the failure breaker applies.
+    agent: bool,
+    /// A `thread ask` question: may be delivered promptly to an idle ancestor.
+    ask: bool,
 }
 
 pub(crate) fn enqueue(

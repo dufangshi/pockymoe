@@ -52,6 +52,83 @@ mod tests {
     }
 
     #[test]
+    fn coordination_commands_parse_ask_mail_wakes_and_intended_retries() {
+        let cli = Cli::try_parse_from([
+            "pockymoe",
+            "thread",
+            "ask",
+            "parent",
+            "--subject",
+            "Key?",
+            "--text",
+            "Which?",
+        ])
+        .unwrap();
+        let Commands::Thread {
+            command: threads::ThreadCommand::Ask { id, timeout, .. },
+        } = cli.command
+        else {
+            panic!("expected ask")
+        };
+        assert_eq!((id.as_str(), timeout), ("parent", 600));
+        // A question needs a subject and text.
+        assert!(
+            Cli::try_parse_from(["pockymoe", "thread", "ask", "parent", "--text", "x"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["pockymoe", "thread", "ask", "parent", "--subject", "x"]).is_err()
+        );
+        let cli = Cli::try_parse_from([
+            "pockymoe",
+            "inbox",
+            "wait",
+            "--from-thread",
+            "Mac/00000000-0000-0000-0000-000000000001",
+            "--kind",
+            "result",
+            "--in-reply-to",
+            "m1",
+            "--wake",
+        ])
+        .unwrap();
+        let Commands::Inbox(args) = cli.command else {
+            panic!("expected inbox")
+        };
+        assert!(matches!(
+            args.command,
+            Some(threads::InboxCommand::Wait {
+                wake: true,
+                in_reply_to: Some(_),
+                ..
+            })
+        ));
+        // A wake does not block, so it takes no timeout.
+        assert!(
+            Cli::try_parse_from(["pockymoe", "inbox", "wait", "--wake", "--timeout", "5"]).is_err()
+        );
+        let cli = Cli::try_parse_from([
+            "pockymoe",
+            "thread",
+            "send",
+            "worker",
+            "--delivery",
+            "queue",
+            "--kind",
+            "task",
+            "--text",
+            "again",
+            "--retry-failed",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Thread {
+                command: threads::ThreadCommand::Send { body, .. }
+            } if body.retry_failed
+        ));
+    }
+
+    #[test]
     fn hosted_database_binding_command_returns_stable_error() {
         let root = std::env::temp_dir().join(format!("host-mode-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&root).unwrap();
@@ -450,7 +527,8 @@ Details: pockymoe guide delegate | messaging"#
     #[command(after_long_help = r#"Rules:
   - Read at natural checkpoints: when the turn notice names something, before work that
     depends on a peer, after a build or batch. Not after every tool call.
-  - To wait, use `inbox wait --kind result --kind question` instead of polling.
+  - To wait, use `inbox wait --kind result --kind question` instead of polling; to end
+    your turn while you wait (for example on another device's result), add --wake.
   - Ack only what you handled. Do not reply "received"; answer questions before acking.
 
 More: pockymoe guide inbox"#)]

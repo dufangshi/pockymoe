@@ -80,7 +80,7 @@ fn goal_status_is_terminal(status: &str) -> bool {
     matches!(status, "complete" | "terminated")
 }
 
-struct LiveTurn {
+pub(crate) struct LiveTurn {
     turn_id: String,
     cancel: CancellationToken,
 }
@@ -360,11 +360,11 @@ pub struct Supervisor {
     pub db: Database,
     pub bus: EventBus,
     runtimes: HashMap<Provider, SharedRuntime>,
-    live: Mutex<HashMap<String, LiveTurn>>,
+    pub(crate) live: Mutex<HashMap<String, LiveTurn>>,
     pub harness_gates: std::sync::Mutex<HashMap<String, Arc<tokio::sync::RwLock<()>>>>,
     pub supervisor_update_status: std::sync::Mutex<Option<Value>>,
     pub update_lock: Arc<Mutex<()>>,
-    update_draining: std::sync::atomic::AtomicBool,
+    pub(crate) update_draining: std::sync::atomic::AtomicBool,
     update_recovering: std::sync::Mutex<HashSet<String>>,
     pub maintenance_gate: Arc<tokio::sync::RwLock<()>>,
     pub management_jobs: std::sync::Mutex<HashMap<String, Value>>,
@@ -3209,6 +3209,8 @@ impl Supervisor {
                  WHERE id=?3",
                 params![now, title, thread.id],
             )?;
+            // The queue started: whatever kept it from starting is over.
+            crate::interaction::coordination::clear_stall(conn, &thread.id)?;
             upsert_legacy_turn_metadata(
                 conn,
                 &thread.id,
@@ -3259,6 +3261,12 @@ impl Supervisor {
         // A role template applies once, to whichever prompt first starts work.
         let prompt = match crate::interaction::take_role(self, &thread.id) {
             Some(role) => format!("{role}\n\n{prompt}"),
+            None => prompt,
+        };
+        // Like the role, the delegate contract reaches only the harness: it is
+        // not the sender's message, so it never enters the stored prompt.
+        let prompt = match self.take_contract(&thread.id) {
+            Some(contract) => format!("{contract}\n\n{prompt}"),
             None => prompt,
         };
         let prompt = match self.pending_mail_notice(&thread.id) {
@@ -3770,6 +3778,11 @@ impl Supervisor {
         })?;
         self.pause_thread_prompt_automations(thread_id, "userStop")?;
         let interrupted_turn_id = self.active_turn_id(thread_id)?;
+        if let Some(turn) = &interrupted_turn_id {
+            // A delegate's coordinator reads who stopped it (`outcome.by`);
+            // `thread stop` records itself first, and the first record wins.
+            self.record_interrupt(turn, json!({"by":"owner","at":now_rfc3339()}))?;
+        }
         let had_live_turn = {
             if let Some(live) = live_turns.get(thread_id) {
                 live.cancel.cancel();

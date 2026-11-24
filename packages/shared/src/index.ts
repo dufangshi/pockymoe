@@ -1626,11 +1626,20 @@ export interface ThreadPendingSteerDto {
   sender?: MessageSenderDto | null;
 }
 
-/** A `thread wait --wake` registration that has not fired yet. */
+/** A `thread wait --wake` (`kind: "threads"`) or `inbox wait --wake` (`kind: "mail"`)
+    registration that has not fired yet. Older Supervisors omit `kind`; a mail wake
+    repeats its local senders in `members` for clients that predate it. */
 export interface ThreadPendingWakeDto {
   id: string;
   createdAt: string | null;
   members: Array<{ threadId: string; name: string | null; status: string | null }>;
+  kind?: string;
+  mail?: {
+    /** Empty: mail from anyone. */
+    from: Array<{ threadId: string; name: string | null; status: string | null }>;
+    kinds: string[];
+    inReplyTo?: string | null;
+  } | null;
 }
 
 export interface ThreadSubagentDto {

@@ -114,7 +114,93 @@ const FILTERED_UNREAD: &str = "key GLOB ?1
     AND json_extract(value,'$.supersededBy') IS NULL
     AND (?2='[]' OR json_extract(value,'$.fromThreadId') IN (SELECT value FROM json_each(?2)))
     AND (?3='[]' OR COALESCE(json_extract(value,'$.kind'),'status') IN (SELECT value FROM json_each(?3)))
-    AND json_extract(value,'$.id') NOT IN (SELECT value FROM json_each(?4))";
+    AND json_extract(value,'$.id') NOT IN (SELECT value FROM json_each(?4))
+    AND (?5 IS NULL OR json_extract(value,'$.inReplyTo')=?5)";
+
+/// What `inbox wait` and a mail wake match: unacknowledged, current mail of a
+/// mailbox, optionally from given threads, of given kinds, or answering one
+/// message. `exclude` holds ids already seen (`--new`).
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailFilter {
+    #[serde(default)]
+    pub from_thread_ids: Vec<String>,
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    #[serde(default)]
+    pub in_reply_to: Option<String>,
+}
+
+impl MailFilter {
+    pub(super) fn validate(&self) -> Result<()> {
+        validate_kinds(&self.kinds)?;
+        ensure!(
+            self.from_thread_ids.len() <= 20,
+            "filter on at most 20 sender threads"
+        );
+        if let Some(id) = &self.in_reply_to {
+            ensure!(
+                !id.trim().is_empty() && id.len() <= 128,
+                "inReplyTo must be a message id"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Matching mail, oldest first, at most `limit`.
+pub(super) fn matching(
+    conn: &Connection,
+    thread: &str,
+    filter: &MailFilter,
+    exclude: &[String],
+    limit: usize,
+) -> Result<Vec<Value>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT value FROM kv WHERE {FILTERED_UNREAD}
+         ORDER BY json_extract(value,'$.createdAt'), json_extract(value,'$.id') LIMIT ?6"
+    ))?;
+    let rows = stmt
+        .query_map(
+            params![
+                format!("{}*", prefix(thread)),
+                serde_json::to_string(&filter.from_thread_ids)?,
+                serde_json::to_string(&filter.kinds)?,
+                serde_json::to_string(exclude)?,
+                filter.in_reply_to,
+                limit as i64
+            ],
+            |r| r.get::<_, String>(0),
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    rows.iter()
+        .map(|raw| Ok(serde_json::from_str::<Value>(raw)?))
+        .collect()
+}
+
+/// Ids of every matching message now, for `--new`.
+pub(super) fn matching_ids(
+    conn: &Connection,
+    thread: &str,
+    filter: &MailFilter,
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT json_extract(value,'$.id') FROM kv WHERE {FILTERED_UNREAD}"
+    ))?;
+    let ids = stmt
+        .query_map(
+            params![
+                format!("{}*", prefix(thread)),
+                serde_json::to_string(&filter.from_thread_ids)?,
+                serde_json::to_string(&filter.kinds)?,
+                "[]",
+                filter.in_reply_to
+            ],
+            |r| r.get(0),
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(ids)
+}
 
 fn string_filter(query: &Value, field: &str) -> Result<Vec<String>> {
     if query[field].is_null() {
@@ -142,7 +228,12 @@ fn validate_kinds(kinds: &[String]) -> Result<()> {
     );
     Ok(())
 }
-fn mark_read(conn: &Connection, thread: &str, message: &mut Value, now: &str) -> Result<()> {
+pub(super) fn mark_read(
+    conn: &Connection,
+    thread: &str,
+    message: &mut Value,
+    now: &str,
+) -> Result<()> {
     if message["readAt"].is_null() {
         conn.execute(
             "UPDATE kv SET value=json_set(value,'$.readAt',?2) WHERE key=?1 AND json_extract(value,'$.readAt') IS NULL",
@@ -152,7 +243,7 @@ fn mark_read(conn: &Connection, thread: &str, message: &mut Value, now: &str) ->
     }
     Ok(())
 }
-fn get(conn: &Connection, thread: &str, id: &str) -> Result<Value> {
+pub(super) fn get(conn: &Connection, thread: &str, id: &str) -> Result<Value> {
     let raw: Option<String> = conn
         .query_row(
             "SELECT value FROM kv WHERE key=?1",
@@ -239,42 +330,42 @@ impl Supervisor {
         only_new: bool,
         timeout: std::time::Duration,
     ) -> Result<Value> {
+        let filter = MailFilter {
+            from_thread_ids: from.to_vec(),
+            kinds: kinds.to_vec(),
+            in_reply_to: None,
+        };
+        self.inbox_wait_matching(thread, &filter, only_new, timeout)
+            .await
+    }
+
+    /// `inbox_wait` with every filter, including the reply to one message.
+    pub async fn inbox_wait_matching(
+        &self,
+        thread: &str,
+        filter: &MailFilter,
+        only_new: bool,
+        timeout: std::time::Duration,
+    ) -> Result<Value> {
         self.get_thread(thread)?;
-        validate_kinds(kinds)?;
+        filter.validate()?;
         let started = std::time::Instant::now();
         let deadline = started + timeout;
         let mut events = self.bus.subscribe();
-        let mailbox = format!("{}*", prefix(thread));
-        let from_json = serde_json::to_string(from)?;
-        let kinds_json = serde_json::to_string(kinds)?;
         // Capture every matching id, not just the first page. Exclude them in SQL
         // before LIMIT, otherwise --new is starved by a backlog of old messages.
         let seen: Vec<String> = if only_new {
-            self.db.with(|c| {
-                let mut stmt = c.prepare(&format!(
-                    "SELECT json_extract(value,'$.id') FROM kv WHERE {FILTERED_UNREAD}"
-                ))?;
-                let ids = stmt
-                    .query_map(params![mailbox, from_json, kinds_json, "[]"], |r| r.get(0))?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                Ok(ids)
-            })?
+            self.db.with(|c| matching_ids(c, thread, filter))?
         } else {
             vec![]
         };
-        let seen_json = serde_json::to_string(&seen)?;
         let unread = || {
             self.db.with(|c| {
-                let mut stmt = c.prepare(&format!(
-                    "SELECT value FROM kv WHERE {FILTERED_UNREAD}
-                     ORDER BY json_extract(value,'$.createdAt'), json_extract(value,'$.id') LIMIT 200"
-                ))?;
-                let rows = stmt
-                    .query_map(params![mailbox, from_json, kinds_json, seen_json], |r| r.get::<_, String>(0))?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                let mut messages = rows.iter().map(|raw| serde_json::from_str::<Value>(raw)).collect::<std::result::Result<Vec<_>, _>>()?;
+                let mut messages = matching(c, thread, filter, &seen, 200)?;
                 let now = now_rfc3339();
-                for message in &mut messages { mark_read(c, thread, message, &now)?; }
+                for message in &mut messages {
+                    mark_read(c, thread, message, &now)?;
+                }
                 Ok(messages)
             })
         };

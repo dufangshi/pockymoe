@@ -20,6 +20,14 @@ opened, and an unlabelled one cannot.
 calls it out. Do not mark routine updates as questions, or that signal stops meaning
 anything. Use `--in-reply-to MESSAGE_ID` when answering so the exchange correlates.
 
+When you are blocked and need the answer before you can continue, `thread ask`
+sends the question and waits for the reply in one command; an idle ancestor gets it
+as a turn right away (`guide inbox`, "Asking and waiting for the answer"):
+
+```bash
+pockymoe thread ask parent --subject 'Which staging key?' --text 'Which key may I use?'
+```
+
 Do not hand-write `Subject:` or `Kind:` into the message text. The flags populate a
 real envelope; prose in the body does not.
 
@@ -135,6 +143,10 @@ pockymoe thread stop NAME --clear-queue --reason "..."   # withdraw yours, then 
 - A stopped delegate keeps its history and its slot. It is not closed or deleted.
 - In `thread queue`, `queued` runs in order, `held` is a steer whose turn ended (it never
   runs; withdraw it or resend), and `steered` is already in the running turn.
+- A delegate whose last 3 or more turns failed refuses your next task until you look:
+  `thread status NAME` (its `outcome` and `consecutiveFailures`) and `transcript NAME
+  --limit 1`. Resend with `--retry-failed` only when you fixed the cause or a retry is
+  really what you want.
 
 ## Execution receipts and steering failures
 
