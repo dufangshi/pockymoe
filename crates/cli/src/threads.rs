@@ -16,7 +16,7 @@ pub struct Connection {
 }
 #[derive(Args)]
 pub struct Body {
-    /// inbox is passive (send default); queue assigns a task (create default); direct/steer require an urgent correction or unblock request plus --interrupt-reason for peer sends.
+    /// inbox is passive (send default); queue assigns a task (default for --kind task and for create); direct/steer require an urgent correction or unblock request plus --interrupt-reason for peer sends.
     #[arg(long, value_parser=["inbox","direct","queue","steer"])]
     pub delivery: Option<String>,
     /// Completion notifications are passive inbox mail; they do not immediately wake or queue the caller.
@@ -705,6 +705,13 @@ impl Client {
         let text = body
             .text()?
             .context("send requires --text or --text-file")?;
+        // A task is work to execute: unless told otherwise it is queued, not
+        // mailed. A task left in an inbox never starts a turn.
+        let default_delivery = if body.kind.as_deref() == Some("task") {
+            "queue"
+        } else {
+            default_delivery
+        };
         let mut input = json!({"operation":"send","text":text,"delivery":body.delivery.as_deref().unwrap_or(default_delivery),"notifyDelivery":body.notify_delivery,"fromThreadId":self.from,"notifyOnComplete":body.notify_on_complete,"clientRequestId":body.request_id,"subject":body.subject,"kind":body.kind,"inReplyTo":body.in_reply_to,"interruptReason":body.interrupt_reason,"topicKey":body.topic_key});
         if body.retry_failed {
             input["retryFailed"] = json!(true);

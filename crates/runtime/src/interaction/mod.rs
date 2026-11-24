@@ -929,7 +929,7 @@ pub(crate) fn finish_notification(
             } else {
                 ""
             };
-            let text = format!("[Pockymoe turn notification]\nThread {thread}, turn {turn} ended with status {status} at {now}. This describes execution status, not business success - check the result below before acting on it. Full detail: pockymoe transcript {target} --turn {turn} --view overview{device_hint}{summary}");
+            let text = format!("{}\nThread {thread}, turn {turn} ended with status {status} at {now}. This describes execution status, not business success - check the result below before acting on it. Full detail: pockymoe transcript {target} --turn {turn} --view overview{device_hint}{summary}", inbox::TURN_NOTIFICATION);
             let message_id = Uuid::new_v4().to_string();
             let subject = format!("Delegate turn {status}");
             if let Some(device) = remote_device {

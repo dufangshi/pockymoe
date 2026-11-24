@@ -623,6 +623,9 @@ async fn an_ask_to_a_parent_with_a_wake_is_told_once_in_the_wake_with_the_questi
         "{prompt}"
     );
     assert!(!prompt.contains("String("), "{prompt}");
+    // Quoted in the wake, the question counts as read: no reminder turn later.
+    let listed = s.inbox_list(&lead, &json!({})).unwrap();
+    assert!(listed["messages"][0]["readAt"].is_string(), "{listed}");
     // No second turn repeats it as a prompt of its own.
     tokio::time::sleep(Duration::from_millis(1200)).await;
     assert_eq!(turns(&s, &lead).len(), 1, "{:?}", turns(&s, &lead));
@@ -897,4 +900,54 @@ async fn a_mail_wake_expires_with_a_status_note_and_wakes_can_be_listed_and_canc
     assert_eq!(rest["cancelled"].as_array().unwrap().len(), 1);
     assert_eq!(wake_count(&s), 0);
     assert!(s.manage_wakes(&lead, &["../x".into()], false).is_err());
+}
+
+#[tokio::test]
+async fn a_wake_on_settled_delegates_reports_now_and_names_a_mailed_task() {
+    let (_dir, s, _) = setup();
+    let ws = workspace(&s);
+    let lead = root(&s, &ws).await;
+    let helper = named(&s, &ws, &lead, "helper").await;
+    // The usual mistake: the task is mailed (inbox), so the idle delegate never runs it.
+    s.send_to_thread(&helper, mail(&lead, "inbox", "task", "Create c.txt"))
+        .unwrap();
+    let report = s
+        .wake_or_report(&lead, std::slice::from_ref(&helper))
+        .await
+        .unwrap();
+    assert_eq!(report["registered"], false, "{report}");
+    assert_eq!(report["allSettled"], true);
+    assert_eq!(report["threads"][0]["threadId"], helper.as_str());
+    assert_eq!(
+        report["unstartedTasks"],
+        json!([{"threadId": helper, "unreadTasksFromYou": 1}])
+    );
+    assert!(report["next"]
+        .as_str()
+        .unwrap()
+        .contains("--delivery queue"));
+    assert_eq!(
+        wake_count(&s),
+        0,
+        "nothing registered, so nothing fires later"
+    );
+
+    // While the delegate works, the wake is registered as before.
+    add_turn(&s, &helper, 1, "inProgress", None);
+    s.db.with(|c| {
+        c.execute("UPDATE threads SET status='running' WHERE id=?1", [&helper])?;
+        Ok(())
+    })
+    .unwrap();
+    let registered = s
+        .wake_or_report(&lead, std::slice::from_ref(&helper))
+        .await
+        .unwrap();
+    assert_eq!(registered["registered"], true, "{registered}");
+    assert_eq!(wake_count(&s), 1);
+    // Only one's own delegates.
+    assert!(s
+        .wake_or_report(&helper, std::slice::from_ref(&lead))
+        .await
+        .is_err());
 }

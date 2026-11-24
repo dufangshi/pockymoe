@@ -379,7 +379,9 @@ async fn run_as(
         "wake" => {
             let threads = strings(&input["threadIds"]);
             threads.iter().try_for_each(|thread| reach(thread))?;
-            state.register_wake(from.context("wake needs the caller's identity")?, &threads)
+            state
+                .wake_or_report(from.context("wake needs the caller's identity")?, &threads)
+                .await
         }
         "wakes" => {
             // A thread lists and cancels only its own wakes.

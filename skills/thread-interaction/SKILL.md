@@ -43,7 +43,8 @@ Choosing a delivery for an existing peer:
   `thread stop NAME --reason "..."`, with `--clear-queue` to withdraw what you queued
   behind it, then send the new instructions. `thread queue NAME` lists what waits for
   it; `thread unqueue NAME MESSAGE_ID...` withdraws messages you sent (`guide messaging`).
-- Distinct work that can wait for the peer's whole current turn: `--delivery queue --kind task`.
+- Distinct work that can wait for the peer's whole current turn: `--kind task` (queued by
+  default; `--delivery inbox` would only mail it, and mailed tasks never run).
 - Results, progress, ready inputs, ordinary questions and acknowledgements: the default
   passive inbox. "Important", "urgent" or "the peer is idle" is not a reason to use
   direct, and a report is never relabeled as a task.

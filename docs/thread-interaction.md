@@ -232,7 +232,7 @@ A Docker end-to-end check lives in [e2e/thread-interaction](../e2e/thread-intera
 
 ## 0.12.32 delivery and inbox revision
 
-This section supersedes the earlier default-delivery examples above. Ordinary `thread send` defaults to `--delivery inbox`; the create command's initial prompt defaults to `queue`. Explicit `queue` submits execution and explicit `steer` requires a running capable backend. Steering failures after durable acceptance return a held receipt; held input is excluded from background draining.
+This section supersedes the earlier default-delivery examples above. Ordinary `thread send` defaults to `--delivery inbox`; the create command's initial prompt defaults to `queue`, and so does the CLI's `thread send --kind task` (a task is work to execute; one left in an inbox never starts a turn, so mailing a task takes an explicit `--delivery inbox`). Explicit `queue` submits execution and explicit `steer` requires a running capable backend. Steering failures after durable acceptance return a held receipt; held input is excluded from background draining.
 
 `inbox` / `inbox list` returns bounded unread previews; `inbox read ID` expands one message; `inbox ack ID...` marks handled messages while retaining history for 30 days after acknowledgement. `--thread ID` selects a mailbox. Listing and reading never trigger turns or mark messages processed. `status` includes `unreadMessageCount`. Mail uses namespaced records in the existing KV store, with partial indexes for unacknowledged mail and indexed reply lookups.
 
@@ -389,13 +389,33 @@ stored in the KV table; there is no migration.
   as `is blocked`. A recipient with a pending delegate wake covering the asker hears
   the question only there (`promptDelivery: "wake"`): the blocked report quotes each
   open question to the caller (up to 1,500 characters) with the command that answers
-  it, and firing it drops any prompt record for those questions, so the question
-  never costs two turns. The record is also dropped without a turn when the question
+  it, firing it drops any prompt record for those questions and marks them read
+  (so the delayed reminder does not start a turn for a question already quoted),
+  and the question never costs two turns. The record is also dropped without a turn when the question
   is read, answered or acknowledged first, or when the recipient is closed. Limits: one unanswered
   prompt-delivered question per asker and recipient, and 3 waiting per asker; past
   them, and for recipients that are not ancestors or are on another device, the
   question is ordinary passive mail (`promptDelivery: "passive"` with a
   `promptDeliveryNote`).
+- **One report per turn.** A delegate that mails its own `result` as its last act
+  and then ends its turn would be reported twice, by that mail and by the automatic
+  turn notification (`--notify-on-complete`). A notification that arrives within 60
+  seconds of a `result` from the same sender is stored with `supersededBy` naming
+  that result, so it starts no wake, no reminder and no unread count; `inbox read`
+  and `inbox list --all` still show it. A notification never supersedes another.
+- **A harness that died.** A session whose adapter process has exited (crashed or
+  killed while idle) no longer counts as loaded: the next turn resumes it in a new
+  process. Before, every later turn wrote to the dead process and failed (`Broken
+  pipe`, `Codex fork bridge closed`) until the Supervisor restarted. If the new
+  process cannot start either, the queued work stalls as described above. A stalled
+  delegate's wake line leaves out its last closing message, which belongs to an
+  earlier task.
+- **Nothing to wait for.** `thread wait --wake` on delegates that have all settled
+  already registers nothing (`registered: false`): a wake would only replay their
+  last results a moment later, so the receipt carries their states now, in the turn
+  the caller is still running. `unstartedTasks` names each member holding an unread
+  `task` from the caller in its inbox, the usual cause (the task was mailed, not
+  queued), and `next` says how to resend it.
 - **Listing and cancelling wakes.** `thread wakes` (`wakes`) lists the caller's
   pending wakes of both kinds; `--cancel WAKE_ID...` or `--cancel-all` deletes them,
   and a cancelled wake never fires. A thread manages only its own wakes. A mail wake

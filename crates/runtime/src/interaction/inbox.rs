@@ -84,9 +84,42 @@ pub(crate) fn store(
     let remind_after = chrono::DateTime::parse_from_rfc3339(now)? + chrono::Duration::minutes(10);
     // subject/kind ride on the stored record so `inbox list`, which returns it
     // verbatim, lets a receiver triage without opening anything.
-    conn.execute("INSERT INTO kv(key,value) VALUES(?1,?2)", params![key(thread,id),json!({"id":id,"threadId":thread,"fromThreadId":from,"text":text,"createdAt":now,"acknowledgedAt":null,"readAt":null,"remindAfter":remind_after.to_rfc3339(),"remindedAt":null,"subject":envelope.subject,"kind":envelope.kind,"inReplyTo":envelope.in_reply_to,"topicKey":envelope.topic_key,"supersededBy":null}).to_string()])?;
+    // A delegate that mails its own result as its last act and then ends its
+    // turn would be reported twice: by that mail and by the automatic turn
+    // notification seconds later. The notification then only costs its
+    // receiver a wake or a reminder turn, so it is stored as superseded by the
+    // delegate's own report (kept for `inbox read` and `list --all`).
+    let superseded_by: Option<String> = match from {
+        Some(sender) if envelope.kind == "result" && text.starts_with(TURN_NOTIFICATION) => conn
+            .query_row(
+                "SELECT json_extract(value,'$.id') FROM kv WHERE key GLOB ?1
+                   AND json_extract(value,'$.fromThreadId')=?2
+                   AND json_extract(value,'$.kind')='result'
+                   AND json_extract(value,'$.supersededBy') IS NULL
+                   AND substr(json_extract(value,'$.text'),1,?4) != ?5
+                   AND julianday(json_extract(value,'$.createdAt')) >= julianday(?3) - ?6
+                 ORDER BY json_extract(value,'$.createdAt') DESC LIMIT 1",
+                params![
+                    format!("{}*", prefix(thread)),
+                    sender,
+                    now,
+                    TURN_NOTIFICATION.len() as i64,
+                    TURN_NOTIFICATION,
+                    OWN_REPORT_WINDOW_SECONDS / 86_400.0
+                ],
+                |r| r.get(0),
+            )
+            .optional()?,
+        _ => None,
+    };
+    conn.execute("INSERT INTO kv(key,value) VALUES(?1,?2)", params![key(thread,id),json!({"id":id,"threadId":thread,"fromThreadId":from,"text":text,"createdAt":now,"acknowledgedAt":null,"readAt":null,"remindAfter":remind_after.to_rfc3339(),"remindedAt":null,"subject":envelope.subject,"kind":envelope.kind,"inReplyTo":envelope.in_reply_to,"topicKey":envelope.topic_key,"supersededBy":superseded_by}).to_string()])?;
     Ok(())
 }
+/// The first line of an automatic turn-completion notification.
+pub(crate) const TURN_NOTIFICATION: &str = "[Pockymoe turn notification]";
+/// A result the same sender mailed this recently is its own report of the turn
+/// the notification announces.
+const OWN_REPORT_WINDOW_SECONDS: f64 = 60.0;
 /// The sender explicitly opted into full snapshots. Retain old mail for read/all,
 /// but do not repeatedly present obsolete status as work requiring attention.
 pub(super) fn supersede_status(
@@ -523,6 +556,103 @@ mod mailbox_tests {
             stmt.get_status(StatementStatus::VmStep),
             start.elapsed(),
         )
+    }
+
+    #[test]
+    fn a_turn_notification_after_the_senders_own_fresh_result_is_stored_superseded() {
+        let (_dir, db) = database();
+        db.with(|conn| {
+            let result = |kind| Envelope {
+                subject: Some("done"),
+                kind,
+                in_reply_to: None,
+                topic_key: None,
+            };
+            let note =
+                format!("{TURN_NOTIFICATION}\nThread worker, turn t ended with status completed.");
+            let superseded = |id: &str| -> Option<String> {
+                get(conn, "lead", id).unwrap()["supersededBy"]
+                    .as_str()
+                    .map(str::to_owned)
+            };
+            // The worker mails its result, then its turn ends four seconds later.
+            store(
+                conn,
+                "lead",
+                "own",
+                Some("worker"),
+                "remote.txt is ready",
+                "2026-01-01T00:00:20Z",
+                result("result"),
+            )?;
+            store(
+                conn,
+                "lead",
+                "auto",
+                Some("worker"),
+                &note,
+                "2026-01-01T00:00:24Z",
+                result("result"),
+            )?;
+            assert_eq!(superseded("auto").as_deref(), Some("own"));
+            assert_eq!(superseded("own"), None);
+            // A result from long before the turn ended is not that turn's report.
+            store(
+                conn,
+                "lead",
+                "late",
+                Some("worker"),
+                &note,
+                "2026-01-01T00:05:00Z",
+                result("result"),
+            )?;
+            assert_eq!(superseded("late"), None);
+            // Another sender's result, a status and an earlier notification do not count.
+            store(
+                conn,
+                "lead",
+                "other",
+                Some("other-worker"),
+                "mine is ready",
+                "2026-01-01T00:09:50Z",
+                result("result"),
+            )?;
+            store(
+                conn,
+                "lead",
+                "status",
+                Some("worker"),
+                "halfway",
+                "2026-01-01T00:09:55Z",
+                result("status"),
+            )?;
+            store(
+                conn,
+                "lead",
+                "again",
+                Some("worker"),
+                &note,
+                "2026-01-01T00:10:00Z",
+                result("result"),
+            )?;
+            assert_eq!(superseded("again"), None);
+            store(
+                conn,
+                "lead",
+                "twice",
+                Some("worker"),
+                &note,
+                "2026-01-01T00:10:05Z",
+                result("result"),
+            )?;
+            assert_eq!(
+                superseded("twice"),
+                None,
+                "a notification never supersedes another"
+            );
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

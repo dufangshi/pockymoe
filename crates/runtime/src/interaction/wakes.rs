@@ -156,8 +156,64 @@ impl Supervisor {
         })?;
         self.emit_wake_registered(caller);
         Ok(
-            json!({"wakeId":id,"threadId":caller,"members":ids,"behavior":"When all of these settle or one blocks or stalls, their report joins your running turn if your harness takes steers, or is queued as your next turn. You may end your turn now."}),
+            json!({"registered":true,"wakeId":id,"threadId":caller,"members":ids,"behavior":"When all of these settle or one blocks or stalls, their report joins your running turn if your harness takes steers, or is queued as your next turn. You may end your turn now."}),
         )
+    }
+
+    /// `thread wait --wake`: registers the wake unless every member has already
+    /// settled. Then there is nothing to wait for, and a wake would only replay
+    /// their last results a moment later, so the caller gets those results now,
+    /// in the turn it is still running, with a warning for each member that
+    /// holds an unread task from the caller in its inbox (mailed, never queued).
+    pub async fn wake_or_report(&self, caller: &str, ids: &[String]) -> Result<Value> {
+        ensure!(
+            !ids.is_empty() && ids.len() <= 20,
+            "wake on 1 to 20 threads"
+        );
+        self.db.with(|c| {
+            for member in ids {
+                ensure!(
+                    is_descendant(c, caller, member)?,
+                    "you can only wake on your own delegates; {member} is not one"
+                );
+            }
+            Ok(())
+        })?;
+        let now = self.wait_threads(ids, false, Duration::ZERO).await?;
+        if now["allSettled"] != true {
+            return self.register_wake(caller, ids);
+        }
+        let unstarted = self.db.with(|c| {
+            let mut waiting = Vec::new();
+            for member in ids {
+                let count: i64 = c.query_row(
+                    "SELECT COUNT(*) FROM kv WHERE key GLOB ?1
+                       AND json_extract(value,'$.fromThreadId')=?2
+                       AND json_extract(value,'$.kind')='task'
+                       AND json_extract(value,'$.readAt') IS NULL
+                       AND json_extract(value,'$.acknowledgedAt') IS NULL",
+                    params![format!("cli:inbox:{member}:*"), caller],
+                    |r| r.get(0),
+                )?;
+                if count > 0 {
+                    waiting.push(json!({"threadId": member, "unreadTasksFromYou": count}));
+                }
+            }
+            Ok(waiting)
+        })?;
+        let next = if unstarted.is_empty() {
+            "No wake was registered: these threads have already settled and nothing is queued for them, so their last results are here. If you meant to wait for new work, queue it first (`pockymoe thread send NAME --kind task --delivery queue ...`) and then register the wake."
+        } else {
+            "No wake was registered: these threads are idle. A task you sent sits unread in a delegate's inbox (`unstartedTasks`): inbox delivery never starts a turn. Send it again with `--delivery queue` (the mailed copy stays in its inbox; say so in the new message or it may be read as a second task), then register the wake."
+        };
+        Ok(json!({
+            "registered": false,
+            "allSettled": true,
+            "threadId": caller,
+            "threads": now["threads"],
+            "unstartedTasks": unstarted,
+            "next": next,
+        }))
     }
 
     /// One-shot: when mail matching `filter` that was not already waiting
@@ -482,7 +538,12 @@ impl Supervisor {
                 if let Some(outcome) = coordination::outcome_line(&s["outcome"]) {
                     line.push_str(&format!("\n  outcome: {}", clip(&outcome, WAKE_EXCERPT)));
                 }
-                if let Some(message) = s["lastTurn"]["closingMessage"].as_str() {
+                // A stalled delegate's last closing message belongs to an earlier
+                // task; next to the stall it reads as this task's result.
+                if let Some(message) = s["lastTurn"]["closingMessage"]
+                    .as_str()
+                    .filter(|_| s["state"] != "stalled")
+                {
                     line.push_str(&format!(
                         "\n  closing message: {}",
                         clip(message, WAKE_EXCERPT)
@@ -647,6 +708,13 @@ impl Supervisor {
                         tx.execute(
                             "DELETE FROM kv WHERE key=?1",
                             [format!("cli:ask:{caller}:{question}")],
+                        )?;
+                        // Quoted in full, so it is read: the 10-minute reminder
+                        // must not start a turn for it again.
+                        tx.execute(
+                            "UPDATE kv SET value=json_set(value,'$.readAt',?2)
+                             WHERE key=?1 AND json_extract(value,'$.readAt') IS NULL",
+                            params![format!("cli:inbox:{caller}:{question}"), now],
                         )?;
                     }
                 }
