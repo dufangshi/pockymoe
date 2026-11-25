@@ -57,6 +57,12 @@ export interface ThreadEnvironmentDto {
   environment: EnvironmentDto | null;
   supportedHarnesses: string[];
   limitations: string[];
+  /** Stable keys for `limitations`, so they can be shown in the reader's language; older Supervisors omit it. */
+  limitationKeys?: string[];
+  /** False when this browser cannot prove it is the owner, so every change would be refused; older Supervisors omit it. */
+  ownerAuthorized?: boolean;
+  /** A failed approved migration holds the thread until its owner retries or restores Host. */
+  fenced?: boolean;
 }
 export type EnvironmentAction = 'start' | 'stop' | 'rebuild' | 'destroy';
 export interface EnvironmentRequestDto {

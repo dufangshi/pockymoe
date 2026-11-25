@@ -4,7 +4,7 @@ import { formatNumber, getLocale } from '@pockymoe/thread-ui/i18n';
 import type { ThreadDto } from '../../../../../packages/shared/src/index';
 import { deviceRequest } from '../../lib/api';
 import type { EnvironmentLimits, EnvironmentRequestDto, EnvironmentState } from '../../lib/environmentApi';
-import { environmentText as t } from '../../lib/environmentI18n';
+import { environmentText as t, type EnvironmentMessage } from '../../lib/environmentI18n';
 import { environmentRequestText as rt } from '../../lib/environmentRequestI18n';
 import { environmentStateKey, gibValue } from './model';
 
@@ -67,6 +67,22 @@ export function Fact({ label, children, note }: { label: ReactNode; children: Re
 
 export function Tag({ tone = 'neutral', children }: { tone?: 'neutral' | 'warning' | 'success' | 'danger' | 'accent'; children: ReactNode }) {
   return <span className="env-tag" data-tone={tone}>{children}</span>;
+}
+
+/** Limits as labelled chips (a number never stands alone, UI §13); "Verified"
+    when the running container enforces exactly these values. */
+export function LimitChips({ limits, observed }: { limits: EnvironmentLimits; observed?: EnvironmentLimits | null | undefined }) {
+  const verified = !!observed && sameLimits(observed, limits);
+  const chips: [EnvironmentMessage, string][] = [
+    ['chipCpu', formatNumber(limits.cpu)],
+    ['chipMemory', t('gibUnit', { n: formatNumber(gibValue(limits.memoryBytes)) })],
+    ['chipProcesses', formatNumber(limits.pids)],
+    ['chipFiles', formatNumber(limits.nofile)],
+  ];
+  return <dl className="env-chips" aria-label={t('limitsLabel')}>
+    {chips.map(([label, value]) => <div key={label} className="env-chip"><dt>{t(label)}</dt><dd>{value}</dd></div>)}
+    {verified && <div className="env-chip is-verified" title={t('observedVerified')}><dt className="sr-only">{t('observedLimits')}</dt><dd><Check aria-hidden="true" />{t('verified')}</dd></div>}
+  </dl>;
 }
 
 export function limitsText(value: EnvironmentLimits) {
