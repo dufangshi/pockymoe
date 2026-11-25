@@ -8,7 +8,7 @@ import { ErrorMark, StatusMark, type MapDeviceMenuItem, useLongPress, useMenuKey
 import { DeviceMonitor } from '../../components/DeviceMonitor';
 import { FinishProtectionButton } from '../../components/DeviceSetupProgress';
 import { fetchAgentIsolation } from '../../lib/api';
-import { DeviceStateMark } from '../../pages/relayAdmin/ui';
+import { DeviceStateMark } from '../../components/DeviceStateMark';
 import type { DesktopDevice } from '../data/types';
 import { Info } from './UsagePanel';
 import { Sparkline } from './Charts';

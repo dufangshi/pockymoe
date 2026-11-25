@@ -31,14 +31,12 @@ import {
   useParams,
 } from 'react-router-dom';
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
-import { PluginProvider, ThreadPluginScope, type PluginSettingsSnapshot, type UpstreamConnectionPickerProps } from '@pockymoe/thread-ui';
+import { PluginProvider, ThreadPluginScope } from '@pockymoe/thread-ui';
 
 import type {
   AgentBackendIdDto,
   AuthSessionDto,
   RelaySessionDto,
-  ImportPluginInput,
-  UpdatePluginInput,
 } from '../../../packages/shared/src/index';
 import {
   defaultAgentBackendId,
@@ -72,23 +70,14 @@ import { WorkspaceNewPage } from './pages/WorkspaceNewPage';
 import { WorkspacesPage } from './pages/WorkspacesPage';
 import {
   ApiError,
-  deletePlugin,
-  fetchPluginRuns,
-  runPluginAction,
   fetchAuthSession,
-  fetchPlugins,
   readSelectedRelayDeviceId,
-  loadPluginSettings,
-  savePluginSettings,
-  threadPluginAdapter,
   fetchRelaySession,
-  importPlugin,
   login,
   relayModeActive,
-  updatePlugin,
 } from './lib/api';
 import { builtinFrontendPlugins } from './plugins/builtin-plugin-modules';
-import { ConnectionPicker } from './components/ConnectionPicker';
+import { devicePluginAdapter } from './plugins/devicePluginAdapter';
 import { useComposerPreferences } from './lib/useComposerPreferences';
 import { useReasoningSummaries } from './lib/useReasoningSummaries';
 import { startQuietEnrollment } from './lib/quietEnrollment';
@@ -112,28 +101,7 @@ function RoutePluginProvider({ children }: { children: ReactNode }) {
   const { locale: i18nLocale } = useI18n();
   const location = useLocation();
   const deviceId = relayDeviceIdFromPath(location.pathname) ?? (relayModeActive() ? readSelectedRelayDeviceId() ?? undefined : null);
-  const adapter = useMemo(
-    () => ({
-      fetchPlugins: () => fetchPlugins(deviceId),
-      loadPluginSettings: (id: string) => loadPluginSettings(id, deviceId),
-      savePluginSettings: (id: string, settings: PluginSettingsSnapshot) => savePluginSettings(id, settings, deviceId),
-      importPlugin: (input: ImportPluginInput) => importPlugin(input, deviceId),
-      updatePlugin: (id: string, input: UpdatePluginInput) => updatePlugin(id, input, deviceId),
-      deletePlugin: (id: string) => deletePlugin(id, deviceId),
-      runPluginAction: (id: string, action: string, input?: unknown) => runPluginAction(id, action, input, deviceId),
-      fetchPluginRuns: (id: string) => fetchPluginRuns(id, deviceId),
-      threads: threadPluginAdapter(deviceId),
-      connections: {
-        renderPicker: (props: UpstreamConnectionPickerProps) => (
-          <ConnectionPicker
-            apiRoot={deviceId && deviceId !== 'local' ? `relay/devices/${encodeURIComponent(deviceId)}/api` : 'api'}
-            {...props}
-          />
-        ),
-      },
-    }),
-    [deviceId],
-  );
+  const adapter = useMemo(() => devicePluginAdapter(deviceId), [deviceId]);
 
   return (
     // The device's plugins swap in place: a key here remounted the whole app on a

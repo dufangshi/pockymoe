@@ -13,7 +13,7 @@ import { workbenchUrls } from '../lib/workbenchUrls';
 import { currentRelayScopedPath, workspacesHref } from '../lib/relayRoutes';
 import { useAppShellNav } from '../components/AppShellNavContext';
 import { RecentThreadMenu } from '../components/RecentThreadMenu';
-import { DeviceStateMark } from '../pages/relayAdmin/ui';
+import { DeviceStateMark } from '../components/DeviceStateMark';
 
 const desktopWidth = () => window.matchMedia('(min-width: 640px)').matches;
 const subscribeWidth = (changed: () => void) => { const media = window.matchMedia('(min-width: 640px)'); media.addEventListener('change', changed); return () => media.removeEventListener('change', changed); };

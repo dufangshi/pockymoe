@@ -91,7 +91,8 @@ describe('device-scoped runtime settings', () => {
     fireEvent.click(screen.getByRole('button', {name:'Check updates'}));
     await waitFor(() => expect(api.request).toHaveBeenCalledWith('relay/devices/b/api/management/supervisor/check', expect.objectContaining({method:'POST'})));
     fireEvent.click(screen.getByRole('link', {name:'Devices'}));
-    expect(screen.getByText(/Open a device to view/)).toBeVisible();
+    // No device on this page and none chosen: nothing to manage, and never the remembered one.
+    expect(screen.queryByRole('region', { name: 'Runtime management' })).not.toBeInTheDocument();
     expect(screen.queryByText('Running B-version')).not.toBeInTheDocument();
     expect(api.request.mock.calls.every(([path]) => String(path).startsWith('relay/devices/a/') || String(path).startsWith('relay/devices/b/'))).toBe(true);
   });

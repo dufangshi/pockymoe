@@ -5,6 +5,7 @@ import { ArrowLeftRight, Ban, ChevronDown, ChevronRight, Container, Cpu, Gpu, In
 import type { DeviceMetricsDto, HarnessProcessDto, HarnessProcessesDto, LoadedThreadDto, TemperatureReadingDto } from '@pockymoe/shared';
 import { ApiError, fetchHarnessProcesses, releaseThread, request } from '../lib/api';
 import { onHarnessRuntimeChange } from '../lib/harnessRuntimeEvents';
+import { chooseSettingsDevice } from '../lib/settingsDevice';
 import { useDocumentVisible } from '../lib/useDocumentVisible';
 import { useAppShellNav } from './AppShellNavContext';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -485,7 +486,7 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
                         )}
                         {shellNav?.openSettingsSection && (
                           <button type="button" className="dm-harness-settings" title={translate('devices.harnessResourceSettings')} aria-label={translate('devices.harnessResourceSettings')}
-                            onClick={() => { setOpen(false); shellNav.openSettingsSection?.('resources'); }}>
+                            onClick={() => { setOpen(false); if (deviceId) chooseSettingsDevice(deviceId); shellNav.openSettingsSection?.('resources'); }}>
                             <Settings aria-hidden />
                           </button>
                         )}

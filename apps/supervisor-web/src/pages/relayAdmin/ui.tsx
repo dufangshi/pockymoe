@@ -288,27 +288,8 @@ export function Badge({ tone = 'neutral', children, icon }: { tone?: 'neutral' |
   );
 }
 
-export type DeviceState = 'online' | 'offline' | 'unstable';
-
-/**
- * Device connection state, recognizable by shape alone (docs/ui-principles.md
- * "Device connection state"): solid dot online, hollow circle offline, diamond
- * reconnecting often. Always with its words or an accessible name.
- */
-export function DeviceStateMark({ state, label, showLabel = true }: { state: DeviceState; label?: string | undefined; showLabel?: boolean }) {
-  useI18n();
-  const text = label ?? deviceStateLabel(state);
-  return (
-    <span className={`admin-device-state is-${state}`}>
-      <span aria-hidden className="admin-device-state-mark" />
-      {showLabel ? <span>{text}</span> : <span className="sr-only">{text}</span>}
-    </span>
-  );
-}
-
-export function deviceStateLabel(state: DeviceState) {
-  return state === 'online' ? translate('admin.online') : state === 'unstable' ? translate('admin.unstable') : translate('admin.offline');
-}
+// The device connection mark is shared with the device pages and the settings window.
+export { DeviceStateMark, deviceStateLabel, type DeviceState } from '../../components/DeviceStateMark';
 
 export function ProtectionMark({ protectedDevice, showLabel = true }: { protectedDevice: boolean; showLabel?: boolean }) {
   useI18n();

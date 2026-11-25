@@ -1,17 +1,15 @@
 import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { useLocation } from 'react-router-dom';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import type { HarnessResourceSettingsDto } from '@pockymoe/shared';
 import {
   ApiError,
   fetchContextInspectionSettings,
   fetchHarnessResourceSettings,
-  relayModeActive,
   updateContextInspectionSettings,
   updateHarnessResourceSettings,
 } from '../lib/api';
-import { relayDeviceIdFromPath } from '../lib/relayRoutes';
+import { useSettingsDevice } from '../lib/settingsDevice';
 import { gibText, parseResourceField, RESOURCE_LIMITS, type ResourceField as Field } from './harnessResourceModel';
 import { StorageSettings } from './StorageSettings';
 import './ResourceSettings.css';
@@ -42,13 +40,12 @@ function toDraft(settings: HarnessResourceSettingsDto): Draft {
   };
 }
 
-export function HarnessResourceSettings() {
+/** `deviceId` names the device (null: this Supervisor). Without it the panel follows
+ *  the page's device or the one chosen in the settings window, never a remembered one. */
+export function HarnessResourceSettings({ deviceId: explicitDeviceId }: { deviceId?: string | null } = {}) {
   useI18n();
-  const { pathname } = useLocation();
-  const deviceId = relayDeviceIdFromPath(pathname);
-  if (relayModeActive() && !deviceId) {
-    return <p className="py-5 text-sm text-[var(--theme-fg-muted)]">{translate('settings.resourcesChooseDevice')}</p>;
-  }
+  const { deviceId, missing } = useSettingsDevice(explicitDeviceId);
+  if (missing) return null;
   return (
     <div className="pm-resources">
       <section className="pm-res-section" aria-labelledby="pm-res-memory">
