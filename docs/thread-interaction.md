@@ -944,6 +944,22 @@ Moving around keeps the screen steady:
 - Each page load paints the last theme and background before the app starts, so
   a reload does not flash white or the other color mode.
 
+## Terminal scrolling
+
+At a shell prompt the wheel and a finger drag scroll the terminal's own history
+(3,000 lines). Full-screen programs (Codex, Claude Code, less, vim) use the
+alternate screen, which has no history: there the wheel reaches the program, as
+mouse reports when it tracks the mouse and as arrow keys otherwise, and on a phone
+a vertical drag does the same, one row per row of travel.
+
+A viewer that opens or reopens a terminal replays its last 256 KiB of output. The
+Supervisor tracks the private modes in effect (alternate screen, mouse tracking and
+encodings, alternate scroll, application cursor keys, bracketed paste, focus
+reports, cursor visibility); once older output has been dropped, the replay starts
+with them, and it starts at a line or an escape sequence, never inside one. Before,
+a long Codex session pushed its startup mode switches out of the replay, so a
+reopened page drew Codex in the normal buffer and the wheel never reached it.
+
 ## Terminal clipboard
 
 The terminal follows the usual desktop terminal conventions, adjustable in

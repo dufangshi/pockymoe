@@ -29,24 +29,103 @@ pub struct ShellOutput {
 struct ReplayBuffer {
     data: String,
     seq: u64,
+    /// Private modes (`CSI ? N h/l`) in effect at the end of `data`, in the
+    /// order they were first set. Full-screen programs such as Codex set the
+    /// alternate screen and mouse tracking once at startup and then only
+    /// repaint, so those switches leave the window after enough output.
+    modes: Vec<(u16, bool)>,
+    /// The tail of the last chunk when it ended inside a mode sequence.
+    pending: String,
+    /// Whether the start of the output has been dropped.
+    trimmed: bool,
 }
+
+/// Modes a terminal rebuilt from the replay must know: the alternate screen,
+/// mouse tracking and encodings, alternate scroll, application cursor keys,
+/// bracketed paste, focus reports and cursor visibility. Without them a
+/// reattached viewer of a full-screen program shows its repaints in the
+/// normal buffer and the wheel never reaches the program.
+const REPLAYED_MODES: [u16; 14] = [
+    1, 25, 47, 1047, 1049, 1000, 1002, 1003, 1004, 1005, 1006, 1007, 1015, 2004,
+];
 
 impl ReplayBuffer {
     fn push(&mut self, chunk: &str) -> u64 {
+        self.track_modes(chunk);
         self.data.push_str(chunk);
         if self.data.len() > REPLAY_LIMIT {
             let mut cut = self.data.len() - REPLAY_LIMIT;
             while !self.data.is_char_boundary(cut) {
                 cut += 1;
             }
-            // Prefer a line start so replay does not begin inside an escape sequence.
-            if let Some(newline) = self.data[cut..].find('\n') {
-                cut += newline + 1;
+            // Start at a line or at an escape sequence, never inside one:
+            // repaint-only output has no newlines for long stretches.
+            if let Some(next) = self.data[cut..].find(['\n', '\x1b']) {
+                cut += next;
+                if self.data[cut..].starts_with('\n') {
+                    cut += 1;
+                }
             }
             self.data.drain(..cut);
+            self.trimmed = true;
         }
         self.seq += 1;
         self.seq
+    }
+
+    fn track_modes(&mut self, chunk: &str) {
+        let text = std::mem::take(&mut self.pending) + chunk;
+        let bytes = text.as_bytes();
+        let mut i = 0;
+        while let Some(found) = text[i..].find("\x1b[?") {
+            let start = i + found;
+            let mut end = start + 3;
+            while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b';') {
+                end += 1;
+            }
+            if end == bytes.len() {
+                // Cut across chunks: finish it with the next one (bounded).
+                if end - start <= 64 {
+                    self.pending = text[start..].to_string();
+                }
+                return;
+            }
+            let on = match bytes[end] {
+                b'h' => Some(true),
+                b'l' => Some(false),
+                _ => None,
+            };
+            if let Some(on) = on {
+                for mode in text[start + 3..end]
+                    .split(';')
+                    .filter_map(|m| m.parse::<u16>().ok())
+                {
+                    if !REPLAYED_MODES.contains(&mode) {
+                        continue;
+                    }
+                    match self.modes.iter_mut().find(|(m, _)| *m == mode) {
+                        Some(entry) => entry.1 = on,
+                        None => self.modes.push((mode, on)),
+                    }
+                }
+            }
+            i = end + 1;
+        }
+    }
+
+    /// What a new viewer replays: once the start has been dropped, the modes in
+    /// effect come first, so the rebuilt terminal is in the program's state.
+    fn snapshot(&self) -> String {
+        if !self.trimmed {
+            return self.data.clone();
+        }
+        let preamble: String = self
+            .modes
+            .iter()
+            .filter(|(_, on)| *on)
+            .map(|(mode, _)| format!("\x1b[?{mode}h"))
+            .collect();
+        preamble + &self.data
     }
 }
 
@@ -434,7 +513,7 @@ impl ShellHub {
             context.checked()?;
         }
         let replay = shell.replay.lock().unwrap();
-        Ok((replay.data.clone(), replay.seq))
+        Ok((replay.snapshot(), replay.seq))
     }
 
     fn shell_json(&self, id: &str) -> Result<Value> {
@@ -634,5 +713,55 @@ mod command_running_tests {
         hub.write(&id, "\u{3}").unwrap();
         assert_eq!(wait_for(&hub, &id, false), Some(false));
         hub.terminate(&id).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+
+    #[test]
+    fn a_trimmed_replay_restores_the_modes_a_full_screen_program_set_at_startup() {
+        let mut replay = ReplayBuffer::default();
+        // Codex: alternate screen, mouse tracking, SGR encoding, bracketed paste;
+        // the last sequence is split across two chunks.
+        replay.push("$ codex\r\n\x1b[?2004h\x1b[?1049h\x1b[?1007l\x1b[?1000h\x1b[?10");
+        replay.push("02h\x1b[?1003h\x1b[?1006h\x1b[?25l");
+        assert_eq!(
+            replay.snapshot(),
+            replay.data,
+            "nothing dropped, nothing added"
+        );
+        // Then it only repaints, past the window, without newlines.
+        let frame = format!("\x1b[3;1H\x1b[Kredraw {}", "x".repeat(60));
+        for _ in 0..(REPLAY_LIMIT / frame.len() + 50) {
+            replay.push(&frame);
+        }
+        let snapshot = replay.snapshot();
+        assert!(
+            snapshot
+                .starts_with("\x1b[?2004h\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h"),
+            "{:?}",
+            &snapshot[..80]
+        );
+        assert!(
+            !snapshot.contains("\x1b[?1007h") && !snapshot.contains("\x1b[?25h"),
+            "modes turned off stay off"
+        );
+        // The kept output starts at an escape sequence, not inside one.
+        let body = &snapshot[snapshot.find("\x1b[3;1H").unwrap()..];
+        assert_eq!(body.len(), replay.data.len());
+        assert!(replay.data.starts_with('\x1b'), "{:?}", &replay.data[..20]);
+        assert!(replay.data.len() <= REPLAY_LIMIT);
+
+        // Leaving the program turns them off again.
+        replay.push("\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1049l\x1b[?25h$ ");
+        let snapshot = replay.snapshot();
+        assert!(
+            snapshot.starts_with("\x1b[?2004h\x1b[?25h"),
+            "{:?}",
+            &snapshot[..40]
+        );
+        assert!(!snapshot[..40].contains("1049h"));
     }
 }
