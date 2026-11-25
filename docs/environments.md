@@ -193,6 +193,36 @@ loopback and a self-bootstrapped local passcode are not owner proof. The same
 check protects legacy direct connection/lifecycle/binding and isolated-thread
 creation controls; they cannot bypass this ceremony from a Host agent.
 
+The thread's isolation panel answers three things. **Where it runs** is one
+list: the current place first, as a status block (name, state, connection and
+image, CPU/memory/process/file limits as labelled chips, what the state means
+for turns, lifecycle actions, paths and generation under **Details**), then the
+other places the thread can run, which act on a click. A thread owns at most
+one environment that is not destroyed, so the list is This device, that
+environment, or **New isolated environment**. Switching asks once when a live
+native session would end (`resetSession`); a stopped or interrupted target is
+started right after the switch, and **Create and switch** creates, binds and
+starts, because a bound stopped environment would hold every turn and terminal
+(`environment_not_running`). An environment the thread no longer uses but that
+still runs says that it counts toward the budget and offers Stop. Why nothing
+can change is one visible line, not a bare mark: not the owner, a browser that
+is not owner proof, a busy thread, an inherited environment, an approved request
+in charge, an unsupported Harness, or a missing Dokploy connection (with
+**Set up**, which opens Settings → Isolated environments). An active request is a
+banner above the list with Review or Resolve; a failed migration names its
+reason (a full device budget, a generation that must stop first). Other
+requests are listed below; with none, one line says how agents ask.
+`GET /api/threads/{id}/environment` reports `ownerAuthorized` (the same owner
+check the write routes apply, so a local unsigned browser learns up front that
+it can only look), `fenced`, and `limitationKeys` beside the English
+`limitations`. A thread fenced by a failed migration still opens: reading the
+thread record (`GET /api/threads/{id}`) and where it runs passes the fence, while
+everything that executes or reads its working copy stays refused. **Retry** on a
+failed request first stops the request's failed or interrupted generation, which
+the Supervisor otherwise refuses to restart. Start, Stop, Rebuild and Destroy
+run to completion on their own task: closing the tab or navigating away during
+one no longer leaves the environment marked `stopping` or `starting`.
+
 Requests persist as `pending`, `waitingIdle`, `provisioning`, `ready`, `failed`,
 `rejected` or `cancelled` in the private sidecar. Approval is idempotent. It waits
 for the current turn and admitted tasks; it never holds the proposing command

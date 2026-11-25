@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { ErrorMark, StatusMark } from '@pockymoe/thread-ui';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
-import { fetchEnvironmentRequests, notifyEnvironmentChanged, type EnvironmentRequestDto } from '../../lib/environmentApi';
+import { fetchEnvironmentRequests, notifyEnvironmentChanged, type EnvironmentDto, type EnvironmentRequestDto } from '../../lib/environmentApi';
 import { environmentRequestText as t } from '../../lib/environmentRequestI18n';
 import { RequestReview } from './RequestReview';
 import { ListTime, SectionHeading, Tag, ThreadRef, requestMark, useThreadTitles } from './ui';
@@ -70,8 +70,10 @@ export function RequestList({ requests, showThread, threadTitles, onOpen }: { re
 }
 
 /** Settings and tests: the request list with its own review window. */
-export function EnvironmentRequests({ deviceId, threadId, canManage = true, onChanged, hideWhenEmpty = false }: {
+export function EnvironmentRequests({ deviceId, threadId, canManage = true, onChanged, hideWhenEmpty = false, environments }: {
   deviceId?: string | null | undefined; threadId?: string; canManage?: boolean; onChanged?(): void; hideWhenEmpty?: boolean;
+  /** Known environments, so Retry can first stop a request's failed generation. */
+  environments?: EnvironmentDto[] | undefined;
 }) {
   useI18n();
   const { requests, loading, error, refresh, update } = useEnvironmentRequests(deviceId, threadId, onChanged);
@@ -87,6 +89,7 @@ export function EnvironmentRequests({ deviceId, threadId, canManage = true, onCh
     {loading && !requests.length && <p role="status" className="env-empty">{t('loading')}</p>}
     {!loading && !error && !requests.length && <p className="env-empty">{t('empty')}</p>}
     {!!requests.length && <RequestList requests={requests} showThread={!threadId} threadTitles={threadTitles} onOpen={setOpenId} />}
-    {open && <RequestReview request={open} deviceId={deviceId} canManage={canManage} onUpdate={update} onClose={() => setOpenId(null)} />}
+    {open && <RequestReview request={open} deviceId={deviceId} canManage={canManage} onUpdate={update} onClose={() => setOpenId(null)}
+      environment={environments?.find(env => env.id === open.environmentId)} />}
   </section>;
 }

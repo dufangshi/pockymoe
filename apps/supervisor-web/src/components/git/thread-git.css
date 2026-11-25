@@ -1,133 +1,165 @@
-/* Thread Git panel (read only): header with the working-copy switch, a context
-   line, then changes as a file list beside the diff, or the commit list.
+/* Thread Git panel (read only). From the top: one line for where you are, an
+   optional details block, an optional one-line notice, one row of views, then
+   the file list and the diff fill the rest. Narrow, the list (at most 40% of
+   the area, scrolling on its own) sits above the scope's combined diff in one
+   scroll, and a selected file replaces both; a dock 720px or wider shows the
+   list beside the diff.
    Theme variables only, so packs restyle it (docs/theme-packs.md). */
 .thread-git-panel {
   container: thread-git / inline-size;
+  --thread-git-row: 30px;
+  --thread-git-icon: 30px;
+  --thread-git-head: 38px;
   display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0;
   color: var(--theme-fg); background: var(--theme-panel); font-size: 13px;
 }
-/* Narrow (the default dock width, or a phone): one column that scrolls as a
-   whole; the tabs and the diff heading stay in view. */
-.thread-git-scroll { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .thread-git-panel code, .thread-git-patch pre, .thread-git-base input {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 }
-
-.thread-git-header { display: flex; align-items: center; gap: 4px; flex: none; padding: 10px 8px 6px 14px; }
-.thread-git-header h2 { display: flex; align-items: center; gap: 8px; flex: none; margin: 0; font-size: 16px; font-weight: 600; }
-.thread-git-header h2 > svg { width: 17px; height: 17px; color: var(--theme-fg-muted); }
-.thread-git-copy { flex: 1 1 0; min-width: 0; }
-.thread-git-copy .pm-select { width: 100%; min-width: 0; }
-.thread-git-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.thread-git-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.thread-git-dim { color: var(--theme-fg-muted); font-weight: 400; }
 .thread-git-icon {
-  display: grid; place-items: center; flex: none; width: 36px; height: 36px; border: 0; border-radius: 8px;
+  display: grid; place-items: center; flex: none; width: var(--thread-git-icon); height: var(--thread-git-icon); padding: 0; border: 0; border-radius: 7px;
   background: transparent; color: var(--theme-fg-muted);
 }
-.thread-git-icon svg { width: 16px; height: 16px; }
+.thread-git-icon svg { width: 15px; height: 15px; }
 
-.thread-git-context { display: grid; gap: 4px; flex: none; padding: 0 14px 10px; border-bottom: 1px solid var(--theme-border); }
-/* One working copy: no chooser row above, so the facts row (with refresh) leads. */
-.thread-git-scroll > .thread-git-context:first-child { padding-top: 6px; }
-.thread-git-scroll > .thread-git-context:first-child:has(> .thread-git-facts > .thread-git-actions) { position: relative; padding-right: 48px; }
-.thread-git-facts > .thread-git-actions { position: absolute; top: 0; right: 8px; margin: 0; }
-.thread-git-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
-.thread-git-facts .path-chip { flex: 1 1 220px; max-width: 100%; min-width: 0; color: var(--theme-fg-muted); }
-.thread-git-branch { display: inline-flex; align-items: center; gap: 5px; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+/* Where: working copy · HEAD … details, refresh. */
+.thread-git-where { display: flex; align-items: center; gap: 6px; flex: none; min-width: 0; min-height: 42px; padding: 5px 6px 5px 12px; border-bottom: 1px solid var(--theme-border); }
+.thread-git-copy { flex: 0 1 auto; min-width: 72px; }
+.thread-git-copy .pm-select { width: 100%; min-width: 0; min-height: 30px; font-weight: 600; }
+.thread-git-branch { display: inline-flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; font-weight: 600; }
+.thread-git-branch > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .thread-git-branch svg { flex: none; width: 14px; height: 14px; color: var(--theme-fg-muted); }
-.thread-git-head { display: inline-flex; align-items: center; gap: 2px; flex: none; color: var(--theme-fg-muted); }
+.thread-git-head { display: inline-flex; align-items: center; gap: 1px; flex: none; color: var(--theme-fg-muted); }
 .thread-git-head code { font-size: 12px; }
+.thread-git-where-end { display: flex; align-items: center; gap: 2px; flex: none; margin-left: auto; }
+.thread-git-icon[aria-expanded='true'] { color: var(--theme-accent-solid); }
+/* The switch shows the branch; its list adds each copy's directory and role.
+   A detached copy keeps its directory in the switch too, to tell copies apart. */
+.thread-git-option { display: inline; min-width: 0; }
+.thread-git-option-meta { color: var(--theme-fg-muted); font-weight: 400; }
+.thread-git-copy .pm-select-value-label .thread-git-option:not([data-detached]) .thread-git-option-meta { display: none; }
+
+/* Details: the copy's path and role, and where the latest operation ran. */
+.thread-git-details {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 5px 12px; flex: none; margin: 0;
+  padding: 8px 12px 10px; border-bottom: 1px solid var(--theme-border); background: var(--theme-surface); font-size: 12px;
+}
+.thread-git-details dt { color: var(--theme-fg-muted); }
+.thread-git-details dd { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0; }
+.thread-git-details dd .path-chip { min-width: 0; max-width: 100%; }
+.thread-git-details .thread-git-hint { grid-column: 1 / -1; }
+.thread-git-recent-where { flex-wrap: wrap; row-gap: 2px; }
+.thread-git-recent-where .path-chip { flex: 1 1 160px; }
+.thread-git-recent-where time { flex: none; color: var(--theme-fg-muted); }
+.thread-git-tags { flex-wrap: wrap; }
 .thread-git-tag {
   display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border: 1px solid var(--theme-border); border-radius: 999px;
-  background: var(--theme-surface); color: var(--theme-fg-soft); font-size: 11.5px; white-space: nowrap;
+  background: var(--theme-panel); color: var(--theme-fg-soft); font-size: 11.5px; white-space: nowrap;
 }
 .thread-git-tag[data-primary] { border-color: var(--theme-accent-border, var(--theme-border)); background: color-mix(in oklch, var(--theme-accent-solid) 10%, transparent); color: var(--theme-accent-strong, var(--theme-accent-solid)); }
-.thread-git-hint, .thread-git-empty { margin: 0; color: var(--theme-fg-muted); font-size: 12px; line-height: 1.55; }
-.thread-git-empty { padding: 16px 0; }
-.thread-git-empty.is-page { padding: 32px 18px; text-align: center; }
-.thread-git-dim { color: var(--theme-fg-muted); font-weight: 400; }
+.thread-git-hint { margin: 0; color: var(--theme-fg-muted); font-size: 12px; line-height: 1.5; }
 
-.thread-git-observation {
-  display: flex; align-items: center; gap: 10px; flex: none; padding: 8px 14px; border-bottom: 1px solid var(--theme-border);
-  background: var(--status-info-bg, var(--theme-surface)); font-size: 12px;
+/* The latest operation ran in another working copy: one line, with a way there. */
+.thread-git-recent {
+  display: flex; align-items: center; gap: 7px; flex: none; min-width: 0; min-height: 32px; padding: 3px 6px 3px 12px;
+  border-bottom: 1px solid var(--theme-border); background: var(--status-info-bg, var(--theme-surface)); color: var(--theme-fg-soft); font-size: 12px;
 }
-.thread-git-observation > svg { flex: none; width: 15px; height: 15px; color: var(--status-info-fg, var(--theme-fg-muted)); }
-.thread-git-observation-text { display: grid; gap: 2px; flex: 1; min-width: 0; color: var(--theme-fg-soft); }
-.thread-git-observation-where { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--theme-fg-muted); }
-.thread-git-observation-where .path-chip { min-width: 0; max-width: 100%; }
-.thread-git-observation-where time { flex: none; }
-
-.thread-git-tabs { display: flex; align-items: center; gap: 2px; flex: none; padding: 6px 12px 0; border-bottom: 1px solid var(--theme-border); }
-.thread-git-tabs > button {
-  position: relative; display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 10px;
-  border: 0; border-radius: 7px 7px 0 0; background: transparent; color: var(--theme-fg-muted); font-size: 13px; font-weight: 500;
-}
-.thread-git-tabs > button svg { width: 15px; height: 15px; }
-.thread-git-tabs > button[aria-pressed='true'] { color: var(--theme-fg); }
-.thread-git-tabs > button[aria-pressed='true']::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--theme-accent-solid); }
-.thread-git-count, .thread-git-segments button > span {
-  min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--theme-surface-strong); color: var(--theme-fg-soft);
-  font-size: 11px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums;
-}
-.thread-git-loading { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; padding-right: 6px; color: var(--theme-fg-muted); font-size: 12px; }
-.thread-git-loading > svg { flex: none; width: 15px; height: 15px; }
-/* Phones show the spinner only; the words stay for screen readers. */
-@media (max-width: 639px) {
-  .thread-git-loading-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.thread-git-recent > svg { flex: none; width: 14px; height: 14px; color: var(--status-info-fg, var(--theme-fg-muted)); }
+.thread-git-recent-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-git-recent > time { flex: none; color: var(--theme-fg-muted); }
+.thread-git-link {
+  flex: none; margin-left: auto; min-height: 26px; padding: 0 8px; border: 0; border-radius: 6px; background: transparent;
+  color: var(--status-info-fg, var(--theme-accent-solid)); font-size: 12px; font-weight: 600;
 }
 
-/* Changes: files beside the diff on wide screens, each scrolling on its own. */
-.thread-git-changes { display: grid; grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); flex: 1; min-height: 0; }
-.thread-git-files { display: flex; flex-direction: column; gap: 8px; min-height: 0; padding: 12px; overflow-y: auto; border-right: 1px solid var(--theme-border); overscroll-behavior: contain; }
-.thread-git-segments { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px; padding: 2px; border-radius: 9px; background: var(--theme-surface); }
-.thread-git-segments button {
-  display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; min-height: 30px; padding: 0 6px;
-  border: 0; border-radius: 7px; background: transparent; color: var(--theme-fg-muted); font-size: 12px; white-space: nowrap;
+/* Views: one row, counts beside their names. */
+.thread-git-views { display: flex; gap: 2px; flex: none; padding: 5px 8px; border-bottom: 1px solid var(--theme-border); }
+.thread-git-views > button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: 1 1 auto; min-width: 0; height: 28px; padding: 0 6px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--theme-fg-muted); font-size: 12.5px; white-space: nowrap;
 }
-.thread-git-segments button[aria-pressed='true'] { background: var(--theme-panel); color: var(--theme-fg); font-weight: 600; box-shadow: 0 0 0 1px var(--theme-border); }
-.thread-git-base { display: flex; align-items: flex-end; gap: 6px; }
-.thread-git-base label { display: grid; gap: 3px; flex: 1; min-width: 0; color: var(--theme-fg-muted); font-size: 11.5px; }
+.thread-git-views > button[aria-pressed='true'] { background: var(--theme-surface-strong, var(--theme-surface)); color: var(--theme-fg); font-weight: 600; }
+.thread-git-count { color: var(--theme-fg-soft); font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.thread-git-count[data-zero] { color: var(--theme-fg-muted); opacity: .7; }
+
+/* Scope bars: the comparison base, or the commit being shown. */
+.thread-git-bar { display: flex; align-items: center; gap: 6px; flex: none; min-width: 0; min-height: 38px; padding: 4px 8px 4px 12px; border-bottom: 1px solid var(--theme-border); font-size: 12px; }
+.thread-git-commit-bar { padding-left: 4px; }
+.thread-git-commit-bar-subject { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-git-base label { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; color: var(--theme-fg-muted); }
 .thread-git-base input {
-  width: 100%; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid var(--theme-border-strong, var(--theme-border)); border-radius: 7px;
-  background: var(--theme-surface-strong); color: var(--theme-fg); font-size: 12.5px;
+  flex: 1; width: 100%; min-width: 0; height: 28px; padding: 0 8px; border: 1px solid var(--theme-border-strong, var(--theme-border)); border-radius: 6px;
+  background: var(--theme-surface-strong, var(--theme-surface)); color: var(--theme-fg); font-size: 12.5px;
 }
-.thread-git-file-list { display: grid; gap: 1px; margin: 0; padding: 0; list-style: none; }
+.thread-git-button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex: none; min-height: 28px; padding: 0 10px;
+  border: 1px solid var(--theme-border); border-radius: 6px; background: transparent; color: var(--theme-fg-soft); font-size: 12px; font-weight: 500;
+}
+
+/* Changes, narrow (the default): one scroll holding the list, then the
+   combined diff, whose heading sticks at the top once the list scrolls away. */
+.thread-git-changes { display: block; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.thread-git-history { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.thread-git-files { max-height: 40%; min-height: 0; overflow-y: auto; overscroll-behavior: contain; border-bottom: 1px solid var(--theme-border); }
+.thread-git-changes[data-empty] .thread-git-files { max-height: none; border-bottom: 0; }
+.thread-git-panel[data-opened] .thread-git-files { display: none; }
+.thread-git-panel .thread-git-changes[data-empty] .thread-git-diff { display: none; }
+/* The combined diff is already under the list; Back only leaves a file. */
+.thread-git-panel:not([data-opened]) :is(.thread-git-all, .thread-git-back) { display: none; }
+.thread-git-panel:not([data-opened]) .thread-git-diff-title { padding-left: 8px; }
+.thread-git-files { display: flex; flex-direction: column; }
+.thread-git-summary {
+  position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none;
+  min-height: 34px; padding: 3px 6px 3px 12px; background: var(--theme-panel); color: var(--theme-fg-muted); font-size: 12px;
+}
+.thread-git-summary-text { display: inline-flex; align-items: baseline; gap: 8px; min-width: 0; font-variant-numeric: tabular-nums; }
+.thread-git-all {
+  display: inline-flex; align-items: center; gap: 5px; flex: none; height: 26px; padding: 0 8px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--theme-fg-soft); font-size: 12px; font-weight: 500;
+}
+.thread-git-all svg { width: 14px; height: 14px; }
+.thread-git-file-list { display: grid; grid-template-columns: minmax(0, 1fr); margin: 0; padding: 0 0 4px; list-style: none; }
 .thread-git-file {
-  display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; min-height: 36px; padding: 4px 8px;
-  border: 0; border-radius: 7px; background: transparent; color: var(--theme-fg); text-align: left; font-size: 13px;
+  display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; height: var(--thread-git-row); padding: 0 10px 0 12px;
+  border: 0; background: transparent; color: var(--theme-fg); text-align: left; font-size: 13px;
 }
-.thread-git-file[aria-pressed='true'] { background: color-mix(in oklch, var(--theme-accent-solid) 10%, transparent); box-shadow: inset 2px 0 0 var(--theme-accent-solid); }
-.thread-git-file.is-all { color: var(--theme-fg-soft); font-weight: 500; }
-.thread-git-file.is-all .thread-git-file-name { flex: 1; }
-.thread-git-file-meta { color: var(--theme-fg-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .thread-git-letter {
-  display: grid; place-items: center; flex: none; width: 18px; height: 18px; border-radius: 5px;
-  background: var(--theme-surface-strong); color: var(--theme-fg-soft); font: 600 11px/1 var(--font-mono, ui-monospace, monospace);
+  display: grid; place-items: center; flex: none; width: 16px; height: 16px; border-radius: 4px;
+  background: var(--theme-surface-strong); color: var(--theme-fg-soft); font: 600 10.5px/1 var(--font-mono, ui-monospace, monospace);
 }
 .thread-git-letter[data-change='added'], .thread-git-letter[data-change='untracked'] { background: var(--status-success-bg); color: var(--status-success-fg); }
 .thread-git-letter[data-change='modified'], .thread-git-letter[data-change='typeChanged'] { background: var(--status-warning-bg); color: var(--status-warning-fg); }
 .thread-git-letter[data-change='deleted'], .thread-git-letter[data-change='conflicted'] { background: var(--status-danger-bg); color: var(--status-danger-fg); }
 .thread-git-letter[data-change='renamed'], .thread-git-letter[data-change='copied'] { background: var(--status-info-bg, var(--theme-surface-strong)); color: var(--status-info-fg, var(--theme-fg-soft)); }
-.thread-git-file-text { display: grid; flex: 1; min-width: 0; }
-.thread-git-file-name { min-width: 0; }
-.thread-git-file-dir { overflow: hidden; color: var(--theme-fg-muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; unicode-bidi: plaintext; }
-.thread-git-stat { display: inline-flex; gap: 6px; flex: none; font: 11.5px/1 var(--font-mono, ui-monospace, monospace); font-variant-numeric: tabular-nums; }
+.thread-git-file-name { flex: 0 1 auto; min-width: 2.5em; }
+/* The directory gives way first, losing its start, not its end: right-to-left
+   overflow puts the ellipsis first, and the isolated text keeps its order. */
+.thread-git-file-dir {
+  flex: 1 1 0; min-width: 0; overflow: hidden; color: var(--theme-fg-muted); font-size: 11.5px;
+  text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
+}
+.thread-git-file-kind { flex: none; font-size: 11.5px; }
+.thread-git-stat { display: inline-flex; gap: 5px; flex: none; font: 11.5px/1 var(--font-mono, ui-monospace, monospace); font-variant-numeric: tabular-nums; }
 .thread-git-stat ins { color: var(--status-success-fg); text-decoration: none; }
 .thread-git-stat del { color: var(--status-danger-fg); text-decoration: none; }
+.thread-git-note { padding: 6px 12px; }
+.thread-git-empty { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0; padding: 28px 16px; color: var(--theme-fg-muted); font-size: 12.5px; text-align: center; }
+.thread-git-empty > svg { flex: none; width: 15px; height: 15px; color: var(--status-success-fg); }
+.thread-git-empty.is-page { padding: 32px 18px; }
 
-.thread-git-diff { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.thread-git-diff { display: flex; flex-direction: column; }
 .thread-git-diff-head {
-  position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 12px 6px 16px;
+  position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 2px; flex: none; height: var(--thread-git-head); padding: 0 6px 0 4px;
   border-bottom: 1px solid var(--theme-border); background: var(--theme-panel); color: var(--theme-fg-soft); font-size: 12.5px; font-weight: 500;
 }
-.thread-git-diff-title { display: flex; align-items: center; flex: 1; min-width: 0; }
+.thread-git-diff-title { display: flex; align-items: center; flex: 1; min-width: 0; padding-left: 4px; }
 .thread-git-diff-title .path-chip { max-width: 100%; min-width: 0; }
-.thread-git-back { display: none; }
-.thread-git-truncated { padding: 8px 16px 0; }
-.thread-git-diff > .thread-git-empty { padding: 24px 16px; }
-.thread-git-patch { min-width: 0; padding: 0 0 16px; outline: none; }
+.thread-git-patch { flex: 1; min-width: 0; padding: 0 0 16px; outline: none; }
 .thread-git-patch:focus-visible { box-shadow: inset 0 0 0 2px var(--theme-accent-solid); }
 .thread-git-patch pre { margin: 0; padding: 4px 0; overflow-x: auto; font-size: 12px; line-height: 1.6; tab-size: 4; }
-.thread-git-line { display: block; min-width: max-content; padding: 0 16px; white-space: pre; color: var(--theme-fg); }
+.thread-git-line { display: block; min-width: max-content; padding: 0 12px; white-space: pre; color: var(--theme-fg); }
 /* Added and removed lines read apart from context and the @@ line in every
    theme: a clear green or red tint plus an edge bar, so the kind is told by a
    shape as well as a colour. Packs may set the two tokens. */
@@ -143,86 +175,66 @@
 .thread-git-line[data-kind='note'] { color: var(--theme-fg-muted); font-style: italic; }
 .thread-git-patch-file + .thread-git-patch-file { border-top: 1px solid var(--theme-border); }
 .thread-git-patch-file-head {
-  position: sticky; top: 44px; z-index: 1; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 34px; padding: 4px 16px;
+  position: sticky; top: var(--thread-git-head); z-index: 1; display: flex; align-items: center; gap: 10px; width: 100%; min-height: 32px; padding: 4px 12px;
   border: 0; border-bottom: 1px solid var(--theme-border); background: var(--theme-surface); color: var(--theme-fg); text-align: left;
   font: 600 12px/1.4 var(--font-mono, ui-monospace, monospace);
 }
 .thread-git-patch-file-head > :first-child { flex: 1; min-width: 0; }
+.thread-git-patch-file-head > .thread-git-dim { flex: none; font-family: inherit; font-size: 11.5px; }
+.thread-git-file-note { display: flex; align-items: center; gap: 8px; margin: 0; padding: 10px 12px; color: var(--theme-fg-muted); font-size: 12px; }
+.thread-git-file-note > svg { flex: none; width: 16px; height: 16px; }
+.thread-git-file-note + pre { padding-top: 0; }
 
-/* Commits. */
-.thread-git-history { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; padding: 4px 18px 12px; overscroll-behavior: contain; }
-.thread-git-commits { display: grid; margin: 0; padding: 0; list-style: none; }
-.thread-git-commits > li { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 4px 0; }
-.thread-git-commit-open { display: flex; flex: 1; align-items: center; gap: 12px; min-width: 0; padding: 6px 6px 6px 4px; border-radius: 6px; text-align: left; color: inherit; }
-.thread-git-commit-open:active { background: var(--theme-hover); }
-.thread-git-commit-open:focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 1px; }
-@media (hover: hover) { .thread-git-commit-open:hover { background: var(--theme-hover); } }
-.thread-git-commit-chevron { flex: none; width: 15px; height: 15px; color: var(--theme-fg-muted); }
-.thread-git-commit-scope { display: flex; align-items: center; gap: 6px; min-height: 32px; color: var(--theme-fg-muted); font-size: 12px; }
-.thread-git-commit-scope > svg { width: 15px; height: 15px; }
-.thread-git-commit-scope > code { color: var(--theme-fg); }
-.thread-git-commit-scope > .thread-git-icon { margin-left: auto; }
+/* Commits: subject, then short ID, author and date on one line. */
+.thread-git-history { flex: 1; display: flex; flex-direction: column; }
+.thread-git-commits { display: grid; grid-template-columns: minmax(0, 1fr); margin: 0; padding: 0; list-style: none; }
 .thread-git-commits > li + li { border-top: 1px solid var(--theme-border); }
-.thread-git-commit-icon { flex: none; width: 16px; height: 16px; color: var(--theme-fg-muted); }
-.thread-git-commit-main { display: grid; gap: 2px; flex: 1; min-width: 0; }
-.thread-git-commit-main strong { overflow: hidden; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-.thread-git-commit-meta { display: flex; flex-wrap: wrap; gap: 2px 10px; color: var(--theme-fg-muted); font-size: 12px; }
-.thread-git-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 12px; font-size: 12px; }
-.thread-git-button {
-  display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex: none; min-height: 32px; padding: 0 10px;
-  border: 1px solid var(--theme-border); border-radius: 7px; background: transparent; color: var(--theme-fg-soft); font-size: 12.5px; font-weight: 500;
-}
-.thread-git-button svg { width: 14px; height: 14px; }
+.thread-git-commit { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 6px 8px 6px 12px; border: 0; background: transparent; color: inherit; text-align: left; }
+.thread-git-commit-main { display: grid; gap: 1px; flex: 1; min-width: 0; }
+.thread-git-commit-subject { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.thread-git-commit-meta { display: flex; align-items: baseline; gap: 8px; min-width: 0; color: var(--theme-fg-muted); font-size: 11.5px; white-space: nowrap; }
+.thread-git-commit-meta code { flex: none; font-size: 11px; }
+.thread-git-commit-author { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.thread-git-commit-meta time { flex: none; }
+.thread-git-chevron { flex: none; width: 14px; height: 14px; color: var(--theme-fg-muted); }
+.thread-git-pagination { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: auto; padding: 8px; font-size: 12px; }
 
 /* States: hover only where it exists, focus only from the keyboard (UI §16). */
-.thread-git-panel button:disabled { opacity: .45; cursor: default; }
-.thread-git-panel :is(button, input):focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 2px; }
-.thread-git-panel :is(.thread-git-icon, .thread-git-file, .thread-git-button, .thread-git-segments button, .thread-git-tabs > button, .thread-git-patch-file-head):active:not(:disabled) { background: var(--theme-hover); color: var(--theme-fg); }
+.thread-git-panel button:disabled { opacity: .4; cursor: default; }
+.thread-git-panel :is(button, input):focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: -2px; }
+.thread-git-panel :is(.thread-git-icon, .thread-git-file, .thread-git-button, .thread-git-views > button, .thread-git-all, .thread-git-link, .thread-git-commit, .thread-git-patch-file-head):active:not(:disabled) { background: var(--theme-hover); color: var(--theme-fg); }
 @media (hover: hover) {
-  .thread-git-panel :is(.thread-git-icon, .thread-git-file, .thread-git-button, .thread-git-tabs > button):hover:not(:disabled) { background: var(--theme-hover); color: var(--theme-fg); }
-  .thread-git-panel .thread-git-segments button:hover:not(:disabled):not([aria-pressed='true']) { color: var(--theme-fg); }
+  .thread-git-panel :is(.thread-git-icon, .thread-git-file, .thread-git-button, .thread-git-all, .thread-git-link, .thread-git-commit):hover:not(:disabled) { background: var(--theme-hover); }
+  .thread-git-panel :is(.thread-git-icon, .thread-git-button, .thread-git-all):hover:not(:disabled) { color: var(--theme-fg); }
+  .thread-git-panel .thread-git-views > button:hover:not(:disabled):not([aria-pressed='true']) { color: var(--theme-fg); }
   .thread-git-patch-file-head:hover { background: var(--theme-hover); }
 }
 
-/* Narrow is the default: files above the diff, one scroll. */
-.thread-git-tabs { position: sticky; top: 0; z-index: 3; background: var(--theme-panel); }
-.thread-git-changes { display: block; }
-.thread-git-files { overflow: visible; border-right: 0; border-bottom: 1px solid var(--theme-border); }
-.thread-git-diff { overflow: visible; scroll-margin-top: 44px; }
-.thread-git-diff-head { top: 44px; padding-left: 8px; }
-.thread-git-back { display: grid; }
-.thread-git-patch-file-head { top: 88px; }
-.thread-git-history { overflow: visible; }
-.thread-git-observation { flex-wrap: wrap; }
-.thread-git-observation-text { flex-basis: calc(100% - 26px); }
-.thread-git-observation > .thread-git-button { margin-left: 25px; }
-
-/* A dock dragged wide: files beside the diff, each scrolling on its own. */
+/* A dock dragged wide: files beside the diff, each scrolling on its own; the
+   selected row (or All diffs) marks what the diff shows. */
 @container thread-git (min-width: 720px) {
-  .thread-git-scroll { overflow: hidden; }
-  .thread-git-changes { display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); flex: 1; min-height: 0; }
-  .thread-git-files { overflow-y: auto; border-right: 1px solid var(--theme-border); border-bottom: 0; }
-  .thread-git-diff { overflow-y: auto; }
-  .thread-git-diff-head { top: 0; padding-left: 16px; }
-  .thread-git-back { display: none; }
-  .thread-git-patch-file-head { top: 44px; }
-  .thread-git-history { overflow-y: auto; }
-  .thread-git-tabs { position: static; }
-  .thread-git-observation { flex-wrap: nowrap; }
-  .thread-git-observation-text { flex-basis: auto; }
-  .thread-git-observation > .thread-git-button { margin-left: 0; }
+  .thread-git-changes { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); overflow: hidden; }
+  .thread-git-changes[data-empty] { grid-template-columns: minmax(0, 1fr); }
+  .thread-git-files, .thread-git-diff { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  .thread-git-files { max-height: none; border-right: 1px solid var(--theme-border); border-bottom: 0; }
+  .thread-git-panel[data-opened] .thread-git-files { display: flex; }
+  .thread-git-panel:not([data-opened]) .thread-git-all { display: inline-flex; }
+  .thread-git-panel .thread-git-back { display: none; }
+  .thread-git-diff-title, .thread-git-panel:not([data-opened]) .thread-git-diff-title { padding-left: 8px; }
+  .thread-git-file[aria-pressed='true'], .thread-git-all[aria-pressed='true'] { background: color-mix(in oklch, var(--theme-accent-solid) 12%, transparent); color: var(--theme-fg); }
+  .thread-git-file[aria-pressed='true'] { box-shadow: inset 2px 0 0 var(--theme-accent-solid); }
 }
 
-/* Touch-sized targets on a phone. */
+/* Touch-sized targets on a phone (UI §10). */
 @media (max-width: 639px) {
-  .thread-git-icon { width: 40px; height: 40px; }
-  .thread-git-tabs > button { min-height: 44px; }
-  .thread-git-file { min-height: 44px; }
-  .thread-git-segments button { min-height: 40px; }
+  .thread-git-panel { --thread-git-row: 44px; --thread-git-icon: 40px; --thread-git-head: 44px; }
+  .thread-git-where { min-height: 50px; }
   .thread-git-copy .pm-select { min-height: 40px; }
+  .thread-git-views > button { height: 40px; font-size: 13px; }
+  .thread-git-recent { min-height: 40px; }
+  .thread-git-link, .thread-git-all { min-height: 40px; }
   .thread-git-base input, .thread-git-button { min-height: 40px; font-size: 16px; }
   .thread-git-button { font-size: 13px; }
-  .thread-git-commits > li { align-items: flex-start; }
-  .thread-git-pagination button { min-height: 44px; }
+  .thread-git-commit { min-height: 52px; }
   .thread-git-history, .thread-git-patch { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
 }

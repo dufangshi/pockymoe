@@ -56,26 +56,44 @@ grant that ownership.
 The Git entry on the workbench rail (on a phone, the top bar or the dock's More
 sheet) docks a read-only Git inspector at the right of the conversation, which
 stays usable beside it; Files and the isolation inspector share that dock. It
-follows the open thread and shows that thread's title. With more than one
-working copy, its first row switches between the configured and associated
-ones; the line below names the branch, HEAD, whether the copy is the primary one
-and how it was found (a configured checkout is not labelled). With a single copy
-there is no chooser: the branch line comes first and carries the refresh. When the
-latest tool location is in another working copy, a notice shows that path with
-**View that copy**. Selecting a copy changes this view only.
+follows the open thread and shows that thread's title.
 
-Changes list files per scope: unstaged (including untracked), staged, or a
-comparison from a revision's merge base. Selecting a file shows its diff,
-including the contents of an untracked file; the whole-scope diff is split per
-file with added and removed lines colored (tint plus an edge bar), and untracked
-files appear in it as new files within the same output limit. A file's counts
-leave out a side with no lines (`+3`, not `+3 −0`). In the default dock width the
-list and diff stack in one scroll; a dock dragged wider (720px or more) puts them
-side by side.
-Commits are paginated (the pager shows only when there is more than one page).
-Selecting a commit shows what it changed against its first parent in the
-changes view, with a way back to the unstaged changes. PR status and Git writes
-are not included.
+One line says where the view is: the working copy (a switch listing each copy's
+branch, directory and whether it is the primary one, when there are several;
+otherwise the branch), the short HEAD ID with a copy of the full ID, a
+**Details** toggle and refresh. Details shows the copy's absolute path, whether
+it is the primary copy and how it was found (a configured checkout is not
+labelled), the path and time of a recent operation elsewhere, and that
+selecting a copy changes this view only. When the latest tool location is in
+another working copy, one line names that copy and the time, with **View**
+(`View that copy`) to switch to it; while that copy is shown the line says the
+latest operation was here.
+
+Below it one row picks the view: **Unstaged** (including untracked) and
+**Staged** with their file counts, **Compare** (from a revision's merge base;
+a base field and Compare button appear) and **Commits**. The file list starts
+with the file count and the lines added and removed. Each row
+is one line: change letter, name, directory (shortened from its start) and the
+file's counts (`+3`, not `+3 −0`), or "Binary". A clean tree, an empty index or
+a comparison without differences says so in one line. In the default dock
+width the list (at most 40% of the area, scrolling on its own when longer) sits
+above the scope's combined diff in one scroll, so a short list leaves the rest
+to the diff. Selecting a file, in the list or by its heading in the combined
+diff, shows that file alone, with Back, the path, previous and next file and
+Copy patch; Back returns to its row. A dock dragged wider (720px or more) shows
+the list beside the diff, which starts with all files; All diffs returns to
+them there.
+
+The diff is split per file with added and removed lines colored (tint plus an
+edge bar). Git's header lines become words in the file's heading and a note: a
+new or deleted file, a binary file (whose contents are not shown as text), an
+empty file and a rename (`Renamed from …`). Untracked files appear in the
+whole-scope diff as new files within the same output limit, each under its own
+name. Commits are paginated (the pager shows only when there is more than one
+page); each row shows the subject, short ID, author and date. Selecting a commit
+shows what it changed against its first parent, headed by its short ID (with a
+copy of the full ID) and subject, with Back to the commit list. PR status and
+Git writes are not included.
 It refreshes when opened, on thread updates and on request; it does not poll.
 
 The endpoints are `GET /api/threads/{id}/working-context` and

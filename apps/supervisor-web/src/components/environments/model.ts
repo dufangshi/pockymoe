@@ -7,9 +7,15 @@ export const GIB = 1024 ** 3;
 export const environmentTransitioning = (state: EnvironmentState) => ['creating', 'starting', 'stopping'].includes(state);
 export function environmentError(cause: unknown, fallback: EnvironmentMessage = 'operationFailed') {
   if (cause instanceof ApiError) {
+    const code = String(cause.payload.code), message = String(cause.payload.message ?? '');
+    if (code === 'environment_owner_authorization_required') return t('ownerRequired');
     if ([404, 501].includes(cause.statusCode)) return t('unsupported');
     if ([401, 403].includes(cause.statusCode)) return t('forbidden');
-    if (String(cause.payload.code).includes('budget')) return t('budgetExceeded');
+    if (code.includes('budget') || message.includes('budget would be exceeded')) return t('budgetExceeded');
+    // Known Supervisor refusals, matched on their stable prefix; the raw text is never shown.
+    if (message.includes('thread already owns an environment')) return t('alreadyOwns');
+    if (message.includes('close existing child threads')) return t('closeChildren');
+    if (message.includes('stop the active turn')) return t('threadBusy');
     if (cause.statusCode === 409) return t('conflict');
   }
   // Never render upstream HTTP bodies or an error containing the submitted key.
@@ -55,6 +61,21 @@ export const environmentStateKey = (state: string): EnvironmentMessage =>
 /** Lifecycle actions offered for a state; the server still decides. */
 export function environmentActions(state: EnvironmentState): ('start' | 'stop' | 'rebuild' | 'destroy')[] {
   if (state === 'destroyed' || environmentTransitioning(state)) return [];
-  return state === 'running' ? ['stop', 'rebuild', 'destroy'] : ['start', 'rebuild', 'destroy'];
+  if (state === 'running') return ['stop', 'rebuild', 'destroy'];
+  // A failed generation is not safely startable: the Supervisor asks for Stop
+  // (or Rebuild) first, so that is what it offers.
+  if (state === 'error') return ['stop', 'rebuild', 'destroy'];
+  // Interrupted still counts toward the budget until stopped; Start resumes it.
+  if (state === 'interrupted') return ['start', 'stop', 'rebuild', 'destroy'];
+  return ['start', 'rebuild', 'destroy'];
+}
+/** Still holds a container or a budget reservation. */
+export const environmentHoldsResources = (state: EnvironmentState) => ['running', 'starting', 'creating', 'stopping', 'interrupted', 'error'].includes(state);
+/** Why an approved migration failed, in the reader's words, from the Supervisor's stable reason text. */
+export function migrationFailure(lastError: string | null | undefined): EnvironmentMessage {
+  const text = lastError ?? '';
+  if (text.includes('budget would be exceeded')) return 'failedBudget';
+  if (text.includes('not safely startable')) return 'failedNotStartable';
+  return 'failedOther';
 }
 export const gibValue = (bytes: number) => Math.round((bytes / GIB) * 100) / 100;

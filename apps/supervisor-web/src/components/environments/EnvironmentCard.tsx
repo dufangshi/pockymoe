@@ -29,7 +29,7 @@ export function EnvironmentLifecycle({ environment: env, deviceId, onUpdate, dis
   const actions = environmentActions(env.state);
   if (!actions.length) return null;
   return <div className="env-lifecycle">
-    {actions.map(action => <button key={action} type="button" className={`env-button${action === 'destroy' ? ' is-danger' : ''}`}
+    {actions.map(action => <button key={action} type="button" className={`env-button${action === 'destroy' ? ' is-danger' : action === 'start' && (env.state === 'stopped' || env.state === 'interrupted') ? ' is-primary' : ''}`}
       disabled={!!busy || !!disabledReason} onClick={() => action === 'rebuild' || action === 'destroy' ? setConfirmation(action) : void act(action)}>
       {busy === action ? t('working') : t(action)}
     </button>)}

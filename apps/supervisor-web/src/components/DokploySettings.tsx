@@ -41,7 +41,7 @@ function DeviceEnvironmentSettings({ deviceId }: { deviceId: string | null }) {
       {loading && <span role="status" className="env-dim">{t('loading')}</span>}
       {error && <ErrorMark message={error} onRetry={() => void refresh()} kind={error === t('unsupported') || error === t('forbidden') ? 'unavailable' : 'error'} />}
     </div>}
-    <EnvironmentRequests deviceId={deviceId} hideWhenEmpty onChanged={() => void refresh()} />
+    <EnvironmentRequests deviceId={deviceId} hideWhenEmpty onChanged={() => void refresh()} environments={snapshot?.environments} />
     {snapshot && budget && <>
       <section className="env-section" aria-label={t('connections')}>
         <SectionHeading title={t('connections')} count={snapshot.connections.length}>

@@ -104,9 +104,9 @@ async function openSettings(page: Page) {
 }
 async function openThreadEnvironment(page: Page) {
   await page.goto('/threads/thread-one');
-  await page.getByRole('button', { name: 'Thread tools', exact: true }).click();
-  await page.getByRole('button', { name: 'Isolated environments', exact: true }).click();
-  return page.getByRole('dialog', { name: 'Isolated environments', exact: true });
+  // The isolation inspector is docked beside the conversation, opened from the rail.
+  await page.getByRole('button', { name: 'Isolated environments', exact: true }).first().click();
+  return page.getByTestId('thread-environment');
 }
 async function openNewThread(page: Page) {
   await page.goto('/threads/thread-one');
@@ -181,19 +181,21 @@ test('saved connection, write-only replacement, budget and lifecycle follow the 
 
 test('thread entry creates and binds only after explicit native-session release', async ({ page }) => {
   const mock = await mockApi(page);
+  // A thread owns at most one environment; start from a thread that has none.
+  mock.snapshot.environments = [];
   const window = await openThreadEnvironment(page);
-  await window.getByRole('button', { name: 'Create environment' }).click();
+  await window.getByRole('button', { name: /New isolated environment/ }).click();
   await window.getByLabel('Environment name (optional)').fill('Thread sandbox');
-  await window.getByRole('button', { name: 'Create and use' }).click();
-  const confirm = page.getByRole('dialog', { name: 'Release the current session and switch environments?' });
+  await window.getByRole('button', { name: 'Create and switch' }).click();
+  const confirm = page.getByRole('dialog', { name: 'Switch where this thread runs?' });
   expect(mock.writes.filter(write => write.path === '/api/environments')).toHaveLength(0);
   await confirm.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(window.getByLabel('Environment name (optional)')).toHaveValue('Thread sandbox');
-  await window.getByRole('button', { name: 'Create and use' }).click();
-  await confirm.getByRole('button', { name: 'Release session and switch' }).click();
-  await expect(window.getByText('Environment applied')).toBeVisible();
+  await window.getByRole('button', { name: 'Create and switch' }).click();
+  await confirm.getByRole('button', { name: 'Switch', exact: true }).click();
+  await expect(window.getByText('Switched')).toBeVisible();
   expect(mock.writes.find(write => write.path.endsWith('/environment'))!.body).toEqual({ environmentId: 'created-env', resetSession: true });
-  await expect(window.getByRole('article', { name: 'Thread sandbox' })).toContainText('Creating');
+  await expect(window.getByRole('listitem').filter({ hasText: 'Thread sandbox' }).first()).toBeVisible();
 });
 
 test('child thread keeps inherited isolation and explains the disabled controls', async ({ page }) => {
@@ -201,12 +203,11 @@ test('child thread keeps inherited isolation and explains the disabled controls'
   mock.thread.parentThreadId = 'parent-thread';
   mock.bindEnvironment({ ...isolatedEnvironment, id: 'inherited-env', threadId: 'parent-thread', name: 'Inherited environment' });
   const window = await openThreadEnvironment(page);
-  await expect(window.getByRole('combobox', { name: 'Select environment' })).toContainText('Inherited environment');
-  await expect(window.getByRole('combobox', { name: 'Select environment' })).toBeDisabled();
-  await expect(window.getByRole('button', { name: 'Create environment', exact: true })).toBeDisabled();
+  await expect(window.locator('li[aria-current="true"]')).toContainText('Inherited environment');
+  await expect(window.getByRole('button', { name: 'Run on this device' })).toBeDisabled();
+  await expect(window.getByRole('button', { name: /New isolated environment/ })).toHaveCount(0);
   await expect(window.getByRole('button', { name: 'Start', exact: true })).toBeDisabled();
-  await window.getByRole('button', { name: 'Why it is unavailable' }).first().click();
-  await expect(page.locator('.error-mark-bubble')).toContainText('This child thread inherits its parent');
+  await expect(window.getByTestId('environment-blocked')).toContainText('Inherited from the parent thread');
   expect(mock.writes).toHaveLength(0);
 });
 
@@ -290,7 +291,7 @@ test('isolated ACP navigation from New Chat does not probe Host agents or models
   await page.getByRole('button', { name: 'Isolated environments', exact: true }).click();
   const environment = page.getByRole('dialog', { name: 'Isolated environments', exact: true });
   await expect(environment.locator('[data-state="running"]')).toBeVisible();
-  await expect(environment.getByRole('combobox', { name: 'Select environment' })).toContainText('Feature worktree');
+  await expect(environment.locator('li[aria-current="true"]')).toContainText('Feature worktree');
   expect(mock.writes.filter(write => write.path === '/api/threads/start')).toHaveLength(1);
   expect(mock.writes.find(write => write.path === '/api/threads/start')!.body).toMatchObject({ provider: 'acp', agentId: 'codex', model: 'isolated-acp-model', environmentConnectionId: 'dokploy-local' });
   expect(mock.requests.filter(request => request.path === '/api/threads/created-thread/environment').length).toBeGreaterThanOrEqual(3);
@@ -381,8 +382,8 @@ for (const theme of ['classic', 'plum-pocket', 'terminal']) for (const mode of [
     await page.screenshot({ path: path.join(directory, `${theme}-${mode}-resources.png`), animations: 'disabled' });
     await page.keyboard.press('Escape');
     const threadWindow = await openThreadEnvironment(page);
-    await expect(threadWindow.getByRole('button', { name: 'Create environment' })).toBeVisible();
-    await threadWindow.getByRole('button', { name: 'Create environment' }).click();
+    await expect(threadWindow.getByRole('button', { name: /New isolated environment/ })).toBeVisible();
+    await threadWindow.getByRole('button', { name: /New isolated environment/ }).click();
     await page.screenshot({ path: path.join(directory, `${theme}-${mode}-thread.png`), animations: 'disabled' });
     const overflow = await threadWindow.evaluate(node => node.scrollWidth > node.clientWidth + 1);
     expect(overflow).toBe(false);
