@@ -465,7 +465,10 @@ with a fade, opening in place, so a folded wake never hides the answer. The last
 wake's answer is the task's closing answer below the wakes and shows once. What
 the reader sent into a wake turn while it worked (steers, added prompts) stands
 there too, in time order with that answer and drawn like a turn's added prompt;
-a folded task lists them under its work line. Only the wake prompt the
+a folded task lists them under its work line. A steer just delivered into a
+running wake turn shows there at once: the row adds the reader's messages the
+summary already has to the detail loaded for that turn, which does not hold them
+yet. Only the wake prompt the
 Supervisor wrote is never shown as the reader's. `idle` means
 execution ended, not that the task succeeded. The UI reads reports from the
 original wake envelope when older devices supply only state metadata, and shows
@@ -800,7 +803,7 @@ and a labelled "Latest" in an accent tint (not Send's fill). A phone shows only
 "Latest", and only away from the end. On a wide screen the conversation fades out
 under the floating composer instead of showing cut lines below it. A long reply
 folds behind "Show all (about N more characters)" with a right-pointing chevron;
-an opened message's "Show less", a small pill with an edge, rides just above the composer's own box
+an opened message's "Show less", a small translucent chip at the left with its chevron pointing up, rides just above the composer's own box
 (6px), or just above whatever stands over the composer at that spot (the turn
 strip, the composer's corner marks, queued prompts). A reply longer than 1,200
 characters opens folded at that length.
