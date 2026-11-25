@@ -26,18 +26,18 @@ and navigating between fork panels cannot clear an in-flight operation lock.
 
 | Harness | Latest fork | Selected completed turn | Transport |
 | --- | --- | --- | --- |
-| Codex | Yes | Yes | Thin bridge to the app-server owned by codex-acp |
+| Codex | Yes | Yes | Native Codex app-server in a short-lived process |
 | Claude Code | Yes | Yes (claude-agent-acp 0.86.0+) | Standard ACP `session/fork`; a historical fork adds a fork point to `_meta` |
 | DeepSeek Harness | Yes | Yes (Web console composition) | DSH's own seeded fork through the in-process bridge |
 | Grok Build | Yes | No | `_x.ai/session/fork`, then ACP `session/load` |
 
-Codex ACP currently does not implement `session/fork`. The Rust bridge runs as
-codex-acp's `CODEX_PATH`, forwards its stdio unchanged, and adds an authenticated
-loopback control connection. Only `thread/fork` and read-only `thread/turns/list`
-are allowed on this connection. Prompt, load, cancel and all conversation events
-still belong to ACP. The source is never loaded by a second native app-server.
-Historical forks use the selected native `lastTurnId`; they do not roll back or
-modify the parent. This requires native Codex support for these app-server APIs.
+Codex ACP currently does not implement `session/fork`. Pockymoe starts a
+short-lived native Codex app-server to read the stored source history and fork it.
+For a historical fork, it uses `thread/turns/list` to find the selected native
+`lastTurnId`. Both fork paths pass `excludeTurns: true` to `thread/fork`. Codex
+persists the inherited history and returns thread metadata, including the new
+thread ID. The helper exits before ACP loads the fork.
+Prompt, load, cancel and conversation events still use ACP.
 
 claude-agent-acp resolves a fork point given as
 `_meta.jetbrains.air.fork = {version: 1, messageId, messageFingerprint, messageOccurrence}`
