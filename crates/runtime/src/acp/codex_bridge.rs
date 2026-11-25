@@ -99,8 +99,10 @@ impl CodexBridge {
                 })).await?;
                 process.notify("initialized", json!({})).await?;
                 let native = super::codex_permissions::native_policy(policy);
+                // The bridge only needs the new thread ID. The inherited turns can
+                // exceed the transport limit when included in the response.
                 let mut params = json!({"threadId": source, "persistExtendedHistory": true,
-                    "deferGoalContinuation":true, "cwd":cwd,
+                    "excludeTurns": true, "deferGoalContinuation":true, "cwd":cwd,
                     "sandbox":native["sandbox"], "approvalPolicy":native["approvalPolicy"],
                     "approvalsReviewer":native["approvalsReviewer"]});
                 if rollback_count > 0 {

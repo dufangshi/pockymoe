@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Model Codex's process-owned writer locks for ACP fork lifecycle tests (Unix)."""
+"""Model Codex's writer locks and fork responses for ACP lifecycle tests (Unix)."""
 import fcntl
 import json
 import os
@@ -36,7 +36,12 @@ def dispatch(message):
         acquire(sid)
         with open(sid + ".json", "w") as output:
             json.dump(params, output)
-        return {"thread": {"id": sid}}
+        turns = []
+        if not params.get("excludeTurns"):
+            # Model inherited history larger than the ACP transport limit.
+            reply = {"type": "agentMessage", "text": "x" * (5 * 1024 * 1024)}
+            turns.append({"items": [reply]})
+        return {"thread": {"id": sid, "turns": turns}}
     if method == "thread/settings/update":
         return {}
     if method in ("session/new", "session/load"):
