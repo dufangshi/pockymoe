@@ -175,7 +175,7 @@ it('disables Dokploy options for an unsupported Harness and keeps an already-sel
   expect(await screen.findByRole('option', { name: 'Local Dokploy' })).toBeDisabled();
   fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' });
   fireEvent.click(screen.getByRole('button', { name: 'Why it is unavailable' }));
-  expect(within(await screen.findByRole('dialog', { name: 'Why it is unavailable' })).getByText('This Harness does not support isolated environments.')).toBeVisible();
+  expect(within(await screen.findByRole('dialog', { name: 'Why it is unavailable' })).getByText('This Harness can’t run isolated; Codex, Claude and custom ACP can.')).toBeVisible();
   expect(api.create).not.toHaveBeenCalled();
 });
 it('allows a configured Custom ACP transport with a distinct agent id', async () => {
