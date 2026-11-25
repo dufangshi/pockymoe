@@ -227,7 +227,7 @@
 :theme [data-page='devices'] section[aria-labelledby='devices-heading'] > .rounded-lg { margin-top: 10px; border: 0; background: transparent; }
 :theme [data-page='devices'] section[aria-labelledby='devices-heading'] > .rounded-lg > div:first-child:has(> span + span + span) { display: none; }
 :theme [data-page='devices'] section[aria-labelledby='devices-heading'] .divide-y > * { border: 0; }
-:theme [data-page='devices'] article:has(.device-presence-dot) {
+:theme [data-page='devices'] article.device-row {
   position: relative;
   grid-template-columns: 40px minmax(0, 1fr) auto;
   column-gap: 14px;
@@ -236,18 +236,18 @@
   padding: 12px 12px 12px 14px;
   border-radius: 16px;
 }
-:theme [data-page='devices'] article:has(.device-presence-dot) + article::after {
+:theme [data-page='devices'] article.device-row + article::after {
   content: '';
   position: absolute;
   top: 0;
   inset-inline: 16px;
   border-top: 1px dashed var(--plum-page-rule);
 }
-:theme [data-page='devices'] article:has(.device-presence-dot):active { background: var(--plum-page-row-hover); }
+:theme [data-page='devices'] article.device-row:active { background: var(--plum-page-row-hover); }
 @media (hover: hover) {
-  :theme [data-page='devices'] article:has(.device-presence-dot):hover { background: var(--plum-page-row-hover); }
+  :theme [data-page='devices'] article.device-row:hover { background: var(--plum-page-row-hover); }
 }
-:theme [data-page='devices'] article:has(.device-presence-dot)::before {
+:theme [data-page='devices'] article.device-row::before {
   content: '';
   grid-row: 1 / span 2;
   width: 40px;
@@ -255,14 +255,13 @@
   border-radius: 13px;
   background: color-mix(in srgb, var(--theme-accent-solid) 14%, transparent);
 }
-:theme [data-page='devices'] article:has(.device-presence-dot) > div:first-child { grid-column: 2; }
-:theme [data-page='devices'] article:has(.device-presence-dot) > div:nth-child(2) { grid-column: 2; display: flex; align-items: center; gap: 4px; }
-:theme [data-page='devices'] article:has(.device-presence-dot) > div:nth-child(3) { grid-column: 3; grid-row: 1 / span 2; }
-:theme [data-page='devices'] article:has(.device-presence-dot) > p { grid-column: 2 / -1; }
-:theme [data-page='devices'] article:has(.device-presence-dot) > div:first-child > div > p { font-size: 15px; font-weight: 700; flex: 0 1 auto; }
-:theme [data-page='devices'] article:has(.device-presence-dot) > div:first-child > p { display: none; }
-/* A device glyph sits on the tile; the presence dot becomes its badge. */
-:theme [data-page='devices'] article:has(.device-presence-dot) > div:first-child::before {
+:theme [data-page='devices'] article.device-row > .device-row-name { grid-column: 2; }
+:theme [data-page='devices'] article.device-row > .device-meta { grid-column: 2; display: flex; align-items: center; gap: 4px; }
+:theme [data-page='devices'] article.device-row > .device-row-actions { grid-column: 3; grid-row: 1 / span 2; }
+:theme [data-page='devices'] article.device-row > .device-row-name > p { font-size: 15px; font-weight: 700; flex: 0 1 auto; }
+/* A device glyph sits on the tile; the connection mark becomes its badge and keeps
+   its shape: a solid dot online, a hollow circle offline. */
+:theme [data-page='devices'] article.device-row > .device-row-name::before {
   content: '';
   position: absolute;
   left: 23px;
@@ -274,25 +273,23 @@
   -webkit-mask: var(--plum-glyph-device) center / contain no-repeat;
   mask: var(--plum-glyph-device) center / contain no-repeat;
 }
-:theme [data-page='devices'] article:has(.device-presence-dot) .device-presence-dot {
+:theme [data-page='devices'] article.device-row > .device-row-name > .admin-device-state {
   position: absolute;
   left: 44px;
   top: calc(50% + 10px);
+}
+:theme [data-page='devices'] article.device-row > .device-row-name .admin-device-state-mark {
   width: 11px;
   height: 11px;
-  border: 0;
   box-shadow: 0 0 0 2.5px var(--theme-bg);
 }
-:theme [data-page='devices'] article:has(.device-presence-dot):active .device-presence-dot { box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--theme-hover) 70%, var(--theme-bg)); }
+:theme [data-page='devices'] article.device-row > .device-row-name .is-offline .admin-device-state-mark { background: var(--theme-bg); }
+:theme [data-page='devices'] article.device-row:active .admin-device-state-mark { box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--theme-hover) 70%, var(--theme-bg)); }
 @media (hover: hover) {
-  :theme [data-page='devices'] article:has(.device-presence-dot):hover .device-presence-dot { box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--theme-hover) 70%, var(--theme-bg)); }
+  :theme [data-page='devices'] article.device-row:hover .admin-device-state-mark { box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--theme-hover) 70%, var(--theme-bg)); }
 }
-:theme [data-page='devices'] .device-presence-label { padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
-:theme [data-page='devices'] article:has(.device-presence-dot) > div:nth-child(2) > p:first-child { font-size: 12px; }
-:theme [data-page='devices'] article:has(.device-presence-dot) .relay-button-primary { min-height: 36px; padding-inline: 14px 16px; border-radius: 999px; }
-/* Row menus size to their longest item instead of wrapping it. */
-:theme [data-page='devices'] article [role='menu'] { width: max-content; min-width: 14rem; max-width: calc(100vw - 2rem); }
-:theme [data-page='devices'] article [role='menu'] > :is(button, div > button) { white-space: nowrap; }
+:theme [data-page='devices'] article.device-row > .device-meta > p:first-child { font-size: 12px; }
+:theme [data-page='devices'] article.device-row .relay-button-primary { min-height: 36px; padding-inline: 14px 16px; border-radius: 999px; }
 /* Add device: a plain inline form under the heading. */
 :theme [data-page='devices'] #add-device-form { margin-top: 12px; padding: 4px 4px 16px; border: 0; border-bottom: 1.5px dashed var(--plum-page-rule); background: transparent; }
 :theme [data-page='devices'] #add-device-form h3 + p { display: none; }
@@ -611,20 +608,20 @@
   :theme [data-page='workspaces'] .product-list > article.product-row > a { --plum-row-pad: 12px; grid-template-columns: 36px minmax(0, 1fr); padding-inline: 12px; }
   :theme [data-page='workspaces'] .product-list > article.product-row > a > time { grid-column: 2; grid-row: auto; font-size: 11px; }
   :theme [data-page='workspaces'] .product-list > article.product-row > a::before { grid-row: 1 / span 3; }
-  :theme [data-page='devices'] article:has(.device-presence-dot) { grid-template-columns: 40px minmax(0, 1fr) auto; padding-inline: 10px 6px; }
-  :theme [data-page='devices'] article:has(.device-presence-dot) > div:nth-child(3) { grid-row: 1 / span 2; gap: 0; }
-  :theme [data-page='devices'] article:has(.device-presence-dot) > div:first-child::before { left: 19px; }
-  :theme [data-page='devices'] article:has(.device-presence-dot) .device-presence-dot { left: 40px; }
-  /* Phone rows: the name gets the width; Connect becomes a 44px plug button that
-     keeps "Connect" as its accessible name. */
-  :theme [data-page='devices'] article:has(.device-presence-dot) > div:nth-child(2) { grid-column: 2 / -1; }
-  :theme [data-page='devices'] article:has(.device-presence-dot) > div:nth-child(3) { grid-row: 1; }
-  :theme [data-page='devices'] article:has(.device-presence-dot) > div:first-child { align-self: center; }
-  :theme [data-page='devices'] article:has(.device-presence-dot)::before { grid-row: 1 / span 2; align-self: start; margin-top: 2px; }
-  :theme [data-page='devices'] article:has(.device-presence-dot) > div:first-child::before { top: 34px; }
-  :theme [data-page='devices'] article:has(.device-presence-dot) .device-presence-dot { top: 44px; }
-  :theme [data-page='devices'] article:has(.device-presence-dot) .relay-button-primary { width: 44px; min-height: 44px; flex-grow: 0; padding: 0; gap: 0; border-radius: 14px; font-size: 0; }
-  :theme [data-page='devices'] article:has(.device-presence-dot) .relay-button-primary svg { width: 19px; height: 19px; }
+  :theme [data-page='devices'] article.device-row { grid-template-columns: 40px minmax(0, 1fr) auto; padding-inline: 10px 6px; }
+  :theme [data-page='devices'] article.device-row > .device-row-actions { grid-row: 1 / span 2; gap: 0; }
+  :theme [data-page='devices'] article.device-row > .device-row-name::before { left: 19px; }
+  :theme [data-page='devices'] article.device-row > .device-row-name > .admin-device-state { left: 40px; }
+  /* Phone rows: the name gets the width; Open becomes a 44px arrow button that
+     keeps "Open" as its accessible name. */
+  :theme [data-page='devices'] article.device-row > .device-meta { grid-column: 2 / -1; }
+  :theme [data-page='devices'] article.device-row > .device-row-actions { grid-row: 1; }
+  :theme [data-page='devices'] article.device-row > .device-row-name { align-self: center; }
+  :theme [data-page='devices'] article.device-row::before { grid-row: 1 / span 2; align-self: start; margin-top: 2px; }
+  :theme [data-page='devices'] article.device-row > .device-row-name::before { top: 34px; }
+  :theme [data-page='devices'] article.device-row > .device-row-name > .admin-device-state { top: 44px; }
+  :theme [data-page='devices'] article.device-row .relay-button-primary { width: 44px; min-height: 44px; flex-grow: 0; padding: 0; gap: 0; border-radius: 14px; font-size: 0; }
+  :theme [data-page='devices'] article.device-row .relay-button-primary svg { width: 19px; height: 19px; }
   :theme [data-page='devices'] .shared-access-tabs { display: grid; overflow: visible; }
   :theme [data-page='relay-home'] > div > section:first-of-type { grid-template-columns: 1fr; grid-template-areas: 'art' 'status' 'title' 'action'; padding-block: 24px 28px; }
   :theme [data-page='relay-home'] > div > section:first-of-type::after { justify-self: center; width: 200px; height: 140px; margin-bottom: 14px; }

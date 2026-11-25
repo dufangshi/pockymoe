@@ -13,29 +13,24 @@ import {
   useEffect,
   useMemo,
   useCallback,
-  useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   ChevronDown,
-  Eye,
   FileInput,
   LayoutDashboard,
-  Lock,
-  LockOpen,
-  MoreHorizontal,
-  Pencil,
   Pin,
   Plus,
   RefreshCw,
-  Share2,
-  Trash2,
 } from 'lucide-react';
 
 import type { RuntimeConfigDto, WorkspaceDto } from '@pockymoe/shared';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { DeviceStateMark } from '../components/DeviceStateMark';
+import { IsolationMark } from '../components/managed/IsolationMark';
+import { ManagedObjectMenu, useManagedObjectMenu, type ManagedAction } from '../components/managed/ManagedObjectMenu';
+import { workspaceActions } from '../components/managed/workspaceActions';
 import { LongTextDialog } from '../components/LongTextDialog';
 import { RenameDialog } from '../components/RenameDialog';
 import { WorkspaceShareDialog } from '../components/WorkspaceShareDialog';
@@ -54,6 +49,7 @@ import {
   updateWorkspaceFavorite,
 } from '../lib/api';
 import {
+  currentNewThreadHref,
   currentRelayScopedPath,
   currentThreadsHref,
   relayDeviceIdFromPath,
@@ -93,6 +89,7 @@ async function sharedWorkspaces(deviceId: string): Promise<WorkspaceDto[] | null
 export function WorkspacesPage() {
   const { locale: i18nLocale } = useI18n();
   const location = useLocation();
+  const navigate = useNavigate();
   const relayDeviceId = relayDeviceIdFromPath(location.pathname);
   const deviceId = relayDeviceId ?? (relayModeActive() ? readSelectedRelayDeviceId() : null);
   const shellNav = useAppShellNav();
@@ -134,7 +131,6 @@ export function WorkspacesPage() {
   const [draftLabel, setDraftLabel] = useState('');
   const [savingWorkspaceId, setSavingWorkspaceId] = useState<string | null>(null);
   const [favoriteWorkspaceId, setFavoriteWorkspaceId] = useState<string | null>(null);
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [expandedPath, setExpandedPath] = useState<string | null>(null);
   const [deletingWorkspace, setDeletingWorkspace] = useState<WorkspaceDto | null>(null);
   const [deletingWorkspaceBusy, setDeletingWorkspaceBusy] = useState(false);
@@ -266,14 +262,12 @@ export function WorkspacesPage() {
   }
 
   function beginRename(workspace: WorkspaceDto) {
-    setOpenMenuId(null);
     setError(null);
     setEditingWorkspaceId(workspace.id);
     setDraftLabel(workspace.label);
   }
 
   function beginDelete(workspace: WorkspaceDto) {
-    setOpenMenuId(null);
     setDeleteError(null);
     setDeletingWorkspace(workspace);
   }
@@ -287,16 +281,11 @@ export function WorkspacesPage() {
   const supervisorDetails = (
       <details className="group border-y border-[var(--theme-border)]">
         <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 py-2.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-accent-ring)] [&::-webkit-details-marker]:hidden">
-          <span
-            aria-hidden="true"
-            className={`h-2 w-2 shrink-0 rounded-full ${
-              runtimeError
-                ? 'bg-[var(--status-warning-fg)]'
-                : runtimeConfig
-                  ? 'bg-[var(--status-success-fg)]'
-                  : 'bg-[var(--theme-fg-muted)]'
-            }`}
-          />
+          {/* This Supervisor answered: the one device connection mark (§6). A read that failed says why on
+              its own mark below and claims nothing about the connection; the slot stays either way. */}
+          <span className={`inline-flex shrink-0 ${runtimeConfig ? '' : 'invisible'}`} aria-hidden={runtimeConfig ? undefined : true}>
+            <DeviceStateMark showLabel={false} state="online" />
+          </span>
           <span className="shrink-0 font-medium text-[var(--theme-fg)]">Supervisor</span>
           <span className="flex min-w-0 flex-1 items-center gap-1.5">
             {runtimeConfig ? <PathChip path={runtimeSummary} className="workspace-path-chip" /> : (
@@ -315,7 +304,7 @@ export function WorkspacesPage() {
           />
         </summary>
         <dl className="grid gap-x-8 gap-y-3 border-t border-[var(--theme-border)] py-3 sm:grid-cols-2 lg:grid-cols-3">
-          <RuntimeFact label={translate("files.workspaceRoot")} value={runtimeSummary} />
+          <RuntimeFact label={translate("files.workspaceRoot")} value={runtimeSummary} path={Boolean(runtimeConfig)} />
           <RuntimeFact
             label={translate("files.environment")}
             value={
@@ -340,7 +329,8 @@ export function WorkspacesPage() {
         {!sharedOnly && <Link to={currentRelayScopedPath('/workspaces/new')} aria-label={translate("files.addWorkspace")} title={translate("files.addWorkspace")} className="product-icon-button"><Plus data-icon="add" size={20} /></Link>}
       </>} />}
 
-      {deviceName?.deviceId === deviceId && deviceName.connected === false ? <p className="flex items-center gap-2 text-sm text-[var(--theme-fg-muted)]">{translate('desktopDevices.offline')}<ErrorMark kind="unavailable" message={translate('devices.deviceIsolationOffline')} /></p> : null}
+      {/* An offline device opens like any other and says so here, with the device connection mark (§6). */}
+      {deviceName?.deviceId === deviceId && deviceName.connected === false ? <p className="flex items-center gap-2 text-sm text-[var(--theme-fg-muted)]"><DeviceStateMark state="offline" label={translate('desktopDevices.offline')} /><ErrorMark kind="unavailable" message={translate('devices.manageOffline')} /></p> : null}
       {!desktopLayout && supervisorDetails}
 
       {/* A device whose protection is unfinished blocks every request: say the step that unblocks it. */}
@@ -404,84 +394,30 @@ export function WorkspacesPage() {
       {!loading && sortedWorkspaces.length > 0 ? (
         <section aria-label={translate("files.workspaceRegistry")}>
           <div className="product-list !overflow-visible">
-            {sortedWorkspaces.map((workspace) => {
-              const menuOpen = openMenuId === workspace.id;
-              const favoriteBusy = favoriteWorkspaceId === workspace.id;
-
-              return (
-                <article
-                  key={workspace.id}
-                  className={`product-row relative !grid min-w-0 grid-cols-[minmax(0,1fr)_auto] !gap-0 !p-0 ${
-                    menuOpen ? 'z-20' : ''
-                  }`}
-                >
-                  {/* The name is a link stretched over the card; the path chip sits
-                      above it, so it can show the whole path and copy it (§2). */}
-                  <div className="relative min-w-0 px-4 py-3.5 sm:px-5">
-                  <Link
-                    to={currentThreadsHref(workspace.id)}
-                    className="group block min-w-0 after:absolute after:inset-0 after:content-[''] focus-visible:outline-none focus-visible:after:z-10 focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-[var(--theme-accent-ring)]"
-                  >
-                    <span className="flex min-w-0 items-center gap-2">
-                      <span className="truncate text-sm font-semibold text-[var(--theme-fg)] sm:text-base">
-                        {workspace.label}
-                      </span>
-                      {workspace.agentIsolated ? (
-                        <span
-                          className="workspace-isolated-badge inline-flex shrink-0 items-center gap-1 rounded-full border border-[var(--theme-border)] px-1.5 py-0.5 text-[11px] font-medium leading-none text-[var(--theme-fg-muted)]"
-                          title={translate('files.workspaceIsolatedHint')}
-                        >
-                          <Lock data-icon="isolated" aria-hidden="true" className="h-3 w-3" />
-                          {translate('files.workspaceIsolated')}
-                        </span>
-                      ) : null}
-
-                    </span>
-                  </Link>
-                    <PathChip path={workspace.absPath} className="workspace-path-chip relative z-20 mt-1" />
-                    <time
-                      dateTime={workspace.lastOpenedAt ?? undefined}
-                      className="mt-1 block text-xs text-[var(--theme-fg-muted)]"
-                    >
-                      {lastOpenedLabel(workspace.lastOpenedAt)}
-                    </time>
-                  </div>
-
-                  {sharedOnly ? null : <div className="flex items-center gap-1 pr-2 sm:pr-3">
-                    <button
-                      type="button"
-                      disabled={favoriteBusy}
-                      onClick={() => void handleFavorite(workspace)}
-                      aria-label={workspace.isFavorite ? translate("files.unpin", { value1: workspace.label }) : translate("files.pin", { value1: workspace.label })}
-                      title={workspace.isFavorite ? translate("files.unpinWorkspace") : translate("files.pinWorkspace")}
-                      className={`product-icon-button disabled:cursor-wait disabled:opacity-60 ${
-                        workspace.isFavorite
-                          ? 'text-[var(--status-warning-fg)] hover:bg-[var(--status-warning-bg)]'
-                          : ''
-                      }`}
-                    >
-                      <Pin
-                        data-icon="pin"
-                        aria-hidden="true"
-                        className={`h-4 w-4 ${workspace.isFavorite ? 'rotate-[18deg] fill-current' : 'rotate-[8deg]'}`}
-                      />
-                    </button>
-                    {rowMark(`favorite:${workspace.id}`)}
-                    <WorkspaceActionsMenu
-                      workspace={workspace}
-                      open={menuOpen}
-                      onOpenChange={(nextOpen) => setOpenMenuId(nextOpen ? workspace.id : null)}
-                      onViewPath={() => setExpandedPath(workspace.absPath)}
-                      onRename={() => beginRename(workspace)}
-                      onShare={shareDeviceId ? () => setSharingWorkspace(workspace) : undefined}
-                      onToggleIsolation={workspace.agentIsolated === undefined ? undefined : () => void handleIsolation(workspace)}
-                      onDelete={() => beginDelete(workspace)}
-                    />
-                    {rowMark(`isolation:${workspace.id}`)}
-                  </div>}
-                </article>
-              );
-            })}
+            {sortedWorkspaces.map((workspace) => (
+              <WorkspaceRow
+                key={workspace.id}
+                workspace={workspace}
+                readOnly={sharedOnly}
+                favoriteBusy={favoriteWorkspaceId === workspace.id}
+                onFavorite={() => void handleFavorite(workspace)}
+                favoriteMark={rowMark(`favorite:${workspace.id}`)}
+                isolationMark={rowMark(`isolation:${workspace.id}`)}
+                menuItems={workspaceActions(workspace, {
+                  navigate,
+                  openHref: currentThreadsHref(workspace.id),
+                  newThreadHref: currentNewThreadHref(workspace.id),
+                  canShare: Boolean(shareDeviceId),
+                  manage: (action) => {
+                    if (action === 'rename') beginRename(workspace);
+                    else if (action === 'share') setSharingWorkspace(workspace);
+                    else if (action === 'isolate') void handleIsolation(workspace);
+                    else if (action === 'path') setExpandedPath(workspace.absPath);
+                    else beginDelete(workspace);
+                  },
+                })}
+              />
+            ))}
           </div>
         </section>
       ) : null}
@@ -513,14 +449,15 @@ export function WorkspacesPage() {
       />
       <ConfirmDialog
         open={deletingWorkspace !== null}
-        title={translate("files.deleteWorkspace")}
+        title={translate("files.removeWorkspaceTitle")}
         description={
           deletingWorkspace
             // The failure is the mark after the confirm button, not a sentence here.
             ? translate("files.removeAndItsThreadsFromThisSupervisor", { value1: deletingWorkspace.label, value2: '' })
             : ''
         }
-        confirmLabel={translate("files.deleteWorkspace_bc2cf9")}
+        confirmLabel={translate("files.removeWorkspaceConfirm")}
+        busyLabel={translate("files.removingWorkspace")}
         busy={deletingWorkspaceBusy}
         error={deleteError}
         onCancel={() => {
@@ -536,185 +473,82 @@ export function WorkspacesPage() {
   return desktopLayout ? <WorkspacesFrame deviceId={deviceId} sharedOnly={sharedOnly}>{content}</WorkspacesFrame> : content;
 }
 
-function WorkspaceActionsMenu({
-  workspace,
-  open,
-  onOpenChange,
-  onViewPath,
-  onRename,
-  onShare,
-  onToggleIsolation,
-  onDelete,
-}: {
+/** One workspace: the row opens it; its ⋯ menu, a right click and a long press manage it (§3). */
+function WorkspaceRow({ workspace, readOnly, favoriteBusy, onFavorite, favoriteMark, isolationMark, menuItems }: {
   workspace: WorkspaceDto;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onViewPath: () => void;
-  onRename: () => void;
-  /** Absent unless this is the owner's device, opened through the relay. */
-  onShare?: (() => void) | undefined;
-  /** Absent when the device's runtime predates agent isolation. */
-  onToggleIsolation?: (() => void) | undefined;
-  onDelete: () => void;
+  /** A recipient of a share sees the workspace without the owner's actions. */
+  readOnly: boolean;
+  favoriteBusy: boolean;
+  onFavorite: () => void;
+  favoriteMark: ReactNode;
+  isolationMark: ReactNode;
+  /** The workspace's actions, in the order shared with a device's (workspaceActions). */
+  menuItems: ManagedAction[];
 }) {
-  const { locale: i18nLocale } = useI18n();
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const menuId = `workspace-actions-${workspace.id}`;
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    const focusFirstItem = window.requestAnimationFrame(() => {
-      menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
-    });
-
-    function handlePointerDown(event: PointerEvent) {
-      if (!containerRef.current?.contains(event.target as Node)) {
-        onOpenChange(false);
-      }
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onOpenChange(false);
-        triggerRef.current?.focus();
-      }
-    }
-
-    document.addEventListener('pointerdown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.cancelAnimationFrame(focusFirstItem);
-      document.removeEventListener('pointerdown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [onOpenChange, open]);
-
-  function handleMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    const items = Array.from(
-      menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [],
-    );
-    const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
-
-    if (event.key === 'Tab') {
-      onOpenChange(false);
-      return;
-    }
-    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || items.length === 0) {
-      return;
-    }
-
-    event.preventDefault();
-    const nextIndex =
-      event.key === 'Home'
-        ? 0
-        : event.key === 'End'
-          ? items.length - 1
-          : event.key === 'ArrowDown'
-            ? (currentIndex + 1) % items.length
-            : (currentIndex - 1 + items.length) % items.length;
-    items[nextIndex]?.focus();
-  }
-
-  function runAction(action: () => void) {
-    triggerRef.current?.focus();
-    onOpenChange(false);
-    action();
-  }
-
+  useI18n();
+  const menu = useManagedObjectMenu();
   return (
-    <div ref={containerRef} className="relative shrink-0">
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-label={translate("files.moreActionsFor", { value1: workspace.label })}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={open ? menuId : undefined}
-        title={translate("files.workspaceActions")}
-        onClick={() => onOpenChange(!open)}
-        className="product-icon-button"
-      >
-        <MoreHorizontal data-icon="more" aria-hidden="true" className="h-5 w-5" />
-      </button>
-      {open ? (
-        <div
-          ref={menuRef}
-          id={menuId}
-          role="menu"
-          aria-label={translate("files.actionsFor", { value1: workspace.label })}
-          onKeyDown={handleMenuKeyDown}
-          className="absolute right-0 top-[calc(100%+0.375rem)] z-30 w-max min-w-52 max-w-[calc(100vw-2rem)] whitespace-nowrap rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)] p-1.5 shadow-[var(--theme-shadow)]"
-        >
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => runAction(onViewPath)}
-            className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)]"
+    <article
+      aria-label={workspace.label}
+      className="product-row relative !grid min-w-0 grid-cols-[minmax(0,1fr)_auto] !gap-0 !p-0"
+      {...(readOnly ? {} : menu.rowProps)}
+    >
+      {/* The name is a link stretched over the card; the path chip and the isolation
+          mark sit above it, so they can show the whole path and what isolation means (§2, §8). */}
+      <div className="relative min-w-0 px-4 py-3.5 sm:px-5">
+        <div className="flex min-w-0 items-center gap-2">
+          <Link
+            to={currentThreadsHref(workspace.id)}
+            className="group block min-w-0 after:absolute after:inset-0 after:content-[''] focus-visible:outline-none focus-visible:after:z-10 focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-[var(--theme-accent-ring)]"
           >
-            <Eye data-icon="view-path" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
-            {translate("files.viewFullPath")}</button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => runAction(onRename)}
-            className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)]"
-          >
-            <Pencil data-icon="rename" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
-            {translate("files.rename_d3f4cb")}</button>
-          {onShare ? (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => runAction(onShare)}
-              className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)]"
-            >
-              <Share2 data-icon="share" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
-              {translate("sharing.shareWorkspace")}
-            </button>
-          ) : null}
-          {onToggleIsolation ? (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => runAction(onToggleIsolation)}
-              title={translate('files.workspaceIsolatedHint')}
-              className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--theme-fg)] transition hover:bg-[var(--theme-hover)] focus-visible:outline-none focus-visible:bg-[var(--theme-hover)]"
-            >
-              {workspace.agentIsolated ? (
-                <LockOpen data-icon="unisolate" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
-              ) : (
-                <Lock data-icon="isolate" aria-hidden="true" className="h-4 w-4 text-[var(--theme-fg-muted)]" />
-              )}
-              {translate(workspace.agentIsolated ? 'files.stopIsolatingWorkspace' : 'files.isolateWorkspace')}
-            </button>
-          ) : null}
-          <div className="my-1 border-t border-[var(--theme-border)]" />
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => runAction(onDelete)}
-            className="flex min-h-11 w-full items-center gap-3 rounded-md px-3 text-left text-sm text-[var(--status-danger-fg)] transition hover:bg-[var(--status-danger-bg)] focus-visible:outline-none focus-visible:bg-[var(--status-danger-bg)]"
-          >
-            <Trash2 data-icon="delete" aria-hidden="true" className="h-4 w-4" />
-            {translate("files.deleteWorkspace_bc2cf9")}</button>
+            <span className="block truncate text-sm font-semibold text-[var(--theme-fg)] sm:text-base">
+              {workspace.label}
+            </span>
+          </Link>
+          {workspace.agentIsolated ? <span className="relative z-20 inline-flex shrink-0"><IsolationMark kind="workspace" /></span> : null}
         </div>
-      ) : null}
-    </div>
+        <PathChip path={workspace.absPath} className="workspace-path-chip relative z-20 mt-1" />
+        <time
+          dateTime={workspace.lastOpenedAt ?? undefined}
+          className="mt-1 block text-xs text-[var(--theme-fg-muted)]"
+        >
+          {lastOpenedLabel(workspace.lastOpenedAt)}
+        </time>
+      </div>
+
+      {readOnly ? null : <div className="flex items-center gap-1 pr-2 sm:pr-3">
+        <button
+          type="button"
+          disabled={favoriteBusy}
+          onClick={onFavorite}
+          aria-label={workspace.isFavorite ? translate("files.unpin", { value1: workspace.label }) : translate("files.pin", { value1: workspace.label })}
+          title={workspace.isFavorite ? translate("files.unpinWorkspace") : translate("files.pinWorkspace")}
+          className={`product-icon-button disabled:cursor-wait disabled:opacity-60 ${
+            workspace.isFavorite
+              ? 'text-[var(--status-warning-fg)] hover:bg-[var(--status-warning-bg)]'
+              : ''
+          }`}
+        >
+          <Pin
+            data-icon="pin"
+            aria-hidden="true"
+            className={`h-4 w-4 ${workspace.isFavorite ? 'rotate-[18deg] fill-current' : 'rotate-[8deg]'}`}
+          />
+        </button>
+        {favoriteMark}
+        <ManagedObjectMenu ref={menu.ref} name={workspace.label} items={menuItems} className="product-icon-button" />
+        {isolationMark}
+      </div>}
+    </article>
   );
 }
 
-function RuntimeFact({ label, value }: { label: string; value: string }) {
+function RuntimeFact({ label, value, path = false }: { label: string; value: string; /** A path is a path chip wherever it shows (§2). */ path?: boolean }) {
   const { locale: i18nLocale } = useI18n();
   return (
     <div className="min-w-0">
       <dt className="text-xs text-[var(--theme-fg-muted)]">{label}</dt>
-      <dd className="mt-0.5 break-words font-mono text-xs leading-5 text-[var(--theme-fg)]">{value}</dd>
+      <dd className="mt-0.5 break-words font-mono text-xs leading-5 text-[var(--theme-fg)]">{path ? <PathChip path={value} className="workspace-path-chip" /> : value}</dd>
     </div>
   );
 }

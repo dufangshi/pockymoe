@@ -1,84 +1,303 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { seed } from './fixtures';
 const evidence = '.scratch/device-management/actions';
-test('device management stays in app; card menu and arrow in every theme', async ({ page }) => {
-  mkdirSync(evidence, { recursive: true });
-  const popups: string[] = [];
-  page.on('popup', popup => { popups.push('external browser'); void popup.close(); });
-  await page.routeWebSocket(/^ws:\/\/127\.0\.0\.1:\d+\/\?token=/, socket => socket.onMessage(() => undefined));
+// Issue #114: a device is managed the same way on its card, on its row and on a
+// phone, and a workspace the same way as a device. The names, order, separator
+// and danger styling belong to the shared action model (deviceActions,
+// workspaceActions); the menu is one component (ManagedObjectMenu).
+const DEVICE_ACTIONS = ['打开', '新建线程', '重命名', '共享…', '隔离…', '设置…', '移除…'];
+const go = (page: Page, path: string) => page.evaluate(target => { history.pushState({}, '', target); dispatchEvent(new PopStateEvent('popstate')); }, path);
+const where = (page: Page) => page.evaluate(() => location.pathname + location.search.replace(/[?&]desktopMockHost=1/, ''));
+async function prepare(page: Page, pack = 'classic', dark = false, host = true) {
   await page.addInitScript(() => localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'relay:devices-test'])}`, JSON.stringify({ welcomeDismissed: true, completed: [], resume: {} })));
-  for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [false, true]) for (const width of [1440, 390]) {
-    await page.setViewportSize({ width, height: 1000 });
-    await seed(page, pack, dark);
-    await page.evaluate(() => { (window as any).__externalAttempts = 0; window.pockymoeHost!.shell.openExternal = () => { (window as any).__externalAttempts++; }; });
-    const card = page.getByRole('article', { name: 'MacBook Pro', exact: true });
-    expect(await card.locator('.pd-workspaces-arrow').evaluate(el => [getComputedStyle(el, '::after').width, getComputedStyle(el, '::after').height])).toEqual(['40px', '40px']);
-    await expect(card.locator('.pd-workspaces-arrow svg')).toHaveAttribute('width', '14');
-    await card.getByRole('button', { name: 'MacBook Pro 的操作', exact: true }).click();
-    // The names, order, separator and danger styling belong to the shared action model.
-    await expect(page.locator('.pd-device-menu [role="menuitem"]')).toHaveText(['在地图中显示', '设备详情', '打开工作区', '新建线程', '检查更新', '重命名', '共享…', '隔离…', '移除设备…']);
-    await page.screenshot({ path: `${evidence}/menu-${pack}-${dark ? 'dark' : 'light'}-${width}.png` });
-    await page.keyboard.press('Escape');
-    const offlineArrow = page.getByRole('link', { name: '打开 Linux Server 的工作区', exact: true });
-    await expect(offlineArrow).not.toHaveAttribute('aria-disabled', 'true');
-    await offlineArrow.click();
-    await expect(page.locator('[data-page="workspaces"]')).toContainText('离线');
-    await page.evaluate(() => { history.pushState({}, '', '/desktop/devices/device-0'); dispatchEvent(new PopStateEvent('popstate')); });
-    const access = page.getByRole('region', { name: '访问', exact: true });
-    await expect(access).toBeVisible();
-    await access.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: `${evidence}/access-${pack}-${dark ? 'dark' : 'light'}-${width}.png` });
-    await page.getByRole('button', { name: 'MacBook Pro 的操作', exact: true }).click();
-    await page.getByRole('menuitem', { name: '共享…', exact: true }).click();
-    await expect(page.getByPlaceholder('用户名或电子邮箱')).toBeVisible();
-    if (width === 390) {
-      const dialog = page.getByRole('dialog', { name: '共享 MacBook Pro', exact: true });
-      await expect.poll(async () => Math.round((await dialog.boundingBox())!.y + (await dialog.boundingBox())!.height)).toBe(1000);
-      expect((await dialog.boundingBox())!.width).toBe(390);
-    }
-    await page.screenshot({ path: `${evidence}/share-${pack}-${dark ? 'dark' : 'light'}-${width}.png` });
-    await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
-    expect(await page.evaluate(() => (window as any).__externalAttempts)).toBe(0);
-    expect(popups).toEqual([]);
-  }
+  await seed(page, pack, dark, false, false, host);
+  // MacBook Pro is isolated, and so is its first workspace.
+  await page.route('**/api/config/agent-isolation', route => route.fulfill({ json: { device: route.request().url().includes('/device-0/'), workspaces: [] } }));
+  await page.route(/\/relay\/devices\/device-\d+\/api\/workspaces$/, route => route.fulfill({ json: [
+    { id: 'w-0', hostId: 'host', absPath: '/home/alex/projects/pockymoe', label: 'Pockymoe', isFavorite: true, createdAt: new Date().toISOString(), lastOpenedAt: new Date().toISOString(), agentIsolated: true },
+    { id: 'w-1', hostId: 'host', absPath: '/home/alex/projects/a-very-long-directory-name/research-notes-2026', label: 'Research notes', isFavorite: false, createdAt: new Date().toISOString(), lastOpenedAt: null, agentIsolated: false },
+  ] }));
+}
+const trigger = (page: Page, name: string) => page.getByRole('button', { name: `${name} 的更多操作`, exact: true });
+const menuOf = (page: Page, name: string) => page.getByRole('menu', { name: `${name} 的操作`, exact: true });
+async function expectInViewport(page: Page, name: string) {
+  const box = (await menuOf(page, name).boundingBox())!, view = page.viewportSize()!;
+  expect(box.x).toBeGreaterThanOrEqual(0); expect(box.y).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(view.width); expect(box.y + box.height).toBeLessThanOrEqual(view.height);
+}
+
+test('one menu for a device: its card, a right click, and its row on its own page', async ({ page }) => {
+  await prepare(page);
+  const card = page.getByRole('article', { name: 'MacBook Pro', exact: true });
+  await expect(card.locator('.managed-menu-trigger [data-icon="more"]')).toBeVisible();
+  await trigger(page, 'MacBook Pro').click();
+  const menu = menuOf(page, 'MacBook Pro');
+  // The card adds the two places this surface has: the device's page and the map.
+  await expect(menu.getByRole('menuitem')).toHaveText(['打开', '新建线程', '设备详情', '在地图中显示', ...DEVICE_ACTIONS.slice(2)]);
+  expect(await menu.evaluate(element => element.parentElement === document.body)).toBe(true);
+  await expect(menu.getByRole('menuitem').first()).toBeFocused();
+  await expect(menu.getByRole('separator')).toHaveCount(1);
+  const remove = menu.getByRole('menuitem', { name: '移除…', exact: true });
+  await expect(remove).toHaveAttribute('data-tone', 'danger');
+  expect(await remove.evaluate(element => getComputedStyle(element).color)).not.toBe(await menu.getByRole('menuitem', { name: '重命名', exact: true }).evaluate(element => getComputedStyle(element).color));
+  await expect(menu.getByRole('menuitem').locator('svg')).toHaveCount(9);
+  await page.keyboard.press('Escape');
+  await expect(trigger(page, 'MacBook Pro')).toBeFocused();
+  // A right click on the card is the same menu.
+  await card.click({ button: 'right', position: { x: 60, y: 60 } });
+  await expect(menuOf(page, 'MacBook Pro').getByRole('menuitem')).toHaveCount(9);
+  await page.keyboard.press('Escape');
+  // An offline device offers the same actions; only a new thread waits for it.
+  await trigger(page, 'Linux Server').click();
+  await expect(menuOf(page, 'Linux Server').getByRole('menuitem', { name: '新建线程', exact: true })).toBeDisabled();
+  await expect(menuOf(page, 'Linux Server').getByRole('menuitem').and(page.locator(':disabled'))).toHaveCount(1);
+  await page.keyboard.press('Escape');
+
+  // On the device's own page its card and its row list the same actions; the row's
+  // menu is at the page root too, so "Remove…" is not cut off at the page's end.
+  await go(page, '/desktop/devices/device-0');
+  const row = page.locator('.device-management-embedded article.device-row');
+  await expect(row).toHaveCount(1);
+  await expect(row.locator('.admin-device-state.is-online')).toHaveCount(1);
+  await expect(row.locator('.device-presence-dot, .device-presence-label')).toHaveCount(0);
+  await row.scrollIntoViewIfNeeded();
+  await row.getByRole('button', { name: 'MacBook Pro 的更多操作', exact: true }).click();
+  await expect(menuOf(page, 'MacBook Pro').getByRole('menuitem')).toHaveText(DEVICE_ACTIONS);
+  expect(await menuOf(page, 'MacBook Pro').evaluate(element => element.parentElement === document.body)).toBe(true);
+  await expectInViewport(page, 'MacBook Pro');
+  await page.keyboard.press('Escape');
+  await page.getByRole('article', { name: 'MacBook Pro', exact: true }).first().getByRole('button', { name: 'MacBook Pro 的更多操作', exact: true }).click();
+  await expect(menuOf(page, 'MacBook Pro').getByRole('menuitem')).toHaveText(['打开', '新建线程', '在地图中显示', ...DEVICE_ACTIONS.slice(2)]);
 });
 
-test('desktop add, share, isolation, removal and account entry are reachable without a browser', async ({ page }) => {
-  await seed(page);
+test('rename, share, isolation, settings and removal open in place; old ?action= links still open them', async ({ page }) => {
+  await prepare(page);
   const popups: string[] = [];
   page.on('popup', popup => { popups.push('external browser'); void popup.close(); });
   await page.evaluate(() => { window.pockymoeHost!.shell.openExternal = () => { throw new Error('Management opened an external browser'); }; });
-  await page.getByRole('button', { name: '添加设备', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '添加设备', exact: true }).getByRole('textbox', { name: '设备名称', exact: true })).toBeVisible();
+  const choose = async (item: string) => { await trigger(page, 'MacBook Pro').click(); await menuOf(page, 'MacBook Pro').getByRole('menuitem', { name: item, exact: true }).click(); };
+
+  // Rename: over the overview, which stays the page after cancelling.
+  await choose('重命名');
+  const rename = page.getByRole('dialog', { name: '重命名设备', exact: true });
+  await expect(rename.getByRole('textbox', { name: '设备名称', exact: true })).toHaveValue('MacBook Pro');
+  expect(await where(page)).toBe('/desktop/devices');
   await page.keyboard.press('Escape');
-  await page.getByRole('button', { name: 'MacBook Pro 的操作', exact: true }).click();
-  await page.getByRole('menuitem', { name: '共享…', exact: true }).click();
-  const recipient = page.getByRole('dialog').getByPlaceholder('用户名或电子邮箱');
-  await expect(recipient).toBeVisible();
+  await expect(rename).toHaveCount(0);
+  expect(await where(page)).toBe('/desktop/devices');
+  await expect(trigger(page, 'MacBook Pro')).toBeFocused();
+
+  await choose('共享…');
+  const recipient = page.getByRole('dialog', { name: '共享 MacBook Pro', exact: true }).getByPlaceholder('用户名或电子邮箱');
   await recipient.fill('fixture-recipient');
   await expect(recipient).toBeFocused();
-  await expect(recipient).toHaveValue('fixture-recipient');
   await page.keyboard.press('Escape');
   const discard = page.getByRole('dialog', { name: '放弃未保存的更改？', exact: true });
   await discard.getByRole('button', { name: '取消', exact: true }).click();
   await expect(recipient).toHaveValue('fixture-recipient');
   await page.keyboard.press('Escape');
   await discard.getByRole('button', { name: '放弃更改', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(await where(page)).toBe('/desktop/devices');
+
+  await choose('隔离…');
+  const isolation = page.getByRole('dialog', { name: '隔离 · MacBook Pro', exact: true });
+  await expect(isolation.getByRole('checkbox', { name: '隔离此设备', exact: true })).toBeChecked();
+  await expect(isolation).not.toContainText('Agent');
   await page.keyboard.press('Escape');
-  await page.getByRole('button', { name: 'MacBook Pro 的操作', exact: true }).click();
-  await page.getByRole('menuitem', { name: '隔离…', exact: true }).click();
-  await expect(page.getByRole('checkbox')).toBeVisible();
+  expect(await where(page)).toBe('/desktop/devices');
+
+  // Settings hold what were menu items of the phone row: the setup commands and the token.
+  await choose('设置…');
+  const settings = page.getByRole('dialog', { name: '设备设置 · MacBook Pro', exact: true });
+  await expect(settings.getByRole('heading', { name: 'Supervisor', exact: true })).toBeVisible();
+  await expect(settings.getByRole('button', { name: '复制 macOS/Linux 设置命令', exact: true })).toBeVisible();
+  await expect(settings.getByRole('button', { name: '复制 Windows 设置命令', exact: true })).toBeVisible();
+  const replace = settings.getByRole('button', { name: '替换设备令牌', exact: true });
+  await expect(replace.locator('svg')).toHaveCount(1);
+  expect(await replace.evaluate(element => getComputedStyle(element).color)).toBe(await page.evaluate(() => { const probe = document.createElement('span'); probe.style.color = 'var(--status-danger-fg)'; document.body.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; }));
+  // Reached with the keyboard, it shows where focus is.
+  await settings.getByRole('button', { name: '复制 Windows 设置命令', exact: true }).focus();
+  await page.keyboard.press('Tab');
+  await expect(replace).toBeFocused();
+  expect(await replace.evaluate(element => getComputedStyle(element).outlineStyle)).not.toBe('none');
+  await replace.click();
+  const confirmReplace = page.getByRole('dialog', { name: '替换设备令牌？', exact: true });
+  await expect(confirmReplace.getByRole('button', { name: '取消', exact: true })).toBeFocused();
+  await confirmReplace.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(settings).toBeVisible();
   await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(await where(page)).toBe('/desktop/devices');
+  // The card's update badge opens the same settings, on the Supervisor's version.
+  await page.getByRole('article', { name: 'Windows Studio', exact: true }).getByRole('button', { name: '有更新 0.13.42', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '设备设置 · Windows Studio', exact: true })).toContainText('0.13.42');
   await page.keyboard.press('Escape');
-  await page.getByRole('button', { name: 'MacBook Pro 的操作', exact: true }).click();
-  await page.getByRole('menuitem', { name: '移除设备…', exact: true }).click();
+
+  await choose('移除…');
   const confirm = page.getByRole('dialog', { name: '移除设备', exact: true });
   await expect(confirm).toContainText('MacBook Pro');
   await expect(confirm.getByRole('button', { name: '取消', exact: true })).toBeFocused();
-  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(await where(page)).toBe('/desktop/devices');
+
+  // A link from an older client names the window in the address: it opens there, and the parameter goes.
+  for (const [action, name] of [['rename', '重命名设备'], ['share', '共享 MacBook Pro'], ['isolate', '隔离 · MacBook Pro'], ['update', '设备设置 · MacBook Pro'], ['remove', '移除设备']] as const) {
+    await go(page, `/desktop/devices/device-0?action=${action}`);
+    await expect(page.getByRole('dialog', { name, exact: true })).toBeVisible();
+    expect(await where(page)).toBe('/desktop/devices/device-0');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  }
+
+  await page.getByRole('button', { name: '添加设备', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '添加设备', exact: true }).getByRole('textbox', { name: '设备名称', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
   await page.locator('.desktop-map-scene:not([hidden]) .matter-rail').getByRole('button', { name: /账号菜单/ }).click();
   await page.getByRole('menuitem', { name: '账号设置', exact: true }).click();
   await expect(page).toHaveURL(/relay-account/);
   expect(popups).toEqual([]);
+});
+
+test('the map lists the same actions for a device and opens their windows over the map', async ({ page }) => {
+  await prepare(page);
+  await go(page, '/');
+  const map = page.locator('.desktop-map-persistent');
+  await expect(map).toBeVisible();
+  const key = map.getByRole('button', { name: '设备操作：MacBook Pro', exact: true }).first();
+  await key.click();
+  const menu = page.getByRole('menu', { name: 'MacBook Pro', exact: true });
+  await expect(menu.getByRole('menuitem')).toHaveText(['打开', '新建线程', '设备详情', '在地图中显示', ...DEVICE_ACTIONS.slice(2)]);
+  await menu.getByRole('menuitem', { name: '隔离…', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '隔离 · MacBook Pro', exact: true }).getByRole('checkbox', { name: '隔离此设备', exact: true })).toBeChecked();
+  expect(await where(page)).toBe('/');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(map).toBeVisible();
+  await key.click();
+  await menu.getByRole('menuitem', { name: '设置…', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '设备设置 · MacBook Pro', exact: true })).toBeVisible();
+  expect(await where(page)).toBe('/');
+});
+
+test('an offline device opens and says it is offline; a workspace is managed like a device', async ({ page }) => {
+  await prepare(page);
+  const offlineArrow = page.getByRole('link', { name: '打开 Linux Server 的工作区', exact: true });
+  await expect(offlineArrow).not.toHaveAttribute('aria-disabled', 'true');
+  await offlineArrow.click();
+  const workspaces = page.locator('[data-page="workspaces"]');
+  await expect(workspaces.locator('.admin-device-state.is-offline')).toContainText('离线');
+  await go(page, '/devices/device-0/workspaces');
+  const row = page.getByRole('article', { name: 'Pockymoe', exact: true });
+  // The path is a path chip; "Isolated" is a lock with the word, and a tap says what it means.
+  await expect(row.locator('.path-chip')).toBeVisible();
+  const isolated = row.getByRole('button', { name: '已隔离', exact: true });
+  await expect(isolated.locator('svg')).toHaveCount(1);
+  await isolated.click();
+  await expect(page.getByRole('dialog', { name: '已隔离', exact: true })).toContainText('工作区以外的智能体无法列出、读取其中的线程');
+  expect(await where(page)).toBe('/devices/device-0/workspaces');
+  await page.keyboard.press('Escape');
+  await trigger(page, 'Pockymoe').click();
+  const menu = menuOf(page, 'Pockymoe');
+  // The same actions in the same order as a device; the path stands where a device has its settings.
+  await expect(menu.getByRole('menuitem')).toHaveText(['打开', '新建线程', '重命名', '共享…', '取消隔离', '查看路径', '移除…']);
+  expect(await menu.evaluate(element => element.parentElement === document.body)).toBe(true);
+  await expect(menu.getByRole('menuitem', { name: '移除…', exact: true })).toHaveAttribute('data-tone', 'danger');
+  await page.keyboard.press('Escape');
+  await row.click({ button: 'right', position: { x: 300, y: 10 } });
+  await expect(menuOf(page, 'Pockymoe').getByRole('menuitem')).toHaveCount(7);
+  await menuOf(page, 'Pockymoe').getByRole('menuitem', { name: '移除…', exact: true }).click();
+  const confirm = page.getByRole('dialog', { name: '移除工作区？', exact: true });
+  await expect(confirm).toContainText('从此 Supervisor 移除 Pockymoe 及其线程。不会删除磁盘文件。');
+  await expect(confirm).not.toContainText('删除工作区');
+  await expect(confirm.getByRole('button', { name: '移除工作区', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await trigger(page, 'Research notes').click();
+  await menuOf(page, 'Research notes').getByRole('menuitem', { name: '打开', exact: true }).click();
+  await expect(page).toHaveURL(/\/devices\/device-0\/threads\?workspaceId=w-1/);
+});
+
+test('the phone manages a device from the same menu, renames it there, and opens it offline', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await prepare(page, 'classic', false, false);
+  await go(page, '/relay-devices');
+  await expect(page.getByRole('heading', { name: '设备与共享', exact: true })).toBeVisible();
+  const row = page.getByRole('article', { name: 'MacBook Pro', exact: true });
+  await expect(row.getByRole('button', { name: '连接', exact: true })).toHaveCount(0);
+  await trigger(page, 'MacBook Pro').click();
+  const menu = menuOf(page, 'MacBook Pro');
+  await expect(menu.getByRole('menuitem')).toHaveText(['打开', '新建线程', '设备详情', ...DEVICE_ACTIONS.slice(2)]);
+  expect(await menu.evaluate(element => element.parentElement === document.body)).toBe(true);
+  await expectInViewport(page, 'MacBook Pro');
+  // Fingers get rows of at least 44px.
+  expect(await menu.getByRole('menuitem').evaluateAll(items => Math.min(...items.map(item => item.getBoundingClientRect().height)))).toBeGreaterThanOrEqual(44);
+  await menu.getByRole('menuitem', { name: '重命名', exact: true }).click();
+  const rename = page.getByRole('dialog', { name: '重命名设备', exact: true });
+  await rename.getByRole('textbox', { name: '设备名称', exact: true }).fill('Kitchen Mac');
+  await rename.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.getByRole('article', { name: 'Kitchen Mac', exact: true })).toBeVisible();
+  expect(await where(page)).toBe('/relay-devices');
+  // A long press on a row is the menu too.
+  await page.getByRole('article', { name: 'Windows Studio', exact: true }).locator('p').first().dispatchEvent('touchstart', { touches: [{ identifier: 0, clientX: 80, clientY: 560 }] });
+  await expect(menuOf(page, 'Windows Studio')).toBeVisible({ timeout: 2000 });
+  await page.keyboard.press('Escape');
+  const offline = page.getByRole('article', { name: 'Linux Server', exact: true });
+  await offline.getByRole('button', { name: '打开', exact: true }).click();
+  await expect(page).toHaveURL(/\/devices\/device-2\/workspaces/);
+  await expect(page.locator('[data-page="workspaces"] .admin-device-state.is-offline')).toContainText('离线');
+});
+
+test('menus, rows and the settings window in every theme, light and dark, desktop and phone', async ({ page, browser }) => {
+  test.setTimeout(420_000);
+  mkdirSync(evidence, { recursive: true });
+  for (const width of [1440, 390]) {
+    const phone = width < 640;
+    // One page per width: a seeded page keeps its host (addInitScript adds up).
+    const view = phone ? await (await browser.newContext({ viewport: { width, height: 900 }, hasTouch: true })).newPage() : page;
+    view.setDefaultTimeout(15_000);
+    await view.setViewportSize({ width, height: 900 });
+    for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [false, true]) {
+      await prepare(view, pack, dark, !phone);
+      const name = `${pack}-${dark ? 'dark' : 'light'}-${width}`;
+      if (phone) await go(view, '/relay-devices');
+      await expect(view.locator('html')).toHaveAttribute('data-theme-preset', pack);
+      await trigger(view, 'MacBook Pro').first().click();
+      await expect(menuOf(view, 'MacBook Pro').getByRole('menuitem', { name: '移除…', exact: true })).toBeVisible();
+      await expectInViewport(view, 'MacBook Pro');
+      await view.screenshot({ path: `${evidence}/device-menu-${name}.png` });
+      await menuOf(view, 'MacBook Pro').getByRole('menuitem', { name: '设置…', exact: true }).click();
+      const settings = view.getByRole('dialog', { name: '设备设置 · MacBook Pro', exact: true });
+      await expect(settings.getByRole('button', { name: '替换设备令牌', exact: true })).toBeVisible();
+      if (phone) {
+        // A window rises from the bottom edge on a phone (§4); wait for it to settle.
+        await expect.poll(async () => Math.round((await settings.boundingBox())!.y + (await settings.boundingBox())!.height)).toBe(900);
+        expect((await settings.boundingBox())!.width).toBe(390);
+      }
+      await view.screenshot({ path: `${evidence}/device-settings-${name}.png` });
+      await view.keyboard.press('Escape');
+      await expect(view.getByRole('dialog')).toHaveCount(0);
+      if (!phone) {
+        await go(view, '/desktop/devices/device-0');
+        const row = view.locator('.device-management-embedded article.device-row');
+        await row.scrollIntoViewIfNeeded();
+        await row.getByRole('button', { name: 'MacBook Pro 的更多操作', exact: true }).click();
+        await expectInViewport(view, 'MacBook Pro');
+        await view.screenshot({ path: `${evidence}/device-row-${name}.png` });
+        await view.keyboard.press('Escape');
+      }
+      await go(view, '/devices/device-0/workspaces');
+      await trigger(view, 'Pockymoe').click();
+      await expect(menuOf(view, 'Pockymoe').getByRole('menuitem', { name: '移除…', exact: true })).toBeVisible();
+      await expectInViewport(view, 'Pockymoe');
+      await view.screenshot({ path: `${evidence}/workspace-menu-${name}.png` });
+      await view.keyboard.press('Escape');
+      await view.getByRole('article', { name: 'Pockymoe', exact: true }).getByRole('button', { name: '已隔离', exact: true }).click();
+      await expect(view.getByRole('dialog', { name: '已隔离', exact: true })).toBeVisible();
+      await view.screenshot({ path: `${evidence}/workspace-isolated-${name}.png` });
+      await view.keyboard.press('Escape');
+    }
+    if (phone) await view.context().close();
+  }
 });

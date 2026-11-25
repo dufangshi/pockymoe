@@ -20,14 +20,14 @@ async function prepare(page: Page, pack = 'classic', dark = false, host = true) 
     const saved = route.request().method() === 'PATCH' ? route.request().postDataJSON() : {};
     await route.fulfill({ json: { workspaceRoot: `/root-of-${device}`, devHome: `/dev-of-${device}`, ...saved } });
   });
-  await page.route('**/api/config/runtime', route => route.fulfill({ json: { appName: 'pockymoe', appVersion: '0.13.41', environment: 'production', host: '127.0.0.1', port: 45679, workspaceRoot: '/fixture', defaultBackend: 'acp' } }));
   await page.route('**/api/environments', route => route.fulfill({ json: { connections: [], environments: [], budget: { maxRunning: 3, maxCpu: 8, maxMemoryBytes: 8 * 2 ** 30, reservedCpu: 0, reservedMemoryBytes: 0 } } }));
   await page.route('**/api/environment-requests*', route => route.fulfill({ json: [] }));
 }
 function deviceRequests(page: Page) {
   const seen: string[] = [];
   page.on('request', request => {
-    const match = /\/relay\/devices\/([^/]+)\/api\/(config\/workspace-settings|management\/[^?]+|harness-resources\/settings|environments|plugins)/.exec(new URL(request.url()).pathname);
+    // What only the settings window asks a device (the cards behind it poll management/supervisor for every device).
+    const match = /\/relay\/devices\/([^/]+)\/api\/(config\/workspace-settings|management\/(?:harnesses|connections|jobs|upstreams|templates)|harness-resources\/settings|environments|plugins)/.exec(new URL(request.url()).pathname);
     if (match) seen.push(`${request.method()} ${match[1]} ${match[2]}`);
   });
   return seen;

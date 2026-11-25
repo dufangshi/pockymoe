@@ -89,8 +89,10 @@
 .pd-empty { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 24px 0; color: var(--theme-fg-muted); }
 .pd-empty h2 { font-size: 13px; font-weight: 500; }
 .pd-empty p { font-size: 11px; }
+.pd-empty { flex-wrap: wrap; }
+.pd-empty .pd-add-device { min-height: 30px; margin-left: 8px; padding: 0 10px; color: var(--theme-accent-solid-fg); }
 .pd-skeleton { width: 50px; height: 12px; border-radius: var(--pd-radius); background: var(--theme-hover); }
-@media (hover: hover) { .pd-page .pd-icon-button:hover, .pd-select:hover, .pd-usage-device-row:hover, .pd-workspace-usage a:hover, .pd-device-menu :is(button,a):hover { background: var(--theme-hover); } }
+@media (hover: hover) { .pd-page .pd-icon-button:hover, .pd-select:hover, .pd-usage-device-row:hover, .pd-workspace-usage a:hover { background: var(--theme-hover); } }
 @media (max-width: 1000px) { .pd-page { padding-inline: 10px; } .pd-account-models { grid-template-columns: 145px minmax(0,1fr); gap: 10px; }  .pd-usage-table th:first-child { width: 29%; } .pd-usage-table th,.pd-usage-table td { padding-inline: 2px; } }
 @media (max-width: 640px) { .pd-page-header { gap: 5px; } .pd-page-header .pd-select { min-width: 0; max-width: 100px; } .pd-page-header .pd-segment button { padding-inline: 5px; } .pd-device-count { display: none; } .pd-account-models { grid-template-columns: 1fr; gap: 4px; } .pd-donut { width: 145px; margin: 0 auto; } .pd-usage-table { font-size: 10px; } .pd-usage-table th:first-child { width: 32%; } .pd-charts-grid { grid-template-columns: 1fr; gap: 6px; }  .pd-account-usage { margin-top: 2px; } .pd-usage-device-row { grid-template-columns: 12px 90px 1fr 70px; } .pd-workspace-usage a { grid-template-columns: 90px 1fr 70px; } }
 .pd-page .pd-sparkline { position: relative; flex: 1; max-width: 168px; min-width: 80px; height: 26px; }
@@ -102,8 +104,6 @@
 .pd-page .pd-chart-tip b { font-weight: 500; margin-left: auto; padding-left: 10px; white-space: nowrap; }
 .pd-page .pd-sparkline .pd-chart-tip { white-space: nowrap; top: 28px; right: auto; left: 0; max-width: none; padding: 5px 8px; }
 .pd-page .pd-chart-tip i, .pd-page .pd-legend i { flex: none; display: inline-block; width: 6px; height: 6px; border-radius: 2px; }
-.pd-device-menu { position: absolute; top: 38px; right: 10px; z-index: 30; width: 190px; padding: 4px; border: 1px solid var(--theme-border); border-radius: 8px; background: var(--theme-bg); box-shadow: var(--theme-shadow); }
-.pd-device-menu :is(button, a) { display: flex; align-items: center; justify-content: space-between; width: 100%; background: transparent; border: 0; border-radius: 4px; padding: 7px 8px; color: inherit; font-size: 12px; text-align: left; }
 .pd-page .pd-chart-wrap { position: relative; }
 .pd-page .pd-chart-wrap > svg { display: block; width: 100%; height: auto; min-height: 140px; overflow: visible; }
 .pd-page .pd-axis { stroke: var(--theme-border); stroke-width: 1px; }
@@ -115,11 +115,7 @@
 @keyframes pd-spin { to { transform: rotate(360deg); } }
 @keyframes pd-pulse { 50% { opacity: .5; } }
 
-.pd-device-menu { color: var(--theme-fg); background: var(--theme-panel); z-index: 100; position: fixed; width: 212px; box-shadow: var(--theme-shadow); font: inherit; }
-.pd-device-menu :is(button, a) { text-decoration: none; min-height: 32px; font: inherit; font-size: 12px; }
-.pd-device-menu :is(button, a):focus-visible { outline: 1px solid var(--theme-accent-solid); outline-offset: -1px; background: var(--theme-hover); }
-:root[data-theme-preset='terminal'] :is(.pd-device-card, .pd-kpis, .pd-chart-panel, .pd-segment, .pd-segment button, .pd-chart-tip, .pd-device-menu, .pd-device-menu button, .pd-device-menu a) { border-radius: 0; }
-.pd-device-menu { right: auto; bottom: auto; }
+:root[data-theme-preset='terminal'] :is(.pd-device-card, .pd-kpis, .pd-chart-panel, .pd-segment, .pd-segment button, .pd-chart-tip) { border-radius: 0; }
 .pd-page .pd-kpi small, .pd-page .pd-chart-caption, .pd-page .pd-legend { font-size: 11px; }
 
 .pd-page .pd-donut circle:focus-visible { outline: none; stroke-width: 28px; }
@@ -141,10 +137,6 @@
 .pd-link { padding: 0; border: 0; background: none; color: var(--theme-accent-solid); font: inherit; }
 .pd-web-page { height: 100%; min-height: 0; overflow: auto; background: var(--theme-bg); }
 
-.pd-device-menu > div { display: flex; align-items: center; }
-.pd-device-menu > div > button { flex: 1; }
-.pd-device-menu .pd-menu-separated { border-top: 1px solid var(--theme-border); margin-top: 8px; padding-top: 8px; }
-.pd-device-menu button[data-tone="danger"] { color: var(--status-danger-fg); }
 .pd-header-actions .pd-add-device { min-height: 30px; padding: 0 10px; color: var(--theme-accent-solid-fg); }
 
 .pd-workspaces-arrow { position: relative; margin-inline: 9px; }
@@ -199,4 +191,9 @@
 /* An isolated device: a small lock after its name, as on the phone's device rows. */
 .pd-page .pd-protect-badge { border: 0; display: inline-flex; flex: none; gap: 3px; align-items: center; min-height: 20px; font-size: 10px; font-weight: 600; color: var(--status-warning-fg); background: color-mix(in oklch, var(--status-warning-fg) 12%, transparent); border-radius: 4px; padding: 0 5px; white-space: nowrap; cursor: pointer; }
 @media (hover: hover) { .pd-page .pd-protect-badge:hover:not(:disabled) { background: color-mix(in oklch, var(--status-warning-fg) 20%, transparent); } }
-.pd-page .pd-isolated { display: inline-flex; flex: none; align-items: center; color: var(--theme-fg-muted); }
+/* The card's ⋯ key and "Isolated" mark are the shared ones, drawn at the card's scale. */
+.pd-page .pd-icon-button.managed-menu-trigger > svg { width: 14px; height: 14px; }
+.pd-card-heading .isolation-mark { min-height: 18px; padding: 0 5px; font-size: 10px; }
+/* A narrow card keeps the device's name readable: the lock alone, still named "Isolated" and tapped for what it means (§13). */
+.pd-card-heading { container: pd-card-heading / inline-size; }
+@container pd-card-heading (max-width: 300px) { .isolation-mark-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } }

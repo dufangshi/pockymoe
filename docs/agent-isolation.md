@@ -11,14 +11,15 @@ in the Web UI, or what people you share threads and devices with can do.
 
 | Where | Effect |
 | --- | --- |
-| **Devices** page, a device's **⋯ → Agent isolation…** | Agents on other devices cannot list, read or message this device's threads, list its workspaces, read its files or create threads on it. |
-| **Workspaces** page, a workspace's **⋯ → Isolate workspace** | Agents outside the workspace, on this device or another one, cannot list, read, message, wait for, close or create threads in it, set automations on them, run commands there or read its files. |
+| A device's **⋯ → Isolate…** (its card, its row on a phone, the map) | Agents on other devices cannot list, read or message this device's threads, list its workspaces, read its files or create threads on it. |
+| **Workspaces** page, a workspace's **⋯ → Isolate** (**Stop isolating** to undo) | Agents outside the workspace, on this device or another one, cannot list, read, message, wait for, close or create threads in it, set automations on them, run commands there or read its files. |
 
 Isolation is inbound only: threads of an isolated device or workspace can still
-reach unisolated ones. An isolated workspace shows an **Isolated** badge; a
-device row shows one once the Devices page has talked to the device. On a
-computer's Devices page a card shows a small lock after the device's name, read
-from the device while it is online and again after its settings close.
+reach unisolated ones. An isolated workspace or device shows the same mark, a lock
+with **Isolated**; tapping it says what isolation keeps out. A device row shows
+it once the Devices page has talked to the device; on a computer's Devices page a
+card reads it from the device while it is online and again after one of its
+windows closes (a narrow card keeps the lock alone).
 
 Isolation is stored on the device (KV key `agent:isolation`) and enforced there;
 the relay can neither see nor change it. Only the owner can change it:

@@ -101,13 +101,16 @@ const active = (job?: Job) =>
   ].includes(job?.state ?? job?.phase ?? '');
 function supervisorJobText(job: Job) {
   const operation = job.action === 'restart' ? translate("devices.restart_b134bd") : translate("devices.update");
+  // Mid-sentence the operation is lower case where the language has case.
+  const lower = operation.toLowerCase();
+  const reason = job.error ?? translate("devices.checkTheDeviceLogs");
   if (job.rollingBack && active(job))
     return translate("devices.failedRestoringThePreviousService", { value1: operation });
   switch (job.phase) {
     case 'scheduled':
-      return `${operation} requested…`;
+      return translate('devices.jobRequested', { value1: operation });
     case 'preparing':
-      return `Preparing ${operation.toLowerCase()}: saving active tasks…`;
+      return translate('devices.jobPreparing', { value1: lower });
     case 'installing':
       return translate("devices.installingSupervisorUpdate");
     case 'restarting':
@@ -115,15 +118,15 @@ function supervisorJobText(job: Job) {
     case 'verifying':
       return translate("devices.supervisorStartedVerifyingItsConnection");
     case 'completed':
-      return `${operation} completed`;
+      return translate('devices.jobCompleted', { value1: operation });
     case 'recovered':
       return translate("devices.supervisorRecovered");
     case 'failed':
-      return `Last ${operation.toLowerCase()} failed: ${job.error ?? translate("devices.checkTheDeviceLogs")}`;
+      return translate('devices.jobFailed', { value1: lower, value2: reason });
     case 'rolled-back':
-      return `Last ${operation.toLowerCase()} failed; previous service restored. ${job.error ?? ''}`;
+      return translate('devices.jobRolledBack', { value1: lower, value2: job.error ?? '' });
     case 'rollback-failed':
-      return `Last ${operation.toLowerCase()} and recovery failed: ${job.error ?? translate("devices.checkTheDeviceLogs")}`;
+      return translate('devices.jobRollbackFailed', { value1: lower, value2: reason });
     default:
       return job.error ?? job.phase;
   }

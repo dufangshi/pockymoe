@@ -127,7 +127,7 @@ const workspaceSteps: TourStep[] = [
     page: 'relayDevices',
     title: 'tour.devices.relayList.title',
     body: 'tour.devices.relayList.body',
-    targets: [{ selector: 'section[aria-labelledby="devices-heading"] article:has(.device-presence-dot), .pd-device-card' }],
+    targets: [{ selector: 'section[aria-labelledby="devices-heading"] article.device-row, .pd-device-card' }],
     optional: true,
     only: { mode: 'relay' },
   },

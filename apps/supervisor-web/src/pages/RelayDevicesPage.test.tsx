@@ -1,8 +1,9 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import type { RelayDeviceDto } from '@pockymoe/shared';
-import { ApiError, createRelayDevice, fetchAgentIsolation, fetchRelayPortal, request, setDeviceIsolation } from '../lib/api';
+import { setLocale } from '@pockymoe/thread-ui/i18n';
+import { ApiError, createRelayDevice, fetchAgentIsolation, fetchRelayPortal, request, setDeviceIsolation, setSelectedRelayDeviceId } from '../lib/api';
 import { requireUnlock } from '../lib/accountVault';
 import { accountPasswordProof } from '../lib/accountAuth';
 import { prepareDeviceEnrollment } from '../lib/deviceEnrollment';
@@ -10,6 +11,7 @@ import { securityRequest } from '../lib/relaySecurity';
 import { relaySupervisorCommand } from '../lib/deviceSetupCommands';
 import { useDeviceProtection } from '../lib/useDeviceProtection';
 import { RelayDevicesPage } from './RelayDevicesPage';
+import { DeviceManagement } from '../components/DeviceManagement';
 import { protectDevices, deviceProtectionProgress } from '../lib/remoteDeviceProtection';
 
 vi.mock('../lib/api', () => ({
@@ -33,6 +35,8 @@ vi.mock('../lib/relayOrigin', () => ({ relayOrigin: () => 'https://relay.test' }
 vi.mock('../lib/useDevicePresence', () => ({ useDevicePresence: (portal: unknown) => portal }));
 vi.mock('../lib/useDeviceProtection', () => ({ useDeviceProtection: vi.fn(() => 'not-protected'), protectionLabel: () => 'devices.notProtected' }));
 vi.mock('../components/DeviceBindingPanel', () => ({ DeviceBindingPanel: () => null }));
+// The Supervisor block of a device's settings has its own test (RuntimeManagement.test.tsx).
+vi.mock('../components/RuntimeManagement', () => ({ RuntimeManagement: ({ deviceId }: { deviceId: string }) => <p>Supervisor of {deviceId}</p> }));
 // The line under a new device's command has its own test (DeviceSetupProgress.test.tsx).
 vi.mock('../components/DeviceSetupProgress', () => ({ DeviceSetupProgress: () => null }));
 vi.mock('../lib/remoteDeviceProtection', () => ({
@@ -59,6 +63,7 @@ const writeText = vi.fn();
 const reauthenticationRequired = () => new ApiError(403, { code: 'reauthentication_required', message: 'Verify again' });
 
 beforeEach(() => {
+  setLocale('en', false);
   vi.resetAllMocks();
   vi.mocked(useDeviceProtection).mockReturnValue('not-protected');
   vi.mocked(deviceProtectionProgress).mockResolvedValue(undefined);
@@ -86,9 +91,17 @@ async function addDevice() {
   fireEvent.change(screen.getByLabelText('Device name'), { target: { value: 'New laptop' } });
   fireEvent.click(screen.getByRole('button', { name: 'Create token' }));
 }
-function copySetup(platform: 'unix' | 'windows' = 'unix') {
+function openMenu() {
   fireEvent.click(screen.getByRole('button', { name: `More actions for ${device.name}` }));
-  fireEvent.click(screen.getByRole('menuitem', { name: platform === 'unix' ? 'Copy setup for macOS/Linux' : 'Copy setup for Windows' }));
+  return screen.getByRole('menu', { name: `Actions for ${device.name}` });
+}
+function openSettings() {
+  fireEvent.click(within(openMenu()).getByRole('menuitem', { name: 'Settings…' }));
+  return screen.getByRole('dialog', { name: `Device settings · ${device.name}` });
+}
+// The setup command is a setting of the device, not an item of its menu.
+function copySetup(platform: 'unix' | 'windows' = 'unix') {
+  fireEvent.click(within(openSettings()).getByRole('button', { name: platform === 'unix' ? 'Copy setup for macOS/Linux' : 'Copy setup for Windows' }));
 }
 async function verify() {
   const dialog = await screen.findByRole('dialog', { name: 'Verify your identity' });
@@ -161,7 +174,7 @@ describe('device setup reauthentication', () => {
     if (action === 'add') await addDevice(); else copySetup();
     const dialog = await screen.findByRole('dialog', { name: 'Verify your identity' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Verify your identity' })).toBeNull());
     expect(mutation).toHaveBeenCalledTimes(1);
     expect(writeText).not.toHaveBeenCalled();
     expect(screen.queryByRole('alert')).toBeNull();
@@ -219,16 +232,17 @@ describe('agent isolation', () => {
     vi.mocked(setDeviceIsolation).mockResolvedValue({ device: true, workspaces: [] });
     await openPage();
     expect(fetchAgentIsolation).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: `More actions for ${device.name}` }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Agent isolation…' }));
-    const dialog = await screen.findByRole('dialog', { name: `Agent isolation · ${device.name}` });
+    fireEvent.click(within(openMenu()).getByRole('menuitem', { name: 'Isolate…' }));
+    const dialog = await screen.findByRole('dialog', { name: `Isolation · ${device.name}` });
     const toggle = await within(dialog).findByRole('checkbox', { name: 'Isolate this device' });
     expect(fetchAgentIsolation).toHaveBeenCalledWith(device.id);
     expect(toggle).not.toBeChecked();
     fireEvent.click(toggle);
     await waitFor(() => expect(setDeviceIsolation).toHaveBeenCalledExactlyOnceWith(true, device.id));
     await waitFor(() => expect(toggle).toBeChecked());
-    expect(screen.getByText('Isolated')).toBeTruthy();
+    // The row's mark: a lock with the word, one tap from what it means.
+    // (The open window hides the page behind it from assistive technology.)
+    expect(within(screen.getByRole('article', { name: device.name, hidden: true })).getByRole('button', { name: 'Isolated', hidden: true })).toBeTruthy();
   });
 
   it('asks to update a device whose runtime predates isolation', async () => {
@@ -236,10 +250,9 @@ describe('agent isolation', () => {
     vi.mocked(fetchRelayPortal).mockResolvedValue({ user: { id: 'test-user' } as never, devices: [online], sharedWithMe: [], sharedByMe: [] });
     vi.mocked(fetchAgentIsolation).mockRejectedValue(new ApiError(404, { code: 'not_found', message: 'Not found' }));
     await openPage();
-    fireEvent.click(screen.getByRole('button', { name: `More actions for ${device.name}` }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Agent isolation…' }));
+    fireEvent.click(within(openMenu()).getByRole('menuitem', { name: 'Isolate…' }));
     // The toggle stays, disabled; its mark says why.
-    const dialog = await screen.findByRole('dialog', { name: `Agent isolation · ${device.name}` });
+    const dialog = await screen.findByRole('dialog', { name: `Isolation · ${device.name}` });
     fireEvent.click(await within(dialog).findByRole('button', { name: 'Why it is unavailable' }));
     expect(screen.getByText('Update this device to change this.')).toBeTruthy();
     expect(within(dialog).getByRole('checkbox', { name: 'Isolate this device' })).toBeDisabled();
@@ -278,9 +291,8 @@ describe('device shared for control', () => {
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).toBeNull();
     // The isolation dialog names the opposite direction too.
-    fireEvent.click(screen.getByRole('button', { name: `More actions for ${device.name}` }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Agent isolation…' }));
-    const isolation = await screen.findByRole('dialog', { name: `Agent isolation · ${device.name}` });
+    fireEvent.click(within(openMenu()).getByRole('menuitem', { name: 'Isolate…' }));
+    const isolation = await screen.findByRole('dialog', { name: `Isolation · ${device.name}` });
     expect(isolation).toHaveTextContent(detail);
     expect(isolation).toHaveTextContent('with alice · Collaborator');
   });
@@ -289,5 +301,113 @@ describe('device shared for control', () => {
     vi.mocked(fetchRelayPortal).mockResolvedValue({ user: { id: 'test-user' } as never, devices: [{ ...device, ...flag }], sharedWithMe: [], sharedByMe: [] });
     await openPage();
     expect(screen.queryByRole('button', { name: 'Shared for control' })).toBeNull();
+  });
+});
+
+// Issue #114: the phone's device rows are managed like the device cards and like workspaces.
+describe('the device row is managed like a card and like a workspace', () => {
+  function Where() { const location = useLocation(); return <p data-testid="where">{location.pathname}</p>; }
+  async function openPageAt() {
+    const view = render(<MemoryRouter initialEntries={['/relay-devices']}><RelayDevicesPage /><Where /></MemoryRouter>);
+    await screen.findByText(device.name);
+    return view;
+  }
+  it('lists the shared actions in order, at the page root, by the key or a right click', async () => {
+    await openPage();
+    const labels = ['Open', 'New thread', 'Device details', 'Rename', 'Share…', 'Isolate…', 'Settings…', 'Remove…'];
+    const menu = openMenu();
+    expect(menu.parentElement).toBe(document.body);
+    expect(within(menu).getAllByRole('menuitem').map(item => item.textContent)).toEqual(labels);
+    expect(within(menu).getByRole('menuitem', { name: 'Remove…' })).toHaveAttribute('data-tone', 'danger');
+    // Offline: a new thread waits for the device, with the reason on a mark; the rest stays.
+    expect(within(menu).getAllByRole('menuitem').filter(item => (item as HTMLButtonElement).disabled).map(item => item.textContent)).toEqual(['New thread']);
+    expect(within(menu).getByRole('button', { name: 'Why it is unavailable' })).toBeVisible();
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(fireEvent.contextMenu(screen.getByRole('article', { name: device.name }), { clientX: 30, clientY: 40 })).toBe(false);
+    expect(within(screen.getByRole('menu', { name: `Actions for ${device.name}` })).getAllByRole('menuitem').map(item => item.textContent)).toEqual(labels);
+  });
+
+  it('opens an offline device instead of refusing, with the one connection mark on its row', async () => {
+    await openPageAt();
+    const row = screen.getByRole('article', { name: device.name });
+    expect(row.querySelector('.admin-device-state.is-offline')).not.toBeNull();
+    expect(row.querySelector('.device-presence-dot, .device-presence-label')).toBeNull();
+    expect(within(row).queryByRole('button', { name: 'Connect' })).toBeNull();
+    const open = within(row).getByRole('button', { name: 'Open' });
+    expect(open).toBeEnabled();
+    fireEvent.click(open);
+    expect(setSelectedRelayDeviceId).toHaveBeenCalledWith(device.id);
+    expect(screen.getByTestId('where')).toHaveTextContent(`/devices/${device.id}/workspaces`);
+  });
+
+  it('renames a device in place, where the phone had no entry', async () => {
+    await openPageAt();
+    fireEvent.click(within(openMenu()).getByRole('menuitem', { name: 'Rename' }));
+    const dialog = screen.getByRole('dialog', { name: 'Rename device' });
+    fireEvent.change(within(dialog).getByLabelText('Device name'), { target: { value: '  Kitchen Mac ' } });
+    vi.mocked(fetchRelayPortal).mockResolvedValue({ user: { id: 'test-user' } as never, devices: [{ ...device, name: 'Kitchen Mac' }], sharedWithMe: [], sharedByMe: [] });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(request).toHaveBeenCalledExactlyOnceWith(`relay/devices/${device.id}`, { method: 'PATCH', body: JSON.stringify({ name: 'Kitchen Mac' }) }));
+    expect(await screen.findByRole('article', { name: 'Kitchen Mac' })).toBeVisible();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    // The page did not change.
+    expect(screen.getByTestId('where')).toHaveTextContent('/relay-devices');
+  });
+
+  it('asks before dropping a changed name, and says so when the relay cannot rename', async () => {
+    vi.mocked(request).mockRejectedValue(new ApiError(405, { code: 'unsupported', message: 'No' } as never));
+    await openPage();
+    fireEvent.click(within(openMenu()).getByRole('menuitem', { name: 'Rename' }));
+    const dialog = screen.getByRole('dialog', { name: 'Rename device' });
+    fireEvent.change(within(dialog).getByLabelText('Device name'), { target: { value: 'Other' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    const discard = screen.getByRole('dialog', { name: 'Discard unsaved changes?' });
+    fireEvent.click(within(discard).getByRole('button', { name: 'Cancel' }));
+    expect(within(dialog).getByLabelText('Device name')).toHaveValue('Other');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('This Relay does not support renaming devices yet.');
+    // Nothing can be saved here, so closing asks nothing.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    // From now on the action is greyed, with the reason on its mark.
+    expect(within(openMenu()).getByRole('menuitem', { name: 'Rename' })).toBeDisabled();
+  });
+
+  it('keeps the token and the setup commands in the device\'s settings, with a replacement that looks dangerous', async () => {
+    await openPage();
+    expect(screen.getByRole('article', { name: device.name })).not.toHaveTextContent(device.tokenPreview);
+    const settings = openSettings();
+    expect(settings).toHaveTextContent(device.tokenPreview);
+    expect(settings).toHaveTextContent(`Supervisor of ${device.id}`);
+    const replace = within(settings).getByRole('button', { name: 'Replace device token' });
+    expect(replace).toHaveClass('device-danger-button');
+    expect(replace.querySelector('svg')).not.toBeNull();
+    fireEvent.click(replace);
+    // The confirmation opens in the window that asked, not behind it.
+    const confirm = within(settings).getByRole('dialog', { name: 'Replace device token?' });
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(within(settings).queryByRole('dialog')).toBeNull());
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('offers the first step in an empty list, as the workspace list does', async () => {
+    vi.mocked(fetchRelayPortal).mockResolvedValue({ user: { id: 'test-user' } as never, devices: [], sharedWithMe: [], sharedByMe: [] });
+    render(<MemoryRouter><RelayDevicesPage /></MemoryRouter>);
+    const empty = (await screen.findByText('No devices yet. Add a device to create its permanent supervisor token.')).parentElement!;
+    fireEvent.click(within(empty).getByRole('button', { name: 'Add device' }));
+    expect(screen.getByLabelText('Device name')).toBeVisible();
+  });
+
+  it.each(['rename', 'share', 'isolate', 'settings', 'remove'] as const)('opens the %s window alone, in place, for a card or the map', async (action) => {
+    const onClose = vi.fn();
+    render(<MemoryRouter initialEntries={['/desktop/devices']}><DeviceManagement embedded deviceId={device.id} action={action} onClose={onClose} /><Where /></MemoryRouter>);
+    const name = { rename: 'Rename device', share: `Share ${device.name}`, isolate: `Isolation · ${device.name}`, settings: `Device settings · ${device.name}`, remove: 'Remove device' }[action];
+    const dialog = await screen.findByRole('dialog', { name });
+    // Only the window: the page keeps its own list, and its address.
+    expect(screen.queryByRole('article', { name: device.name })).toBeNull();
+    expect(screen.getByTestId('where')).toHaveTextContent('/desktop/devices');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
   });
 });
