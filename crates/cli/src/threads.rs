@@ -146,7 +146,12 @@ pub enum ThreadCommand {
         device: Option<String>,
     },
     /// Delete your own finished or unused direct child. Running/queued children and children with descendants are refused.
-    Delete { id: String },
+    Delete {
+        id: String,
+        /// Delete even though its processes serve a web preview; the service ends with it.
+        #[arg(long)]
+        stop_preview_servers: bool,
+    },
     Backends {
         #[arg(long)]
         device: Option<String>,
@@ -264,6 +269,10 @@ More: pockymoe guide delegate"#)]
         /// Also `git worktree remove` its worktree (fails if it has uncommitted changes).
         #[arg(long)]
         remove_worktree: bool,
+        /// Close even though the delegate's processes serve a web preview. Closing
+        /// ends them, so without this flag such a delegate is refused.
+        #[arg(long)]
+        stop_preview_servers: bool,
     },
     /// Stop what a delegate is doing now. For when it is on the wrong path and
     /// steering is not enough; its history stays, and it runs again on its next
@@ -742,7 +751,7 @@ impl Client {
                 self.target(&id, device.as_deref()).await?.apply(&mut input);
                 self.request(input).await
             }
-            ThreadCommand::Delete { id } => self.request(json!({"operation":"delete","threadId":self.id(&id).await?,"fromThreadId":self.from})).await,
+            ThreadCommand::Delete { id, stop_preview_servers } => self.request(json!({"operation":"delete","threadId":self.id(&id).await?,"stopPreviewServers":stop_preview_servers,"fromThreadId":self.from})).await,
             ThreadCommand::Backends { device } => {
                 let mut input = json!({"operation":"backends"});
                 if let Some(device) = device { input["deviceId"] = json!(device); }
@@ -770,11 +779,11 @@ impl Client {
                 let root = match root { Some(r) => Some(self.id(&r).await?), None => None };
                 self.request(json!({"operation":"tree","rootThreadId":root,"all":all,"fromThreadId":self.from})).await
             }
-            ThreadCommand::Close { ids, remove_worktree } => {
+            ThreadCommand::Close { ids, remove_worktree, stop_preview_servers } => {
                 let (mut closed, mut failed) = (Vec::new(), Vec::new());
                 for id in &ids {
                     let result = match self.id(id).await {
-                        Ok(resolved) => self.request(json!({"operation":"close","threadId":resolved,"removeWorktree":remove_worktree,"fromThreadId":self.from})).await,
+                        Ok(resolved) => self.request(json!({"operation":"close","threadId":resolved,"removeWorktree":remove_worktree,"stopPreviewServers":stop_preview_servers,"fromThreadId":self.from})).await,
                         Err(e) => Err(e),
                     };
                     match result { Ok(v) => closed.push(v), Err(e) => failed.push(json!({"thread":id,"error":e.to_string()})) }
@@ -843,7 +852,15 @@ impl Client {
             }
             PreviewCommand::Stop { target } => json!({"operation":"previewStop","target":target}),
         };
-        self.request(input).await.context("Preview command requires a Supervisor and Relay with CLI preview support; update older installations")
+        // Only a Supervisor without the operation needs updating; every other
+        // refusal already says what is wrong.
+        self.request(input).await.map_err(|error| {
+            if format!("{error:#}").contains("unknown CLI operation") {
+                error.context("This Supervisor has no CLI preview support; update it")
+            } else {
+                error
+            }
+        })
     }
     pub async fn device(&self, command: DeviceCommand) -> Result<Value> {
         let input = match command {

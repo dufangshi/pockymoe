@@ -90,6 +90,11 @@ impl ProcessSample {
         self.entries.get(&pid).and_then(|entry| entry.bytes)
     }
 
+    /// A name safe to show: the executable and one distinguishing argument.
+    pub fn name(&self, pid: u32) -> Option<String> {
+        self.entries.get(&pid).map(|entry| name_of(&entry.argv))
+    }
+
     pub fn key(&self, pid: u32) -> Option<ProcessKey> {
         self.entries.get(&pid).map(|entry| (entry.pid, entry.start))
     }

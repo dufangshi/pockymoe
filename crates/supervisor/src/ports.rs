@@ -488,6 +488,54 @@ fn remove_mapping_handles(state: &Supervisor, id: &str) -> Result<Vec<tokio::tas
     Ok(pending)
 }
 
+/// Enabled host previews whose web service runs in `thread`'s process tree, and
+/// so ends when that thread is closed, deleted or released. The mapping itself
+/// may belong to another thread: creating a port again moves the mapping, not
+/// the process that serves it.
+pub(crate) async fn served_by_thread(state: &Supervisor, thread: &str) -> Vec<Value> {
+    let mappings: Vec<Mapping> = snapshot(state)
+        .into_iter()
+        .filter(|mapping| mapping.environment_id.is_none())
+        .collect();
+    let ports: Vec<u16> = mappings.iter().map(|mapping| mapping.port).collect();
+    state
+        .thread_port_listeners(thread, &ports)
+        .await
+        .into_iter()
+        .filter_map(|listener| {
+            let mapping = mappings.iter().find(|m| m.port == listener.port)?;
+            Some(
+                json!({"port":listener.port,"mappingId":mapping.id,"label":mapping.label,
+                "mappingThreadId":mapping.thread_id,"process":listener.name,"pid":listener.pid}),
+            )
+        })
+        .collect()
+}
+
+/// The refusal an agent reads when ending `thread` would stop preview services.
+pub(crate) fn serving_previews_refusal(action: &str, served: &[Value]) -> String {
+    let services = served
+        .iter()
+        .map(|service| {
+            format!(
+                "port {} ({}, pid {})",
+                service["port"],
+                service["process"]
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("process"),
+                service["pid"]
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "conflict: this thread's processes serve a web preview on {services}; to {action} it ends them and the preview link stops working. \
+         Start the service again from a thread that stays open (it must not be a child process of this thread), \
+         or repeat with --stop-preview-servers to end it. `pockymoe preview check PORT` shows whether a preview's service is up."
+    )
+}
+
 /// Binding completion must not leave an already connected host preview usable
 /// until the periodic lease watcher runs. Drain every old stream before ACK.
 pub(crate) async fn revoke_thread_mappings(state: &Supervisor, thread: &str) -> Result<()> {
@@ -508,18 +556,71 @@ pub(crate) async fn revoke_thread_mappings(state: &Supervisor, thread: &str) -> 
     Ok(())
 }
 
-pub(crate) fn open(state: Arc<Supervisor>, message: &Value) {
-    if !state.host_capabilities.previews {
-        return;
+/// Why this device will not serve a `preview.open`. The Relay turns it into the
+/// page or status the browser sees, so a stopped local service is not mistaken
+/// for a broken Relay ([port previews](../../../docs/port-previews.md)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// Nothing accepts connections on the mapped loopback port.
+    ServiceNotRunning,
+    /// A bound device needs a live lease for this mapping.
+    LeaseRequired,
+    /// The mapping was stopped, or belongs to a removed owner browser.
+    MappingStopped,
+    /// The mapping's environment changed or is unavailable.
+    EnvironmentUnavailable,
+    /// The mapping already serves `PREVIEW_STREAMS_PER_MAPPING` connections.
+    Busy,
+    /// This host mode has previews turned off.
+    PreviewsDisabled,
+}
+impl Refusal {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::ServiceNotRunning => "serviceNotRunning",
+            Self::LeaseRequired => "leaseRequired",
+            Self::MappingStopped => "mappingStopped",
+            Self::EnvironmentUnavailable => "environmentUnavailable",
+            Self::Busy => "busy",
+            Self::PreviewsDisabled => "previewsDisabled",
+        }
     }
+}
+
+/// Tell the Relay at once, so the browser does not wait out the data-channel
+/// deadline. A Relay that predates `preview.refused` ignores the frame.
+fn refuse(
+    outgoing: &crate::bounded_channel::Sender<Value>,
+    ticket: &str,
+    mapping: &str,
+    port: Option<u16>,
+    refusal: Refusal,
+) {
+    // One line per mapping and reason a minute: a page retries many requests.
+    static LOGGED: std::sync::OnceLock<Mutex<HashMap<(String, &'static str), std::time::Instant>>> =
+        std::sync::OnceLock::new();
+    let mut logged = LOGGED.get_or_init(Default::default).lock().unwrap();
+    let now = std::time::Instant::now();
+    logged.retain(|_, at| now.duration_since(*at) < std::time::Duration::from_secs(60));
+    if logged.len() < 256
+        && logged
+            .insert((mapping.to_owned(), refusal.code()), now)
+            .is_none()
+    {
+        tracing::info!(mapping_id = %mapping, port = ?port, reason = refusal.code(), "port preview connection refused");
+    }
+    drop(logged);
+    let _ = outgoing.send(
+        json!({"type":"preview.refused","ticket":ticket,"mappingId":mapping,"reason":refusal.code()}),
+    );
+}
+
+pub(crate) fn open(
+    state: Arc<Supervisor>,
+    message: &Value,
+    outgoing: &crate::bounded_channel::Sender<Value>,
+) {
     let Some(id) = message["mappingId"].as_str() else {
-        return;
-    };
-    let lease = message["leaseId"].as_str().map(str::to_owned);
-    if !lease_live(&state, id, lease.as_deref()) {
-        return;
-    }
-    let Some(mapping) = snapshot(&state).into_iter().find(|m| m.id == id) else {
         return;
     };
     let Some(ticket) = message["ticket"]
@@ -529,32 +630,75 @@ pub(crate) fn open(state: Arc<Supervisor>, message: &Value) {
     else {
         return;
     };
+    if !state.host_capabilities.previews {
+        return refuse(outgoing, &ticket, id, None, Refusal::PreviewsDisabled);
+    }
+    let lease = message["leaseId"].as_str().map(str::to_owned);
+    // The mapping first: a stopped mapping has no lease left either, and
+    // "stopped" is the answer that tells the user what to do.
+    let Some(mapping) = snapshot(&state).into_iter().find(|m| m.id == id) else {
+        return refuse(outgoing, &ticket, id, None, Refusal::MappingStopped);
+    };
+    if !lease_live(&state, id, lease.as_deref()) {
+        return refuse(
+            outgoing,
+            &ticket,
+            id,
+            Some(mapping.port),
+            Refusal::LeaseRequired,
+        );
+    }
     let id = mapping.id.clone();
     let mut handles = active().lock().unwrap();
     if !snapshot(&state)
         .iter()
         .any(|m| m.id == id && m.port == mapping.port)
     {
-        return;
+        return refuse(
+            outgoing,
+            &ticket,
+            &id,
+            Some(mapping.port),
+            Refusal::MappingStopped,
+        );
     }
     if !lease_live(&state, &id, lease.as_deref()) {
-        return;
+        return refuse(
+            outgoing,
+            &ticket,
+            &id,
+            Some(mapping.port),
+            Refusal::LeaseRequired,
+        );
     }
     let handles = handles
-        .entry((state.config.database_url.clone(), id))
+        .entry((state.config.database_url.clone(), id.clone()))
         .or_default();
     handles.retain(|h| !h.handle.is_finished());
     if handles.len() >= PREVIEW_STREAMS_PER_MAPPING {
-        return;
+        return refuse(outgoing, &ticket, &id, Some(mapping.port), Refusal::Busy);
     }
     let active_lease = lease.clone();
+    let outgoing = outgoing.clone();
     let task = tokio::spawn(async move {
         if !lease_live(&state, &mapping.id, lease.as_deref()) {
-            return;
+            return refuse(
+                &outgoing,
+                &ticket,
+                &mapping.id,
+                Some(mapping.port),
+                Refusal::LeaseRequired,
+            );
         }
         tokio::select! {
             result = connect_mapping(&state, &mapping, &ticket) => {
-                if let Err(error) = result { tracing::debug!(%error, port=mapping.port, "port preview stream ended"); }
+                match result {
+                    Ok(()) => {}
+                    Err(error) => match error.downcast_ref::<Refusal>() {
+                        Some(refusal) => refuse(&outgoing, &ticket, &mapping.id, Some(mapping.port), *refusal),
+                        None => tracing::debug!(%error, port=mapping.port, "port preview stream ended"),
+                    },
+                }
             }
             _ = watch_mapping(&state, &mapping, lease.as_deref()) => {}
         }
@@ -564,6 +708,12 @@ pub(crate) fn open(state: Arc<Supervisor>, message: &Value) {
         lease_id: active_lease,
     });
 }
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+impl std::error::Error for Refusal {}
 
 async fn watch_mapping(state: &Supervisor, mapping: &Mapping, lease: Option<&str>) {
     loop {
@@ -633,7 +783,10 @@ async fn connect(state: &Supervisor, port: u16, ticket: &str) -> Result<()> {
     connect_target(state, port, ticket, None).await
 }
 async fn connect_mapping(state: &Supervisor, mapping: &Mapping, ticket: &str) -> Result<()> {
-    let context = mapping_execution_context(state, mapping)?;
+    let context = mapping_execution_context(state, mapping).map_err(|error| {
+        tracing::debug!(%error, port = mapping.port, "port preview environment unavailable");
+        Refusal::EnvironmentUnavailable
+    })?;
     connect_target(state, mapping.port, ticket, context).await
 }
 
@@ -684,8 +837,15 @@ async fn connect_target(
     ticket: &str,
     context: Option<pockymoe_runtime::execution::ExecutionContext>,
 ) -> Result<()> {
+    // Before the data channel: a refusal names the reason for the Relay, and a
+    // connection that cannot be served never occupies a Relay stream.
     let upstream: Box<dyn PreviewIo> = if let Some(context) = context {
-        Box::new(context.open_tcp(port).await?)
+        Box::new(
+            context
+                .open_tcp(port)
+                .await
+                .map_err(|_| Refusal::ServiceNotRunning)?,
+        )
     } else {
         let socket = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             match tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await {
@@ -695,7 +855,9 @@ async fn connect_target(
                 }
             }
         })
-        .await??;
+        .await
+        .map_err(|_| Refusal::ServiceNotRunning)?
+        .map_err(|_| Refusal::ServiceNotRunning)?;
         socket.set_nodelay(true)?;
         Box::new(socket)
     };
@@ -1033,6 +1195,98 @@ mod owner_mapping_tests {
         .unwrap()
         .unwrap();
         assert_eq!(count, 0);
+    }
+
+    /// The existing cases only watch the local service; the frame sink is unused.
+    fn open(state: Arc<Supervisor>, message: &Value) {
+        let (outgoing, _unread) = crate::bounded_channel::channel();
+        super::open(state, message, &outgoing);
+    }
+
+    #[tokio::test]
+    async fn a_refused_open_tells_the_relay_why_instead_of_staying_silent() {
+        let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+        let (outgoing, mut frames) = crate::bounded_channel::channel();
+        let refused = |frames: &mut crate::bounded_channel::Receiver<Value>| {
+            let frame = frames.try_recv();
+            frame.map(|frame| {
+                assert_eq!(frame["type"], "preview.refused");
+                (
+                    frame["ticket"].as_str().unwrap().to_owned(),
+                    frame["reason"].as_str().unwrap().to_owned(),
+                )
+            })
+        };
+        // A mapping the device does not have (stopped, or never created).
+        let ticket = Uuid::new_v4().to_string();
+        super::open(
+            state.clone(),
+            &json!({"mappingId":"f".repeat(32),"ticket":ticket}),
+            &outgoing,
+        );
+        assert_eq!(
+            refused(&mut frames),
+            Some((ticket, "mappingStopped".into()))
+        );
+        // The incident: the mapping is fine, the service behind it is gone.
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let mapping = create_local_mapping(&state, port, "docs", None).unwrap();
+        let ticket = Uuid::new_v4().to_string();
+        let started = std::time::Instant::now();
+        super::open(
+            state.clone(),
+            &json!({"mappingId":mapping.id,"ticket":ticket}),
+            &outgoing,
+        );
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(3), frames.recv())
+            .await
+            .expect("a dead local port is reported, not left to the relay's deadline")
+            .unwrap();
+        assert_eq!(frame["type"], "preview.refused");
+        assert_eq!(frame["ticket"], ticket);
+        assert_eq!(frame["mappingId"], mapping.id);
+        assert_eq!(frame["reason"], "serviceNotRunning");
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        // A bound device without a lease for this mapping.
+        live_owner(&state);
+        let ticket = Uuid::new_v4().to_string();
+        super::open(
+            state.clone(),
+            &json!({"mappingId":mapping.id,"ticket":ticket}),
+            &outgoing,
+        );
+        assert_eq!(refused(&mut frames), Some((ticket, "leaseRequired".into())));
+        // A frame without a usable ticket cannot be answered at all.
+        super::open(
+            state.clone(),
+            &json!({"mappingId":mapping.id,"ticket":"x"}),
+            &outgoing,
+        );
+        assert_eq!(refused(&mut frames), None);
+    }
+
+    #[test]
+    fn the_close_refusal_names_each_service_and_the_way_forward() {
+        let message = serving_previews_refusal(
+            "close",
+            &[
+                json!({"port":4310,"process":"node mint","pid":812}),
+                json!({"port":5173,"process":"","pid":900}),
+            ],
+        );
+        assert!(message.starts_with("conflict: "), "{message}");
+        assert!(
+            message.contains("port 4310 (node mint, pid 812)"),
+            "{message}"
+        );
+        assert!(
+            message.contains("port 5173 (process, pid 900)"),
+            "{message}"
+        );
+        assert!(message.contains("--stop-preview-servers"), "{message}");
     }
 
     #[tokio::test]

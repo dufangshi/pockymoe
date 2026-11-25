@@ -110,7 +110,11 @@ release itself.
 Deleting a top-level thread stops its running turn and releases it (`deleted`);
 closing an agent thread releases it (`closed`); deleting a child thread
 releases it as before. Delete and close end only that thread's session when it
-shares a process. A load that no longer belongs to any thread is released once
+shares a process. The CLI's `thread close` and `thread delete` first refuse a
+thread whose process tree serves an enabled web preview, unless told to end it
+([port previews](port-previews.md#the-service-behind-a-mapping)); the Web's
+delete and the release route are the owner's own actions and do not ask.
+A load that no longer belongs to any thread is released once
 settled and a minute old. Restarting a harness from Settings and DSH Restart
 report `explicit`. `POST /api/threads/{id}/disconnect` keeps its old behavior and
 does not release anything.

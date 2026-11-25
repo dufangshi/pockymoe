@@ -133,6 +133,10 @@ a handful of concurrent delegates (3-5) over a large burst.
   it, and not while it is running or has queued work. The command exits nonzero if any
   target fails; `failed` lists which and why. After a name is reused, refer to the old,
   closed thread by its UUID.
+- Closing ends every process the delegate started, including a dev server. If one of
+  them serves a web preview (`pockymoe preview`), close is refused and names the port:
+  start that service from your own thread first, or pass `--stop-preview-servers` when
+  the preview is no longer needed. `thread delete` behaves the same.
 - `--role ROLE` starts from `.pockymoe/agents/ROLE.md` (workspace, then
   `~/.pockymoe/agents/`; `.remote-codex/agents/` still works). Front matter `model`, `effort`, `agent` become defaults
   you can still override; the body is prepended to the delegate's first prompt.

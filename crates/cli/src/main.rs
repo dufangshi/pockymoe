@@ -314,6 +314,41 @@ mod tests {
     }
 
     #[test]
+    fn close_and_delete_end_preview_servers_only_when_told_to() {
+        for (command, extra) in [("close", vec![]), ("delete", vec![])].into_iter().chain([
+            ("close", vec!["--stop-preview-servers"]),
+            ("delete", vec!["--stop-preview-servers"]),
+        ]) {
+            let mut args = vec![
+                "pockymoe",
+                "thread",
+                command,
+                "00000000-0000-0000-0000-000000000001",
+            ];
+            args.extend(&extra);
+            let cli = Cli::try_parse_from(args).unwrap();
+            let asked = match cli.command {
+                Commands::Thread {
+                    command:
+                        threads::ThreadCommand::Close {
+                            stop_preview_servers,
+                            ..
+                        },
+                } => stop_preview_servers,
+                Commands::Thread {
+                    command:
+                        threads::ThreadCommand::Delete {
+                            stop_preview_servers,
+                            ..
+                        },
+                } => stop_preview_servers,
+                _ => panic!("expected close or delete"),
+            };
+            assert_eq!(asked, !extra.is_empty(), "{command} {extra:?}");
+        }
+    }
+
+    #[test]
     fn child_delete_is_a_single_target_command_without_force_or_recursive_flags() {
         let cli = Cli::try_parse_from([
             "pockymoe",
