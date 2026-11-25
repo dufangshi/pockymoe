@@ -113,6 +113,19 @@ async fn action(
     let action: EnvironmentAction = action
         .parse()
         .map_err(|_| map_err(anyhow::anyhow!("invalid environment action")))?;
+    // A lifecycle action marks the record (`stopping`, a new generation) before
+    // it talks to Docker and Dokploy. Axum drops a handler when its client goes
+    // away (a closed tab, a navigation), which would leave that mark behind with
+    // no action offered for it; the action therefore finishes on its own task.
+    tokio::spawn(run_action(state, id, action))
+        .await
+        .map_err(|_| map_err(anyhow::anyhow!("environment action was interrupted")))?
+}
+async fn run_action(
+    state: Arc<Supervisor>,
+    id: String,
+    action: EnvironmentAction,
+) -> Result<Json<EnvironmentDto>, ApiErr> {
     let env = state.environments.get(&id).map_err(map_err)?;
     let mut release = Vec::new();
     if action != EnvironmentAction::Start {
@@ -153,12 +166,45 @@ async fn action(
 async fn thread(
     State(state): State<Arc<Supervisor>>,
     Path(id): Path<String>,
+    principal: Option<axum::Extension<crate::owner_trust::BrowserPrincipal>>,
+    scope: Option<axum::Extension<crate::treer::Scope>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
 ) -> Result<Json<Value>, ApiErr> {
-    state.get_thread(&id).map_err(map_err)?;
-    state.execution_context(&id).map_err(map_err)?;
-    Ok(Json(
-        json!({"environment":state.environments.for_thread(&id).map_err(map_err)?,"supportedHarnesses":["codex","claude","custom"],"limitations":["API broker is the default. Optional Codex/Claude native Linux file login, gh and exact credential mounts require an agent request and separate owner approval. OS keyring/Keychain and SSH forwarding are unsupported","Disk quota for original bind storage is unavailable","Environment capability expires after one hour; reconnect the harness to renew"]}),
-    ))
+    // The same owner proof the write routes require (`execution_scope`), so the
+    // panel can say up front that this browser can only look.
+    let owner = crate::environment_requests::require_owner(
+        &state,
+        principal.as_ref().map(|p| &p.0),
+        scope.is_some(),
+        &headers,
+        &uri,
+    )
+    .is_ok();
+    thread_body(&state, &id, owner)
+}
+/// A failed approved migration fences the thread until its owner retries or
+/// restores Host; reading where it runs must still work so the panel can offer
+/// those actions. Everything that executes stays refused by the fence.
+fn thread_body(state: &Supervisor, id: &str, owner: bool) -> Result<Json<Value>, ApiErr> {
+    state.get_thread(id).map_err(map_err)?;
+    let fenced = state.environments.require_fenced_binding(id).is_err();
+    if !fenced {
+        state.execution_context(id).map_err(map_err)?;
+    }
+    Ok(Json(json!({
+        "environment": state.environments.for_thread(id).map_err(map_err)?,
+        "supportedHarnesses": ["codex", "claude", "custom"],
+        "limitations": [
+            "API broker is the default. Optional Codex/Claude native Linux file login, gh and exact credential mounts require an agent request and separate owner approval. OS keyring/Keychain and SSH forwarding are unsupported",
+            "Disk quota for original bind storage is unavailable",
+            "Environment capability expires after one hour; reconnect the harness to renew"
+        ],
+        // Stable keys for the same three facts, so the Web can say them in the reader's language.
+        "limitationKeys": ["credentialsByRequest", "noDiskQuota", "capabilityHourly"],
+        "ownerAuthorized": owner,
+        "fenced": fenced,
+    })))
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -272,7 +318,8 @@ async fn bind(
             ensure_gateway(state.clone(), &env).map_err(map_err)?;
         }
     }
-    self::thread(State(state), Path(id)).await
+    // Reaching this handler already passed the owner check in `execution_scope`.
+    thread_body(&state, &id, true)
 }
 
 #[cfg(unix)]
@@ -811,6 +858,12 @@ pub(crate) async fn execution_scope(
         },
         None => None,
     };
+    // Reading the thread record itself executes nothing. A thread fenced by a
+    // failed migration must still open, or its owner cannot reach Retry or
+    // Restore Host in the isolation panel; every other route stays refused.
+    let record_read = request.method() == axum::http::Method::GET
+        && segments.len() == 4
+        && segments.get(2) == Some(&"threads");
     let selected = (|| -> Result<Option<ExecutionContext>> {
         if binding_route {
             return Ok(None);
@@ -855,6 +908,17 @@ pub(crate) async fn execution_scope(
         }
         Ok(None)
     })();
+    let selected = match selected {
+        Err(error)
+            if record_read
+                && error
+                    .to_string()
+                    .starts_with("environment_migration_pending") =>
+        {
+            Ok(None)
+        }
+        other => other,
+    };
     let response = match selected {
         Ok(context) => {
             let host = if context.is_none() {
@@ -1007,6 +1071,106 @@ mod tests {
         assert!(gate.clone().try_write_owned().is_err());
         drop(response);
         assert!(gate.try_write_owned().is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_thread_fenced_by_a_failed_migration_still_opens_for_owner_recovery() {
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let fixture = crate::isolation_tests::setup().await;
+        let id = crate::isolation_tests::thread(&fixture.state, &fixture.open).await;
+        let workspace = fixture.state.get_workspace(&fixture.open).unwrap();
+        let root = std::path::PathBuf::from(&workspace.abs_path);
+        let connection = fixture
+            .state
+            .environments
+            .save_connection(
+                "new",
+                &UpdateEnvironmentConnectionRequest {
+                    name: "Fixture".into(),
+                    base_url: "http://127.0.0.1:1".into(),
+                    api_key: Some(uuid::Uuid::new_v4().to_string()),
+                    dokploy_environment_id: "fixture".into(),
+                    image: "fixture:1".into(),
+                    storage_node: "local".into(),
+                    docker_host: None,
+                    allowed_roots: vec![root.parent().unwrap().to_string_lossy().into_owned()],
+                    allowed_egress_hosts: vec![],
+                    cpu_limit: 1.0,
+                    memory_limit_bytes: 536870912,
+                    pids_limit: 128,
+                    nofile_limit: 1024,
+                },
+            )
+            .await
+            .unwrap();
+        let manager = &fixture.state.environments;
+        let request = manager
+            .propose(
+                &ProposeEnvironmentRequest {
+                    connection_id: connection.id,
+                    name: None,
+                    limits: None,
+                    egress_hosts: vec![],
+                    authentication: Default::default(),
+                    credential_mounts: vec![],
+                    handoff: "fixture".into(),
+                    client_request_id: Some("fenced".into()),
+                },
+                pockymoe_runtime::environment::EnvironmentRequestContext {
+                    thread_id: id.clone(),
+                    workspace_id: fixture.open.clone(),
+                    workspace_path: root.clone(),
+                    working_path: root.clone(),
+                    harness: "codex".into(),
+                    model: None,
+                    reasoning_effort: None,
+                },
+            )
+            .unwrap();
+        manager
+            .decide_request(&request.id, &request.digest, true)
+            .unwrap();
+        manager.begin_request(&request.id, "fixture").unwrap();
+        manager
+            .fail_request(&request.id, "fixture failure")
+            .unwrap();
+        assert!(manager.require_fenced_binding(&id).is_err());
+
+        let get = |uri: String| {
+            let router = crate::http::router(fixture.state.clone());
+            async move {
+                let response = router
+                    .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let body = response.into_body().collect().await.unwrap().to_bytes();
+                (
+                    status,
+                    serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+                )
+            }
+        };
+        // The thread record and where it runs stay readable for the owner's recovery.
+        let (status, _) = get(format!("/api/threads/{id}")).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, body) = get(format!("/api/threads/{id}/environment")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["fenced"], true);
+        assert_eq!(body["environment"], Value::Null);
+        // Unsigned loopback is not owner proof: the panel is told before it offers changes.
+        assert_eq!(body["ownerAuthorized"], false);
+        assert_eq!(body["limitationKeys"].as_array().unwrap().len(), 3);
+        // Anything that executes or reads the working copy stays fenced.
+        let (status, _) = get(format!(
+            "/api/workspaces/{}/files/tree?threadId={id}&path=.",
+            fixture.open
+        ))
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, _) = get(format!("/api/threads/{id}/git/status")).await;
+        assert_eq!(status, StatusCode::CONFLICT);
     }
 
     #[tokio::test]

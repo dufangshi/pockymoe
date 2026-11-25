@@ -1,7 +1,7 @@
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 const messages = {
   requests: ['隔离申请', 'Isolation requests'],
-  empty: ['暂无申请。智能体用 pockymoe environment request 提交后会出现在这里。', 'No requests. Agents submit one with pockymoe environment request.'],
+  empty: ['暂无。智能体用 pockymoe environment request 申请。', 'None. Agents ask with pockymoe environment request.'],
   pending: ['待你批准', 'Awaiting your approval'],
   waitingIdle: ['已批准，等待当前轮次退出', 'Approved, waiting for the current turn to exit'],
   provisioning: ['正在创建并迁移', 'Provisioning and migrating'],
@@ -74,6 +74,7 @@ const messages = {
   technical: ['技术信息', 'Technical details'],
   review: ['审阅', 'Review'],
   open: ['查看', 'View'],
+  resolve: ['处理', 'Resolve'],
   purposeGeneric: ['通用', 'Generic'],
   fencedHint: ['此线程已暂停执行，不会回退到此设备。可重试，或销毁计算后恢复宿主执行。', 'This thread is paused and does not fall back to this device. Retry, or destroy the computation and restore Host execution.'],
   waitingHint: ['当前轮次与已准入操作结束后自动迁移。', 'Migrates automatically once the current turn and admitted operations end.'],
@@ -81,7 +82,7 @@ const messages = {
   readyHint: ['此线程正在隔离环境中运行。恢复宿主会先销毁这次迁移的计算。', 'This thread runs in the isolated environment. Restoring Host first destroys this migration’s computation.'],
   failedReason: ['失败原因', 'Why it failed'],
   submitted: ['提交于 {time}', 'Submitted {time}'],
-  fencedSwitch: ['已批准的隔离申请正在管理此线程的运行位置。请在申请中重试或恢复宿主执行。', 'An approved isolation request manages where this thread runs. Retry or restore Host execution from the request.'],
+  fencedSwitch: ['已批准的申请决定运行位置，请在申请中重试或恢复宿主执行。', 'An approved request decides where this runs. Retry or restore Host execution from the request.'],
   showAll: ['展开全文', 'Show all'],
   showLess: ['收起', 'Show less'],
   otherHarness: ['（未使用）', '(not used)'],

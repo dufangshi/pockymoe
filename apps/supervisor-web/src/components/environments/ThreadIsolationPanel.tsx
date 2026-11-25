@@ -1,20 +1,20 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Box, ChevronRight, Monitor, Plus, RefreshCw } from 'lucide-react';
-import { ErrorMark, Select, StatusMark, getDirtyWorkspaceDocumentCount } from '@pockymoe/thread-ui';
-import { formatNumber, useI18n } from '@pockymoe/thread-ui/i18n';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { ArrowLeft, Box, Check, ChevronRight, Info, Monitor, Plus, RefreshCw, Settings } from 'lucide-react';
+import { ErrorMark, MiddleName, PathChip, Select, StatusMark, getDirtyWorkspaceDocumentCount, useAppShellNav } from '@pockymoe/thread-ui';
+import { formatNumber, getLocale, useI18n } from '@pockymoe/thread-ui/i18n';
 import type { ThreadDto } from '@pockymoe/shared';
 import {
-  bindThreadEnvironment, createEnvironment, fetchEnvironmentRequests, fetchThreadEnvironment, notifyEnvironmentChanged,
-  type EnvironmentDto, type EnvironmentRequestDto, type ThreadEnvironmentDto,
+  actOnEnvironment, bindThreadEnvironment, createEnvironment, fetchEnvironmentRequests, fetchThreadEnvironment, notifyEnvironmentChanged,
+  type EnvironmentConnectionDto, type EnvironmentDto, type EnvironmentRequestDto, type ThreadEnvironmentDto,
 } from '../../lib/environmentApi';
 import { environmentText as t, type EnvironmentMessage } from '../../lib/environmentI18n';
 import { environmentRequestText as rt } from '../../lib/environmentRequestI18n';
-import { EnvironmentFacts, EnvironmentLifecycle } from './EnvironmentCard';
+import { EnvironmentLifecycle } from './EnvironmentCard';
 import { EnvironmentConfirmation } from './EnvironmentConfirmation';
-import { environmentError, useEnvironmentSnapshot } from './model';
+import { environmentError, environmentHoldsResources, migrationFailure, useEnvironmentSnapshot } from './model';
 import { RequestList, useEnvironmentRequests } from './EnvironmentRequests';
 import { RequestDecisionBar, RequestReviewDetails, RequestStatusLine, requestHasDecision, useRequestDecision } from './RequestReview';
-import { EnvironmentStateMark, SectionHeading, Tag, requestMark } from './ui';
+import { EnvironmentStateMark, Fact, LimitChips, requestMark } from './ui';
 import './environments.css';
 
 type Props = {
@@ -54,24 +54,31 @@ export function useIsolationAttention(threadId: string | undefined, status: stri
   return request;
 }
 
-/** The isolation inspector of one thread, docked beside the conversation:
-    where it runs, the request that decides it, requests, and a manual switch.
-    A request opens in place, with its decision pinned to the panel's foot. */
+/** A Latin name inside a Chinese sentence gets spaces around it. */
+const inline = (name: string) => getLocale() === 'zh-CN' ? ` ${name} ` : name;
+
+type Step = 'creating' | 'switching' | 'starting';
+type Target = { id: string | null; label: string };
+
+/** The isolation inspector of one thread, docked beside the conversation. It
+    answers three things at a glance: where the thread runs now (one status
+    block), where it can run instead (a short list that acts on selection), and
+    whether anything waits for the owner (requests). A request opens in place,
+    with its decision pinned to the panel's foot. */
 export function ThreadIsolationPanel({ thread, deviceId, canManage }: Props) {
   useI18n();
   const { snapshot, setSnapshot, loading, error: snapshotError, refresh } = useEnvironmentSnapshot(deviceId);
   const [binding, setBinding] = useState<ThreadEnvironmentDto | null>(null);
   const [bindingLoading, setBindingLoading] = useState(true);
   const [bindingError, setBindingError] = useState<string | null>(null);
-  const [selected, setSelected] = useState('');
-  const [createMode, setCreateMode] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const [connectionId, setConnectionId] = useState('');
   const [name, setName] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [step, setStep] = useState<Step | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [revision, setRevision] = useState(0);
-  const [resetAction, setResetAction] = useState<'apply' | 'create' | null>(null);
+  const [confirm, setConfirm] = useState<{ target: Target; run(): void } | null>(null);
   const [sessionReleased, setSessionReleased] = useState(false);
   const [reviewId, setReviewId] = useState<string | null>(null);
   const reload = useCallback(() => { void refresh(); setRevision(value => value + 1); }, [refresh]);
@@ -81,11 +88,7 @@ export function ThreadIsolationPanel({ thread, deviceId, canManage }: Props) {
     const controller = new AbortController();
     setBindingLoading(true); setBindingError(null);
     void fetchThreadEnvironment(thread.id, deviceId, controller.signal).then(next => {
-      if (controller.signal.aborted) return;
-      setBinding(previous => {
-        setSelected(current => current === (previous?.environment?.id ?? '') ? next.environment?.id ?? '' : current);
-        return next;
-      });
+      if (!controller.signal.aborted) setBinding(next);
     }).catch(cause => { if (!controller.signal.aborted) setBindingError(environmentError(cause, 'loadFailed')); })
       .finally(() => { if (!controller.signal.aborted) setBindingLoading(false); });
     return () => controller.abort();
@@ -94,48 +97,77 @@ export function ThreadIsolationPanel({ thread, deviceId, canManage }: Props) {
     setSnapshot(current => current && { ...current, environments: [...current.environments.filter(env => env.id !== next.id), next] });
     setBinding(current => current?.environment?.id === next.id ? { ...current, environment: next } : current);
   }, [setSnapshot]);
-  const current = snapshot?.environments.find(env => env.id === binding?.environment?.id) ?? binding?.environment;
-  const connection = snapshot?.connections.find(value => value.id === current?.connectionId);
+
+  const current = snapshot?.environments.find(env => env.id === binding?.environment?.id) ?? binding?.environment ?? null;
+  const connectionOf = (env: EnvironmentDto | null | undefined) => snapshot?.connections.find(value => value.id === env?.connectionId);
+  // A thread owns at most one environment that is not destroyed (the Supervisor
+  // refuses a second); when it is not in use it is the other place to run.
+  const own = snapshot?.environments.find(env => env.threadId === thread.id && env.state !== 'destroyed' && env.id !== current?.id) ?? null;
+  const ownsOne = !!own || (!!current && current.threadId === thread.id && current.state !== 'destroyed');
+  const connections = snapshot?.connections.filter(value => value.configured) ?? [];
+  const chosenConnection = connectionId || connections[0]?.id || '';
   const activeThread = thread.status === 'running' || thread.status === 'recovering';
-  const inheritedEnvironment = !!(thread.parentThreadId && binding?.environment);
+  const inherited = !!(thread.parentThreadId && binding?.environment && binding.environment.threadId !== thread.id);
   // Custom ACP threads use the existing "acp" provider; the environment API names that family "custom".
   const environmentFamily = thread.provider === 'acp' ? 'custom' : thread.provider;
   const supported = !!binding?.supportedHarnesses.some(harness => harness === thread.agentId || harness === thread.provider || harness === environmentFamily);
-  const lifecycleReason = !canManage ? t('readOnly') : activeThread ? t('threadBusy') : inheritedEnvironment ? t('inheritedEnvironment') : undefined;
   const active = activeRequest(requests);
+  const others = requests.filter(request => request !== active);
   // An approved migration owns the binding until it is retried or Host is restored from the request.
-  const fenced = requests.some(request => ['waitingIdle', 'provisioning', 'failed'].includes(request.state)
+  const fenced = !!binding?.fenced || requests.some(request => ['waitingIdle', 'provisioning', 'failed'].includes(request.state)
     || (request.state === 'ready' && !!request.environmentId && request.environmentId === binding?.environment?.id));
-  const reason = lifecycleReason ?? (fenced ? rt('fencedSwitch') : undefined) ?? (!supported && binding ? t('unsupportedHarness') : undefined);
-  const available = snapshot?.environments.filter(env => (env.threadId === thread.id || env.id === current?.id) && env.state !== 'destroyed') ?? [];
-  if (current && current.state !== 'destroyed' && !available.some(env => env.id === current.id)) available.push(current);
-  const connections = snapshot?.connections.filter(value => value.configured) ?? [];
-  const chosenConnection = connectionId || connections[0]?.id || '';
-  const unavailable = reason || snapshotError || bindingError;
-  const apply = async (resetSession?: true) => {
-    if (unavailable || busy || !binding) return;
+  const ownerBlocked = binding?.ownerAuthorized === false;
+  // The first reason that blocks every change, said in one line (no unexplained marks).
+  const blocked: string | undefined = !canManage ? t('readOnly') : ownerBlocked ? t('viewOnly') : activeThread ? t('threadBusy')
+    : inherited ? t('inheritedEnvironment') : fenced ? rt('fencedSwitch') : binding && !supported ? t('unsupportedHarness') : undefined;
+  const lifecycleReason = !canManage ? t('readOnly') : ownerBlocked ? t('viewOnly') : activeThread ? t('threadBusy') : inherited ? t('inheritedEnvironment') : undefined;
+  const loadFailed = snapshotError || bindingError;
+  const busy = step !== null;
+  const disabled = !!blocked || !!loadFailed || busy || !binding;
+
+  /** Ask once before ending a live native session; nothing else interrupts work. */
+  const guarded = (target: Target, run: (reset: boolean) => Promise<void>) => {
+    if (disabled) return;
     if (getDirtyWorkspaceDocumentCount()) { setError(t('saveFilesFirst')); return; }
-    if (thread.providerSessionId && !sessionReleased && !resetSession) { setResetAction('apply'); return; }
-    setBusy(true); setError(null); setSaved(false);
-    try { const next = await bindThreadEnvironment(thread.id, selected || null, deviceId, resetSession); setBinding(next); setSelected(next.environment?.id ?? ''); setSaved(true); setResetAction(null); if (resetSession) setSessionReleased(true); notifyEnvironmentChanged(thread.id, deviceId); }
-    catch (cause) { setError(environmentError(cause)); }
-    finally { setBusy(false); }
+    setError(null); setSaved(false);
+    if (thread.providerSessionId && !sessionReleased) setConfirm({ target, run: () => void run(true) });
+    else void run(false);
   };
-  const create = async (resetSession?: true) => {
-    if (unavailable || busy || !chosenConnection || !binding) return;
-    if (getDirtyWorkspaceDocumentCount()) { setError(t('saveFilesFirst')); return; }
-    if (thread.providerSessionId && !sessionReleased && !resetSession) { setResetAction('create'); return; }
-    setBusy(true); setError(null); setSaved(false);
-    let created = false;
+  const finish = (next: ThreadEnvironmentDto, reset: boolean) => {
+    setBinding(next); setSaved(true); setConfirm(null);
+    if (reset) setSessionReleased(true);
+    notifyEnvironmentChanged(thread.id, deviceId);
+  };
+  /** Bound and stopped means turns queue silently: switching to it also starts it. */
+  const startIfIdle = async (env: EnvironmentDto | null | undefined) => {
+    if (!env || (env.state !== 'stopped' && env.state !== 'interrupted')) return;
+    setStep('starting');
+    updateEnvironment(await actOnEnvironment(env.id, 'start', deviceId));
+  };
+  const switchTo = (env: EnvironmentDto | null) => guarded({ id: env?.id ?? null, label: env?.name ?? t('thisDevice') }, async reset => {
+    setStep('switching');
     try {
-      const next = await createEnvironment({ connectionId: chosenConnection, threadId: thread.id, ...(name.trim() ? { name: name.trim() } : {}) }, deviceId);
-      created = true; updateEnvironment(next); setSelected(next.id); setCreateMode(false); setName(''); setConnectionId('');
-      const attached = await bindThreadEnvironment(thread.id, next.id, deviceId, resetSession);
-      setBinding(attached); setSelected(attached.environment?.id ?? ''); setSaved(true); if (resetSession) setSessionReleased(true);
-      notifyEnvironmentChanged(thread.id, deviceId);
+      const next = await bindThreadEnvironment(thread.id, env?.id ?? null, deviceId, reset || undefined);
+      finish(next, reset);
+      await startIfIdle(next.environment);
+    } catch (cause) { setError(environmentError(cause)); }
+    finally { setStep(null); }
+  });
+  const create = () => guarded({ id: 'new', label: name.trim() || t('newEnvironment') }, async reset => {
+    if (!chosenConnection) return;
+    setStep('creating');
+    let created: EnvironmentDto | null = null;
+    try {
+      created = await createEnvironment({ connectionId: chosenConnection, threadId: thread.id, ...(name.trim() ? { name: name.trim() } : {}) }, deviceId);
+      updateEnvironment(created); setCreateOpen(false); setName(''); setConnectionId('');
+      setStep('switching');
+      const next = await bindThreadEnvironment(thread.id, created.id, deviceId, reset || undefined);
+      finish(next, reset);
+      await startIfIdle(next.environment ?? created);
     } catch (cause) { setError(created ? t('bindFailed') : environmentError(cause)); }
-    finally { setBusy(false); setResetAction(null); }
-  };
+    finally { setStep(null); }
+  });
+
   const review = requests.find(request => request.id === reviewId);
   const refreshing = loading || bindingLoading;
   const root = useRef<HTMLDivElement>(null);
@@ -147,90 +179,212 @@ export function ThreadIsolationPanel({ thread, deviceId, canManage }: Props) {
     root.current?.querySelector<HTMLElement>(`[data-request-id="${CSS.escape(id)}"] button`)?.focus({ preventScroll: false });
   }, [review]);
   if (review) return <RequestPane key={review.id} request={review} deviceId={deviceId} canManage={canManage} onUpdate={updateRequest}
+    environment={snapshot?.environments.find(env => env.id === review.environmentId)}
     onBack={() => { backTo.current = review.id; setReviewId(null); }} />;
-  return <div className="env-dock" ref={root} data-testid="thread-environment">
+
+  const stepLabel = step === 'creating' ? t('stepCreating') : step === 'switching' ? t('stepSwitching') : step === 'starting' ? t('stepStarting') : null;
+  return <div className="env-dock" ref={root} data-testid="thread-environment" aria-busy={busy || undefined}>
     <div className="env-dock-scroll">
-    <div className="env-panel">
-      <section className="env-section" aria-labelledby="env-where">
-        <SectionHeading id="env-where" title={t('current')}>
-          {(snapshotError || bindingError) && <ErrorMark message={snapshotError || bindingError || ''} onRetry={() => { reload(); refreshRequests(); }} />}
-          <button type="button" className="env-icon-button" aria-label={t('refresh')} title={t('refresh')} disabled={refreshing || busy}
-            onClick={() => { reload(); refreshRequests(); }}><RefreshCw aria-hidden="true" className={refreshing ? 'request-spin' : undefined} /></button>
-        </SectionHeading>
-        {refreshing && !binding && <p role="status" className="env-empty">{t('loading')}</p>}
-        {binding && <div className="env-group">
-          {active && <ActiveRequest request={active} onOpen={() => setReviewId(active.id)} />}
-          {current ? <>
-            <div className="env-location" data-kind="isolated">
-              <span className="env-location-icon" aria-hidden="true"><Box /></span>
-              <span className="env-location-text"><strong>{current.name}</strong>
-                <span>{connection?.name ?? 'Dokploy'} · {t('generationN', { n: formatNumber(current.generation) })}</span></span>
-              <EnvironmentStateMark state={current.state} />
-              {current.lastError && <ErrorMark message={t('safeError')} detail={current.lastError} announce={false} />}
+      <div className="env-panel is-dock">
+        {active && <ActiveRequest request={active} onOpen={() => setReviewId(active.id)} />}
+
+        <section className="env-section" aria-labelledby="env-where">
+          <header className="env-heading">
+            <h3 id="env-where">{t('current')}</h3>
+            <div className="env-heading-actions">
+              {loadFailed && binding && <ErrorMark message={loadFailed} onRetry={() => { reload(); refreshRequests(); }} />}
+              <button type="button" className="env-icon-button is-quiet" aria-label={t('refresh')} title={t('refresh')} disabled={refreshing || busy}
+                onClick={() => { reload(); refreshRequests(); }}><RefreshCw aria-hidden="true" className={refreshing ? 'request-spin' : undefined} /></button>
             </div>
-            <EnvironmentFacts environment={current} />
-            <EnvironmentLifecycle key={current.id} environment={current} deviceId={deviceId} onUpdate={updateEnvironment} disabledReason={lifecycleReason} />
-          </> : <div className="env-location" data-kind="host">
-            <span className="env-location-icon" aria-hidden="true"><Monitor /></span>
-            <span className="env-location-text"><strong>{t('hostTitle')}</strong><span>{t('hostDetail')}</span></span>
-          </div>}
-        </div>}
-      </section>
-      <section className="env-section" aria-labelledby="env-requests">
-        <SectionHeading id="env-requests" title={rt('requests')} count={requests.length || undefined}>
-          {requestsError && <ErrorMark message={requestsError} onRetry={refreshRequests} />}
-        </SectionHeading>
-        {requests.length ? <RequestList requests={requests} showThread={false} onOpen={setReviewId} />
-          : !requestsLoading && !requestsError && <p className="env-empty">{rt('empty')}</p>}
-      </section>
-      {binding && snapshot && <section className="env-section" aria-labelledby="env-switch">
-        <SectionHeading id="env-switch" title={t('switchHeading')} />
-        {!createMode ? <div className="env-switch">
-          <Select aria-label={t('select')} value={selected} disabled={busy || !!unavailable}
-            onValueChange={value => { setSelected(value); setSaved(false); setError(null); }} options={[{ value: '', label: t('host') }, ...available.map(env => ({ value: env.id, label: env.name }))]} />
-          <button type="button" className="relay-button-primary" disabled={busy || !!unavailable || selected === (binding.environment?.id ?? '')} onClick={() => void apply()}>{t(busy ? 'saving' : 'apply')}</button>
-          <button type="button" className="relay-button-secondary" disabled={busy || !!unavailable || !connections.length}
-            onClick={() => { setCreateMode(true); setSaved(false); setError(null); }}><Plus aria-hidden="true" />{t('create')}</button>
-          {reason && <ErrorMark kind="unavailable" message={reason} />}
-          {!connections.length && <ErrorMark kind="unavailable" message={t('setupHint')} />}
-          {error && <ErrorMark message={error} />}
-          {saved && <span role="status" className="env-ok">{t('applied')}</span>}
-        </div> : <form className="env-create" onSubmit={event => { event.preventDefault(); void create(); }}>
-          <p className="env-note">{t('createHint')}</p>
-          <div className="env-create-fields">
-            <label><span>{t('connection')}</span><Select aria-label={t('connection')} value={chosenConnection} disabled={busy || !!unavailable} onValueChange={setConnectionId}
-              options={connections.map(value => ({ value: value.id, label: value.name }))} /></label>
-            <label><span>{t('optionalName')}</span><input className="relay-input" value={name} disabled={busy} maxLength={120} onChange={event => setName(event.target.value)} /></label>
-          </div>
-          <div className="env-form-actions">
-            {reason && <ErrorMark kind="unavailable" message={reason} />}{error && <ErrorMark message={error} />}
-            <button type="button" className="relay-button-secondary" disabled={busy} onClick={() => setCreateMode(false)}>{t('cancel')}</button>
-            <button type="submit" className="relay-button-primary" disabled={busy || !!unavailable || !chosenConnection}>{t(busy ? 'creatingAndBinding' : 'createAndUse')}</button>
-          </div>
-        </form>}
-      </section>}
-      {binding && <details className="env-technical">
-        <summary><ChevronRight aria-hidden="true" />{t('scopeDetails')}{!!binding.limitations.length && <Tag>{formatNumber(binding.limitations.length)}</Tag>}</summary>
-        <ul className="env-bullets">
-          <li>{t('isolationHint')}</li>
-          <li>{t('diskQuota')}</li>
-          {binding.limitations.map(limitation => <li key={limitation}><span className="env-dim">{t('limitations')}:</span> {limitation}</li>)}
-        </ul>
-      </details>}
-      <EnvironmentConfirmation open={resetAction !== null} title={t('resetTitle')} description={t('resetBody')} confirmLabel={t('resetConfirm')} busy={busy} busyLabel={t('working')}
-        error={error} onCancel={() => { if (!busy) setResetAction(null); }} onConfirm={() => { if (resetAction === 'create') void create(true); else void apply(true); }} />
-    </div>
+          </header>
+          {refreshing && !binding && !loadFailed && <p role="status" className="env-empty">{t('loading')}</p>}
+          {loadFailed && !binding && <p className="env-line is-error"><span>{loadFailed}</span>
+            <button type="button" className="env-link" onClick={() => { reload(); refreshRequests(); }}>{t('retry')}</button></p>}
+          {binding && <>
+            {blocked && <p className="env-line" data-testid="environment-blocked"><Info aria-hidden="true" /><span>{blocked}</span></p>}
+            {/* The current place comes first and carries the status block; the
+                others act on a click (with one confirmation when a live session ends). */}
+            <ul className="env-targets" aria-labelledby="env-where">
+              {current
+                ? <li aria-current="true" className="is-current"><CurrentEnvironment environment={current} connection={connectionOf(current)} deviceId={deviceId} onUpdate={updateEnvironment} disabledReason={lifecycleReason} /></li>
+                : <TargetRow current icon={<Monitor />} title={t('hostTitle')} meta={<span className="env-dim">{t('notIsolated')}</span>} />}
+              {current && <TargetRow current={false} disabled={disabled || inherited} onSelect={() => switchTo(null)}
+                icon={<Monitor />} title={t('hostTitle')} meta={<span className="env-dim">{t('notIsolated')}</span>} label={t('switchTo', { name: t('thisDevice') })} />}
+              {own && <TargetRow current={false} disabled={disabled || own.state === 'error'} onSelect={() => switchTo(own)} icon={<Box />} title={own.name}
+                meta={<EnvironmentStateMark state={own.state} />} label={t('switchTo', { name: inline(own.name) })}
+                note={environmentHoldsResources(own.state) && own.state !== 'error' ? <OwnLifecycle environment={own} deviceId={deviceId} onUpdate={updateEnvironment} disabled={!!lifecycleReason || busy} /> : undefined} />}
+              {!ownsOne && !inherited && (connections.length
+                ? !createOpen
+                  ? <li><button type="button" className="env-target is-new" disabled={disabled} onClick={() => { setCreateOpen(true); setSaved(false); setError(null); }}>
+                    <span className="env-target-icon" aria-hidden="true"><Plus /></span>
+                    <span className="env-target-main"><span className="env-target-title">{t('newEnvironment')}</span>
+                      <span className="env-target-meta">{connections.length === 1 ? connections[0]!.name : t('connection')}</span></span>
+                  </button></li>
+                  : <li><CreateForm connections={connections} connectionId={chosenConnection} onConnection={setConnectionId} name={name} onName={setName}
+                    busy={busy} disabled={disabled} onCancel={() => setCreateOpen(false)} onSubmit={create} /></li>
+                : snapshot && <li className="env-target is-missing">
+                  <span className="env-target-icon" aria-hidden="true"><Plus /></span>
+                  <span className="env-target-main"><span className="env-target-title">{t('newEnvironment')}</span>
+                    <span className="env-target-meta">{t('needsConnection')}</span></span>
+                  <SetUpLink />
+                </li>)}
+            </ul>
+            {(stepLabel || error || saved) && <p className="env-line is-feedback" role="status">
+              {stepLabel ? <span className="env-dim">{stepLabel}</span> : saved && !error ? <span className="env-ok"><Check aria-hidden="true" />{t('switched')}</span> : null}
+              {error && <ErrorMark message={error} />}
+            </p>}
+          </>}
+        </section>
+
+        {/* The request in the banner above is not listed twice; with nothing
+            else, the section is one short line, or gone when the banner says it all. */}
+        {(others.length > 0 || !active || requestsError) && <section className="env-section" aria-labelledby="env-requests">
+          <header className="env-heading">
+            <h3 id="env-requests">{rt('requests')}</h3>
+            {requestsError && <div className="env-heading-actions"><ErrorMark message={requestsError} onRetry={refreshRequests} /></div>}
+          </header>
+          {others.length ? <RequestList requests={others} showThread={false} onOpen={setReviewId} />
+            : !requestsLoading && !requestsError && !active && <p className="env-empty">{rt('empty')}</p>}
+        </section>}
+
+        {binding && <ScopeDetails binding={binding} />}
+        <EnvironmentConfirmation open={confirm !== null} title={t('resetTitle')}
+          description={t('resetBody', { target: confirm?.target.id === null ? t('thisDevice') : inline(confirm?.target.label ?? '') })}
+          confirmLabel={t('resetConfirm')} tone="primary" busy={busy} busyLabel={stepLabel ?? t('working')}
+          error={error} onCancel={() => { if (!busy) setConfirm(null); }} onConfirm={() => confirm?.run()} />
+      </div>
     </div>
   </div>;
 }
 
+/** Where the thread runs now: name and state, the image it runs, its limits as
+    labelled chips, what its state means for turns, and its lifecycle. Paths,
+    generation and enforced limits fold under Details. */
+function CurrentEnvironment({ environment: env, connection, deviceId, onUpdate, disabledReason }: {
+  environment: EnvironmentDto; connection: EnvironmentConnectionDto | undefined; deviceId: string | null | undefined;
+  onUpdate(env: EnvironmentDto): void; disabledReason: string | undefined;
+}) {
+  const hint: EnvironmentMessage | null = env.state === 'stopped' ? 'stateHintStopped' : env.state === 'interrupted' ? 'stateHintInterrupted'
+    : env.state === 'error' ? 'stateHintError' : env.state === 'destroyed' ? 'stateHintDestroyed' : null;
+  return <div className="env-now-card" data-state={env.state}>
+    <div className="env-now-head" data-kind="isolated">
+      <span className="env-now-icon" aria-hidden="true"><Box /></span>
+      <span className="env-now-title"><strong title={env.name}>{env.name}</strong>
+        <span className="env-now-sub">{connection?.name ?? 'Dokploy'}{connection?.image && <> · <code title={connection.image}><MiddleName name={connection.image} /></code></>}</span></span>
+      <EnvironmentStateMark state={env.state} />
+    </div>
+    <LimitChips limits={env.limits} observed={env.observedLimits} />
+    {hint && <p className="env-line" data-state={env.state}><span>{t(hint)}</span>
+      {env.lastError && <ErrorMark message={t('safeError')} detail={env.lastError} announce={false} />}</p>}
+    <EnvironmentLifecycle key={env.id} environment={env} deviceId={deviceId} onUpdate={onUpdate} disabledReason={disabledReason} />
+    <details className="env-technical">
+      <summary><ChevronRight aria-hidden="true" />{t('details')}</summary>
+      <dl className="env-facts is-compact">
+        <Fact label={t('workspace')}><PathChip path={env.workspacePath} label={t('copyAbsolutePath')} /></Fact>
+        {env.worktreePath && env.worktreePath !== env.workspacePath && <Fact label={t('worktree')}><PathChip path={env.worktreePath} label={t('copyAbsolutePath')} /></Fact>}
+        <Fact label={t('observedLimits')}>{env.observedLimits ? <span className="env-ok">{t('observedVerified')}</span> : <span className="env-dim">{t('notObserved')}</span>}</Fact>
+        <Fact label={t('generation')}>{formatNumber(env.generation)}</Fact>
+      </dl>
+    </details>
+  </div>;
+}
+
+/** One place the thread can run. The current one is marked, not a button. */
+function TargetRow({ current, disabled = false, onSelect, icon, title, meta, label, note }: {
+  current: boolean; disabled?: boolean; onSelect?(): void; icon: ReactNode; title: string; meta: ReactNode; label?: string; note?: ReactNode;
+}) {
+  // The current place states its condition on the right (like an environment's
+  // state); the others say what a click does.
+  const body = current ? <>
+    <span className="env-target-icon" aria-hidden="true">{icon}</span>
+    <span className="env-target-main"><span className="env-target-title" title={title}>{title}</span></span>
+    <span className="env-pill">{meta}</span>
+  </> : <>
+    <span className="env-target-icon" aria-hidden="true">{icon}</span>
+    <span className="env-target-main"><span className="env-target-title" title={title}>{title}</span><span className="env-target-meta">{meta}</span></span>
+    <span className="env-target-go" aria-hidden="true">{t('switchAction')}<ChevronRight /></span>
+  </>;
+  return <li aria-current={current || undefined} className={current ? 'is-current' : undefined}>
+    {current ? <div className="env-target is-current">{body}</div>
+      : <button type="button" className="env-target" disabled={disabled} aria-label={label} onClick={onSelect}>{body}</button>}
+    {note}
+  </li>;
+}
+
+/** An environment not in use that still holds resources: say so and offer Stop. */
+function OwnLifecycle({ environment: env, deviceId, onUpdate, disabled }: { environment: EnvironmentDto; deviceId: string | null | undefined; onUpdate(env: EnvironmentDto): void; disabled: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (env.state !== 'running' && env.state !== 'interrupted') return null;
+  const stop = async () => {
+    setBusy(true); setError(null);
+    try { onUpdate(await actOnEnvironment(env.id, 'stop', deviceId)); notifyEnvironmentChanged(env.threadId, deviceId); }
+    catch (cause) { setError(environmentError(cause)); }
+    finally { setBusy(false); }
+  };
+  return <p className="env-target-note"><span>{t('stillRunning')}</span>
+    <button type="button" className="env-button is-small" disabled={disabled || busy} onClick={() => void stop()}>{busy ? t('working') : t('stop')}</button>
+    {error && <ErrorMark message={error} />}</p>;
+}
+
+function CreateForm({ connections, connectionId, onConnection, name, onName, busy, disabled, onCancel, onSubmit }: {
+  connections: EnvironmentConnectionDto[]; connectionId: string; onConnection(id: string): void; name: string; onName(name: string): void;
+  busy: boolean; disabled: boolean; onCancel(): void; onSubmit(): void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => { input.current?.focus(); }, []);
+  const connection = connections.find(value => value.id === connectionId);
+  return <form className="env-create" aria-label={t('newEnvironment')} onSubmit={event => { event.preventDefault(); onSubmit(); }}
+    onKeyDown={event => { if (event.key === 'Escape' && !busy) { event.stopPropagation(); onCancel(); } }}>
+    <label className="env-create-name"><span className="sr-only">{t('optionalName')}</span>
+      <input ref={input} className="relay-input" value={name} disabled={busy} maxLength={120} placeholder={t('optionalName')} aria-label={t('optionalName')}
+        onChange={event => onName(event.target.value)} /></label>
+    {connections.length > 1 && <Select aria-label={t('connection')} value={connectionId} disabled={busy} onValueChange={onConnection}
+      options={connections.map(value => ({ value: value.id, label: value.name }))} />}
+    {connection && <p className="env-create-note">{t('createHint')}</p>}
+    <div className="env-form-actions">
+      <button type="button" className="relay-button-secondary" disabled={busy} onClick={onCancel}>{t('cancel')}</button>
+      <button type="submit" className="relay-button-primary" disabled={disabled || !connectionId}>{t('createAndSwitch')}</button>
+    </div>
+  </form>;
+}
+
+/** Settings → Isolated environments, where connections are added. */
+function SetUpLink() {
+  const nav = useAppShellNav();
+  if (!nav?.openSettingsSection) return null;
+  return <button type="button" className="env-button is-small" onClick={() => nav.openSettingsSection?.('environments')}><Settings aria-hidden="true" />{t('setUp')}</button>;
+}
+
+const SCOPE: Record<string, [EnvironmentMessage, EnvironmentMessage][]> = {
+  credentialsByRequest: [['scopeCredentials', 'scopeCredentialsValue'], ['scopeUnsupported', 'scopeUnsupportedValue']],
+  noDiskQuota: [['scopeDisk', 'scopeDiskValue']],
+  capabilityHourly: [['scopeAccess', 'scopeAccessValue']],
+};
+/** What isolation covers and what it does not, as labelled lines. Facts the
+    Supervisor reports by key are said in the reader's language; any other
+    limitation it adds is listed as sent. */
+function ScopeDetails({ binding }: { binding: ThreadEnvironmentDto }) {
+  const keys = binding.limitationKeys ?? [];
+  const known = keys.length === binding.limitations.length ? keys.flatMap(key => SCOPE[key] ?? []) : [];
+  const other = keys.length === binding.limitations.length ? binding.limitations.filter((_, index) => !SCOPE[keys[index]!]) : binding.limitations;
+  const items: [EnvironmentMessage, EnvironmentMessage][] = [['scopeNetwork', 'scopeNetworkValue'], ...known, ['scopeSkills', 'scopeSkillsValue']];
+  return <details className="env-technical env-scope">
+    <summary><ChevronRight aria-hidden="true" />{t('scopeDetails')}</summary>
+    <dl className="env-facts is-compact">
+      {items.map(([label, value]) => <Fact key={label} label={t(label)}>{t(value)}</Fact>)}
+      {other.map(text => <Fact key={text} label={t('scopeOther')}>{text}</Fact>)}
+    </dl>
+  </details>;
+}
+
 /** A request opened in the panel: its review scrolls, its decision stays at the foot. */
-function RequestPane({ request, deviceId, canManage, onUpdate, onBack }: {
+function RequestPane({ request, deviceId, canManage, onUpdate, onBack, environment }: {
   request: EnvironmentRequestDto; deviceId: string | null | undefined; canManage: boolean;
-  onUpdate(request: EnvironmentRequestDto): void; onBack(): void;
+  onUpdate(request: EnvironmentRequestDto): void; onBack(): void; environment?: EnvironmentDto | undefined;
 }) {
   useI18n();
-  const decision = useRequestDecision(request, deviceId, canManage, onUpdate);
+  const decision = useRequestDecision(request, deviceId, canManage, onUpdate, environment);
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { heading.current?.focus({ preventScroll: true }); }, []);
   return <div className="env-dock is-detail" data-testid="isolation-request" aria-busy={decision.busy ? true : undefined}>
@@ -251,10 +405,10 @@ function RequestPane({ request, deviceId, canManage, onUpdate, onBack }: {
 /** The request that decides where this thread runs right now, with its next step. */
 function ActiveRequest({ request, onOpen }: { request: EnvironmentRequestDto; onOpen(): void }) {
   const hint = request.state === 'pending' ? rt('lead', { connection: request.spec.connection.name })
-    : request.state === 'failed' ? rt('fencedHint') : request.state === 'provisioning' ? rt('provisioningHint') : rt('waitingHint');
-  return <div className="env-active" data-state={request.state}>
+    : request.state === 'failed' ? t(migrationFailure(request.lastError)) : request.state === 'provisioning' ? rt('provisioningHint') : rt('waitingHint');
+  return <div className="env-active" data-state={request.state} data-request-id={request.id}>
     <StatusMark status={requestMark(request.state)} label={rt(request.state)} />
     <span className="env-active-text"><strong>{rt(request.state)}</strong><span>{hint}</span></span>
-    <button type="button" className={request.state === 'pending' ? 'relay-button-primary' : 'relay-button-secondary'} onClick={onOpen}>{rt(request.state === 'pending' ? 'review' : 'open')}</button>
+    <button type="button" className={request.state === 'pending' || request.state === 'failed' ? 'relay-button-primary' : 'relay-button-secondary'} onClick={onOpen}>{rt(request.state === 'pending' ? 'review' : request.state === 'failed' ? 'resolve' : 'open')}</button>
   </div>;
 }

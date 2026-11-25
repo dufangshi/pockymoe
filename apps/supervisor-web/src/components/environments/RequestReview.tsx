@@ -2,12 +2,13 @@ import { useState } from 'react';
 import { ArrowRight, ChevronRight } from 'lucide-react';
 import { CopyButton, ErrorMark, PathChip, StatusMark } from '@pockymoe/thread-ui';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
-import { decideEnvironmentRequest, type EnvironmentRequestDto } from '../../lib/environmentApi';
+import { actOnEnvironment, decideEnvironmentRequest, type EnvironmentDto, type EnvironmentRequestDto } from '../../lib/environmentApi';
 import { environmentText as et } from '../../lib/environmentI18n';
 import { environmentRequestText as t } from '../../lib/environmentRequestI18n';
 import { EnvironmentConfirmation } from './EnvironmentConfirmation';
 import { EnvironmentWindow } from './EnvironmentWindow';
 import { Fact, MigrationSteps, Tag, limitsText, listTimeText, requestMark } from './ui';
+import { migrationFailure } from './model';
 
 type Spec = EnvironmentRequestDto['spec'];
 type Mount = Spec['credentialMounts'][number];
@@ -18,14 +19,21 @@ const purposeLabel = (purpose: Mount['purpose']) =>
 
 /** One decision on a request: busy and failure state, and the explicit
     confirmation before Restore Host destroys computation. */
-export function useRequestDecision(request: EnvironmentRequestDto, deviceId: string | null | undefined, canManage: boolean, onUpdate: (request: EnvironmentRequestDto) => void) {
+export function useRequestDecision(request: EnvironmentRequestDto, deviceId: string | null | undefined, canManage: boolean, onUpdate: (request: EnvironmentRequestDto) => void,
+  /** The environment this request provisioned, when known: Retry first stops a failed generation. */
+  environment?: EnvironmentDto | undefined) {
   const [busy, setBusy] = useState<Decision | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [recover, setRecover] = useState(false);
   const act = async (action: Decision) => {
     if (busy || !canManage) return;
     setBusy(action); setError(null);
-    try { onUpdate(await decideEnvironmentRequest(request, action, deviceId)); setRecover(false); }
+    try {
+      // The Supervisor refuses to restart a failed or interrupted generation
+      // ("not safely startable"); the owner's Retry includes that Stop.
+      if (action === 'retry' && environment && (environment.state === 'error' || environment.state === 'interrupted')) await actOnEnvironment(environment.id, 'stop', deviceId);
+      onUpdate(await decideEnvironmentRequest(request, action, deviceId)); setRecover(false);
+    }
     catch { setError(t('decisionFailed')); }
     finally { setBusy(null); }
   };
@@ -69,7 +77,7 @@ export function RequestReviewDetails({ request }: { request: EnvironmentRequestD
   return <>
     <div className="env-review" data-request-id={request.id}>
       <MigrationSteps state={request.state} />
-      {hint && <p className="env-review-hint" data-state={request.state}>{hint}
+      {hint && <p className="env-review-hint" data-state={request.state}><span>{request.state === 'failed' && <strong>{et(migrationFailure(request.lastError))} </strong>}{hint}</span>
         {request.lastError && <ErrorMark message={t('failedReason')} detail={request.lastError} announce={false} />}</p>}
       <p className="env-lead">{t('lead', { connection: spec.connection.name })}</p>
       <dl className="env-facts">
@@ -118,12 +126,12 @@ export function RequestReviewDetails({ request }: { request: EnvironmentRequestD
 }
 
 /** Settings: the review in its own window over the settings dialog. */
-export function RequestReview({ request, deviceId, canManage, onUpdate, onClose }: {
+export function RequestReview({ request, deviceId, canManage, onUpdate, onClose, environment }: {
   request: EnvironmentRequestDto; deviceId?: string | null | undefined; canManage: boolean;
-  onUpdate(request: EnvironmentRequestDto): void; onClose(): void;
+  onUpdate(request: EnvironmentRequestDto): void; onClose(): void; environment?: EnvironmentDto | undefined;
 }) {
   useI18n();
-  const decision = useRequestDecision(request, deviceId, canManage, onUpdate);
+  const decision = useRequestDecision(request, deviceId, canManage, onUpdate, environment);
   return <EnvironmentWindow wide title={request.spec.name} busy={!!decision.busy} onClose={onClose}
     subtitle={<RequestStatusLine request={request} />}
     footer={requestHasDecision(request.state) ? <RequestDecisionBar decision={decision} /> : undefined}>
