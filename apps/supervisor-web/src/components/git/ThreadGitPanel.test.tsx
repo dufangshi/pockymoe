@@ -176,16 +176,23 @@ describe('thread Git inspection', () => {
     await waitFor(() => expect(files.getByRole('button', { name: 'View diff for docs/diagram.png' })).toHaveTextContent('Binary'));
     expect(files.getByRole('button', { name: 'View diff for sup2.pid' })).toHaveTextContent('+1');
     expect(files.getByText('2 files')).toBeVisible();
-    fireEvent.click(files.getByRole('button', { name: 'All diffs' }));
+    // The scope's combined diff is already under the list; nothing is opened.
+    expect(screen.getByTestId('thread-git')).not.toHaveAttribute('data-opened');
     const diff = within(screen.getByRole('region', { name: 'All files' }));
     expect(diff.getByRole('button', { name: 'View diff for docs/diagram.png' })).toHaveTextContent('Binary');
     expect(diff.getByText('New binary file; contents are not shown as text')).toBeVisible();
     expect(diff.queryByText(/Binary files \/dev\/null/)).toBeNull();
     const pid = diff.getByRole('button', { name: 'View diff for sup2.pid' }).closest('section')!;
     expect(within(pid as HTMLElement).getByText('+1087690')).toBeVisible();
-    // An empty untracked file says so instead of "no diff".
+    // A file heading in the combined diff opens that file on its own; an empty
+    // untracked file says so instead of "no diff".
     fireEvent.click(diff.getByRole('button', { name: 'View diff for sup2.pid' }));
+    expect(screen.getByTestId('thread-git')).toHaveAttribute('data-opened', 'true');
     expect(await screen.findByText('Empty file')).toBeVisible();
+    // All diffs (shown beside the list in a wide dock) goes back to every file without opening one.
+    fireEvent.click(screen.getByRole('button', { name: 'All diffs' }));
+    expect(screen.getByTestId('thread-git')).not.toHaveAttribute('data-opened');
+    await waitFor(() => expect(git.fetchThreadGitDiff).toHaveBeenLastCalledWith('thread', 'a', { area: 'worktree' }, undefined, expect.any(AbortSignal)));
   });
 
   it('steps through files from the diff and returns to the list', async () => {
@@ -201,6 +208,8 @@ describe('thread Git inspection', () => {
     expect(screen.getByRole('button', { name: 'Next file' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Back to files' }));
     expect(screen.getByTestId('thread-git')).not.toHaveAttribute('data-opened');
+    // Back lands on the row of the file that was open.
+    expect(screen.getByRole('button', { name: 'View diff for b.txt' })).toHaveFocus();
     await waitFor(() => expect(git.fetchThreadGitDiff).toHaveBeenLastCalledWith('thread', 'a', { area: 'worktree' }, undefined, expect.any(AbortSignal)));
   });
 

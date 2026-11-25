@@ -72,14 +72,17 @@ latest operation was here.
 Below it one row picks the view: **Unstaged** (including untracked) and
 **Staged** with their file counts, **Compare** (from a revision's merge base;
 a base field and Compare button appear) and **Commits**. The file list starts
-with the file count and the lines added and removed, and **All diffs**. Each row
+with the file count and the lines added and removed. Each row
 is one line: change letter, name, directory (shortened from its start) and the
 file's counts (`+3`, not `+3 −0`), or "Binary". A clean tree, an empty index or
-a comparison without differences says so in words. In the default dock width
-the list and a diff take turns: a file (or All diffs) replaces the list with its
-diff, whose heading has Back, the path, previous and next file and Copy patch. A
-dock dragged wider (720px or more) shows the list beside the diff, which starts
-with all files.
+a comparison without differences says so in one line. In the default dock
+width the list (at most 40% of the area, scrolling on its own when longer) sits
+above the scope's combined diff in one scroll, so a short list leaves the rest
+to the diff. Selecting a file, in the list or by its heading in the combined
+diff, shows that file alone, with Back, the path, previous and next file and
+Copy patch; Back returns to its row. A dock dragged wider (720px or more) shows
+the list beside the diff, which starts with all files; All diffs returns to
+them there.
 
 The diff is split per file with added and removed lines colored (tint plus an
 edge bar). Git's header lines become words in the file's heading and a note: a

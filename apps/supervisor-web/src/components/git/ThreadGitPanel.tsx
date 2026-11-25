@@ -22,6 +22,8 @@ type View = 'worktree' | 'index' | 'branch' | 'commits';
 const SOURCE_KEY = { created: 'workbench.gitSourceCreated', adopted: 'workbench.gitSourceAdopted', observed: 'workbench.gitSourceObserved', configured: 'workbench.gitSourceConfigured' } as const;
 const CHANGE_LETTER: Record<FileChange, string> = { untracked: 'U', added: 'A', modified: 'M', deleted: 'D', renamed: 'R', copied: 'C', conflicted: '!', typeChanged: 'T', changed: '•' };
 const PAGE = 30;
+// The dock width (thread-git.css's container query) from which the list sits beside the diff.
+const WIDE = 720;
 const baseName = (path: string) => path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path;
 const dirName = (path: string) => path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '';
 const shortOid = (oid: string) => oid.slice(0, 7);
@@ -45,11 +47,13 @@ interface ListedFile { path: string; change: FileChange; originalPath?: string |
 /** The thread's Git inspector, docked beside the conversation (read only).
     One line says where you are (working copy, HEAD, details, refresh), one row
     picks what to look at, and the rest is the file list and the diff. Narrow,
-    the list and a file's diff take turns; wide (a dragged-out dock), they sit
-    side by side (docs/worktrees.md). */
+    the list sits above the scope's combined diff in one scroll and a file opens
+    on its own; wide (a dragged-out dock), they sit side by side (docs/worktrees.md). */
 export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPanelProps) {
   useI18n();
   const detailsId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const changesRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLElement>(null);
   const diffRef = useRef<HTMLElement>(null);
   const [context, setContext] = useState<ThreadWorkingContext | null>(null);
@@ -58,7 +62,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
   // A commit opened from the list; its changes show in place of the list.
   const [commit, setCommit] = useState<GitCommit | null>(null);
   const [path, setPath] = useState('');
-  // Narrow only: whether the diff (of `path`, or of all files) replaces the list.
+  // Narrow only: whether the selected file's diff replaces the list and the combined diff.
   const [opened, setOpened] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [baseDraft, setBaseDraft] = useState('HEAD');
@@ -149,23 +153,20 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
   const parsed = useMemo(() => diff ? parsePatch(diff.patch) : null, [diff]);
   const current = path ? listed.findIndex(file => file.path === path) : -1;
 
-  const choose = (next: string) => {
-    if (next === '') returnFocus.current = null;
-    setPath(next); setOpened(true);
-  };
-  const back = () => { returnFocus.current = path || '\u0000all'; reset(); };
-  // The list and the diff take turns when narrow: the reader lands on the diff's
-  // back button, and Back returns to the row they opened.
+  // A file opens on its own (narrow: in place of the list and the combined
+  // diff); '' is every file, which the narrow layout already shows under the list.
+  const choose = (next: string) => { setPath(next); setOpened(next !== ''); };
+  const back = () => { returnFocus.current = path; reset(); };
+  // Narrow, opening a file lands the reader on its Back button at the top, and
+  // Back returns to the row they opened. Wide, the list stays where it was.
   useLayoutEffect(() => {
-    const narrow = (element: HTMLElement | null) => !!element && element.offsetParent === null;
+    const narrow = (panelRef.current?.clientWidth ?? 0) < WIDE;
+    if (!narrow) { returnFocus.current = null; return; }
     if (opened) {
-      diffRef.current?.scrollTo?.({ top: 0 });
-      if (narrow(listRef.current) && listRef.current?.contains(document.activeElement)) diffRef.current?.querySelector<HTMLElement>('.thread-git-back')?.focus();
-    } else if (returnFocus.current && !narrow(listRef.current) && diffRef.current?.offsetParent === null) {
-      const target = returnFocus.current === '\u0000all'
-        ? listRef.current?.querySelector<HTMLElement>('.thread-git-all')
-        : Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-path]') ?? []).find(element => element.dataset.path === returnFocus.current);
-      target?.focus();
+      changesRef.current?.scrollTo?.({ top: 0 });
+      if (changesRef.current?.contains(document.activeElement)) diffRef.current?.querySelector<HTMLElement>('.thread-git-back')?.focus();
+    } else if (returnFocus.current) {
+      Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-path]') ?? []).find(element => element.dataset.path === returnFocus.current)?.focus();
       returnFocus.current = null;
     }
   }, [opened, path]);
@@ -174,7 +175,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
   const scopeEmpty = area === 'worktree' ? (status?.files.length ? gt('noUnstaged') : gt('clean'))
     : area === 'index' ? gt('noStaged') : area === 'branch' ? gt('noDifference', { base }) : gt('noFiles');
 
-  return <div className="thread-git-panel" data-testid="thread-git" data-opened={opened || undefined}>
+  return <div ref={panelRef} className="thread-git-panel" data-testid="thread-git" data-opened={opened || undefined}>
     {/* Where: the working copy (a switch when there are several), HEAD, details and refresh, on one line. */}
     {(workingCopy || !!error) && <div className="thread-git-where">
       {workingCopy && (manyCopies && context
@@ -227,7 +228,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
         <span className="thread-git-head"><code>{shortOid(commit.oid)}</code><CopyButton value={commit.oid} label={translate('workbench.gitCopyCommit')} /></span>
         <span className="thread-git-commit-bar-subject" title={commit.subject}>{commit.subject}</span>
       </div>}
-      {area ? <div className="thread-git-changes" data-empty={listReady && !listed.length || undefined}>
+      {area ? <div ref={changesRef} className="thread-git-changes" data-empty={listReady && !listed.length || undefined}>
         <aside ref={listRef} className="thread-git-files" aria-label={translate('workbench.gitChangedFiles')}>
           {listReady && listed.length > 0 && <div className="thread-git-summary">
             <span className="thread-git-summary-text">{gt(listed.length === 1 ? 'oneFile' : 'files', { n: formatNumber(listed.length) })}{known && <Stat file={totals} />}</span>
