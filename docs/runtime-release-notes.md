@@ -1,9 +1,17 @@
-Terminals scroll again in full-screen programs such as Codex and Claude Code, and Codex forks no longer fail on long conversations.
+The Git panel and the isolated environments panel are redesigned, and a thread whose environment migration failed can be opened and recovered again.
 
 **Fixes**
 
-- **Scrolling Codex and Claude Code in a terminal.** After a long session, reopening the page or switching back to the thread drew a full-screen program in the normal buffer, and the mouse wheel no longer reached it. The terminal now restores the program's screen and mouse modes when it is reopened, and no longer starts its replay inside an escape sequence.
-- **Scrolling on a phone.** A finger drag in a full-screen program (Codex, Claude Code, less, vim) now scrolls the program, as the mouse wheel does on a computer. At a shell prompt it still scrolls the terminal's history.
-- **Forking a long Codex conversation.** Forking a Codex thread with a long history could fail because the native fork answer carried every inherited turn and exceeded the transport limit. The fork now asks only for the new thread.
+- **A thread stuck after a failed migration.** When an approved move into an isolated environment failed, the thread page said "Unable to resolve this thread" and the Retry and Restore buttons could not be reached. The thread now opens; everything that runs stays blocked until its owner retries or restores this device.
+- **Stop or start interrupted by closing the page.** An environment could stay in "stopping" forever when the tab was closed mid-action. The action now finishes on the device.
+- **Retry after a failed migration.** Retry stops the failed environment first instead of failing again.
+- **Git diff under the wrong file.** An untracked binary file made the next file's changes appear under its name. Each file's changes now show under its own name, and binary and empty files say so in words.
+
+**Changes**
+
+- **Environments start when you create or switch to them.** Before, the environment stayed stopped and prompts waited without a word.
+- **Git panel.** One line shows where you are (branch, short commit, working-copy switch), one line switches between Unstaged, Staged, Compare and Commits, and the rest is the file list with the changes under it. Paths and details open on request.
+- **Isolated environments panel.** One list shows where the thread runs and what it can switch to, with the current place first: its state, image and limits. A line of text says why something cannot be changed, for example "Needs a Dokploy connection first", with a button to Settings. An environment you left running says it still uses the device's budget and offers Stop.
+- A steer sent into a running wake turn shows at once while the wake is folded, and "Show less" sits at the left with its arrow pointing up.
 
 Update a device from Settings → Check/Update.
