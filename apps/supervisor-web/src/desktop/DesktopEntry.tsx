@@ -1,7 +1,7 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { ErrorMark, setHostPlatform } from '@pockymoe/thread-ui';
 import { fetchRelaySession } from '../lib/api';
 import { DesktopIndexStore, DesktopStoreContext } from './data';
 import { desktopHost, type DesktopCapabilities } from './host';
@@ -20,6 +20,8 @@ export default function DesktopEntry({ children }: { children: ReactNode }) {
       const host = desktopHost(); if (!host) return;
       const [session, capabilities] = await Promise.all([fetchRelaySession(), host.capabilities()]);
       if (capabilities.surface !== 'desktop') return;
+      // The client's operating system decides which key is Mod (§19).
+      setHostPlatform(capabilities.platform);
       if (!session.authenticated || !session.user) { if (!cancelled) setError({ signIn: true, message: translate('desktopShell.signInRequired') }); return; }
       store = new DesktopIndexStore(session.user.id); await store.hydrate();
       if (cancelled) return;
