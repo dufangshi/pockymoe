@@ -231,30 +231,39 @@ async fn mcp_http_versions_batches_and_rebinding_hosts() {
     let s = &f.state;
     let bearer = token(s, "read");
     let init = json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}});
-    for host in [
-        "evil.example",
-        "evil.example:19190",
-        "127.0.0.1.evil.example",
+    // Without a passcode the local API's own guard refuses first (403); with
+    // one, MCP and OAuth still refuse rebound names themselves (421).
+    for (passcode, expected) in [
+        (None, StatusCode::FORBIDDEN),
+        (Some("open sesame"), StatusCode::MISDIRECTED_REQUEST),
     ] {
-        let (status, _, _) = req(
-            s,
-            "POST",
-            "/mcp",
-            init.clone(),
-            &[JSON, ("authorization", &bearer), ("host", host)],
-        )
-        .await;
-        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST, "{host}");
-        let (status, _, _) = req(
-            s,
-            "GET",
-            "/.well-known/oauth-authorization-server",
-            Value::Null,
-            &[("host", host)],
-        )
-        .await;
-        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST, "{host}");
+        crate::auth::set_passcode(s, passcode).unwrap();
+        for host in [
+            "evil.example",
+            "evil.example:19190",
+            "127.0.0.1.evil.example",
+        ] {
+            let (status, _, _) = req(
+                s,
+                "POST",
+                "/mcp",
+                init.clone(),
+                &[JSON, ("authorization", &bearer), ("host", host)],
+            )
+            .await;
+            assert_eq!(status, expected, "{host}");
+            let (status, _, _) = req(
+                s,
+                "GET",
+                "/.well-known/oauth-authorization-server",
+                Value::Null,
+                &[("host", host)],
+            )
+            .await;
+            assert_eq!(status, expected, "{host}");
+        }
     }
+    crate::auth::set_passcode(s, None).unwrap();
     let mut session = String::new();
     for host in [
         "127.0.0.1:19190",

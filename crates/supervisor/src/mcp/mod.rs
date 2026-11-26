@@ -24,6 +24,11 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use tools::Grant;
 
+/// The canonical origin OAuth clients use for this Supervisor.
+pub(crate) fn issuer(state: &Supervisor) -> String {
+    oauth::issuer(state)
+}
+
 pub(crate) fn start(state: &Arc<Supervisor>) {
     events::start(state);
 }

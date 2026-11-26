@@ -75,6 +75,20 @@ sign-in for that minute. The local CLI keeps working with its token, and
 CLI credentials (not a thread's scoped token). Hosted (Treer) Supervisors cannot
 set a passcode.
 
+Without a passcode, every route (API, `/ws`, the Web UI) answers only requests
+whose `Host` cannot be a rebound DNS name, so a web page elsewhere cannot point
+its name at this computer and use the open API from the browser
+(`local_hosts.rs`). Accepted: any IP address (a page sends an IP as `Host` only
+when it was loaded from that address, which is this Supervisor), `localhost` and
+`*.localhost`, the computer's name with or without `.local`/`.lan`, the
+`POCKYMOE_HOST` name, the MCP issuer's name, and the names in
+`POCKYMOE_ALLOWED_HOSTS` (comma separated; `*.example.ts.net` allows that
+domain's subdomains). Other names get 403 `host_not_allowed` with a message
+saying how to allow them. Requests through the relay tunnel, and every request
+once a passcode is set (sign-in cookies are bound to their origin), are not
+checked here. The CLI, MCP stdio, environment workers and the Pages Web UI reach
+a local Supervisor by loopback address; Treer attach is checked by Treer.
+
 ### `server`
 
 Legacy. A reachable Supervisor with one administrator from environment variables.
@@ -419,7 +433,8 @@ Those capabilities should be added on top of the same outbound tunnel rather tha
 
 ## Security Notes
 
-- Use `local` only on trusted loopback, LAN, or VPN networks.
+- Use `local` only on trusted loopback, LAN, or VPN networks. Without a passcode
+  it refuses DNS-rebound host names (see local mode above).
 - Use HTTPS/TLS in `server` mode when accessed by mobile clients.
 - Do not reuse the admin password as `POCKYMOE_SESSION_SECRET`.
 - Keep destructive actions behind existing confirmation flows even after login.
