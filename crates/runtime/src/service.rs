@@ -626,6 +626,20 @@ impl Supervisor {
                     }
                     saved
                 }
+                // The harness's own allowance report updates the shared account
+                // cache; viewers only learn that it changed (owner-only route).
+                "runtime.subscription.updated" => {
+                    if let (Some(provider), Some(usage)) = (
+                        event.payload["provider"].as_str().map(str::to_owned),
+                        event
+                            .payload
+                            .as_object_mut()
+                            .and_then(|p| p.remove("usage")),
+                    ) {
+                        supervisor.subscription_usage.observe(&provider, &usage);
+                    }
+                    Ok(())
+                }
                 "thread.context.delivered" => match event.payload["providerSessionId"].as_str() {
                     Some(session) => supervisor
                         .db

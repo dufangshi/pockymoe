@@ -46,7 +46,7 @@ const CLEARED_AUTH: &[&str] = &[
 // Intentionally no Debug: this contains a revocable thread capability, never a
 // provider key or host profile. It lives only as long as this loaded process.
 #[derive(Clone)]
-pub(super) struct Route {
+pub(crate) struct Route {
     capability: String,
     native_directory: Option<String>,
 }
@@ -58,6 +58,12 @@ impl Route {
                 && init["agentInfo"]["version"].as_str() == Some(VERSION),
             "unsupported_environment_claude_adapter: require claude-agent-acp 0.101.0 with programmatic settings"
         );
+        Self::from_environment(env)
+    }
+
+    /// The route alone, for the native stream-json runtime: it has no adapter
+    /// to verify and checks the native CLI's own version after initialize.
+    pub(crate) fn from_environment(env: &[(&str, String)]) -> Result<Self> {
         let get = |name| env.iter().find(|(key, _)| *key == name).map(|(_, v)| v);
         if get("POCKYMOE_ENV_CLAUDE_NATIVE").is_some_and(|v| v == "1") {
             let directory = get("CLAUDE_CONFIG_DIR")
@@ -96,6 +102,21 @@ impl Route {
         self.pin_env(child(settings, "env")?);
         self.pin_env(child(options, "env")?);
         Ok(meta)
+    }
+
+    /// The values both settings tiers receive. The native runtime passes them as
+    /// the process environment and as the CLI's `--settings` flag tier, which is
+    /// what the SDK does with `options.env` and `options.settings`.
+    pub(crate) fn pinned_env(&self) -> Map<String, Value> {
+        let mut env = Map::new();
+        self.pin_env(&mut env);
+        env
+    }
+
+    /// `--settings` for the native CLI: the same programmatic tier `pin` writes
+    /// for the ACP adapter, above user/project/local settings.
+    pub(crate) fn flag_settings(&self) -> Value {
+        json!({"apiKeyHelper": "", "env": self.pinned_env()})
     }
 
     fn pin_env(&self, env: &mut Map<String, Value>) {
@@ -243,6 +264,36 @@ mod tests {
                 ""
             );
         }
+    }
+
+    #[test]
+    fn native_stream_json_receives_exactly_the_acp_programmatic_tier() {
+        for env in [
+            vec![
+                ("ANTHROPIC_BASE_URL", BROKER.to_string()),
+                ("ANTHROPIC_AUTH_TOKEN", "test-short-capability".into()),
+            ],
+            vec![
+                ("POCKYMOE_ENV_CLAUDE_NATIVE", "1".into()),
+                ("CLAUDE_CONFIG_DIR", "/credentials/claude".into()),
+            ],
+        ] {
+            let acp = Route::verified(
+                &json!({"agentInfo":{"name":ADAPTER,"version":VERSION}}),
+                &env,
+            )
+            .unwrap()
+            .pin(json!({}))
+            .unwrap();
+            let native = Route::from_environment(&env).unwrap();
+            let settings = &acp["claudeCode"]["options"]["settings"];
+            assert_eq!(native.flag_settings(), *settings);
+            assert_eq!(
+                json!(native.pinned_env()),
+                acp["claudeCode"]["options"]["env"]
+            );
+        }
+        assert!(Route::from_environment(&[]).is_err());
     }
 
     #[test]

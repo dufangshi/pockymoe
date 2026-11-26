@@ -258,3 +258,84 @@ async fn steering_and_interrupt_use_native_turn_identity() {
         runtime.release_session(&id).await.unwrap();
     }
 }
+
+#[test]
+fn isolated_native_file_requires_the_reviewed_image_codex() {
+    let init = |agent: &str| json!({"userAgent": agent});
+    assert_eq!(
+        super::codex_version(&init(
+            "pockymoe/0.167.0 (Ubuntu 24.4.0; x86_64) unknown (pockymoe; 1)"
+        )),
+        Some("0.167.0")
+    );
+    assert!(super::verify_isolated_native_file(&init("pockymoe/0.167.0 (Ubuntu)")).is_ok());
+    for other in ["pockymoe/0.169.0 (Ubuntu)", "", "pockymoe"] {
+        let error = super::verify_isolated_native_file(&init(other))
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("unsupported_environment_codex_cli"));
+    }
+    assert!(super::isolated_native_file(&[(
+        "POCKYMOE_ENV_CODEX_NATIVE",
+        "1".into()
+    )]));
+    assert!(!super::isolated_native_file(&[(
+        "POCKYMOE_ENV_CODEX",
+        "1".into()
+    )]));
+}
+
+#[test]
+fn isolated_sessions_hide_native_forks_like_acp() {
+    let runtime = super::CodexRuntime::new(
+        pockymoe_protocol::Provider::Acp,
+        std::sync::Arc::new(crate::fake::FakeRuntime::new(
+            pockymoe_protocol::Provider::Acp,
+        )),
+        std::env::temp_dir(),
+    );
+    let host = runtime.session_negotiated_caps(Some("codex"), "codex::abc");
+    assert!(host.branching.fork && host.branching.fork_at && host.branching.hard_rollback);
+    let isolated = runtime.session_negotiated_caps(Some("codex"), "codex::env/e/1/abc");
+    assert!(!isolated.branching.fork && !isolated.branching.fork_at);
+    assert!(isolated.branching.hard_rollback && isolated.turns.steer);
+}
+
+#[tokio::test]
+async fn account_rate_limit_pushes_reach_viewers_during_a_turn() {
+    let (_dir, r) = runtime();
+    let id = r.start_session(input()).await.unwrap().provider_session_id;
+    let bus = EventBus::new();
+    let mut rx = bus.subscribe();
+    r.start_turn(turn(&id, "limits"), bus, CancellationToken::new())
+        .await
+        .unwrap();
+    let mut announced = vec![];
+    let mut lifecycle = vec![];
+    while let Ok(event) = rx.try_recv() {
+        if event.event_type == "runtime.subscription.updated" {
+            announced.push(event.payload);
+        } else if event.event_type.as_str().starts_with("thread.turn.") {
+            lifecycle.push((
+                event.event_type.as_str().to_owned(),
+                event.payload["status"].clone(),
+            ));
+        }
+    }
+    // The Supervisor's turn lifecycle events, exactly as ACP emits them.
+    assert_eq!(
+        lifecycle,
+        vec![
+            ("thread.turn.started".to_owned(), Value::Null),
+            ("thread.turn.completed".to_owned(), json!("completed")),
+        ]
+    );
+    assert_eq!(announced.len(), 1, "{announced:?}");
+    assert_eq!(announced[0]["provider"], "codex");
+    let windows = announced[0]["usage"]["windows"].as_array().unwrap();
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0]["id"], "secondary");
+    assert_eq!(windows[0]["label"], "7d");
+    assert_eq!(windows[0]["usedPercent"], 42.0);
+    r.release_session(&id).await.unwrap();
+}

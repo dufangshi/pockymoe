@@ -301,6 +301,16 @@
   :theme .workspace-node-menu button { min-height: 44px; white-space: nowrap; }
 }
 
+/* The allowance details also open from the plum top bar on phones; like the
+   search results they take the content surface and ink. */
+:theme .thread-subscription-usage-details {
+  --subscription-details-bg: var(--ws-content-panel);
+  --theme-fg: var(--ws-content-fg);
+  --theme-fg-muted: var(--ws-content-muted);
+  --theme-border: var(--ws-content-border);
+  --theme-border-strong: var(--ws-content-border);
+}
+
 /* ── Conversation search ─────────────────────────────────────────────────── */
 /* The results drop over the content, so they take the content surface rather
    than the plum chrome they live in (custom properties resolve at :root). */
