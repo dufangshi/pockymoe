@@ -59,6 +59,8 @@ test('Git parity controls and themes', async ({ page, request }) => {
       await page.getByRole('textbox', { name: 'Comment', exact: true }).fill('Review this change');
       await page.getByRole('button', { name: 'Add comment', exact: true }).click();
       await expect(page.getByRole('dialog')).toHaveCount(0);
+      await page.getByTestId('workbench-close-inspector').click();
+      await expect(page.locator('.composer-quote-mark')).toBeVisible();
     }
   }
 });
