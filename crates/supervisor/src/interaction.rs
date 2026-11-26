@@ -144,7 +144,9 @@ async fn run_as(
     let requester = requester(caller.as_deref(), peer);
     let reach = |thread: &str| state.ensure_agent_reaches_thread(requester, thread);
     let id = input.get("threadId").and_then(Value::as_str).unwrap_or("");
-    let from = input["fromThreadId"].as_str();
+    // An empty id (an empty `POCKYMOE_THREAD_ID`) names no thread: treat it
+    // as omitted rather than as a claim to be someone else.
+    let from = input["fromThreadId"].as_str().filter(|id| !id.is_empty());
     let me = || from.context("this command needs the caller's thread identity; pass --from ID");
     let number = || input["number"].as_i64().context("task number required");
     let all = input["all"] == true;
@@ -845,7 +847,11 @@ mod tests {
         // An empty POCKYMOE_THREAD_ID sends no fromThreadId: still the caller's
         // child, not a top-level thread outside the lineage caps. A raw
         // parentThreadId cannot pick another parent either.
-        for extra in [json!({}), json!({"parentThreadId":other})] {
+        for extra in [
+            json!({}),
+            json!({"fromThreadId":""}),
+            json!({"parentThreadId":other}),
+        ] {
             let id = created(&cli(&f, Some(&caller), create(extra)).await.unwrap());
             let t = f.state.get_thread(&id).unwrap();
             assert_eq!(t.parent_thread_id.as_deref(), Some(caller.as_str()));
