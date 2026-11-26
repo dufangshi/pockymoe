@@ -32,3 +32,5 @@ values can be credentials: listings show them as `<redacted>`. Only the
 machine's own CLI credential can list or change it; a thread's agent or a peer
 device cannot. Servers that need an OAuth login need a token obtained outside
 Pockymoe, passed as a header.
+
+For clients calling Pockymoe as a server, see [Outside agents over MCP](mcp-outside-agents.md).

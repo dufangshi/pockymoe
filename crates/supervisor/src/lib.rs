@@ -19,6 +19,7 @@ mod linked_files;
 #[cfg(test)]
 mod local_passcode_tests;
 mod management;
+mod mcp;
 mod message_sender;
 mod model_proxy;
 mod notifications;

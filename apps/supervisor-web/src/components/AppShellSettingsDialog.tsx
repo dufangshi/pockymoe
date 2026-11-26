@@ -1,3 +1,4 @@
+import { OutsideAgentsSettings } from './OutsideAgents';
 import { NotificationSettings } from './NotificationSettings';
 import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
@@ -659,6 +660,7 @@ export function AppShellSettingsDialog({
           {section === 'resources' && <HarnessResourceSettings />}
           {section === 'environments' && <DokploySettings />}
           {section === 'device' && !hostScope && <LocalPasscodeSettings />}
+          {section === 'outside-agents' && !hostScope && <OutsideAgentsSettings />}
           {(section === 'device' || section === 'harnesses') && (
             <RuntimeManagement view={section === 'device' && hostScope ? 'supervisor' : section} />
           )}
@@ -735,6 +737,11 @@ export function appSettingsSections({ scoped = false }: { scoped?: boolean } = {
       id: 'workspace',
       label: translate("files.workspace"),
       description: translate("files.defaultLocationsForProjectsOnThisDevice"),
+    },
+    {
+      id: 'outside-agents',
+      label: environmentText('outsideAgents'),
+      description: environmentText('outsideAgentsDescription'),
     },
     {
       id: 'plugins',

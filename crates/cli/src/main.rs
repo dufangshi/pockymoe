@@ -4,6 +4,7 @@ mod automations;
 mod checkpoints;
 mod environments;
 mod legacy_env;
+mod mcp;
 mod models;
 mod plugins;
 mod threads;
@@ -801,6 +802,9 @@ async fn run() -> Result<()> {
             )?
         ),
         Commands::Model { command } => threads::Client::new(cli.connection)?.model(command).await?,
+        Commands::Mcp {
+            command: plugins::McpCommand::Serve { device, access },
+        } => mcp::serve(threads::Client::new(cli.connection)?, device, access).await?,
         Commands::Mcp { command } => println!(
             "{}",
             serde_json::to_string_pretty(
