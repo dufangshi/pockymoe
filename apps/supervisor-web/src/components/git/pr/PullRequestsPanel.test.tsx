@@ -29,3 +29,9 @@ it('shows setup failure and output while retaining the created worktree result',
  expect(screen.getByText(/Installing dependencies/)).toBeTruthy();
  expect(screen.getByText(/Missing local fixture/)).toBeTruthy();
 });
+it('shows merged state when the host closes a successfully merged PR',async()=>{
+ action.mockImplementation(async(_thread:string,op:string)=>op==='show'?{data:{title:'Already merged',head:{sha:'merged-head'},state:'closed',merged:true}}:op==='watchStatus'?{state:{active:false}}:{data:{}});
+ render(<PullRequestsPanel threadId="thread"/>);
+ fireEvent.click(await screen.findByRole('button',{name:'a/b · PR #42'}));
+ await screen.findByText('State: Merged');
+});
