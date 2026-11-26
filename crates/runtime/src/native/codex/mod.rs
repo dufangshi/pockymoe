@@ -81,20 +81,25 @@ impl CodexRuntime {
         tokio::sync::mpsc::Receiver<(i64, String, Value)>,
     )> {
         let isolated = crate::execution::current().is_some();
-        let command = if isolated {
-            "codex".into()
-        } else {
-            self.command
-                .clone()
-                .or_else(|| std::env::var("CODEX_COMMAND").ok())
-                .unwrap_or_else(|| "codex".into())
-        };
         let mut env = if isolated {
             crate::execution::isolated_harness_environment("codex")?
         } else if crate::upstreams::native::oauth_selected(&self.upstreams, "codex") {
             vec![(crate::upstreams::native::CLEAN_OAUTH_ENV, "codex".into())]
         } else {
             vec![]
+        };
+        // An approved native file login runs the image's launcher, which pins
+        // ChatGPT/file/openai startup exactly as codex-acp's CODEX_PATH does.
+        let native_file = isolated && isolated_native_file(&env);
+        let command = if native_file {
+            ISOLATED_SUBSCRIPTION_LAUNCHER.into()
+        } else if isolated {
+            "codex".into()
+        } else {
+            self.command
+                .clone()
+                .or_else(|| std::env::var("CODEX_COMMAND").ok())
+                .unwrap_or_else(|| "codex".into())
         };
         if let Some(state) = self
             .inspection
@@ -121,7 +126,10 @@ impl CodexRuntime {
         let (process, updates, requests) =
             AcpProcess::spawn(&format!("{command} app-server"), cwd, &env).await?;
         let process = Arc::new(process);
-        let initialized = process.request("initialize",json!({"clientInfo":{"name":"pockymoe","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await;
+        let initialized = process.request("initialize",json!({"clientInfo":{"name":"pockymoe","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await
+            .and_then(|init| {
+                if native_file { verify_isolated_native_file(&init) } else { Ok(()) }
+            });
         if let Err(e) = initialized {
             let _ = process.shutdown().await;
             return Err(e);
@@ -285,6 +293,22 @@ impl AgentRuntime for CodexRuntime {
         caps.branching.hard_rollback = true;
         caps.controls.performance_mode = true;
         caps.controls.goals = true;
+        crate::acp::runtime::isolated_capabilities::restrict(
+            &mut caps,
+            crate::execution::current().is_some(),
+        );
+        caps
+    }
+    fn session_negotiated_caps(
+        &self,
+        agent: Option<&str>,
+        session_id: &str,
+    ) -> AgentProviderCapabilitiesDto {
+        let mut caps = self.negotiated_caps(agent);
+        crate::acp::runtime::isolated_capabilities::restrict(
+            &mut caps,
+            session_id.contains("::env/"),
+        );
         caps
     }
     fn toolbox(&self, agent: Option<&str>) -> Vec<ToolboxItemDto> {
@@ -410,17 +434,32 @@ impl AgentRuntime for CodexRuntime {
             .is_none()
             .then(|| crate::acp::CodexUsageReader::new(native_raw(&input.provider_session_id)));
         let mut usage_tick = tokio::time::interval(Duration::from_millis(250));
+        let mut announcer = crate::subscription::Announcer::default();
         let inspection = self
             .inspection
             .read()
             .unwrap()
             .clone()
             .filter(|_| !input.hidden);
-        let response = session.process.request("turn/start", params).await?;
-        let turn = response["turn"]["id"]
-            .as_str()
-            .context("Codex turn id missing")?
-            .to_owned();
+        crate::native::turn_events::started(&bus, &input);
+        let started = session
+            .process
+            .request("turn/start", params)
+            .await
+            .and_then(|response| {
+                response["turn"]["id"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .context("Codex turn id missing")
+            });
+        let turn = match started {
+            Ok(turn) => turn,
+            Err(error) => {
+                let failed: Result<()> = Err(error);
+                crate::native::turn_events::finished(&bus, &input, &failed, false, None);
+                return failed.map(|_| vec![]);
+            }
+        };
         let context_observer = session
             .context_reader
             .as_ref()
@@ -449,7 +488,8 @@ impl AgentRuntime for CodexRuntime {
                 if let Some(reader)=usage_reader.as_mut() {for usage in reader.poll() {
                     crate::acp::context::native_usage(session.context_reader.as_ref(), &usage, inspection.as_ref(), &input.provider_session_id, &input.thread_id, &bus);
                     crate::acp::emit_mapped(&bus,&input.thread_id,&input.turn_id,crate::acp::mapper::MappedUpdate{usage:Some(usage),..Default::default()},input.hidden);
-                }}
+                }
+                if let Some(limits)=reader.take_rate_limits() {announcer.announce(&bus,&input.thread_id,"codex",limits,input.hidden);}}
             },
             _=cancel.cancelled(), if !interrupted => {interrupted=true;interrupt_deadline=tokio::time::Instant::now()+Duration::from_secs(15);self.interrupt(&input.provider_session_id,&turn).await?;},
             _=tokio::time::sleep_until(interrupt_deadline), if interrupted => {return Err(ExecutionUncertain("Codex did not confirm interruption".into()).into());},
@@ -469,7 +509,13 @@ impl AgentRuntime for CodexRuntime {
             },
             update=updates.recv()=>{let Some(update)=update else {return Err(ExecutionUncertain("app-server notification stream closed".into()).into());};
                 let update=json!({"method":update["_remoteMethod"],"params":update});
-                let params=&update["params"];if params["threadId"].as_str().is_some_and(|id|id!=native_raw(&input.provider_session_id)){continue;}
+                let params=&update["params"];
+                // Account-wide, not thread-scoped: the push the ACP adapter drops.
+                if update["method"]=="account/rateLimits/updated" {
+                    if let Some(limits)=crate::subscription::codex_rate_update(&params["rateLimits"]) {announcer.announce(&bus,&input.thread_id,"codex",limits,input.hidden);}
+                    continue;
+                }
+                if params["threadId"].as_str().is_some_and(|id|id!=native_raw(&input.provider_session_id)){continue;}
                 if update["method"]=="turn/completed" && params["turn"]["id"]==turn {
                     if params["turn"]["status"]=="failed" {bail!("Codex turn failed: {}",params["turn"]["error"]);}
                     interrupted |= params["turn"]["status"]=="interrupted";break;
@@ -492,7 +538,11 @@ impl AgentRuntime for CodexRuntime {
             }
         }} Ok(())}.await;
         if let Some(reader) = usage_reader.as_mut() {
-            for usage in reader.poll_final() {
+            let final_usage = reader.poll_final();
+            if let Some(limits) = reader.take_rate_limits() {
+                announcer.announce(&bus, &input.thread_id, "codex", limits, input.hidden);
+            }
+            for usage in final_usage {
                 crate::acp::context::native_usage(
                     session.context_reader.as_ref(),
                     &usage,
@@ -522,8 +572,10 @@ impl AgentRuntime for CodexRuntime {
             .lock()
             .await
             .retain(|_, p| p.process.id != session.process.id);
+        let items = mapper.finish(interrupted || result.is_err());
+        crate::native::turn_events::finished(&bus, &input, &result, interrupted, Some(&items));
         result?;
-        Ok(mapper.finish(interrupted))
+        Ok(items)
     }
     async fn interrupt(&self, id: &str, turn: &str) -> Result<()> {
         let session = self.session(id)?;
@@ -614,8 +666,20 @@ impl AgentRuntime for CodexRuntime {
             .map(|p| p.dto.clone())
             .collect()
     }
-    async fn compact_session(&self, id: &str, _thread: &str, _bus: EventBus) -> Result<()> {
-        self.session(id)?
+    async fn compact_session(&self, id: &str, thread: &str, bus: EventBus) -> Result<()> {
+        // Like ACP's hidden `/compact` turn: hold the session until Codex has
+        // finished, so no prompt starts against a half-compacted thread and
+        // the caller's "compacted" really means done.
+        let session = self.session(id)?;
+        let mut updates = session
+            .updates
+            .try_lock()
+            .map_err(|_| anyhow!("conflict: session busy"))?;
+        let _operation = session
+            .operation
+            .try_lock()
+            .map_err(|_| anyhow!("conflict: session busy"))?;
+        session
             .process
             .request(
                 "thread/compact/start",
@@ -624,9 +688,56 @@ impl AgentRuntime for CodexRuntime {
                 })?,
             )
             .await?;
-        Ok(())
+        let raw = native_raw(id);
+        let deadline = tokio::time::Instant::now() + COMPACTION_DEADLINE;
+        let mut turn: Option<String> = None;
+        loop {
+            let update = tokio::time::timeout_at(deadline, updates.recv())
+                .await
+                .map_err(|_| ExecutionUncertain("Codex did not finish compacting".into()))?
+                .ok_or_else(|| {
+                    ExecutionUncertain("app-server notification stream closed".into())
+                })?;
+            let method = update["_remoteMethod"].as_str().unwrap_or("");
+            if method == "account/rateLimits/updated" {
+                if let Some(limits) = crate::subscription::codex_rate_update(&update["rateLimits"])
+                {
+                    crate::subscription::announce(&bus, thread, "codex", limits, false);
+                }
+                continue;
+            }
+            if update["threadId"].as_str().is_some_and(|t| t != raw) {
+                continue;
+            }
+            match method {
+                "turn/started" => turn = update["turn"]["id"].as_str().map(str::to_owned),
+                "turn/completed"
+                    if turn.is_none() || update["turn"]["id"].as_str() == turn.as_deref() =>
+                {
+                    if update["turn"]["status"] == "failed" {
+                        bail!("Codex compaction failed: {}", update["turn"]["error"]);
+                    }
+                    return Ok(());
+                }
+                // Without a compaction turn, the completed item or the legacy
+                // notification is the end; a later turn/completed is ignored.
+                "thread/compacted" if turn.is_none() => return Ok(()),
+                "item/completed"
+                    if turn.is_none() && update["item"]["type"] == "contextCompaction" =>
+                {
+                    return Ok(())
+                }
+                _ => {}
+            }
+        }
     }
     async fn fork_session(&self, id: &str) -> Result<StartSessionResult> {
+        // Like ACP: a fork would be a new, unbound thread and cannot inherit
+        // the environment's thread-bound grants.
+        anyhow::ensure!(
+            !id.contains("::env/"),
+            "unsupported_environment_fork: native forks are unavailable for isolated threads"
+        );
         let s = self.session(id)?;
         let settings = s.settings.read().unwrap().clone();
         self.load("thread/fork", Some(native_raw(id)), &s.cwd, settings)
@@ -857,6 +968,36 @@ fn goal(value: &Value) -> Option<GoalState> {
 
 #[cfg(test)]
 mod tests;
+
+const COMPACTION_DEADLINE: Duration = Duration::from_secs(15 * 60);
+
+/// The environment image's launcher and the Codex release reviewed with it
+/// (`containers/environment`). ACP gates the same login on codex-acp 2.5.0.
+const ISOLATED_SUBSCRIPTION_LAUNCHER: &str = "/opt/pockymoe/bin/codex-subscription";
+const ISOLATED_NATIVE_FILE_CODEX: &str = "0.167.0";
+
+fn isolated_native_file(env: &[(&str, String)]) -> bool {
+    env.iter()
+        .any(|(k, v)| *k == "POCKYMOE_ENV_CODEX_NATIVE" && v == "1")
+}
+
+/// `userAgent` is `<client>/<codex version> (<os>) ...`.
+fn codex_version(init: &Value) -> Option<&str> {
+    init["userAgent"]
+        .as_str()?
+        .split_whitespace()
+        .next()?
+        .rsplit_once('/')
+        .map(|(_, version)| version)
+}
+
+fn verify_isolated_native_file(init: &Value) -> Result<()> {
+    anyhow::ensure!(
+        codex_version(init) == Some(ISOLATED_NATIVE_FILE_CODEX),
+        "unsupported_environment_codex_cli: native file authentication requires the environment image's Codex {ISOLATED_NATIVE_FILE_CODEX}"
+    );
+    Ok(())
+}
 
 fn native_raw(id: &str) -> &str {
     let raw = crate::import_id::raw_session_id(id);

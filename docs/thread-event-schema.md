@@ -34,6 +34,7 @@ partial updates: clients should merge them or refresh the relevant HTTP state.
 | `thread.collaboration.updated` | `turnId`, `collaborationMode` |
 | `thread.context.delivered` | `providerSessionId`; collaboration context delivered |
 | `runtime.usage.updated` | `turnId`, provider `usage`; normalized by the service |
+| `runtime.subscription.updated` | `provider`; the harness reported fresher account allowance |
 | `device.ports.changed` | `reason`; device notification with an empty `threadId` |
 
 The goal events and `thread.turn.failed` are declared compatibility values;
@@ -166,6 +167,13 @@ events a second per item, each consistent with what a snapshot read returns.
 `runtime.usage.updated` is saved with its per-request list (`requests`) and
 broadcast without it; viewers read a turn's totals from
 `thread.turn.token.updated`.
+
+`runtime.subscription.updated` leaves the runtime with the reported allowance
+windows. The service merges them into the device's account-usage cache and
+broadcasts only `provider`: owners re-read the owner-only
+`/api/agent-runtimes/{provider}/subscription-usage` route, so shared viewers never
+receive account data. See
+[model prices and subscription usage](model-pricing-and-subscription-usage.md#oauth-allowance).
 
 Wire tests check known/unknown string round trips and flattened payload
 preservation. These checks cover discriminants; they do not validate arbitrary

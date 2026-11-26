@@ -36,7 +36,7 @@ import { useScopedState } from './useScopedState';
 import { useOptimisticAttachmentPreviews } from './useOptimisticAttachmentPreviews';
 import { ImageFallbackProvider, ImageRecoveryProvider, ImageDiagnosisProvider } from '@pockymoe/thread-ui';
 import { diagnoseChatImage } from '../lib/chatImageDiagnosis';
-import { useSubscriptionUsage } from './useSubscriptionUsage';
+import { refreshSubscriptionUsage, useSubscriptionUsage } from './useSubscriptionUsage';
 import { useThreadTabStatus } from '../lib/useThreadTabStatus';
 import { DeviceEncryptionStatus, useConnectionDownShown } from '../components/DeviceEncryptionStatus';
 import { ThreadPublicLinks } from '../components/ThreadPublicLinks';
@@ -1942,6 +1942,11 @@ export function ThreadDetailPage() {
     const handleSocketEvent = (event: ThreadEventEnvelope) => {
       referenceEventRef.current(event);
       announceHarnessRuntimeEvent(event);
+      // Account allowance is device-wide: any thread's harness report refreshes it.
+      if (event.type === 'runtime.subscription.updated') {
+        refreshSubscriptionUsage(relayRouteDeviceId, event.payload.provider);
+        return;
+      }
       if (event.threadId !== id) {
         // The current thread reaches the list through its own detail reads.
         if (THREAD_LIST_EVENT_TYPES.has(event.type) && !isPendingSteerUpdate(event)) {

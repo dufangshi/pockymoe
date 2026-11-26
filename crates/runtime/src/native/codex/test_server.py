@@ -28,7 +28,19 @@ for line in sys.stdin:
         elif text=='approval-permissions':
             approval='permissions'
             send({'id':900,'method':'item/permissions/requestApproval','params':{'threadId':'shared','reason':'Need network','permissions':{'network':{'enabled':True}}}})
+        elif text=='limits':
+            # Sparse rolling update: a per-model alias limit is ignored, then
+            # the account's own codex limit reports only its weekly window.
+            send({'method':'account/rateLimits/updated','params':{'rateLimits':{'limitId':'codex_other','primary':{'usedPercent':99,'windowDurationMins':300,'resetsAt':4102444800}}}})
+            send({'method':'account/rateLimits/updated','params':{'rateLimits':{'limitId':'codex','primary':None,'secondary':{'usedPercent':42,'windowDurationMins':10080,'resetsAt':4102444800}}}})
+            done()
         elif text!='wait': done()
+
+    if m=='thread/compact/start':
+        send({'method':'turn/started','params':{'threadId':'shared','turn':{'id':'compact-turn'}}})
+        send({'method':'item/completed','params':{'threadId':'shared','turnId':'compact-turn','item':{'id':'c','type':'contextCompaction'}}})
+        send({'method':'thread/tokenUsage/updated','params':{'threadId':'shared','tokenUsage':{'total':{'totalTokens':10},'last':{'totalTokens':5},'modelContextWindow':100}}})
+        send({'method':'turn/completed','params':{'threadId':'shared','turn':{'id':'compact-turn','status':'completed'}}})
 
     if m=='turn/steer': done()
     if m=='turn/interrupt':

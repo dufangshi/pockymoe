@@ -2,7 +2,7 @@ import { RelayUserMenu } from '../components/RelayUserMenu';
 import { relayModeActive } from '../lib/api';
 import { useSyncExternalStore, useMemo, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { FileInput, LayoutDashboard, Plus, Settings } from 'lucide-react';
+import { FileInput, GitPullRequest, LayoutDashboard, Plus, Settings } from 'lucide-react';
 import { MatterWorkbench, Select } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useDesktopSurface, useDesktopWorkbench } from './context';
@@ -10,7 +10,8 @@ import { useDesktopSelector } from './data';
 import { useWorkbenchNavigation } from '../pages/useWorkbenchNavigation';
 import { appUrl } from '../lib/webBase';
 import { workbenchUrls } from '../lib/workbenchUrls';
-import { currentRelayScopedPath, workspacesHref } from '../lib/relayRoutes';
+import { currentRelayScopedPath, relayScopedPath, workspacesHref } from '../lib/relayRoutes';
+import { prText } from '../components/git/pr/text';
 import { useAppShellNav } from '../components/AppShellNavContext';
 import { RecentThreadMenu } from '../components/RecentThreadMenu';
 import { DeviceStateMark } from '../pages/relayAdmin/ui';
@@ -37,6 +38,7 @@ export function WorkspacesFrame({ deviceId, children, sharedOnly }: { deviceId: 
   const actions = <div className="desktop-workspace-actions">
     {!sharedOnly && <Link to={currentRelayScopedPath('/workspaces/new')}><Plus size={16} aria-hidden />{translate('files.addWorkspace')}</Link>}
     {!sharedOnly && <Link to={currentRelayScopedPath('/threads/import')}><FileInput size={16} aria-hidden />{translate('files.importSession')}</Link>}
+    {!sharedOnly && <Link to={relayScopedPath('/pull-requests', deviceId)}><GitPullRequest size={16} aria-hidden />{prText('title')}</Link>}
     <button onClick={surface?.openMap}><LayoutDashboard size={16} aria-hidden />{translate('workbench.threadMap')}</button>
   </div>;
   return <div className="thread-ui-shell thread-ui-viewport-constrained desktop-workspaces-shell" data-theme-effective={shell?.effectiveTheme} data-theme-mode={shell?.themeMode}>

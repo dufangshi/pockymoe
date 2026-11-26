@@ -11,6 +11,8 @@ pub(super) struct Mapper {
     usage: HashMap<String, Value>,
     last_parent: Value,
     tasks: std::collections::BTreeMap<String, Value>,
+    /// Write tool uses' previous file contents, from the PreToolUse hook.
+    write_previews: HashMap<String, (String, String)>,
 }
 impl Mapper {
     pub fn new(turn: &str) -> Self {
@@ -23,7 +25,12 @@ impl Mapper {
             usage: HashMap::new(),
             last_parent: Value::Null,
             tasks: Default::default(),
+            write_previews: HashMap::new(),
         }
+    }
+    pub fn write_preview(&mut self, tool_use: &str, path: &str, previous: String) {
+        self.write_previews
+            .insert(tool_use.into(), (path.into(), previous));
     }
     pub fn finish(self, interrupted: bool) -> Vec<pockymoe_protocol::ThreadHistoryItemDto> {
         let mut items = self.inner.finish(interrupted);
@@ -182,8 +189,18 @@ impl Mapper {
                             json!([{"type":"content","content":{"type":"text","text":block["content"].to_string()}}])
                         };
                         // Edit's exact replacement snippet is a truthful local
-                        // diff. A Write lacks its previous contents here, so do
-                        // not fabricate a whole-file addition for an overwrite.
+                        // diff. A Write is diffed against the contents the
+                        // PreToolUse hook read just before it ran (empty for a
+                        // new file); without that reading no diff is invented.
+                        if tool == "Write" && block["is_error"] != true {
+                            let id = block["tool_use_id"].as_str().unwrap_or("");
+                            if let (Some((path, old)), Some(new)) = (
+                                self.write_previews.remove(id),
+                                update["rawInput"]["content"].as_str(),
+                            ) {
+                                update["content"] = json!([{"type":"diff","path":path,"oldText":old,"newText":new}]);
+                            }
+                        }
                         if tool == "Edit" && block["is_error"] != true {
                             let input = &update["rawInput"];
                             if let (Some(path), Some(old), Some(new)) = (

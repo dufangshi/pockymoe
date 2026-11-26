@@ -22,13 +22,18 @@ for line in sys.stdin:
  v=json.loads(line)
  if v['type']=='control_request':
   r=v['request']; data={}
-  if r['subtype']=='initialize': data={'models':[{'value':'fixture','displayName':'Fixture','supportedEffortLevels':['low','high']}],'commands':[]}
+  if r['subtype']=='initialize':
+   data={'models':[{'value':'fixture','displayName':'Fixture','supportedEffortLevels':['low','high']}],'commands':[]}
+   hooks=r.get('hooks',{})
   emit({'type':'control_response','response':{'subtype':'success','request_id':v['request_id'],'response':data}})
   if r['subtype']=='interrupt': result()
  elif v['type']=='user':
   text=v['message']['content'][0].get('text','')
   if text=='crash': sys.exit(9)
   if text=='hang': continue
+  if text=='write':
+   pre=hooks['PreToolUse'][0]; assert pre['matcher']=='Write'
+   emit({'type':'control_request','request_id':'hook','request':{'subtype':'hook_callback','callback_id':pre['hookCallbackIds'][0],'tool_use_id':'w1','input':{'hook_event_name':'PreToolUse','tool_name':'Write','tool_input':{'file_path':'lab.txt','content':'after\n'}}}}); continue
   if text=='approval':
    emit({'type':'control_request','request_id':'permission','request':{'subtype':'can_use_tool','tool_name':'Bash','input':{'command':'echo fixture'},'tool_use_id':'tool'}}); continue
   if text=='stream':
@@ -37,6 +42,12 @@ for line in sys.stdin:
    assistant('Hello')
   else: assistant(text)
   result()
+ elif v['type']=='control_response' and v['response']['request_id']=='hook':
+  assert v['response']['response']=={'continue':True}
+  emit({'type':'assistant','uuid':'u-w','message':{'id':'api-w','model':'fixture','content':[{'type':'tool_use','id':'w1','name':'Write','input':{'file_path':'lab.txt','content':'after\n'}}],'usage':{'input_tokens':5,'output_tokens':1}}})
+  open('lab.txt','w').write('after\n')
+  emit({'type':'user','message':{'role':'user','content':[{'type':'tool_result','tool_use_id':'w1','content':'File written'}]}})
+  assistant('written'); result()
  elif v['type']=='control_response':
   assistant(v['response']['response']['behavior']); result()
 "#).unwrap();
@@ -114,9 +125,11 @@ async fn native_claude_permission_is_scoped_and_answered() {
             .start_turn(input, bus, CancellationToken::new())
             .await
     });
+    let mut before = vec![];
     let request = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let e = rx.recv().await.unwrap();
+            before.push(e.event_type.as_str().to_owned());
             if e.event_type == "thread.request.created" {
                 break e.payload["request"]["id"].as_str().unwrap().to_owned();
             }
@@ -124,6 +137,10 @@ async fn native_claude_permission_is_scoped_and_answered() {
     })
     .await
     .unwrap();
+    assert!(
+        before.iter().any(|t| t == "thread.turn.started"),
+        "{before:?}"
+    );
     assert!(runtime.pending_requests("other-thread").await.is_empty());
     assert_eq!(runtime.pending_requests("thread").await.len(), 1);
     runtime
@@ -133,6 +150,26 @@ async fn native_claude_permission_is_scoped_and_answered() {
     let items = task.await.unwrap().unwrap();
     assert!(items.iter().any(|i| i.text == "deny"));
     assert!(runtime.pending_requests("thread").await.is_empty());
+    // The lifecycle events the Supervisor needs, exactly as ACP emits them:
+    // started before the request, completed after the final items.
+    let mut after = vec![];
+    while let Ok(e) = rx.try_recv() {
+        after.push(e.event_type.as_str().to_owned());
+    }
+    let completed = after
+        .iter()
+        .position(|t| t == "thread.turn.completed")
+        .unwrap();
+    assert!(after[..completed]
+        .iter()
+        .any(|t| t == "thread.item.completed"));
+    assert_eq!(
+        after
+            .iter()
+            .filter(|t| *t == "thread.turn.completed")
+            .count(),
+        1
+    );
     runtime.release_session(&id).await.unwrap();
 }
 #[tokio::test]
@@ -823,4 +860,33 @@ async fn native_claude_router_delivers_permission_to_owning_backend() {
         .await
         .is_ok());
     native.release_session(&id).await.unwrap();
+}
+
+#[tokio::test]
+async fn native_claude_write_diff_comes_from_the_pre_tool_use_hook() {
+    let (dir, runtime) = fake();
+    std::fs::write(dir.path().join("lab.txt"), "before\n").unwrap();
+    let id = start(&runtime, dir.path().to_str().unwrap()).await;
+    let items = runtime
+        .start_turn(
+            turn(&id, "write"),
+            EventBus::new(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let write = items
+        .iter()
+        .find(|i| i.kind == "fileChange")
+        .expect("write row");
+    let detail = serde_json::to_string(write).unwrap();
+    assert!(
+        detail.contains("before") && detail.contains("after"),
+        "{detail}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("lab.txt")).unwrap(),
+        "after\n"
+    );
+    runtime.release_session(&id).await.unwrap();
 }

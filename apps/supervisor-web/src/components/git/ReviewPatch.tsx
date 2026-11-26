@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { PathChip, type PromptQuote } from '@pockymoe/thread-ui';
 import { FormDialog } from '../FormDialog';
 import { translate } from '@pockymoe/thread-ui/i18n';
 import { gitText as gt } from '../../lib/gitI18n';
-import { parsePatch, type ParsedPatch, type PatchLine } from './patch';
+import { parsePatch, type ParsedPatch, type PatchFile, type PatchLine } from './patch';
 import type { Write } from './GitActions';
 
 /** Keep Git's exact file header and one complete hunk, including newline markers. */
@@ -31,13 +31,32 @@ function numbered(lines: PatchLine[]) {
     return { ...line, number, gridRow };
   });
 }
-export function ReviewPatch({ patch, parsed, split, collapsed, area, write, busy, onReviewQuote, single, onSelect }: { single: boolean; onSelect(path: string): void; patch: string; parsed: ParsedPatch; split: boolean; collapsed: boolean; area: string; write: Write | undefined; busy: boolean; onReviewQuote?: ((quote: PromptQuote) => boolean) | undefined }) {
+/** A comment on selected diff lines, with the side they are on. */
+export interface LineComment { path: string; side: 'old' | 'new'; startLine: number; endLine: number; text: string; comment: string }
+export interface ReviewPatchExtras {
+  /** Takes the comment instead of `onReviewQuote` (PR review drafts need the side). */
+  onLineComment?: ((comment: LineComment) => boolean) | undefined;
+  /** A second action in the comment window, e.g. ask an agent about the lines. */
+  secondaryComment?: { label: string; run(comment: LineComment): void } | undefined;
+  commentLabel?: string | undefined;
+  /** Shown under a line in the unified view (review threads and drafts). */
+  annotation?: ((path: string, side: 'old' | 'new', line: number) => ReactNode) | undefined;
+  /** Extra controls in a file's heading row (e.g. Viewed). */
+  fileHeader?: ((file: PatchFile) => ReactNode) | undefined;
+  /** A file's closed state before the reader opens or closes it. */
+  defaultClosed?: ((path: string) => boolean) | undefined;
+  /** Hide the Find button (the host page has its own). */
+  hideFind?: boolean | undefined;
+}
+export function ReviewPatch({ patch, parsed, split, collapsed, area, write, busy, onReviewQuote, single, onSelect, onLineComment, secondaryComment, commentLabel, annotation, fileHeader, defaultClosed, hideFind }: { single: boolean; onSelect(path: string): void; patch: string; parsed: ParsedPatch; split: boolean; collapsed: boolean; area: string; write: Write | undefined; busy: boolean; onReviewQuote?: ((quote: PromptQuote) => boolean) | undefined } & ReviewPatchExtras) {
   const root = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const [finding, setFinding] = useState(false);
   const [query, setQuery] = useState('');
   const [match, setMatch] = useState(0);
   const [selection, setSelection] = useState<PromptQuote | null>(null);
+  const [selectedSide, setSelectedSide] = useState<'old' | 'new'>('new');
+  const canComment = !!(onReviewQuote || onLineComment);
   const [commenting, setCommenting] = useState(false);
   const [comment, setComment] = useState('');
   const hunks = useMemo(() => hunkPatches(patch), [patch]);
@@ -47,7 +66,7 @@ export function ReviewPatch({ patch, parsed, split, collapsed, area, write, busy
   const capture = () => {
     // Dialog pointer events bubble through React portals. Keep the selected
     // lines while editing/submitting the comment, even after DOM selection clears.
-    if (!onReviewQuote || commenting) return;
+    if (!canComment || commenting) return;
     const selected = window.getSelection();
     if (!selected || selected.isCollapsed || !root.current?.contains(selected.anchorNode) || !root.current.contains(selected.focusNode)) { setSelection(null); return; }
     const parent = (node: Node | null) => (node instanceof Element ? node : node?.parentElement)?.closest<HTMLElement>('[data-line]');
@@ -55,19 +74,20 @@ export function ReviewPatch({ patch, parsed, split, collapsed, area, write, busy
     if (!a || !b || a.dataset.file !== b.dataset.file || a.dataset.side !== b.dataset.side) return;
     const start = Math.min(Number(a.dataset.line), Number(b.dataset.line)), end = Math.max(Number(a.dataset.line), Number(b.dataset.line));
     const text = Array.from(root.current.querySelectorAll<HTMLElement>('[data-line]')).filter(node => node.dataset.file === a.dataset.file && node.dataset.side === a.dataset.side && Number(node.dataset.line) >= start && Number(node.dataset.line) <= end).map(node => node.dataset.text).join('\n');
+    setSelectedSide(a.dataset.side === 'old' ? 'old' : 'new');
     setSelection({ path: a.dataset.file!, startLine: start, endLine: end, text, from: 'user', turn: null, turnId: null, itemId: null });
   };
   return <div ref={root} className="thread-git-review thread-git-patch" data-split={split || undefined} onMouseUp={capture} onTouchEnd={capture} onKeyDown={event => {
     if ((event.metaKey || event.ctrlKey) && event.key === 'f') { event.preventDefault(); setFinding(true); queueMicrotask(() => search.current?.focus()); }
   }} tabIndex={0}>
-    <div className="thread-git-actions"><button onClick={() => { setFinding(value => !value); queueMicrotask(() => search.current?.focus()); }}>{gt('find')}</button>{selection && <button onClick={() => setCommenting(true)}>{gt('comment')}</button>}</div>
+    {(!hideFind || selection) && <div className="thread-git-actions">{!hideFind && <button onClick={() => { setFinding(value => !value); queueMicrotask(() => search.current?.focus()); }}>{gt('find')}</button>}{selection && <button className="thread-git-comment-selection" onClick={() => setCommenting(true)}>{commentLabel ?? gt('comment')}</button>}</div>}
     {finding && <div className="thread-git-actions"><input ref={search} aria-label={gt('find')} value={query} onChange={event => { setQuery(event.target.value); setMatch(0); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); move(event.shiftKey ? -1 : 1); } if (event.key === 'Escape') { event.stopPropagation(); setFinding(false); setQuery(''); } }} /><button onClick={() => move(-1)} aria-label={gt('previousMatch')}>↑</button><button onClick={() => move(1)} aria-label={gt('nextMatch')}>↓</button><button onClick={() => { setFinding(false); setQuery(''); }}>{gt('closeFind')}</button></div>}
     {parsed.preamble.length > 0 && <pre>{parsed.preamble.map(line => line.text).join('\n')}</pre>}
     {parsed.files.map(file => {
       const matches = !!query && file.lines.some(line => line.text.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
-      const open = matches || (overrides[file.path] ?? !collapsed);
+      const open = matches || (overrides[file.path] ?? (defaultClosed ? !defaultClosed(file.path) : !collapsed));
       let hunk = -1;
-      return <section key={file.path} className="thread-git-patch-file"><div className="thread-git-actions"><button aria-expanded={open} onClick={() => setOverrides(value => ({ ...value, [file.path]: !open }))}>{open ? '⌄' : '›'}</button>{!single ? <button aria-label={translate('workbench.gitViewFile', { path: file.path })} onClick={() => onSelect(file.path)}>{file.path}{file.binary ? ` · ${gt('binary')}` : ''}</button> : <PathChip path={file.path} />}</div>
+      return <section key={file.path} className="thread-git-patch-file"><div className="thread-git-actions"><button aria-expanded={open} onClick={() => setOverrides(value => ({ ...value, [file.path]: !open }))}>{open ? '⌄' : '›'}</button>{!single ? <button aria-label={translate('workbench.gitViewFile', { path: file.path })} onClick={() => onSelect(file.path)}>{file.path}{file.binary ? ` · ${gt('binary')}` : ''}</button> : <PathChip path={file.path} />}{fileHeader?.(file)}</div>
         {file.binary && <p className="thread-git-file-note">{gt(file.created ? 'binaryNew' : file.removed ? 'binaryDeleted' : 'binaryChanged')}</p>}
         {file.oldPath && <p className="thread-git-file-note">{gt(file.lines.some(line => line.kind === 'hunk') ? 'renamedFrom' : 'renamedOnly', { path: file.oldPath })}</p>}
         {!file.binary && file.created && !file.lines.some(line => line.kind === 'hunk') && <p>{gt('emptyFile')}</p>}
@@ -75,10 +95,13 @@ export function ReviewPatch({ patch, parsed, split, collapsed, area, write, busy
           if (line.kind === 'meta') return null;
           if (line.kind === 'hunk') { hunk++; const patch = hunks.get(file.path)?.[hunk]; return <span key={index} className="thread-git-line" style={{ gridRow: split ? line.gridRow : undefined }} data-kind="hunk">{line.text}{write && patch && (area === 'worktree' || area === 'index') && <span className="thread-git-actions">{(area === 'index' ? ['unstage'] as const : ['stage', 'discard'] as const).map(action => <button key={action} disabled={busy} onClick={() => { void write(`git/${action}`, { patch }).catch(() => {}); }}>{gt(action)} {gt('hunk')}</button>)}</span>}{'\n'}</span>; }
           const hit = !!query && line.text.toLocaleLowerCase().includes(query.toLocaleLowerCase());
-          return <span key={index} className="thread-git-line" style={{ gridRow: split ? line.gridRow : undefined }} data-kind={line.kind} data-match={hit || undefined} data-file={file.path} data-line={['ctx', 'add', 'del'].includes(line.kind) ? line.number : undefined} data-side={line.kind === 'del' ? 'old' : 'new'} data-text={line.text.slice(1)}>{line.text || ' '}{'\n'}</span>;
+          const side = line.kind === 'del' ? 'old' : 'new';
+          const row = <span key={index} className="thread-git-line" style={{ gridRow: split ? line.gridRow : undefined }} data-kind={line.kind} data-match={hit || undefined} data-file={file.path} data-line={['ctx', 'add', 'del'].includes(line.kind) ? line.number : undefined} data-side={side} data-text={line.text.slice(1)}>{line.text || ' '}{'\n'}</span>;
+          const note = !split && annotation && ['ctx', 'add', 'del'].includes(line.kind) ? annotation(file.path, side, line.number) : null;
+          return note ? <Fragment key={index}>{row}<span className="thread-git-annotation">{note}</span></Fragment> : row;
         })}</pre>}
       </section>;
     })}
-    {commenting && selection && <FormDialog secondary title={gt('addComment')} onClose={() => setCommenting(false)}><PathChip path={`${selection.path}:${selection.startLine}–${selection.endLine}`} /><blockquote>{selection.text}</blockquote><textarea aria-label={gt('comment')} value={comment} onChange={event => setComment(event.target.value)} /><div className="form-dialog-actions"><button onClick={() => setCommenting(false)}>{gt('cancel')}</button><button className="relay-button-primary" disabled={!comment.trim()} onClick={() => { if (onReviewQuote?.({ ...selection, comment: comment.trim() })) { setComment(''); setSelection(null); setCommenting(false); } }}>{gt('addComment')}</button></div></FormDialog>}
+    {commenting && selection && <FormDialog secondary title={commentLabel ?? gt('addComment')} onClose={() => setCommenting(false)}><PathChip path={`${selection.path}:${selection.startLine}–${selection.endLine}`} /><blockquote>{selection.text}</blockquote><textarea aria-label={gt('comment')} value={comment} onChange={event => setComment(event.target.value)} /><div className="form-dialog-actions"><button onClick={() => setCommenting(false)}>{gt('cancel')}</button>{secondaryComment && <button disabled={!comment.trim()} onClick={() => { secondaryComment.run({ path: selection.path ?? '', side: selectedSide, startLine: selection.startLine ?? 0, endLine: selection.endLine ?? 0, text: selection.text, comment: comment.trim() }); setComment(''); setSelection(null); setCommenting(false); }}>{secondaryComment.label}</button>}<button className="relay-button-primary" disabled={!comment.trim()} onClick={() => { const done = onLineComment ? onLineComment({ path: selection.path ?? '', side: selectedSide, startLine: selection.startLine ?? 0, endLine: selection.endLine ?? 0, text: selection.text, comment: comment.trim() }) : onReviewQuote?.({ ...selection, comment: comment.trim() }); if (done) { setComment(''); setSelection(null); setCommenting(false); } }}>{commentLabel ?? gt('addComment')}</button></div></FormDialog>}
   </div>;
 }

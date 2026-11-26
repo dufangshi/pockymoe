@@ -1,5 +1,6 @@
 //! Owner-authorized source-control hosts. Host tokens never enter DTOs or prompts.
 mod hosts;
+pub mod review;
 pub mod setup;
 mod watch;
 use crate::Supervisor;
@@ -23,6 +24,19 @@ struct Settings {
     hosts: BTreeMap<String, HostSettings>,
     #[serde(default)]
     writing_instructions: String,
+    /// Merge dialogs start with "Remove agent credits" ticked.
+    #[serde(default)]
+    remove_agent_credits: bool,
+    /// Review guide preferences; workspaces may override the instructions.
+    #[serde(default)]
+    guide_instructions: String,
+    #[serde(default)]
+    guide_workspace_instructions: BTreeMap<String, String>,
+    /// `auto`, `codex`, `claude` or `upstream` (prompt-only, with the diff).
+    #[serde(default)]
+    guide_source: String,
+    #[serde(default)]
+    guide_model: String,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +44,51 @@ struct HostSettings {
     kind: HostKind,
     token: String,
     enabled: bool,
+}
+fn review_settings(settings: &Settings) -> Value {
+    json!({
+        "removeAgentCredits": settings.remove_agent_credits,
+        "guideInstructions": settings.guide_instructions,
+        "guideWorkspaceInstructions": settings.guide_workspace_instructions,
+        "guideSource": if settings.guide_source.is_empty() { "auto" } else { settings.guide_source.as_str() },
+        "guideModel": settings.guide_model,
+    })
+}
+fn apply_review_settings(settings: &mut Settings, input: &Value) -> Result<()> {
+    if let Some(value) = input["removeAgentCredits"].as_bool() {
+        settings.remove_agent_credits = value;
+    }
+    if let Some(text) = input["guideInstructions"].as_str() {
+        ensure!(text.len() <= 4_000, "Guide instructions too long");
+        settings.guide_instructions = text.into();
+    }
+    if let Some(map) = input["guideWorkspaceInstructions"].as_object() {
+        ensure!(map.len() <= 200, "Too many workspace overrides");
+        let mut clean = BTreeMap::new();
+        for (workspace, text) in map {
+            let text = text.as_str().unwrap_or("");
+            ensure!(text.len() <= 4_000, "Guide instructions too long");
+            if !text.trim().is_empty() {
+                clean.insert(workspace.clone(), text.to_owned());
+            }
+        }
+        settings.guide_workspace_instructions = clean;
+    }
+    if let Some(source) = input["guideSource"].as_str() {
+        ensure!(
+            matches!(source, "auto" | "codex" | "claude" | "upstream"),
+            "Guide source must be auto, codex, claude or upstream"
+        );
+        settings.guide_source = source.into();
+    }
+    if let Some(model) = input["guideModel"].as_str() {
+        ensure!(
+            model.len() <= 200 && !model.contains(char::is_whitespace),
+            "Invalid guide model"
+        );
+        settings.guide_model = model.into();
+    }
+    Ok(())
 }
 fn settings_path(s: &Supervisor) -> PathBuf {
     crate::upstreams::directory(&s.config.database_url).join("source-control.json")
@@ -75,7 +134,7 @@ impl Supervisor {
     pub fn source_control_settings(&self) -> Result<Value> {
         let settings = load(self)?;
         Ok(
-            json!({"hosts":settings.hosts.iter().map(|(host,s)|json!({"host":host,"kind":s.kind,"enabled":s.enabled,"hasToken":!s.token.is_empty()})).collect::<Vec<_>>(),"writingInstructions":self.text_generation_settings()?["instructions"],"generation":self.text_generation_settings()?}),
+            json!({"hosts":settings.hosts.iter().map(|(host,s)|json!({"host":host,"kind":s.kind,"enabled":s.enabled,"hasToken":!s.token.is_empty()})).collect::<Vec<_>>(),"writingInstructions":self.text_generation_settings()?["instructions"],"generation":self.text_generation_settings()?,"review":review_settings(&settings)}),
         )
     }
     pub fn save_source_control_settings(&self, input: &Value) -> Result<Value> {
@@ -92,6 +151,9 @@ impl Supervisor {
             let mut generation = self.text_generation_settings()?;
             generation["instructions"] = json!(instructions);
             self.set_text_generation_settings(&generation)?;
+        }
+        if let Some(review) = input.get("review") {
+            apply_review_settings(&mut settings, review)?;
         }
         if let Some(host) = input["host"].as_str() {
             hosts::validate_host(host)?;
@@ -335,14 +397,14 @@ impl Supervisor {
         }
         Ok(json!({"repository":repo,"data":result}))
     }
-    async fn source_work_on(
+    /// Fetch a PR's head (forks included) into `target` in the checkout at `root`.
+    pub(crate) async fn fetch_pull_request_ref(
         &self,
-        thread: &str,
         root: &Path,
         repo: &Repository,
         number: u64,
-        input: &Value,
-    ) -> Result<Value> {
+        target: &str,
+    ) -> Result<String> {
         let origin = hosts::git(root, &["remote", "get-url", "origin"])?;
         let origin_repo = Repository::parse(origin.trim())?;
         let remote = if origin_repo.host == repo.host
@@ -392,8 +454,25 @@ impl Supervisor {
             reference.starts_with("refs/") && !reference.contains([':', '\n', '\r']),
             "Invalid PR ref"
         );
-        let target = format!("refs/pockymoe/pull-requests/{number}");
         hosts::git(root, &["fetch", &remote, &format!("+{reference}:{target}")])?;
+        Ok(target.to_owned())
+    }
+    async fn source_work_on(
+        &self,
+        thread: &str,
+        root: &Path,
+        repo: &Repository,
+        number: u64,
+        input: &Value,
+    ) -> Result<Value> {
+        let target = self
+            .fetch_pull_request_ref(
+                root,
+                repo,
+                number,
+                &format!("refs/pockymoe/pull-requests/{number}"),
+            )
+            .await?;
         let name = input["name"]
             .as_str()
             .map(str::to_owned)
@@ -503,7 +582,7 @@ impl Supervisor {
             found.push(json!({"host":hostname,"kind":kind,"enabled":enabled,"authenticated":authenticated,"hasToken":settings.hosts.get(&hostname).is_some_and(|h|!h.token.is_empty())}));
         }
         Ok(
-            json!({"hosts":found,"writingInstructions":self.text_generation_settings()?["instructions"],"generation":self.text_generation_settings()?}),
+            json!({"hosts":found,"writingInstructions":self.text_generation_settings()?["instructions"],"generation":self.text_generation_settings()?,"review":review_settings(&settings)}),
         )
     }
     pub async fn source_cleanup_suggestions(&self, thread: &str) -> Result<Value> {

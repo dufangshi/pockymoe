@@ -1,4 +1,7 @@
-import {fireEvent,render,screen,waitFor} from '@testing-library/react';
+import {fireEvent,render as baseRender,screen,waitFor} from '@testing-library/react';
+import type {ReactElement} from 'react';
+import {MemoryRouter} from 'react-router-dom';
+const render=(ui:ReactElement)=>baseRender(ui,{wrapper:MemoryRouter});
 import {beforeEach,expect,it,vi} from 'vitest';
 import {PullRequestsPanel} from './PullRequestsPanel';
 const request=vi.hoisted(()=>vi.fn());const action=vi.hoisted(()=>vi.fn());

@@ -343,6 +343,11 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
         name: "thread_source_links",
         apply: crate::source_control::migrate,
     },
+    Migration {
+        version: 30,
+        name: "pull_request_review",
+        apply: crate::source_control::review::store::migrate,
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them

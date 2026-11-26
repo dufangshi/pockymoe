@@ -125,12 +125,14 @@ export function shortPath(path: string, max = 44) {
 export function ThreadCreateForm({
   initialWorkspaceId,
   initialTitle = '',
+  initialPrompt = '',
   onCreated,
   onCancel,
   variant = 'panel',
 }: {
   initialWorkspaceId?: string | null | undefined;
   initialTitle?: string | null | undefined;
+  initialPrompt?: string | null | undefined;
   onCreated: (thread: ThreadDto) => void;
   onCancel?: () => void;
   variant?: 'panel' | 'dialog';
@@ -170,7 +172,7 @@ export function ThreadCreateForm({
   const [title, setTitle] = useState(() => initialTitle ?? '');
   // The first prompt, optional: written here, the thread is created and sent in
   // one step (quick start); left empty, the thread opens with an empty composer.
-  const [firstPrompt, setFirstPrompt] = useState('');
+  const [firstPrompt, setFirstPrompt] = useState(() => (initialPrompt ?? '').slice(0, 20_000));
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [runtimeBusyProvider, setRuntimeBusyProvider] = useState<AgentBackendIdDto | null>(null);

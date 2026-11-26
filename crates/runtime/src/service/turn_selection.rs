@@ -86,7 +86,7 @@ impl Supervisor {
             let mut rows = stmt
                 .query_map(params![thread_id, ids, limit], |row| {
                     Ok((
-                        u32::try_from(row.get::<_, i64>(11)?).unwrap_or(u32::MAX),
+                        u32::try_from(row.get::<_, i64>("number")?).unwrap_or(u32::MAX),
                         turn_meta_row(row, &catalog)?,
                     ))
                 })?
