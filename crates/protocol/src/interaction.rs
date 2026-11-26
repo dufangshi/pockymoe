@@ -6,6 +6,7 @@ pub const THREAD_INTERACTION_SKILL: &str =
 /// Topic guides behind the short skill: `pockymoe guide TOPIC`.
 /// (name, one-line summary, text)
 pub const THREAD_INTERACTION_GUIDES: &[(&str, &str, &str)] = &[
+    ("pr", "Pull requests, issues and PR watch", include_str!("../../../skills/thread-interaction/guides/pr.md")),
     (
         "environments",
         "Propose isolation, optional credential mappings and same-thread migration for owner approval",

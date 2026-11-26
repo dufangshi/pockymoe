@@ -67,9 +67,11 @@ pub fn router(state: AppState) -> Router {
 pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::Hub>>) -> Router {
     state.start_interaction_worker();
     crate::mcp::start(&state);
+    state.start_source_control_worker();
     crate::environments::start(state.clone());
     crate::peer_send::start_outbox_worker(&state);
     let router = Router::new()
+        .merge(crate::source_control::routes())
         .merge(crate::environments::routes())
         .merge(crate::mcp::routes())
         .merge(crate::treer::routes())

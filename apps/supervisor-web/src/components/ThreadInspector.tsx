@@ -1,3 +1,4 @@
+import { PullRequestsPanel } from './git/pr/PullRequestsPanel';
 import { useCallback, useEffect, useState } from 'react';
 import { Box, GitBranch } from 'lucide-react';
 import type { WorkbenchInspector, WorkbenchToolPanel } from '@pockymoe/thread-ui';
@@ -70,7 +71,7 @@ export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, 
     // Keyed by device and thread: switching threads never shows the previous
     // thread's diff, request or decision target.
     content: shown === 'git'
-      ? <ThreadGitPanel key={`git:${scope}:${turnId ?? ''}`} initialTurnId={turnId} canWrite={canManage} running={thread.status === 'running' || thread.status === 'recovering'} onReviewQuote={onReviewQuote} onAskAgent={onAskAgent} threadId={thread.id} deviceId={deviceId} refreshKey={thread.updatedAt} />
+      ? <ThreadGitPanel key={`git:${scope}:${turnId ?? ''}`} initialTurnId={turnId} canWrite={canManage} running={thread.status === 'running' || thread.status === 'recovering'} onReviewQuote={onReviewQuote} onAskAgent={onAskAgent} threadId={thread.id} deviceId={deviceId} refreshKey={thread.updatedAt} renderPullRequests={canManage ? props => <PullRequestsPanel {...props} deviceId={deviceId} /> : undefined} />
       : <ThreadIsolationPanel key={`isolation:${scope}`} thread={thread} deviceId={deviceId} canManage={canManage} />,
     onClose: () => setView(null),
   } : null;

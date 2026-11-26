@@ -7,6 +7,7 @@ mod legacy_env;
 mod mcp;
 mod models;
 mod plugins;
+mod source_control;
 mod threads;
 mod worktrees;
 use anyhow::Result;
@@ -500,6 +501,10 @@ enum Commands {
     },
     /// Manage a thread's Git worktrees and inspect its actual working directory.
     Worktree(worktrees::WorktreeArgs),
+    /// Pull requests using the owner’s host sign-in.
+    Pr(source_control::SourceControlArgs),
+    /// Browse, create, comment on and link issues.
+    Issue(source_control::SourceControlArgs),
     /// Inspect and restore turn snapshots; restores require an idle checkout.
     Checkpoint(checkpoints::CheckpointArgs),
     /// Create, contact, and inspect local threads or same-owner device peers.
@@ -869,6 +874,18 @@ async fn run() -> Result<()> {
                 Err(_) => pockymoe_protocol::THREAD_INTERACTION_SKILL.to_owned(),
             };
             println!("{text}");
+        }
+        Commands::Pr(args) => {
+            let value = threads::Client::new(cli.connection)?
+                .source_control(args, false)
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
+        Commands::Issue(args) => {
+            let value = threads::Client::new(cli.connection)?
+                .source_control(args, true)
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
         }
         Commands::Checkpoint(args) => {
             let value = threads::Client::new(cli.connection)?

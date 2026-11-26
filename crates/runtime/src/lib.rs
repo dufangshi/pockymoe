@@ -70,6 +70,7 @@ mod pricing;
 mod relay_notifications;
 pub mod subscription;
 
+pub mod source_control;
 pub mod stats;
 
 mod usage_accounting;

@@ -1016,3 +1016,11 @@ http, permission denied) it opens a field
 to paste into and edit before sending.
 
 See [Switching harnesses](harness-switching.md) for changing an existing thread’s agent with a preview and portable history.
+
+## Pull request wakes
+
+PR watches deliver a task through the thread queue every time a watched host
+reports a relevant change. The prompt names the PR and commands for inspecting
+it; it never assumes a merge or check result authorizes an external write.
+Watches persist across restarts and are restricted to root threads. See
+[source control](source-control.md#watching-a-pr) for hosts and stop rules.

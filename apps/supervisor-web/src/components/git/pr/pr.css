@@ -1,0 +1,26 @@
+.pr-panel { padding: 12px; display: grid; gap: 12px; min-width: 0; color: var(--theme-fg); }
+.pr-panel button, .pr-panel input, .pr-panel textarea, .pr-panel [role=combobox] { border: 1px solid var(--theme-border); border-radius: 6px; padding: 7px 9px; background: var(--theme-bg); color: inherit; min-height: 36px; }
+.pr-panel button:disabled { opacity: .5; }
+.pr-panel button { cursor: pointer; }
+.pr-panel input, .pr-panel textarea { width: 100%; min-width: 0; }
+.pr-panel textarea { min-height: 80px; }
+.pr-panel label { display: grid; gap: 5px; font-size: 13px; }
+.pr-panel .pr-checkbox { display: flex; align-items: center; }
+.pr-checkbox input { width: auto; min-height: auto; }
+.pr-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pr-toolbar input { flex: 1; min-width: 130px; }
+.pr-toolbar strong { flex: 1; font-size: 13px; overflow-wrap: anywhere; }
+.pr-form { display: grid; gap: 10px; border: 1px solid var(--theme-border); padding: 10px; border-radius: 8px; }
+.pr-panel ul { display: grid; gap: 6px; list-style: none; padding: 0; }
+.pr-panel li { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.pr-panel .pr-item { flex: 1; text-align: start; overflow-wrap: anywhere; min-width: 0; }
+.pr-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; font-size: 12px; }
+.pr-panel .pr-danger { color: var(--theme-danger, #c33); }
+.pr-panel [role=alert] { color: var(--theme-danger, #c33); overflow-wrap: anywhere; }
+@media (hover: hover) { .pr-panel button:hover { background: var(--theme-bg-muted); } }
+
+.pr-panel .pr-result { display: grid; padding: 8px; border-bottom: 1px solid var(--theme-border); overflow-wrap: anywhere; }
+
+.pr-panel .pr-primary { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); border-color: var(--theme-accent-solid); }
+
+@media (hover: hover) { .pr-panel .pr-primary:hover { background: var(--theme-accent-solid-hover); } }

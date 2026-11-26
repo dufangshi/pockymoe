@@ -170,6 +170,13 @@ pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool
         return true;
     }
     let pathname = path.split('?').next().unwrap_or(path);
+    // Host APIs spend the owner's sign-in, including private repository reads.
+    if pathname.starts_with("/api/source-control/")
+        || pathname.contains("/source-control/")
+        || pathname.ends_with("/pull-requests")
+    {
+        return false;
+    }
     // No share or grant ever reaches a terminal, read or control.
     if terminal_route(pathname) {
         return false;
@@ -1524,6 +1531,55 @@ mod native_protocol_access_tests {
                     method,
                     "/api/harness-protocols/settings"
                 ));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod source_control_access_tests {
+    use super::*;
+    #[test]
+    fn source_control_endpoints_are_owner_only_for_every_verb() {
+        for path in [
+            "/api/source-control/settings",
+            "/api/source-control/scan",
+            "/api/source-control/clone",
+            "/api/source-control/jobs/fixture",
+            "/api/threads/root/pull-requests",
+            "/api/threads/root/source-control/show",
+            "/api/threads/root/source-control/merge",
+            "/api/threads/root/source-control/watch",
+            "/api/threads/root/source-control/link",
+            "/api/threads/root/source-control/unlink",
+            "/api/threads/root/source-control/list",
+            "/api/threads/root/source-control/create",
+            "/api/threads/root/source-control/update",
+            "/api/threads/root/source-control/comment",
+            "/api/threads/root/source-control/checks",
+            "/api/threads/root/source-control/reviews",
+            "/api/threads/root/source-control/comments",
+            "/api/threads/root/source-control/files",
+            "/api/threads/root/source-control/commits",
+            "/api/threads/root/source-control/ready",
+            "/api/threads/root/source-control/autoMerge",
+            "/api/threads/root/source-control/unwatch",
+            "/api/threads/root/source-control/watchStatus",
+            "/api/threads/root/source-control/workOn",
+            "/api/threads/root/source-control/generate",
+            "/api/threads/root/source-control/publish",
+            "/api/threads/root/source-control/cleanup",
+            "/api/threads/root/source-control/removeWorktree",
+        ] {
+            for method in ["GET", "POST", "PUT", "DELETE"] {
+                assert!(access_allows(&owner_access(), method, path));
+                for scope in ["device", "workspace", "thread"] {
+                    let mut share = owner_access();
+                    share.kind = "share";
+                    share.scope = scope.into();
+                    share.thread_id = Some("root".into());
+                    assert!(!access_allows(&share, method, path), "{method} {path}");
+                }
             }
         }
     }

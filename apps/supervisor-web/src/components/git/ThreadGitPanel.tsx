@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { GitActions, CommitBox, useGitWrite } from './GitActions';
@@ -22,7 +23,7 @@ export interface ThreadGitPanelProps {
   canWrite?: boolean;
   initialTurnId?: string | undefined;
   onReviewQuote?: ((quote: import('@pockymoe/thread-ui').PromptQuote) => boolean) | undefined;
-  renderPullRequests?: (props: { threadId: string; workingCopyId?: string }) => ReactNode;
+  renderPullRequests?: ((props: { threadId: string; workingCopyId?: string }) => ReactNode) | undefined;
   deviceId?: string | null | undefined;
   /** Existing thread updates invalidate the open panel; no polling is started. */
   refreshKey?: string | undefined;
@@ -148,7 +149,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey, running = false
     return () => controller.abort();
     // areaScope is derived from selected, area and diffBase.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId, deviceId, selected, context, area, path, diffBase, offset, visible, turnId, preferences.whitespace]);
+  }, [threadId, deviceId, selected, context, area, path, diffBase, offset, visible, turnId, preferences.whitespace, view]);
 
   const workingCopy = context?.workingCopies.find(copy => copy.id === selected);
   const manyCopies = (context?.workingCopies.length ?? 0) > 1;
