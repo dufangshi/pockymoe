@@ -714,29 +714,21 @@ impl Adapter {
             !self.token.is_empty(),
             "Sign in to the source-control host in Settings"
         );
+        // Loopback hosts (throwaway local Forgejo or GitLab) speak plain HTTP.
+        let scheme = if self.repo.host.split(':').next().is_some_and(|h| {
+            h == "localhost" || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+        }) {
+            "http"
+        } else {
+            "https"
+        };
         let base = match self.repo.kind {
             HostKind::Github if self.repo.host == "github.com" => "https://api.github.com".into(),
             HostKind::Github if path == "graphql" => format!("https://{}/api", self.repo.host),
             HostKind::Github => format!("https://{}/api/v3", self.repo.host),
-            HostKind::Gitlab if path == "graphql" => format!("https://{}/api", self.repo.host),
-            HostKind::Gitlab => format!("https://{}/api/v4", self.repo.host),
-            HostKind::Forgejo => format!(
-                "{}://{}/api/v1",
-                if self
-                    .repo
-                    .host
-                    .split(':')
-                    .next()
-                    .is_some_and(|h| h == "localhost"
-                        || h.parse::<std::net::IpAddr>()
-                            .is_ok_and(|ip| ip.is_loopback()))
-                {
-                    "http"
-                } else {
-                    "https"
-                },
-                self.repo.host
-            ),
+            HostKind::Gitlab if path == "graphql" => format!("{scheme}://{}/api", self.repo.host),
+            HostKind::Gitlab => format!("{scheme}://{}/api/v4", self.repo.host),
+            HostKind::Forgejo => format!("{scheme}://{}/api/v1", self.repo.host),
             HostKind::Bitbucket => "https://api.bitbucket.org/2.0".into(),
             HostKind::Azure => format!("https://{}", self.repo.host),
         };

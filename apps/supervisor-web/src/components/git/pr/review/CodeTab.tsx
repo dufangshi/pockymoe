@@ -99,7 +99,7 @@ export function CodeTab({ detail, files, filesError, drafts, shownHead, act, bus
         annotation={annotation} fileHeader={fileHeader} defaultClosed={file => viewed.get(file) === 'viewed'} />}
     </section>
     {fileComment && <FormDialog secondary title={rt('fileComment')} onClose={() => setFileComment(null)}>
-      <form className="pr-form" onSubmit={event => { event.preventDefault(); void saveDraft({ kind: 'file', path: fileComment.path, body: fileComment.body, headSha: shownHead }).then(ok => { if (ok) setFileComment(null); }); }}>
+      <form className="pr-review-form" onSubmit={event => { event.preventDefault(); void saveDraft({ kind: 'file', path: fileComment.path, body: fileComment.body, headSha: shownHead }).then(ok => { if (ok) setFileComment(null); }); }}>
         <PathChip path={fileComment.path} />
         <textarea aria-label={rt('comment')} autoFocus value={fileComment.body} onChange={event => setFileComment({ ...fileComment, body: event.target.value })} />
         <div className="form-dialog-actions"><button type="button" data-dialog-cancel onClick={() => setFileComment(null)}>{rt('cancel')}</button><button type="submit" className="relay-button-primary" disabled={!fileComment.body.trim()}>{rt('addToReview')}</button></div>

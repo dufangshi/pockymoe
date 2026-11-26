@@ -27,17 +27,17 @@ export function ReviewSettings({ apiRoot, value, busy, save }: { apiRoot: string
   useEffect(() => { setModel(current.guideModel); }, [current.guideModel]);
   useEffect(() => { void request<WorkspaceDto[]>(`${apiRoot}/workspaces`).then(setWorkspaces).catch(() => {}); }, [apiRoot]);
   const review = (patch: Partial<ReviewSettingsValue>) => save({ review: patch });
-  return <section className="pr-form" aria-label={rt('settingsTitle')}>
+  return <section className="pr-review-form pr-review-settings" aria-label={rt('settingsTitle')}>
     <strong>{rt('settingsTitle')}</strong>
-    <label className="pr-checkbox"><input type="checkbox" checked={current.removeAgentCredits} disabled={busy} onChange={event => { void review({ removeAgentCredits: event.target.checked }); }} />{rt('removeCreditsDefault')}</label>
+    <label className="pr-checkbox pr-check"><input type="checkbox" checked={current.removeAgentCredits} disabled={busy} onChange={event => { void review({ removeAgentCredits: event.target.checked }); }} />{rt('removeCreditsDefault')}</label>
     <p className="settings-hint">{rt('removeCreditsHint')}</p>
     <label>{rt('guideSource')}<Select value={current.guideSource} onValueChange={source => { void review({ guideSource: source as ReviewSettingsValue['guideSource'] }); }}
       options={[{ value: 'auto', label: rt('sourceAuto') }, { value: 'codex', label: 'Codex' }, { value: 'claude', label: 'Claude Code' }, { value: 'upstream', label: rt('sourceUpstream') }]} /></label>
-    <form className="pr-form" onSubmit={event => { event.preventDefault(); void review({ guideModel: model.trim() }); }}>
+    <form className="pr-review-form" onSubmit={event => { event.preventDefault(); void review({ guideModel: model.trim() }); }}>
       <label>{rt('guideModel')}<input value={model} spellCheck={false} autoCapitalize="off" onChange={event => setModel(event.target.value)} /></label>
       <button className="pr-primary" disabled={busy || model.trim() === current.guideModel}>{rt('save')}</button>
     </form>
-    <form className="pr-form" onSubmit={event => {
+    <form className="pr-review-form" onSubmit={event => {
       event.preventDefault();
       void (scope ? review({ guideWorkspaceInstructions: { ...current.guideWorkspaceInstructions, [scope]: text } }) : review({ guideInstructions: text }));
     }}>

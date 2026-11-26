@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Hourglass, ChevronLeft, ChevronRight, CircleCheck, CircleDashed, CircleMinus, CircleX, ExternalLink, MessageCircleQuestion, RotateCw, TriangleAlert } from 'lucide-react';
 import { CopyButton, ErrorMark, PathChip } from '@pockymoe/thread-ui';
 import { ReviewPatch, type LineComment } from '../../ReviewPatch';
@@ -64,6 +64,17 @@ export function GuideTab({ detail, guide, shownHead, act, busy, saveDraft, onAsk
   const [read, setRead] = useState<Set<number>>(() => new Set([0]));
   const stop: GuideStop | undefined = stops[Math.min(index, stops.length - 1)];
   const go = (next: number) => { setIndex(next); setRead(value => new Set(value).add(next)); };
+  // J and K step through the stops, as in the host review tools, unless typing.
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (event.metaKey || event.ctrlKey || event.altKey || target?.closest('input, textarea, select, [contenteditable="true"], [role="dialog"]')) return;
+      if (event.key === 'j' && index < stops.length - 1) go(index + 1);
+      if (event.key === 'k' && index > 0) go(index - 1);
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  });
   const running = guide.run?.state === 'running';
   const failed = guide.run?.state === 'failed' ? guide.run : null;
   const comment = (input: LineComment) => { void saveDraft({ kind: 'line', path: input.path, side: input.side === 'old' ? 'left' : 'right', line: input.endLine, startLine: input.startLine === input.endLine ? null : input.startLine, body: input.comment, headSha: shownHead }); return true; };
@@ -89,8 +100,8 @@ export function GuideTab({ detail, guide, shownHead, act, busy, saveDraft, onAsk
     {stop && <article className="pr-stop" aria-label={stop.title}>
       <header className="pr-stop-head">
         <span className="pr-dim">{rt('stopOf', { i: index + 1, n: stops.length })}</span>
-        <button type="button" className="pr-icon" disabled={index === 0} onClick={() => go(index - 1)} aria-label={rt('previousStop')} title={rt('previousStop')}><ChevronLeft aria-hidden="true" /></button>
-        <button type="button" className="pr-icon" disabled={index >= stops.length - 1} onClick={() => go(index + 1)} aria-label={rt('nextStop')} title={rt('nextStop')}><ChevronRight aria-hidden="true" /></button>
+        <button type="button" className="pr-icon" disabled={index === 0} onClick={() => go(index - 1)} aria-label={rt('previousStop')} title={`${rt('previousStop')} (K)`}><ChevronLeft aria-hidden="true" /></button>
+        <button type="button" className="pr-icon" disabled={index >= stops.length - 1} onClick={() => go(index + 1)} aria-label={rt('nextStop')} title={`${rt('nextStop')} (J)`}><ChevronRight aria-hidden="true" /></button>
       </header>
       <h3>{stop.title}</h3>
       {stop.summary && <p>{stop.summary}</p>}

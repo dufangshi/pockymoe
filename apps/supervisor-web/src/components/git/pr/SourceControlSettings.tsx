@@ -32,6 +32,6 @@ function Settings({apiRoot}:{apiRoot:string}) {
     <CloneRepository apiRoot={apiRoot}/>
     <label>{t('generationSource')}<Select value={settings.generation?.source||'auto'} onValueChange={source=>{void save({generation:{...settings.generation,source}});}} options={[{value:'auto',label:t('automatic')},{value:'codex',label:'Codex'},{value:'claude',label:'Claude'}]}/></label>
     <form className="pr-form" onSubmit={e=>{e.preventDefault();void save({writingInstructions:instructions});}}><label>{t('instructions')}<textarea value={instructions} onChange={e=>setInstructions(e.target.value)}/></label><p className="settings-note">{t('instructionsHint')}</p><button className="pr-primary" disabled={busy||instructions===settings.writingInstructions}>{t('save')}</button></form>
-    <ReviewSettings apiRoot={apiRoot} value={settings.review} busy={busy} save={save}/>
+    {settings.review&&<ReviewSettings apiRoot={apiRoot} value={settings.review} busy={busy} save={save}/>}
   </section>;
 }

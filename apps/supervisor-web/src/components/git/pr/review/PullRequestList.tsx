@@ -88,7 +88,7 @@ export function PullRequestList({ page, loading, error, query, onQuery, views, o
       </li>)}
     </ul>
     {naming && <FormDialog secondary title={naming.id ? rt('renameView') : rt('saveView')} description={rt('viewHint')} onClose={() => setNaming(null)}>
-      <form className="pr-form" onSubmit={event => { event.preventDefault(); void saveNamed(); }}>
+      <form className="pr-review-form" onSubmit={event => { event.preventDefault(); void saveNamed(); }}>
         <label>{rt('viewName')}<input autoFocus maxLength={80} required value={naming.name} onChange={event => setNaming({ ...naming, name: event.target.value })} /></label>
         <div className="form-dialog-actions"><button type="button" data-dialog-cancel onClick={() => setNaming(null)}>{rt('cancel')}</button><button type="submit" className="relay-button-primary" disabled={!naming.name.trim()}>{rt('save')}</button></div>
       </form>

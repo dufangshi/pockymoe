@@ -161,11 +161,11 @@
 .pr-thread-actions, .pr-reply-actions, .pr-stop-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .pr-thread-actions { justify-content: flex-start; }
 .pr-reply, .pr-composer { display: grid; gap: 6px; }
-.pr-reply textarea, .pr-composer textarea, .pr-form textarea { width: 100%; min-height: 72px; resize: vertical; padding: 7px 9px; border: 1px solid var(--theme-border); border-radius: 7px; background: var(--theme-surface); color: inherit; font: inherit; }
-.pr-form { display: grid; gap: 10px; min-width: 0; }
-.pr-form label { display: grid; gap: 5px; font-size: 13px; }
-.pr-form label.pr-check { display: flex; }
-.pr-form input:not([type='checkbox']) { min-height: 36px; padding: 0 9px; border: 1px solid var(--theme-border); border-radius: 7px; background: var(--theme-surface); color: inherit; font: inherit; }
+.pr-reply textarea, .pr-composer textarea, .pr-review-form textarea { width: 100%; min-height: 72px; resize: vertical; padding: 7px 9px; border: 1px solid var(--theme-border); border-radius: 7px; background: var(--theme-surface); color: inherit; font: inherit; }
+.pr-review-form { display: grid; gap: 10px; min-width: 0; }
+.pr-review-form label { display: grid; gap: 5px; font-size: 13px; }
+.pr-review-form label.pr-check { display: flex; }
+.pr-review-form input:not([type='checkbox']) { min-height: 36px; padding: 0 9px; border: 1px solid var(--theme-border); border-radius: 7px; background: var(--theme-surface); color: inherit; font: inherit; }
 .pr-events { display: flex; }
 .pr-events > button { flex: 1; }
 .pr-pending-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; }
@@ -258,3 +258,8 @@
 .pr-body pre code { padding: 0; background: none; }
 .pr-body h1, .pr-body h2, .pr-body h3, .pr-body h4 { margin: .6em 0 .3em; font-size: 1em; font-weight: 700; }
 .pr-body blockquote { margin: .4em 0; padding-left: 10px; border-left: 3px solid var(--theme-border); color: var(--theme-fg-muted); }
+
+/* Settings → Source control → Pull request review, inside the PR panel's styles. */
+.pr-review-settings { padding-top: 12px; border-top: 1px solid var(--theme-border); }
+.pr-review-settings > form { gap: 8px; }
+.pr-review-settings .settings-hint { margin: -4px 0 0; font-size: 12px; color: var(--theme-fg-muted); }

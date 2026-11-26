@@ -231,7 +231,7 @@ function SubmitDialog({ drafts, events, head, moved, busy, host, onSummary, onDi
   // The summary is a draft too: kept on the device while the window is closed.
   const persist = () => { if (body !== saved) onSummary(body); };
   return <FormDialog secondary title={rt('submitReview')} description={rt('reviewHead', { sha: head.slice(0, 7) })} onClose={() => { persist(); onClose(); }} busy={busy}>
-    <form className="pr-form" onSubmit={eventObject => { eventObject.preventDefault(); persist(); void onSubmit(event, body); }}>
+    <form className="pr-review-form" onSubmit={eventObject => { eventObject.preventDefault(); persist(); void onSubmit(event, body); }}>
       <div className="product-segmented pr-events" role="radiogroup" aria-label={rt('reviewButton')}>
         {events.map(item => <button key={item} type="button" role="radio" className="product-segment" aria-checked={event === item} data-event={item} onClick={() => setEvent(item)}>{rt(EVENT_LABEL[item])}</button>)}
       </div>
@@ -264,7 +264,7 @@ function MergeDialog({ data, head, moved, busy, deviceId, onClose, onMerge, onLo
     return () => { alive = false; };
   }, [strip, canStrip, method, deviceId, detail.url]);
   return <FormDialog secondary title={rt('mergeTitle', { n: detail.number })} description={rt('mergeHead', { sha: head.slice(0, 7) })} onClose={onClose} busy={busy}>
-    <form className="pr-form" onSubmit={event => { event.preventDefault(); void onMerge({ method, removeAgentCredits: strip && canStrip }, false); }}>
+    <form className="pr-review-form" onSubmit={event => { event.preventDefault(); void onMerge({ method, removeAgentCredits: strip && canStrip }, false); }}>
       {detail.mergeMethods.length > 1 && <label>{rt('mergeMethod')}<Select value={method} onValueChange={setMethod} options={detail.mergeMethods.map(item => ({ value: item, label: rt(METHOD_LABEL[item] ?? 'mergeCommit') }))} /></label>}
       {detail.capabilities.removeCredits && <label className="pr-check"><input type="checkbox" checked={strip && canStrip} disabled={!canStrip} onChange={event => setStrip(event.target.checked)} />{rt('removeCredits')}</label>}
       <p className="pr-dim">{canStrip ? rt('removeCreditsHint') : detail.capabilities.removeCredits ? rt('removeCreditsRebase') : null}</p>
@@ -286,7 +286,7 @@ function AskDialog({ context, data, onClose, onSend }: { context: string; data: 
   const quoted = context.includes('\n\n') ? context.slice(0, context.lastIndexOf('\n\n')) : context;
   const prompt = `${data.detail.url}\n${quoted}\n\n${question}`.trim();
   return <FormDialog secondary title={rt('askTitle')} onClose={onClose}>
-    <form className="pr-form" onSubmit={event => { event.preventDefault(); onSend(target, prompt); }}>
+    <form className="pr-review-form" onSubmit={event => { event.preventDefault(); onSend(target, prompt); }}>
       {quoted && <pre className="pr-ask-context">{quoted}</pre>}
       <label>{rt('askQuestion')}<textarea autoFocus value={question} onChange={event => setQuestion(event.target.value)} /></label>
       <label>{rt('askTarget')}<Select value={target} onValueChange={setTarget} options={[...data.linkedThreads.map(thread => ({ value: thread.id, label: thread.title })), ...(data.workspace?.id ? [{ value: 'new', label: rt('askNew') }] : [])]} /></label>
