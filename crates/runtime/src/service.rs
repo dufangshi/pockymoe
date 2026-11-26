@@ -3343,6 +3343,10 @@ impl Supervisor {
                 cancel.clone(),
             )
             .await;
+        // The runtime has settled. A detach/stop while checkpoint I/O finishes
+        // must not turn its completed result into an interruption (and change
+        // durable notification outcomes that observers already saw).
+        let interrupted = cancel.is_cancelled();
         self.capture_turn_checkpoints_async(&thread.id, &turn_id, "end")
             .await;
         bus.close_turn();
@@ -3355,7 +3359,6 @@ impl Supervisor {
             .is_some_and(|err| err.is::<crate::actor::ExecutionUncertain>());
         match result {
             Ok(items) => {
-                let interrupted = cancel.is_cancelled();
                 let status = if interrupted {
                     "interrupted"
                 } else {
@@ -3375,14 +3378,14 @@ impl Supervisor {
                 self.persist_turn_result(
                     &thread.id,
                     &turn_id,
-                    if cancel.is_cancelled() {
+                    if interrupted {
                         "interrupted"
                     } else if uncertain {
                         "recovering"
                     } else {
                         "failed"
                     },
-                    if cancel.is_cancelled() {
+                    if interrupted {
                         None
                     } else {
                         Some(error.as_str())
@@ -3394,7 +3397,7 @@ impl Supervisor {
         }
         live.remove(&thread.id);
         drop(live);
-        let thread_status = if cancel.is_cancelled() {
+        let thread_status = if interrupted {
             "interrupted"
         } else if uncertain {
             "recovering"

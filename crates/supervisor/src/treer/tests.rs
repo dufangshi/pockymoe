@@ -1145,6 +1145,13 @@ async fn notifications_retry_durably_using_only_the_live_bound_identity() {
     // the completed task. A changed socket instance supplies the current identity.
     ws.close(None).await.unwrap();
     wait_until(|| f.hub.live.lock().unwrap().is_empty()).await;
+    // Detach may overlap end-checkpoint I/O after the harness completed. It
+    // must not change the settled outcome or consume the pending done notice.
+    assert_eq!(
+        f.hub.submission(&root, &id).unwrap().unwrap()["state"],
+        "done"
+    );
+    assert_eq!(delivery_state(&f.hub, &id), scheduled);
     let dir = std::mem::replace(&mut f._dir, tempfile::tempdir().unwrap());
     let old_state = Arc::downgrade(&f.hub.state);
     let server = std::mem::replace(&mut f.server, tokio::spawn(async {}));
