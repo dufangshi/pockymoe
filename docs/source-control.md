@@ -73,9 +73,9 @@ Managed worktree creation copies files, applies sparse patterns, initializes
 submodules and runs commands in order. Copy paths must stay inside the source and
 destination checkouts; existing files are never overwritten. Commands have bounded
 output and a two-minute deadline each. The creation response includes setup output
-or the failure and retains the registered worktree for inspection. Repository
-setup commands are executable project configuration; review them before creating
-a worktree. Setup in isolated environments returns an explicit unavailable result.
+or the failure and retains the registered worktree for inspection. Setup output and errors are also
+shown after the PR panel's Create worktree action. Repository setup commands are
+executable project configuration; review them before creating a worktree. Setup in isolated environments returns an explicit unavailable result.
 
 `pockymoe pr cleanup` suggests managed worktrees merged into the default remote
 branch, or created from a PR that is now closed/merged, when no other thread is

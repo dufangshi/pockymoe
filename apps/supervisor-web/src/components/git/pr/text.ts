@@ -1,5 +1,6 @@
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 const messages = {
+  setupFailed: ['工作副本已创建，初始化失败', 'Worktree created; setup failed'], setupComplete: ['工作副本初始化完成', 'Worktree setup completed'],
   linkedItems: ['关联的 PR 与议题', 'Linked PRs and issues'],
   open: ['开放', 'Open'], closed: ['已关闭', 'Closed'], merged: ['已合并', 'Merged'],
   conflicts: ['存在合并冲突', 'Merge conflicts'], mergeable: ['可以合并', 'Mergeable'], search: ['搜索', 'Search'],

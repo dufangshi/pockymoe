@@ -20,3 +20,12 @@ it('preserves comment drafts after a failed host request',async()=>{
  fireEvent.change(screen.getByLabelText('Comment'),{target:{value:'Keep this draft'}});fireEvent.click(screen.getByRole('button',{name:/^Comment$/}));
  await screen.findByText('Error: Host unavailable');expect(screen.getByDisplayValue('Keep this draft')).toBeTruthy();
 });
+it('shows setup failure and output while retaining the created worktree result',async()=>{
+ render(<PullRequestsPanel threadId="thread"/>);fireEvent.click(await screen.findByRole('button',{name:'a/b · PR #42'}));await screen.findByDisplayValue('Review me');
+ action.mockResolvedValueOnce({workingCopy:{path:'/tmp/new-copy'},setup:{completed:false,error:'Setup command 1 failed',output:['Installing dependencies','Missing local fixture']}});
+ fireEvent.click(screen.getByRole('button',{name:'Create worktree'}));
+ await screen.findByText('Worktree created; setup failed');
+ expect(screen.getByText('Setup command 1 failed')).toBeTruthy();
+ expect(screen.getByText(/Installing dependencies/)).toBeTruthy();
+ expect(screen.getByText(/Missing local fixture/)).toBeTruthy();
+});

@@ -15,6 +15,7 @@
 .pr-panel li { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .pr-panel .pr-item { flex: 1; text-align: start; overflow-wrap: anywhere; min-width: 0; }
 .pr-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; font-size: 12px; }
+.pr-panel details { min-width: 0; }
 .pr-panel .pr-danger { color: var(--theme-danger, #c33); }
 .pr-panel [role=alert] { color: var(--theme-danger, #c33); overflow-wrap: anywhere; }
 @media (hover: hover) { .pr-panel button:hover { background: var(--theme-bg-muted); } }
