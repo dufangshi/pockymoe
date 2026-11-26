@@ -1,0 +1,410 @@
+{
+ "data": {
+  "viewer": {
+   "login": "fixture-user-2"
+  },
+  "repository": {
+   "viewerPermission": "READ",
+   "mergeCommitAllowed": true,
+   "squashMergeAllowed": true,
+   "rebaseMergeAllowed": true,
+   "autoMergeAllowed": true,
+   "pullRequest": {
+    "id": "PR_kwDODKw3uc8AAAABQQJczw",
+    "number": 15100,
+    "title": "Revoke CLI OAuth tokens on logout",
+    "url": "https://github.com/cli/cli/pull/15100",
+    "body": "<!--\nThank you for contributing to GitHub CLI!\n\nIf you are proposing a fix for a security issue, STOP and follow .github/SECURITY.md instead.\n\nKeep the entire pull request self-contained, reviewer-facing, and diegetic: describe the\nchange, rationale, and evidence within the context of the repository and pull request. Do not\nnarrate how the pull request was produced or refer to private conversations, prior agent work,\nor other behind-the-scenes context. Omit those details unless they materially affect review;\nif they do, state the relevant fact and its significance directly.\n-->\n\n<!-- List rela",
+    "state": "MERGED",
+    "isDraft": false,
+    "createdAt": "2026-11-18T23:08:00Z",
+    "updatedAt": "2026-11-24T22:39:55Z",
+    "headRefName": "bagtoad/oauth-logout-revocation",
+    "baseRefName": "trunk",
+    "headRefOid": "fe9ea5c35b64183e94ba4cdfd2cb679cc42b2a19",
+    "baseRefOid": "acee710547dcf7dfb6490afea77972187e74b819",
+    "additions": 1409,
+    "deletions": 70,
+    "changedFiles": 10,
+    "mergeable": "UNKNOWN",
+    "mergeStateStatus": "UNKNOWN",
+    "reviewDecision": "APPROVED",
+    "viewerCanUpdate": false,
+    "isCrossRepository": false,
+    "author": {
+     "login": "fixture-user-1",
+     "avatarUrl": "https://avatars.example.com/u/1"
+    },
+    "autoMergeRequest": null,
+    "labels": {
+     "nodes": []
+    },
+    "reviewRequests": {
+     "nodes": []
+    },
+    "latestReviews": {
+     "nodes": [
+      {
+       "author": {
+        "login": "fixture-user-3"
+       },
+       "state": "COMMENTED",
+       "submittedAt": "2026-11-18T23:12:36Z"
+      },
+      {
+       "author": {
+        "login": "fixture-user-4"
+       },
+       "state": "APPROVED",
+       "submittedAt": "2026-11-24T22:10:31Z"
+      }
+     ]
+    },
+    "comments": {
+     "nodes": []
+    },
+    "reviews": {
+     "nodes": [
+      {
+       "id": "PRR_kwDODKw3uc8AAAABY6SNoQ",
+       "databaseId": 5966695841,
+       "author": {
+        "login": "fixture-user-3",
+        "avatarUrl": "https://avatars.example.com/u/1"
+       },
+       "state": "COMMENTED",
+       "body": "<!-- ccr-overview-v2 -->\n\n### \ud83d\udfe1 Changes recommended\n\nScripted logout now revokes tokens shared elsewhere and fails without removing local credentials when revocation is unavailable, leaving a breaking compatibility change unresolved without explicit maintainer agreement.\n\n<details open>\n<summary><st",
+       "submittedAt": "2026-11-18T23:12:36Z",
+       "url": "https://github.com/cli/cli/pull/15100#pullrequestreview-5966695841",
+       "commit": {
+        "oid": "24968b6ab2f7556183246c9d729edd06acacaf98"
+       }
+      },
+      {
+       "id": "PRR_kwDODKw3uc8AAAABY7GuSg",
+       "databaseId": 5967556170,
+       "author": {
+        "login": "fixture-user-1",
+        "avatarUrl": "https://avatars.example.com/u/1"
+       },
+       "state": "COMMENTED",
+       "body": "",
+       "submittedAt": "2026-11-19T00:44:19Z",
+       "url": "https://github.com/cli/cli/pull/15100#pullrequestreview-5967556170",
+       "commit": {
+        "oid": "24968b6ab2f7556183246c9d729edd06acacaf98"
+       }
+      },
+      {
+       "id": "PRR_kwDODKw3uc8AAAABZHyCVQ",
+       "databaseId": 5980848725,
+       "author": {
+        "login": "fixture-user-4",
+        "avatarUrl": "https://avatars.example.com/u/1"
+       },
+       "state": "CHANGES_REQUESTED",
+       "body": "Thanks for tackling this, @fixture-user-1! :pray:\n\nBefore we merge, I'd like to confirm and document the refreshable-token behavior, particularly whether revocation also invalidates the refresh token and what happens when the access token has already expired. I'd also like to clarify the tradeoff behind re",
+       "submittedAt": "2026-11-19T18:24:03Z",
+       "url": "https://github.com/cli/cli/pull/15100#pullrequestreview-5980848725",
+       "commit": {
+        "oid": "24968b6ab2f7556183246c9d729edd06acacaf98"
+       }
+      },
+      {
+       "id": "PRR_kwDODKw3uc8AAAABZIIFcg",
+       "databaseId": 5981209970,
+       "author": {
+        "login": "fixture-user-1",
+        "avatarUrl": "https://avatars.example.com/u/1"
+       },
+       "state": "COMMENTED",
+       "body": "",
+       "submittedAt": "2026-11-19T18:48:19Z",
+       "url": "https://github.com/cli/cli/pull/15100#pullrequestreview-5981209970",
+       "commit": {
+        "oid": "24968b6ab2f7556183246c9d729edd06acacaf98"
+       }
+      }
+     ]
+    },
+    "reviewThreads": {
+     "nodes": [
+      {
+       "id": "PRRT_kwDODKw3uc65Pz2n",
+       "isResolved": true,
+       "isOutdated": true,
+       "path": "pkg/cmd/auth/logout/logout.go",
+       "line": null,
+       "originalLine": 175,
+       "startLine": null,
+       "diffSide": "RIGHT",
+       "startDiffSide": null,
+       "subjectType": "LINE",
+       "viewerCanResolve": false,
+       "viewerCanUnresolve": false,
+       "viewerCanReply": true,
+       "comments": {
+        "nodes": [
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABE4BItg",
+          "databaseId": 4622141622,
+          "author": {
+           "login": "fixture-user-3",
+           "avatarUrl": "https://avatars.example.com/u/1"
+          },
+          "body": "\ud83d\uded1 Requirement: Resolve the scripted-logout compatibility change before switching the default\n\nExisting non-interactive invocations now invalidate copies of the token used elsewhere, and fail without logging out when offline or revocation is rejected. Previously, those invocations removed credentials",
+          "createdAt": "2026-11-18T23:12:35Z",
+          "url": "https://github.com/cli/cli/pull/15100#discussion_r4622141622"
+         },
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABE4tWXw",
+          "databaseId": 4622866015,
+          "author": {
+           "login": "fixture-user-1",
+           "avatarUrl": "https://avatars.example.com/u/1"
+          },
+          "body": "This is the point yes :)",
+          "createdAt": "2026-11-19T00:44:19Z",
+          "url": "https://github.com/cli/cli/pull/15100#discussion_r4622866015"
+         }
+        ]
+       }
+      },
+      {
+       "id": "PRRT_kwDODKw3uc65pZYK",
+       "isResolved": true,
+       "isOutdated": true,
+       "path": "pkg/cmd/auth/logout/logout.go",
+       "line": null,
+       "originalLine": 83,
+       "startLine": null,
+       "diffSide": "RIGHT",
+       "startDiffSide": null,
+       "subjectType": "LINE",
+       "viewerCanResolve": false,
+       "viewerCanUnresolve": false,
+       "viewerCanReply": true,
+       "comments": {
+        "nodes": [
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABFCjSEA",
+          "databaseId": 4633186832,
+          "author": {
+           "login": "fixture-user-4",
+           "avatarUrl": "https://avatars.example.com/u/1"
+          },
+          "body": "Could we explicitly mention GitHub CLI OAuth tokens here? Other token types are not revoked by default.\n\n```suggestion\n\tcmd.Flags().BoolVar(&opts.NoRevoke, \"no-revoke\", false, \"Remove local credentials without revoking the GitHub CLI OAuth token\")\n```",
+          "createdAt": "2026-11-19T18:23:35Z",
+          "url": "https://github.com/cli/cli/pull/15100#discussion_r4633186832"
+         },
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABFC9LvQ",
+          "databaseId": 4633611197,
+          "author": {
+           "login": "fixture-user-1",
+           "avatarUrl": "https://avatars.example.com/u/1"
+          },
+          "body": "Fixed in [75e31ecb7](https://github.com/cli/cli/commit/75e31ecb702ac9fa374a824ba48eb805ff2bb0fe).",
+          "createdAt": "2026-11-19T19:00:16Z",
+          "url": "https://github.com/cli/cli/pull/15100#discussion_r4633611197"
+         }
+        ]
+       }
+      },
+      {
+       "id": "PRRT_kwDODKw3uc65pZYV",
+       "isResolved": true,
+       "isOutdated": true,
+       "path": "pkg/cmd/auth/logout/logout.go",
+       "line": null,
+       "originalLine": 174,
+       "startLine": null,
+       "diffSide": "RIGHT",
+       "startDiffSide": null,
+       "subjectType": "LINE",
+       "viewerCanResolve": false,
+       "viewerCanUnresolve": false,
+       "viewerCanReply": true,
+       "comments": {
+        "nodes": [
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABFCjSIQ",
+          "databaseId": 4633186849,
+          "author": {
+           "login": "fixture-user-4",
+           "avatarUrl": "https://avatars.example.com/u/1"
+          },
+          "body": "Could we extract this entire branch into a helper to keep the main logout flow easier to follow? It could take the options, authentication config, hostname, and username, and return a small result struct plus an error. The result could hold the pre-logout active user, revocation status, warning, and",
+          "createdAt": "2026-11-19T18:23:35Z",
+          "url": "https://github.com/cli/cli/pull/15100#discussion_r4633186849"
+         },
+         {
+          "id": "PRRC_kwDODKw3uc8AAAABFC9L1A",
+          "databaseId": 4633611220,
+          "author": {
+           "login": "fixture-user-1",
+           "avatarUrl": "https://avatars.example.com/u/1"
+          },
+          "body": "Fixed in [30b9f9a56](https://github.com/cli/cli/commit/30b9f9a56379fa9f77a973215ba04b741c368295).",
+          "createdAt": "2026-11-19T19:00:16Z",
+          "url": "https://github.com/cli/cli/pull/15100#discussion_r4633611220"
+         }
+        ]
+       }
+      }
+     ]
+    },
+    "allCommits": {
+     "nodes": [
+      {
+       "commit": {
+        "oid": "dfe9be699a547d661f3559f99fed763412bedbae",
+        "messageHeadline": "Limit required logout locking to revocation",
+        "message": "Limit required logout locking to revocation",
+        "committedDate": "2026-11-19T18:59:39Z",
+        "url": "https://github.com/cli/cli/commit/dfe9be699a547d661f3559f99fed763412bedbae",
+        "author": {
+         "name": "Fixture Person",
+         "user": {
+          "login": "fixture-user-5"
+         }
+        }
+       }
+      },
+      {
+       "commit": {
+        "oid": "bdcd69067d8b7c995749badab6cc74e902fba1f8",
+        "messageHeadline": "Fix expired OAuth token revocation on logout",
+        "message": "Fix expired OAuth token revocation on logout",
+        "committedDate": "2026-11-20T18:15:12Z",
+        "url": "https://github.com/cli/cli/commit/bdcd69067d8b7c995749badab6cc74e902fba1f8",
+        "author": {
+         "name": "Fixture Person",
+         "user": {
+          "login": "fixture-user-5"
+         }
+        }
+       }
+      },
+      {
+       "commit": {
+        "oid": "fe9ea5c35b64183e94ba4cdfd2cb679cc42b2a19",
+        "messageHeadline": "Restore best-effort locking for logout",
+        "message": "Restore best-effort locking for logout",
+        "committedDate": "2026-11-24T19:30:14Z",
+        "url": "https://github.com/cli/cli/commit/fe9ea5c35b64183e94ba4cdfd2cb679cc42b2a19",
+        "author": {
+         "name": "Fixture Person",
+         "user": {
+          "login": "fixture-user-5"
+         }
+        }
+       }
+      }
+     ]
+    },
+    "lastCommit": {
+     "nodes": [
+      {
+       "commit": {
+        "statusCheckRollup": {
+         "state": "FAILURE",
+         "contexts": {
+          "nodes": [
+           {
+            "__typename": "CheckRun",
+            "databaseId": 138718347714,
+            "name": "CodeQL-Build (go, manual, ./.github/codeql/codeql-config.yml)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/45470926098/job/138718347714",
+            "startedAt": "2026-11-24T19:30:31Z",
+            "completedAt": "2026-11-24T19:32:51Z",
+            "checkSuite": {
+             "workflowRun": {
+              "databaseId": 45470926098
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "databaseId": 138718350917,
+            "name": "lint",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/45470926478/job/138718350917",
+            "startedAt": "2026-11-24T19:30:31Z",
+            "completedAt": "2026-11-24T19:32:32Z",
+            "checkSuite": {
+             "workflowRun": {
+              "databaseId": 45470926478
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "databaseId": 138718349534,
+            "name": "build (ubuntu-latest)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/45470926253/job/138718349534",
+            "startedAt": "2026-11-24T19:30:31Z",
+            "completedAt": "2026-11-24T19:34:18Z",
+            "checkSuite": {
+             "workflowRun": {
+              "databaseId": 45470926253
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "databaseId": 138718348581,
+            "name": "CodeQL-Build (actions, none, security-and-quality)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/45470926098/job/138718348581",
+            "startedAt": "2026-11-24T19:30:31Z",
+            "completedAt": "2026-11-24T19:31:15Z",
+            "checkSuite": {
+             "workflowRun": {
+              "databaseId": 45470926098
+             }
+            }
+           },
+           {
+            "__typename": "CheckRun",
+            "databaseId": 138718348909,
+            "name": "build (windows-latest)",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "detailsUrl": "https://github.com/cli/cli/actions/runs/45470926253/job/138718348909",
+            "startedAt": "2026-11-24T19:30:31Z",
+            "completedAt": "2026-11-24T19:36:46Z",
+            "checkSuite": {
+             "workflowRun": {
+              "databaseId": 45470926253
+             }
+            }
+           }
+          ]
+         }
+        }
+       }
+      }
+     ]
+    },
+    "commits": {
+     "nodes": [
+      {
+       "commit": {
+        "statusCheckRollup": {
+         "state": "FAILURE"
+        }
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

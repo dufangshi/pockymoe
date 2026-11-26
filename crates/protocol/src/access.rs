@@ -1570,6 +1570,18 @@ mod source_control_access_tests {
             "/api/threads/root/source-control/publish",
             "/api/threads/root/source-control/cleanup",
             "/api/threads/root/source-control/removeWorktree",
+            "/api/threads/root/source-control/review",
+            "/api/source-control/pull-requests",
+            "/api/source-control/pull-requests?state=all",
+            "/api/source-control/pull-requests/detail",
+            "/api/source-control/pull-requests/files",
+            "/api/source-control/pull-requests/draftSave",
+            "/api/source-control/pull-requests/submit",
+            "/api/source-control/pull-requests/viewed",
+            "/api/source-control/pull-requests/merge",
+            "/api/source-control/pull-requests/guide",
+            "/api/source-control/pull-requests/workOn",
+            "/api/source-control/pull-request-views",
         ] {
             for method in ["GET", "POST", "PUT", "DELETE"] {
                 assert!(access_allows(&owner_access(), method, path));

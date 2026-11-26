@@ -26,6 +26,7 @@ mod notifications;
 mod owner_trust;
 mod preview_cli;
 mod source_control;
+mod source_control_review;
 mod worktrees;
 // Device-to-device messaging and files (docs/cross-device-peer.zh.md).
 mod peer_api;

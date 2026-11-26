@@ -237,6 +237,10 @@ pub trait Host: Send + Sync {
         input: &Value,
     ) -> Result<Operation>;
     async fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value>;
+    /// A plain-text response (raw diffs). Hosts without one refuse.
+    async fn request_text(&self, _path: &str) -> Result<String> {
+        bail!("Raw host responses are unavailable for this host")
+    }
 }
 struct Adapter {
     repo: Repository,
@@ -624,6 +628,19 @@ impl Host for Adapter {
         }
     }
     async fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
+        let text = self.raw(method, path, body).await?;
+        if text.trim().is_empty() {
+            Ok(json!({}))
+        } else {
+            Ok(serde_json::from_str(&text)?)
+        }
+    }
+    async fn request_text(&self, path: &str) -> Result<String> {
+        self.raw("GET", path, None).await
+    }
+}
+impl Adapter {
+    async fn raw(&self, method: &str, path: &str, body: Option<Value>) -> Result<String> {
         ensure!(
             !path.starts_with('/') && !path.contains("://"),
             "Invalid host API path"
@@ -664,14 +681,7 @@ impl Host for Adapter {
                 Path::new("/"),
                 body.map(|b| serde_json::to_vec(&b)).transpose()?,
             )
-            .await
-            .and_then(|s| {
-                if s.trim().is_empty() {
-                    Ok(json!({}))
-                } else {
-                    Ok(serde_json::from_str(&s)?)
-                }
-            });
+            .await;
         }
         if self.token.is_empty() && self.repo.kind == HostKind::Azure {
             let mut args = vec![
@@ -698,11 +708,7 @@ impl Host for Adapter {
             }
             let output = command("az", &args, Path::new("/"), None).await?;
             drop(file);
-            return if output.trim().is_empty() {
-                Ok(json!({}))
-            } else {
-                Ok(serde_json::from_str(&output)?)
-            };
+            return Ok(output);
         }
         ensure!(
             !self.token.is_empty(),
@@ -712,6 +718,7 @@ impl Host for Adapter {
             HostKind::Github if self.repo.host == "github.com" => "https://api.github.com".into(),
             HostKind::Github if path == "graphql" => format!("https://{}/api", self.repo.host),
             HostKind::Github => format!("https://{}/api/v3", self.repo.host),
+            HostKind::Gitlab if path == "graphql" => format!("https://{}/api", self.repo.host),
             HostKind::Gitlab => format!("https://{}/api/v4", self.repo.host),
             HostKind::Forgejo => format!(
                 "{}://{}/api/v1",
@@ -767,11 +774,7 @@ impl Host for Adapter {
             );
             bytes.extend_from_slice(&chunk);
         }
-        if bytes.is_empty() {
-            Ok(json!({}))
-        } else {
-            Ok(serde_json::from_slice(&bytes)?)
-        }
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 }
 /// No shell interpolation, no credential prompts, bounded streams and deadline.
