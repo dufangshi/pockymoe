@@ -7,6 +7,8 @@ mod claude_lifecycle;
 mod claude_tasks;
 mod claude_usage;
 pub(crate) use claude_usage::legacy_background_reply_phases;
+/// The Claude JSONL billing reader, shared with the native Claude runtime.
+pub(crate) use claude_usage::ClaudeUsageReader;
 mod codex_bridge;
 pub(crate) mod codex_models;
 pub(crate) mod codex_permissions;
@@ -16,6 +18,9 @@ mod deepseek;
 pub use deepseek::visible_models as visible_deepseek_models;
 pub(crate) mod dependencies;
 pub(crate) mod elicitation;
+pub(crate) use elicitation::{
+    questions as elicitation_questions, response as elicitation_response,
+};
 mod grok;
 pub mod mcp_servers;
 pub(crate) use grok::billing_usage as grok_billing_usage;
@@ -33,7 +38,8 @@ pub use adapter::{
     adapter_for, ClaudeAdapter, CodexAdapter, CursorAdapter, DeepSeekAdapter, GrokAdapter,
     HarnessAdapter, StandardAdapter,
 };
-pub use capabilities::NegotiatedCaps;
+pub(crate) use capabilities::parse_commands;
+pub use capabilities::{NegotiatedCaps, NegotiatedCommand};
 pub use catalog::{
     augment_path, builtin_agents, classify_availability, command_available, parse_command_models,
 };

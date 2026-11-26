@@ -38,7 +38,7 @@ fn capability_advertised(value: Option<&Value>) -> bool {
     }
 }
 
-pub(super) fn parse_commands(value: &Value) -> Vec<NegotiatedCommand> {
+pub(crate) fn parse_commands(value: &Value) -> Vec<NegotiatedCommand> {
     value
         .as_array()
         .into_iter()

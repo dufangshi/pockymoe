@@ -16,6 +16,14 @@ use tokio::{
     sync::{mpsc, oneshot, Mutex},
 };
 
+/// What the Agent SDK and claude-agent-acp set for every query: SDK entry
+/// point identity, and session-state bookends (`session_state_changed`), which
+/// own turn completion while background tasks run.
+pub(super) const SDK_ENV: [(&str, &str); 2] = [
+    ("CLAUDE_CODE_ENTRYPOINT", "sdk-ts"),
+    ("CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS", "1"),
+];
+
 type Waiters = Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>;
 pub(super) struct Process {
     stdin: Mutex<ChildStdin>,
@@ -64,6 +72,7 @@ impl Process {
         // A parent CLI's nested-session marker must not attach the new process to
         // the owner's session. Only the thread-scoped gateway identity is passed.
         cmd.env_remove("CLAUDECODE")
+            .envs(SDK_ENV)
             .envs(crate::interaction::launch_env());
         let id = uuid::Uuid::new_v4().to_string();
         let child = crate::execution::host_process::spawn(&mut cmd, &id, true, false).await?;
@@ -83,6 +92,8 @@ impl Process {
         env: Vec<(String, String)>,
     ) -> Result<Arc<Self>> {
         let id = uuid::Uuid::new_v4().to_string();
+        let mut env = env;
+        env.extend(SDK_ENV.map(|(k, v)| (k.to_string(), v.to_string())));
         let mut argv = vec!["claude".to_string()];
         argv.extend(args.iter().cloned());
         let child = context
