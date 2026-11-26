@@ -18,6 +18,7 @@ pockymoe thread stop CHILD --clear-queue --reason "wrong branch"
 pockymoe thread models --provider acp --agent grok
 pockymoe thread create --provider acp --agent grok \
   --model grok-4.6 --reasoning-effort xhigh --title helper
+pockymoe thread create --agent acp:claude --title helper   # claude runs natively; acp:claude uses its ACP adapter
 pockymoe thread send THREAD_ID --delivery queue --kind task --text-file task.txt --notify-on-complete
 pockymoe thread send CHILD --delivery queue --kind task --text-file retry.txt --retry-failed
 pockymoe thread ask parent --subject "Which key?" --text "May I use the staging key?"

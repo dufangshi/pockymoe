@@ -29,8 +29,9 @@ ACP harness differences stay under `crates/runtime/src/acp/` — `catalog.rs` ho
 command catalog, `capabilities.rs` the capability overlays, and per-harness
 adapters (`grok.rs`, `codex_bridge.rs`, `deepseek.rs`) sit alongside them.
 Supervisor code does not special-case Codex vs Grok. The protocol router under
-`runtime/src/native/` selects a registered direct backend per device, keeping
-backend affinity for loaded sessions; ACP remains the default. See
+`runtime/src/native/` runs Codex and Claude on their direct backends unless the
+thread was created under the ACP agent (agent key `acp:codex`), keeping backend
+affinity for loaded sessions. See
 [native harness protocols](native-harnesses.md).
 
 Large modules follow a `foo.rs` + sibling `foo/` convention: the parent file

@@ -299,7 +299,7 @@ async fn run_as(
             threads.retain(|t| state.agent_reaches_workspace(requester, &t.workspace_id));
             let limit = input["limit"].as_u64().unwrap_or(20).clamp(1, 100) as usize;
             Ok(
-                json!({"threads":threads.iter().take(limit).map(|t|json!({"id":t.id,"name":t.agent_name,"title":t.title,"workspaceId":t.workspace_id,"provider":t.provider,"agentId":t.agent_id,"model":t.model,"status":t.status,"updatedAt":t.updated_at,"parentThreadId":t.parent_thread_id,"rootThreadId":t.root_thread_id,"agentThreadCount":t.descendant_count,"closedAt":t.closed_at})).collect::<Vec<_>>(),"totalCount":threads.len()}),
+                json!({"threads":threads.iter().take(limit).map(|t|json!({"id":t.id,"name":t.agent_name,"title":t.title,"workspaceId":t.workspace_id,"provider":t.provider,"agentId":t.agent_id,"harnessProtocol":t.harness_protocol,"model":t.model,"status":t.status,"updatedAt":t.updated_at,"parentThreadId":t.parent_thread_id,"rootThreadId":t.root_thread_id,"agentThreadCount":t.descendant_count,"closedAt":t.closed_at})).collect::<Vec<_>>(),"totalCount":threads.len()}),
             )
         }
         "show" | "status" => {
@@ -684,7 +684,7 @@ async fn run_as(
                     },
                 )
                 .await?;
-            let mut receipt = json!({"threadId":t.id,"name":t.agent_name,"role":t.agent_role,"worktreePath":t.worktree_path,"workspaceId":t.workspace_id,"provider":t.provider,"agentId":t.agent_id,"model":t.model,"reasoningEffort":t.reasoning_effort,"status":t.status});
+            let mut receipt = json!({"threadId":t.id,"name":t.agent_name,"role":t.agent_role,"worktreePath":t.worktree_path,"workspaceId":t.workspace_id,"provider":t.provider,"agentId":t.agent_id,"harnessProtocol":t.harness_protocol,"model":t.model,"reasoningEffort":t.reasoning_effort,"status":t.status});
             if effort_unconfirmed {
                 receipt["reasoningEffortUnconfirmed"] = json!(true);
                 receipt["note"] = json!("Model discovery lists no efforts for this model yet; the harness applies the effort when the session starts.");

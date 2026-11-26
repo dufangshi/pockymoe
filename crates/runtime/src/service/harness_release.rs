@@ -1035,7 +1035,7 @@ impl Supervisor {
                 HarnessLoadReason::Create,
                 runtime.start_session(crate::actor::StartSessionInput {
                     cwd,
-                    agent_id: thread.agent_id.clone(),
+                    agent_id: thread.agent_key(),
                     model: thread.model.clone().unwrap_or_else(|| "default".into()),
                     reasoning_effort: thread.reasoning_effort.clone(),
                     approval_mode: thread.approval_mode.clone(),

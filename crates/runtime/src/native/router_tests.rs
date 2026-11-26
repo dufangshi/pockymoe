@@ -183,17 +183,9 @@ impl AgentRuntime for Recorder {
 #[tokio::test]
 async fn every_unloaded_unknown_session_operation_stays_on_acp() {
     for bound in [None, Some("codex".into()), Some("claude".into())] {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        ProtocolSettings {
-            codex: HarnessProtocol::Native,
-            claude: HarnessProtocol::Native,
-        }
-        .save(&path)
-        .unwrap();
         let acp = Arc::new(Recorder::default());
         let native = Arc::new(Recorder::default());
-        let router = ProtocolRouter::new(acp.clone(), bound, path)
+        let router = ProtocolRouter::new(acp.clone(), bound, None)
             .with_backend("codex", native.clone())
             .with_backend("claude", native.clone());
         for id in [

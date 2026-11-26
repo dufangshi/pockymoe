@@ -348,6 +348,18 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
         name: "pull_request_review",
         apply: crate::source_control::review::store::migrate,
     },
+    Migration {
+        version: 31,
+        name: "thread_harness_protocol",
+        // NULL on threads created before the column: Codex and Claude threads
+        // then run natively at their next load (docs/native-harnesses.md).
+        apply: |conn| {
+            if !table_columns(conn, "threads")?.contains("harness_protocol") {
+                conn.execute_batch("ALTER TABLE threads ADD COLUMN harness_protocol TEXT;")?;
+            }
+            Ok(())
+        },
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them

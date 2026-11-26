@@ -27,6 +27,8 @@ pub struct HandoffPreview {
     pub resumes_session: bool,
     pub settings_note: &'static str,
 }
+const SAME_SESSION_NOTE: &str =
+    "Same session on the other protocol; history and settings are kept.";
 const SETTINGS_NOTE: &str = "Plan, sandbox, fast mode and reasoning effort are reset; approval mode is retained. Active goals must be cleared before switching.";
 
 pub(super) fn record_seen(conn: &Connection, id: &str, now: &str) -> Result<()> {
@@ -125,7 +127,9 @@ impl Supervisor {
     }
 
     fn target_seen(&self, id: &str, target: &HarnessSwitchInput) -> Result<(Option<String>, i64)> {
-        self.db.with(|c| Ok(c.query_row("SELECT session_id,turns_seen FROM thread_harness_sessions WHERE thread_id=?1 AND provider=?2 AND agent_id=?3", params![id,target.provider.as_str(),target.agent_id], |r| Ok((r.get(0)?,r.get(1)?))).optional()?.unwrap_or((None,0))))
+        // Both protocols of one agent share its session store and row.
+        let agent = pockymoe_protocol::split_agent_key(&target.agent_id).0;
+        self.db.with(|c| Ok(c.query_row("SELECT session_id,turns_seen FROM thread_harness_sessions WHERE thread_id=?1 AND provider=?2 AND agent_id=?3", params![id,target.provider.as_str(),agent], |r| Ok((r.get(0)?,r.get(1)?))).optional()?.unwrap_or((None,0))))
     }
 
     pub fn preview_harness_switch(
@@ -142,7 +146,24 @@ impl Supervisor {
         target: &HarnessSwitchInput,
         prompt: &str,
     ) -> Result<HandoffPreview> {
-        self.get_thread(id)?;
+        let thread = self.get_thread(id)?;
+        let (agent, protocol) = pockymoe_protocol::split_agent_key(target.agent_id.trim());
+        if thread.provider == target.provider
+            && thread.agent_id.as_deref() == Some(agent)
+            && thread.harness_protocol.as_deref() != protocol
+            && thread.provider_session_id.is_some()
+        {
+            // The other protocol of the same agent reads the same session.
+            return Ok(HandoffPreview {
+                text: String::new(),
+                bytes: 0,
+                estimated_tokens: 0,
+                turns: 0,
+                omitted_turns: vec![],
+                resumes_session: true,
+                settings_note: SAME_SESSION_NOTE,
+            });
+        }
         let (session, seen) = self.target_seen(id, target)?;
         self.build_handoff(
             id,
@@ -358,7 +379,23 @@ impl Supervisor {
         target: HarnessSwitchInput,
     ) -> Result<ThreadDto> {
         ensure!(!target.agent_id.trim().is_empty(), "agentId is required");
+        // `acp:codex` targets Codex's ACP adapter, `codex` native Codex.
+        let (agent, protocol) = pockymoe_protocol::split_agent_key(target.agent_id.trim());
+        let protocol = protocol.map(str::to_string);
+        let target = HarnessSwitchInput {
+            agent_id: agent.to_string(),
+            ..target
+        };
         let before = self.get_thread(id)?;
+        if before.provider == target.provider
+            && before.agent_id.as_deref() == Some(agent)
+            && before.harness_protocol != protocol
+            && before.provider_session_id.is_some()
+        {
+            return self
+                .switch_thread_protocol(id, before, target, protocol)
+                .await;
+        }
         ensure!(
             !matches!(before.status.as_str(), "running" | "recovering"),
             "conflict: Stop the thread before switching harnesses"
@@ -376,13 +413,13 @@ impl Supervisor {
             "conflict: Clear the goal before switching harnesses"
         );
         if target.provider == Provider::Acp {
+            let key = pockymoe_protocol::agent_key(&target.agent_id, protocol.as_deref());
             let agents = self.list_agents(target.provider).await?;
             ensure!(
                 agents
                     .iter()
-                    .any(|agent| agent.id == target.agent_id || agent.model == target.agent_id),
-                "unknown harness: {}",
-                target.agent_id
+                    .any(|agent| agent.id == key || agent.model == key),
+                "unknown harness: {key}"
             );
         } else {
             self.runtime(target.provider)?;
@@ -408,8 +445,8 @@ impl Supervisor {
             let tx=c.unchecked_transaction()?;
             // Preserve an existing watermark; an unused session must not claim turns it never saw.
             tx.execute("INSERT INTO thread_harness_sessions(thread_id,provider,agent_id,session_id,model,turns_seen,created_at,last_used_at) VALUES(?1,?2,?3,?4,?5,0,?6,?6) ON CONFLICT(thread_id,provider,agent_id) DO UPDATE SET session_id=excluded.session_id,model=excluded.model,last_used_at=excluded.last_used_at",params![id,current.provider.as_str(),current.agent_id.clone().unwrap_or_default(),current.provider_session_id,current.model,now])?;
-            tx.execute("UPDATE threads SET source='supervisor',provider=?2,agent_id=?3,provider_session_id=?4,model=?5,reasoning_effort=?6,collaboration_mode='default',sandbox_mode=NULL,fast_mode=0,context_usage_json=NULL,last_error=NULL,status='idle',updated_at=?7 WHERE id=?1",params![id,target.provider.as_str(),target.agent_id,session,target.model,target.reasoning_effort,now])?;
-            let switch=json!({"fromAgentId":before.agent_id,"fromModel":before.model,"agentId":target.agent_id,"model":target.model,"turns":preview.turns,"recorded":true});
+            tx.execute("UPDATE threads SET source='supervisor',provider=?2,agent_id=?3,provider_session_id=?4,model=?5,reasoning_effort=?6,collaboration_mode='default',sandbox_mode=NULL,fast_mode=0,context_usage_json=NULL,last_error=NULL,status='idle',updated_at=?7,harness_protocol=?8 WHERE id=?1",params![id,target.provider.as_str(),target.agent_id,session,target.model,target.reasoning_effort,now,protocol])?;
+            let switch=json!({"fromAgentId":before.agent_id,"fromModel":before.model,"fromHarnessProtocol":before.harness_protocol,"agentId":target.agent_id,"model":target.model,"harnessProtocol":protocol,"turns":preview.turns,"recorded":true});
             let after: Option<String> = tx.query_row("SELECT id FROM thread_turns WHERE thread_id=?1 ORDER BY ordinal DESC LIMIT 1", [id], |r| r.get(0)).optional()?;
             let entry_id = format!("harness-switch:{}", Uuid::new_v4());
             let entry = json!({"id":entry_id,"kind":"harnessSwitch","text":format!("{} → {}",before.agent_id.as_deref().unwrap_or("unknown"),target.agent_id),"createdAt":now,"afterTurnId":after,"harnessSwitch":switch});
@@ -418,7 +455,73 @@ impl Supervisor {
             tx.execute("DELETE FROM kv WHERE key=?1",[harness_context_key(id)])?;
             tx.commit()?; Ok(())
         })?;
+        if let Some(session) = &session {
+            let key = pockymoe_protocol::agent_key(&target.agent_id, protocol.as_deref());
+            self.runtime(target.provider)?
+                .set_session_route(session, &key);
+        }
         self.bus.emit(pockymoe_protocol::ThreadEventEnvelope{event_type:pockymoe_protocol::ThreadEventType::ThreadUpdated,thread_id:id.into(),timestamp:now,payload:json!({"reason":"harnessSwitched","fromAgentId":before.agent_id,"agentId":target.agent_id,"turns":preview.turns,"settingsNote":SETTINGS_NOTE})});
+        self.get_thread(id)
+    }
+
+    /// Codex (or Claude) between its native runtime and its ACP adapter: both
+    /// read the same session store, so the thread keeps its session, history
+    /// and settings, and no handoff prefix is sent.
+    async fn switch_thread_protocol(
+        &self,
+        id: &str,
+        before: ThreadDto,
+        target: HarnessSwitchInput,
+        protocol: Option<String>,
+    ) -> Result<ThreadDto> {
+        ensure!(
+            !matches!(before.status.as_str(), "running" | "recovering"),
+            "conflict: Stop the thread before switching harnesses"
+        );
+        if target.provider == Provider::Acp {
+            let key = pockymoe_protocol::agent_key(&target.agent_id, protocol.as_deref());
+            let agents = self.list_agents(target.provider).await?;
+            ensure!(
+                agents.iter().any(|agent| agent.model == key),
+                "unknown harness: {key}"
+            );
+        }
+        self.release_thread_harness(id, false, None).await?;
+        let _guard = self.hold_harness(id).await;
+        let current = self.get_thread(id)?;
+        ensure!(
+            current.agent_id == before.agent_id
+                && current.harness_protocol == before.harness_protocol
+                && !self.live.lock().await.contains_key(id),
+            "conflict: Thread changed during switch; retry"
+        );
+        let now = now_rfc3339();
+        let model = target.model.clone().or(current.model.clone());
+        let effort = target
+            .reasoning_effort
+            .clone()
+            .or(current.reasoning_effort.clone());
+        self.db.with(|c| {
+            let tx = c.unchecked_transaction()?;
+            tx.execute("UPDATE threads SET harness_protocol=?2,model=?3,reasoning_effort=?4,last_error=NULL,status='idle',updated_at=?5 WHERE id=?1", params![id, protocol, model, effort, now])?;
+            let switch = json!({"fromAgentId":before.agent_id,"fromModel":before.model,"fromHarnessProtocol":before.harness_protocol,"agentId":target.agent_id,"model":model,"harnessProtocol":protocol,"turns":0,"recorded":true,"sameSession":true});
+            let after: Option<String> = tx.query_row("SELECT id FROM thread_turns WHERE thread_id=?1 ORDER BY ordinal DESC LIMIT 1", [id], |r| r.get(0)).optional()?;
+            let entry_id = format!("harness-switch:{}", Uuid::new_v4());
+            let label = |agent: Option<&str>, protocol: Option<&str>| match protocol {
+                Some("acp") => format!("ACP {}", agent.unwrap_or("unknown")),
+                _ => agent.unwrap_or("unknown").to_string(),
+            };
+            let entry = json!({"id":entry_id,"kind":"harnessSwitch","text":format!("{} → {}", label(before.agent_id.as_deref(), before.harness_protocol.as_deref()), label(Some(&target.agent_id), protocol.as_deref())),"createdAt":now,"afterTurnId":after,"harnessSwitch":switch});
+            tx.execute("INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES(?1,?2,'',?1,?3,?4,?4)", params![entry_id, id, entry.to_string(), now])?;
+            tx.commit()?;
+            Ok(())
+        })?;
+        if let Some(session) = &current.provider_session_id {
+            let key = pockymoe_protocol::agent_key(&target.agent_id, protocol.as_deref());
+            self.runtime(target.provider)?
+                .set_session_route(session, &key);
+        }
+        self.bus.emit(pockymoe_protocol::ThreadEventEnvelope{event_type:pockymoe_protocol::ThreadEventType::ThreadUpdated,thread_id:id.into(),timestamp:now,payload:json!({"reason":"harnessSwitched","fromAgentId":before.agent_id,"agentId":target.agent_id,"fromHarnessProtocol":before.harness_protocol,"harnessProtocol":protocol,"turns":0})});
         self.get_thread(id)
     }
 

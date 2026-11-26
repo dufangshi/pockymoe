@@ -658,6 +658,9 @@ pub trait AgentRuntime: Send + Sync {
     fn session_loaded(&self, _session_id: &str) -> bool {
         false
     }
+    /// Route an unloaded session by this agent key (`acp:codex`) from now on;
+    /// a router uses it after a thread changed protocol.
+    fn set_session_route(&self, _session_id: &str, _agent_key: &str) {}
     async fn session_instance_id(&self, _session_id: &str) -> Option<String> {
         None
     }

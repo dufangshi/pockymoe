@@ -7,65 +7,27 @@ use anyhow::Result;
 use async_trait::async_trait;
 use pockymoe_protocol::*;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::sync::Mutex;
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
-    sync::{Arc, LazyLock, Mutex, RwLock, Weak},
+    path::PathBuf,
+    sync::{Arc, RwLock},
 };
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
+/// Which runtime serves a Codex or Claude session.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum HarnessProtocol {
-    #[default]
     Acp,
+    #[default]
     Native,
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ProtocolSettings {
-    #[serde(default)]
-    pub codex: HarnessProtocol,
-    #[serde(default)]
-    pub claude: HarnessProtocol,
-}
-type SharedSettings = Arc<RwLock<ProtocolSettings>>;
-static SETTINGS: LazyLock<Mutex<HashMap<PathBuf, Weak<RwLock<ProtocolSettings>>>>> =
-    LazyLock::new(Mutex::default);
-
-impl ProtocolSettings {
-    pub fn load(path: &Path) -> Result<Self> {
-        match std::fs::read(path) {
-            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(e.into()),
-        }
-    }
-    pub fn save(&self, path: &Path) -> Result<()> {
-        // Serialize initialization and writes so every router for this device
-        // sees the same successfully persisted selection. A failed PUT leaves
-        // the running selection intact.
-        let registry = SETTINGS.lock().unwrap();
-        crate::upstreams::private_write(path, &serde_json::to_vec(self)?)?;
-        if let Some(settings) = registry.get(path).and_then(Weak::upgrade) {
-            *settings.write().unwrap() = self.clone();
-        }
-        Ok(())
-    }
-    fn shared(path: &Path) -> SharedSettings {
-        let mut registry = SETTINGS.lock().unwrap();
-        if let Some(settings) = registry.get(path).and_then(Weak::upgrade) {
-            return settings;
-        }
-        registry.retain(|_, settings| settings.strong_count() > 0);
-        let settings = Arc::new(RwLock::new(Self::load(path).unwrap_or_default()));
-        registry.insert(path.to_path_buf(), Arc::downgrade(&settings));
-        settings
-    }
-}
-pub fn settings_path(database: &Path) -> PathBuf {
-    database.with_extension("harness-protocols.json")
+/// The agent id inside an agent key (`acp:codex` → `codex`).
+fn plain(key: Option<&str>) -> Option<&str> {
+    key.map(|key| pockymoe_protocol::split_agent_key(key).0)
 }
 fn agent_of(session: &str) -> Option<&str> {
     session
@@ -73,23 +35,30 @@ fn agent_of(session: &str) -> Option<&str> {
         .filter(|(agent, raw)| !agent.is_empty() && !raw.is_empty())
         .map(|(agent, _)| agent)
 }
+/// Routes each thread to the protocol it was created with. Codex and Claude
+/// run natively; an agent key `acp:codex` (a thread created under the ACP
+/// agent) selects the ACP adapter. Both read the same session store.
 pub struct ProtocolRouter {
     acp: SharedRuntime,
     bound_agent: Option<String>,
-    settings: SharedSettings,
+    /// The Supervisor database, read for the protocol a session's thread
+    /// pinned when the session is not loaded and not routed yet.
+    database: Option<PathBuf>,
     backends: HashMap<String, SharedRuntime>,
     owners: RwLock<HashMap<String, SharedRuntime>>,
+    routes: RwLock<HashMap<String, HarnessProtocol>>,
     events: broadcast::Sender<SessionLifecycle>,
 }
 impl ProtocolRouter {
-    pub fn new(acp: SharedRuntime, bound_agent: Option<String>, path: PathBuf) -> Self {
+    pub fn new(acp: SharedRuntime, bound_agent: Option<String>, database: Option<PathBuf>) -> Self {
         let (events, _) = broadcast::channel(256);
         let router = Self {
             acp,
             bound_agent,
-            settings: ProtocolSettings::shared(&path),
+            database,
             backends: HashMap::new(),
             owners: RwLock::new(HashMap::new()),
+            routes: RwLock::new(HashMap::new()),
             events,
         };
         router.forward(&router.acp);
@@ -118,25 +87,27 @@ impl ProtocolRouter {
             });
         }
     }
-    fn selected(&self, agent: Option<&str>) -> SharedRuntime {
-        self.selected_agent(self.bound_agent.as_deref().or(agent))
-    }
-    fn selected_agent(&self, agent: Option<&str>) -> SharedRuntime {
-        let settings = self.settings.read().unwrap();
-        let protocol = match agent {
-            Some("codex") => settings.codex,
-            Some("claude") => settings.claude,
-            _ => HarnessProtocol::Acp,
+    /// The runtime for an agent key and the agent id it receives.
+    fn route<'a>(&self, key: Option<&'a str>) -> (SharedRuntime, Option<&'a str>, HarnessProtocol) {
+        let Some(key) = key else {
+            // No agent means the provider's (or the catalog's default) Codex.
+            let agent = self.bound_agent.as_deref().unwrap_or("codex");
+            return match self.backends.get(agent) {
+                Some(backend) => (backend.clone(), None, HarnessProtocol::Native),
+                None => (self.acp.clone(), None, HarnessProtocol::Acp),
+            };
         };
-        if protocol == HarnessProtocol::Native {
-            if let Some(backend) = agent.and_then(|agent| self.backends.get(agent)) {
-                return backend.clone();
-            }
+        match pockymoe_protocol::split_agent_key(key) {
+            (agent, Some("acp")) => (self.acp.clone(), Some(agent), HarnessProtocol::Acp),
+            (agent, _) => match self.backends.get(agent) {
+                Some(backend) => (backend.clone(), Some(agent), HarnessProtocol::Native),
+                None => (self.acp.clone(), Some(key), HarnessProtocol::Acp),
+            },
         }
-        self.acp.clone()
     }
-    fn remember(&self, id: &str, backend: SharedRuntime) {
+    fn remember(&self, id: &str, backend: SharedRuntime, protocol: HarnessProtocol) {
         self.owners.write().unwrap().insert(id.into(), backend);
+        self.routes.write().unwrap().insert(id.into(), protocol);
     }
     fn owner(&self, id: &str) -> Option<SharedRuntime> {
         self.owners
@@ -146,12 +117,118 @@ impl ProtocolRouter {
             .filter(|backend| backend.session_loaded(id))
             .cloned()
     }
+    fn pinned(&self, id: &str) -> Option<HarnessProtocol> {
+        if let Some(protocol) = self.routes.read().unwrap().get(id) {
+            return Some(*protocol);
+        }
+        let protocol = self.stored_protocol(id)?;
+        self.routes.write().unwrap().insert(id.into(), protocol);
+        Some(protocol)
+    }
+    /// The protocol the session's thread recorded; NULL (a thread older than
+    /// the choice) means native.
+    fn stored_protocol(&self, id: &str) -> Option<HarnessProtocol> {
+        let path = self.database.as_deref()?;
+        let conn = rusqlite::Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .ok()?;
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(2));
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT harness_protocol FROM threads WHERE provider_session_id=?1 LIMIT 1",
+                [id],
+                |row| row.get(0),
+            )
+            .ok()?;
+        Some(match stored.as_deref() {
+            Some("acp") => HarnessProtocol::Acp,
+            _ => HarnessProtocol::Native,
+        })
+    }
     fn session(&self, id: &str) -> SharedRuntime {
         // Session identity takes precedence over the provider's bound agent.
         // Missing and unknown prefixes must never become a native Codex session.
-        self.owner(id)
-            .unwrap_or_else(|| self.selected_agent(agent_of(id)))
+        if let Some(owner) = self.owner(id) {
+            return owner;
+        }
+        let Some(agent) = agent_of(id) else {
+            return self.acp.clone();
+        };
+        match (self.pinned(id), self.backends.get(agent)) {
+            (Some(HarnessProtocol::Acp), _) | (_, None) => self.acp.clone(),
+            (_, Some(backend)) => backend.clone(),
+        }
     }
+    fn protocol_of(&self, backend: &SharedRuntime) -> HarnessProtocol {
+        if Arc::ptr_eq(backend, &self.acp) {
+            HarnessProtocol::Acp
+        } else {
+            HarnessProtocol::Native
+        }
+    }
+    /// Native Codex and Claude first, then the ACP agents with the ACP Codex
+    /// and Claude adapters keyed `acp:codex` / `acp:claude`.
+    fn agent_list(&self, acp: Vec<ModelOptionDto>) -> Vec<ModelOptionDto> {
+        let mut native = Vec::new();
+        let mut out = Vec::with_capacity(acp.len() + 2);
+        for mut entry in acp {
+            let agent = entry.model.clone();
+            if self.backends.contains_key(&agent) {
+                native.push(native_entry(&entry));
+                let key = pockymoe_protocol::agent_key(&agent, Some("acp"));
+                entry.id = key.clone();
+                entry.model = key;
+                entry.is_default = false;
+                if let Some(info) = entry
+                    .acp_agent
+                    .as_mut()
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    info.insert("baseAgentId".into(), agent.into());
+                }
+            }
+            if let Some(info) = entry
+                .acp_agent
+                .as_mut()
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                info.insert("harnessProtocol".into(), "acp".into());
+            }
+            out.push(entry);
+        }
+        native.extend(out);
+        native
+    }
+}
+
+/// A native agent entry made from the catalog's ACP entry: it needs the base
+/// CLI only, never the ACP adapter.
+fn native_entry(acp: &ModelOptionDto) -> ModelOptionDto {
+    let info = acp.acp_agent.clone().unwrap_or_default();
+    let base_ready = matches!(
+        info["availability"].as_str(),
+        Some("ready" | "adapter_missing")
+    );
+    let mut entry = acp.clone();
+    entry.is_default = acp.model == "codex";
+    entry.acp_agent = Some(serde_json::json!({
+        "id": acp.model,
+        "displayName": acp.display_name,
+        "transport": "native",
+        "harnessProtocol": "native",
+        "availability": if base_ready { "ready" } else { "base_missing" },
+        "baseCommand": info["baseCommand"],
+        "baseProbeCommand": info["baseProbeCommand"],
+        "baseVersion": info["baseVersion"],
+        "basePath": info["basePath"],
+        "connectionStatus": if base_ready { "unverified" } else { "unavailable" },
+        "connectionError": null,
+        "busy": false,
+        "statusMessage": if base_ready { "Ready".to_string() } else { format!("Install the base agent first: {}", info["baseCommand"].as_str().unwrap_or("")) },
+    }));
+    entry
 }
 #[async_trait]
 impl AgentRuntime for ProtocolRouter {
@@ -186,11 +263,11 @@ impl AgentRuntime for ProtocolRouter {
         self.acp.start().await
     }
     async fn invalidate_models(&self, agent_id: &str) {
-        self.selected(Some(agent_id))
-            .invalidate_models(agent_id)
-            .await
+        let (backend, agent, _) = self.route(Some(agent_id));
+        backend.invalidate_models(agent.unwrap_or(agent_id)).await
     }
     async fn restart(&self, agent_id: &str) -> Result<usize> {
+        let agent_id = pockymoe_protocol::split_agent_key(agent_id).0;
         let mut count = self.acp.restart(agent_id).await?;
         if let Some(backend) = self.backends.get(agent_id) {
             count += backend.restart(agent_id).await?;
@@ -202,7 +279,8 @@ impl AgentRuntime for ProtocolRouter {
         agent_id: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<Vec<ModelOptionDto>> {
-        self.selected(agent_id).list_models(agent_id, cwd).await
+        let (backend, agent, _) = self.route(agent_id);
+        backend.list_models(agent, cwd).await
     }
     async fn session_models(
         &self,
@@ -211,14 +289,15 @@ impl AgentRuntime for ProtocolRouter {
         cwd: Option<&str>,
     ) -> Result<Vec<ModelOptionDto>> {
         self.session(session_id)
-            .session_models(agent_id, session_id, cwd)
+            .session_models(plain(agent_id), session_id, cwd)
             .await
     }
     async fn list_agents(&self) -> Result<Vec<ModelOptionDto>> {
-        self.acp.list_agents().await
+        Ok(self.agent_list(self.acp.list_agents().await?))
     }
     async fn capabilities(&self, agent_id: Option<&str>) -> Result<AgentCapabilitySnapshotDto> {
-        self.selected(agent_id).capabilities(agent_id).await
+        let (backend, agent, _) = self.route(agent_id);
+        backend.capabilities(agent).await
     }
     async fn session_capabilities(
         &self,
@@ -226,11 +305,12 @@ impl AgentRuntime for ProtocolRouter {
         session_id: &str,
     ) -> Result<AgentCapabilitySnapshotDto> {
         self.session(session_id)
-            .session_capabilities(agent_id, session_id)
+            .session_capabilities(plain(agent_id), session_id)
             .await
     }
     fn negotiated_caps(&self, agent_id: Option<&str>) -> AgentProviderCapabilitiesDto {
-        self.selected(agent_id).negotiated_caps(agent_id)
+        let (backend, agent, _) = self.route(agent_id);
+        backend.negotiated_caps(agent)
     }
     fn session_negotiated_caps(
         &self,
@@ -238,12 +318,14 @@ impl AgentRuntime for ProtocolRouter {
         session_id: &str,
     ) -> AgentProviderCapabilitiesDto {
         self.session(session_id)
-            .session_negotiated_caps(agent_id, session_id)
+            .session_negotiated_caps(plain(agent_id), session_id)
     }
-    async fn start_session(&self, input: StartSessionInput) -> Result<StartSessionResult> {
-        let backend = self.selected(input.agent_id.as_deref());
+    async fn start_session(&self, mut input: StartSessionInput) -> Result<StartSessionResult> {
+        let key = input.agent_id.take();
+        let (backend, agent, protocol) = self.route(key.as_deref());
+        input.agent_id = agent.map(str::to_string);
         let result = backend.start_session(input).await?;
-        self.remember(&result.provider_session_id, backend);
+        self.remember(&result.provider_session_id, backend, protocol);
         Ok(result)
     }
     async fn resume_session(
@@ -254,8 +336,9 @@ impl AgentRuntime for ProtocolRouter {
     ) -> Result<StartSessionResult> {
         let backend = self.session(session_id);
         let result = backend.resume_session(session_id, cwd, settings).await?;
-        self.remember(session_id, backend.clone());
-        self.remember(&result.provider_session_id, backend);
+        let protocol = self.protocol_of(&backend);
+        self.remember(session_id, backend.clone(), protocol);
+        self.remember(&result.provider_session_id, backend, protocol);
         Ok(result)
     }
     async fn start_turn(
@@ -350,13 +433,15 @@ impl AgentRuntime for ProtocolRouter {
     async fn fork_session(&self, session_id: &str) -> Result<StartSessionResult> {
         let backend = self.session(session_id);
         let result = backend.fork_session(session_id).await?;
-        self.remember(&result.provider_session_id, backend);
+        let protocol = self.protocol_of(&backend);
+        self.remember(&result.provider_session_id, backend, protocol);
         Ok(result)
     }
     async fn fork_session_at(&self, session_id: &str, point: &ForkPoint) -> Result<ForkResult> {
         let backend = self.session(session_id);
         let result = backend.fork_session_at(session_id, point).await?;
-        self.remember(&result.session.provider_session_id, backend);
+        let protocol = self.protocol_of(&backend);
+        self.remember(&result.session.provider_session_id, backend, protocol);
         Ok(result)
     }
     async fn send_input(&self, session_id: &str, turn_id: &str, prompt: &str) -> Result<()> {
@@ -386,14 +471,16 @@ impl AgentRuntime for ProtocolRouter {
             .await
     }
     fn toolbox(&self, agent_id: Option<&str>) -> Vec<ToolboxItemDto> {
-        self.selected(agent_id).toolbox(agent_id)
+        let (backend, agent, _) = self.route(agent_id);
+        backend.toolbox(agent)
     }
     async fn harness_catalog(
         &self,
         agent_id: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<serde_json::Value> {
-        self.selected(agent_id).harness_catalog(agent_id, cwd).await
+        let (backend, agent, _) = self.route(agent_id);
+        backend.harness_catalog(agent, cwd).await
     }
     async fn mcp_servers(&self, session_id: &str) -> Result<Option<serde_json::Value>> {
         self.session(session_id).mcp_servers(session_id).await
@@ -420,7 +507,8 @@ impl AgentRuntime for ProtocolRouter {
         self.acp.install(agent_id).await
     }
     async fn list_import_sessions(&self, agent_id: Option<&str>) -> Result<Vec<ImportSessionMeta>> {
-        self.selected(agent_id).list_import_sessions(agent_id).await
+        let (backend, agent, _) = self.route(agent_id);
+        backend.list_import_sessions(agent).await
     }
     async fn resolve_import_session(
         &self,
@@ -428,11 +516,19 @@ impl AgentRuntime for ProtocolRouter {
         session_id: &str,
     ) -> Result<Option<ImportSessionMeta>> {
         self.session(session_id)
-            .resolve_import_session(agent_id, session_id)
+            .resolve_import_session(plain(agent_id), session_id)
             .await
     }
     fn session_loaded(&self, session_id: &str) -> bool {
         self.session(session_id).session_loaded(session_id)
+    }
+    fn set_session_route(&self, session_id: &str, agent_key: &str) {
+        let (_, _, protocol) = self.route(Some(agent_key));
+        self.owners.write().unwrap().remove(session_id);
+        self.routes
+            .write()
+            .unwrap()
+            .insert(session_id.into(), protocol);
     }
     async fn session_instance_id(&self, session_id: &str) -> Option<String> {
         self.session(session_id)
@@ -466,13 +562,27 @@ mod tests {
         }
         async fn list_models(
             &self,
-            _: Option<&str>,
+            agent: Option<&str>,
             _: Option<&str>,
         ) -> Result<Vec<ModelOptionDto>> {
-            anyhow::bail!(self.name)
+            anyhow::bail!("{} {}", self.name, agent.unwrap_or("-"))
         }
         async fn list_agents(&self) -> Result<Vec<ModelOptionDto>> {
-            Ok(vec![])
+            Ok(["codex", "claude", "opencode"]
+                .into_iter()
+                .map(|id| ModelOptionDto {
+                    id: id.into(),
+                    model: id.into(),
+                    display_name: id.into(),
+                    description: String::new(),
+                    is_default: id == "codex",
+                    hidden: false,
+                    supported_reasoning_efforts: vec![],
+                    default_reasoning_effort: None,
+                    selection_kind: Some("agent".into()),
+                    acp_agent: Some(serde_json::json!({"availability": if id == "claude" { "adapter_missing" } else { "ready" }, "baseCommand": id})),
+                })
+                .collect())
         }
         async fn capabilities(&self, _: Option<&str>) -> Result<AgentCapabilitySnapshotDto> {
             anyhow::bail!(self.name)
@@ -482,7 +592,9 @@ mod tests {
             caps.turns.steer = self.name == "native";
             caps
         }
-        async fn start_session(&self, _: StartSessionInput) -> Result<StartSessionResult> {
+        async fn start_session(&self, input: StartSessionInput) -> Result<StartSessionResult> {
+            // The router hands every backend the plain agent id.
+            assert!(input.agent_id.as_deref().is_none_or(|a| !a.contains(':')));
             self.loaded.write().unwrap().push("codex::shared".into());
             Ok(StartSessionResult {
                 provider_session_id: "codex::shared".into(),
@@ -533,210 +645,144 @@ mod tests {
             sandbox_mode: None,
         }
     }
+    fn pair() -> (Arc<Backend>, Arc<Backend>) {
+        let make = |name| {
+            Arc::new(Backend {
+                name,
+                loaded: Default::default(),
+            })
+        };
+        (make("acp"), make("native"))
+    }
+    async fn model_of(router: &ProtocolRouter, id: &str) -> String {
+        router
+            .resume_session(id, None, SessionSettings::default())
+            .await
+            .unwrap()
+            .model
+            .unwrap()
+    }
     #[tokio::test]
-    async fn loaded_session_keeps_backend_until_release_for_catalog_and_bound_providers() {
+    async fn agent_keys_pick_the_protocol_and_a_session_keeps_its_route() {
         for bound in [None, Some("codex".into())] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("protocol.json");
-            let acp = Arc::new(Backend {
-                name: "acp",
-                loaded: Default::default(),
-            });
-            let native = Arc::new(Backend {
-                name: "native",
-                loaded: Default::default(),
-            });
-            let router = ProtocolRouter::new(acp.clone(), bound, path.clone())
-                .with_backend("codex", native.clone());
+            let (acp, native) = pair();
+            let router =
+                ProtocolRouter::new(acp.clone(), bound, None).with_backend("codex", native.clone());
+            let err = |e: anyhow::Error| e.to_string();
+            // Codex (and no agent, which means Codex) is native; `acp:codex` is the adapter.
             assert_eq!(
-                router
-                    .start_session(input())
-                    .await
-                    .unwrap()
-                    .model
-                    .as_deref(),
-                Some("acp")
-            );
-            ProtocolSettings {
-                codex: HarnessProtocol::Native,
-                ..Default::default()
-            }
-            .save(&path)
-            .unwrap();
-            assert_eq!(
-                router
-                    .capabilities(Some("codex"))
-                    .await
-                    .unwrap_err()
-                    .to_string(),
+                err(router.capabilities(Some("codex")).await.unwrap_err()),
                 "native"
             );
+            assert_eq!(err(router.capabilities(None).await.unwrap_err()), "native");
             assert_eq!(
-                router
-                    .session_capabilities(Some("codex"), "codex::shared")
-                    .await
-                    .unwrap_err()
-                    .to_string(),
+                err(router.capabilities(Some("acp:codex")).await.unwrap_err()),
                 "acp"
             );
             assert_eq!(
-                router
-                    .session_models(Some("codex"), "codex::shared", None)
+                err(router
+                    .list_models(Some("acp:codex"), None)
                     .await
-                    .unwrap_err()
-                    .to_string(),
-                "acp"
+                    .unwrap_err()),
+                "acp codex"
             );
+            assert_eq!(
+                err(router
+                    .list_models(Some("opencode"), None)
+                    .await
+                    .unwrap_err()),
+                "acp opencode"
+            );
+            let mut input = input();
+            input.agent_id = Some("acp:codex".into());
+            assert_eq!(
+                router.start_session(input).await.unwrap().model.as_deref(),
+                Some("acp")
+            );
+            // Loaded, then released: the session stays on the protocol it started with.
+            assert_eq!(model_of(&router, "codex::shared").await, "acp");
+            router.release_session("codex::shared").await.unwrap();
+            assert_eq!(model_of(&router, "codex::shared").await, "acp");
             assert!(
                 !router
                     .session_negotiated_caps(Some("codex"), "codex::shared")
                     .turns
                     .steer
             );
-            assert_eq!(
-                router
-                    .resume_session("codex::shared", None, SessionSettings::default())
-                    .await
-                    .unwrap()
-                    .model
-                    .as_deref(),
-                Some("acp")
-            );
+            // A protocol switch re-routes it once the loaded session is released.
             router.release_session("codex::shared").await.unwrap();
-            assert_eq!(
-                router
-                    .resume_session("codex::shared", None, SessionSettings::default())
-                    .await
-                    .unwrap()
-                    .model
-                    .as_deref(),
-                Some("native")
-            );
-            ProtocolSettings::default().save(&path).unwrap();
-            assert_eq!(
-                router
-                    .capabilities(Some("codex"))
-                    .await
-                    .unwrap_err()
-                    .to_string(),
-                "acp"
-            );
-            assert_eq!(
-                router
-                    .session_capabilities(Some("codex"), "codex::shared")
-                    .await
-                    .unwrap_err()
-                    .to_string(),
-                "native"
-            );
-            assert_eq!(
-                router
-                    .session_models(Some("codex"), "codex::shared", None)
-                    .await
-                    .unwrap_err()
-                    .to_string(),
-                "native"
-            );
-            assert!(
-                router
-                    .session_negotiated_caps(Some("codex"), "codex::shared")
-                    .turns
-                    .steer
-            );
-            assert_eq!(
-                router
-                    .resume_session("codex::shared", None, SessionSettings::default())
-                    .await
-                    .unwrap()
-                    .model
-                    .as_deref(),
-                Some("native")
-            );
+            router.set_session_route("codex::shared", "codex");
+            assert_eq!(model_of(&router, "codex::shared").await, "native");
             router.release_session("codex::shared").await.unwrap();
-            assert_eq!(
-                router
-                    .resume_session("codex::shared", None, SessionSettings::default())
-                    .await
-                    .unwrap()
-                    .model
-                    .as_deref(),
-                Some("acp")
-            );
+            router.set_session_route("codex::shared", "acp:codex");
+            assert_eq!(model_of(&router, "codex::shared").await, "acp");
         }
     }
     #[tokio::test]
-    async fn settings_are_shared_and_reload_only_after_a_successful_save() {
+    async fn unrouted_sessions_follow_the_protocol_their_thread_recorded() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("protocol.json");
-        let acp = Arc::new(Backend {
-            name: "acp",
-            loaded: Default::default(),
-        });
-        let native = Arc::new(Backend {
-            name: "native",
-            loaded: Default::default(),
-        });
-        let catalog = ProtocolRouter::new(acp.clone(), None, path.clone())
-            .with_backend("codex", native.clone());
-        let bound = ProtocolRouter::new(acp, Some("codex".into()), path.clone())
-            .with_backend("codex", native);
-        let selection = ProtocolSettings {
-            codex: HarnessProtocol::Native,
-            ..Default::default()
+        let db = dir.path().join("db.sqlite");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch("CREATE TABLE threads(provider_session_id TEXT, harness_protocol TEXT);
+            INSERT INTO threads VALUES('codex::old',NULL),('codex::pinned','acp'),('codex::new','native');").unwrap();
+        let (acp, native) = pair();
+        let router = ProtocolRouter::new(acp, None, Some(db)).with_backend("codex", native);
+        // A thread from before the choice (NULL) moves to native at its next load.
+        for (id, backend) in [
+            ("codex::old", "native"),
+            ("codex::pinned", "acp"),
+            ("codex::new", "native"),
+            ("codex::unknown", "native"),
+        ] {
+            assert_eq!(
+                router
+                    .session_capabilities(Some("codex"), id)
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                backend,
+                "{id}"
+            );
+        }
+        // Agents without a native runtime are never routed natively.
+        assert_eq!(
+            router
+                .session_capabilities(None, "opencode::x")
+                .await
+                .unwrap_err()
+                .to_string(),
+            "acp"
+        );
+    }
+    #[tokio::test]
+    async fn agent_list_offers_native_agents_and_their_acp_adapters() {
+        let (acp, native) = pair();
+        let router = ProtocolRouter::new(acp, None, None)
+            .with_backend("codex", native.clone())
+            .with_backend("claude", native);
+        let agents = router.list_agents().await.unwrap();
+        let keys: Vec<_> = agents.iter().map(|a| a.model.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["codex", "claude", "acp:codex", "acp:claude", "opencode"]
+        );
+        let info = |key: &str| {
+            agents
+                .iter()
+                .find(|a| a.model == key)
+                .unwrap()
+                .acp_agent
+                .clone()
+                .unwrap()
         };
-        // Disk changes cannot silently flip a live router's model/capability probes.
-        std::fs::write(&path, serde_json::to_vec(&selection).unwrap()).unwrap();
-        for router in [&catalog, &bound] {
-            assert_eq!(
-                router
-                    .capabilities(Some("codex"))
-                    .await
-                    .unwrap_err()
-                    .to_string(),
-                "acp"
-            );
-            assert_eq!(
-                router
-                    .list_models(Some("codex"), None)
-                    .await
-                    .unwrap_err()
-                    .to_string(),
-                "acp"
-            );
-        }
-        // This is also the owner PUT handler's persistence/reload path.
-        selection.save(&path).unwrap();
-        for router in [&catalog, &bound] {
-            assert_eq!(
-                router
-                    .capabilities(Some("codex"))
-                    .await
-                    .unwrap_err()
-                    .to_string(),
-                "native"
-            );
-            assert_eq!(
-                router
-                    .list_models(Some("codex"), None)
-                    .await
-                    .unwrap_err()
-                    .to_string(),
-                "native"
-            );
-        }
-        std::fs::remove_file(&path).unwrap();
-        std::fs::create_dir(&path).unwrap();
-        assert!(ProtocolSettings::default().save(&path).is_err());
-        for router in [&catalog, &bound] {
-            assert_eq!(
-                router
-                    .capabilities(Some("codex"))
-                    .await
-                    .unwrap_err()
-                    .to_string(),
-                "native"
-            );
-        }
+        assert_eq!(info("codex")["harnessProtocol"], "native");
+        assert_eq!(info("codex")["transport"], "native");
+        // Native Claude needs the CLI only, not the missing ACP adapter.
+        assert_eq!(info("claude")["availability"], "ready");
+        assert_eq!(info("acp:claude")["availability"], "adapter_missing");
+        assert_eq!(info("acp:codex")["baseAgentId"], "codex");
+        assert_eq!(info("opencode")["harnessProtocol"], "acp");
+        assert!(agents[0].is_default && !agents[2].is_default);
     }
     #[tokio::test]
     async fn native_approval_errors_are_never_swallowed_by_acp() {
@@ -748,8 +794,7 @@ mod tests {
             name: "native",
             loaded: Default::default(),
         });
-        let router =
-            ProtocolRouter::new(acp, None, PathBuf::from("missing")).with_backend("codex", native);
+        let router = ProtocolRouter::new(acp, None, None).with_backend("codex", native);
         assert!(router
             .respond_permission("native-codex:valid", true, None)
             .await
@@ -762,16 +807,6 @@ mod tests {
             .respond_permission("acp-request", true, None)
             .await
             .is_ok());
-    }
-    #[test]
-    fn settings_reject_typo_and_default_to_acp() {
-        assert!(serde_json::from_str::<ProtocolSettings>(r#"{"codex":"nativ"}"#).is_err());
-        assert_eq!(
-            serde_json::from_str::<ProtocolSettings>("{}")
-                .unwrap()
-                .codex,
-            HarnessProtocol::Acp
-        );
     }
 }
 

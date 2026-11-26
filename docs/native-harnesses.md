@@ -1,31 +1,53 @@
 # Native harness protocols
 
-ACP remains the default harness protocol. A device can instead connect directly
-to Codex's `codex app-server` JSON-RPC protocol. Both paths use Codex's own rollout
-store and keep the same `codex::` session identifiers. Release the loaded harness
-before changing protocols for an existing conversation; the next load uses the
-new selection. A setting change never moves an active session between processes.
-Loaded threads also keep their backend's model list and capabilities. The
-Supervisor caches the selection for all its routers and refreshes it after a
-successful settings API update; manual file edits take effect after a restart.
-Unowned sessions with unrecognized prefixes use ACP, including on a bound provider.
+Codex and Claude run natively by default: Pockymoe speaks Codex's
+`codex app-server` JSON-RPC and Claude Code's SDK stream directly. Their ACP
+adapters (codex-acp, claude-agent-acp) stay available under the ACP agent, next
+to the other ACP agents. Both protocols use the harness's own session store
+(Codex rollouts, Claude JSONL) and the same `codex::` / `claude::` session IDs.
 
-In Settings → Resources, choose ACP or Native for each harness.
+## Choosing a protocol
 
-The device owner can also read or replace the selection through
-`GET` / `PUT /api/harness-protocols/settings` with
-`{"codex":"acp","claude":"acp"}` (each value accepts `acp` or `native`).
-The settings file sits beside the Supervisor database, with the extension
-`harness-protocols.json`. Missing settings default to ACP. Shares cannot access
-this endpoint. A native backend must be registered for the selected harness;
-otherwise it continues through ACP.
+A thread's protocol is chosen when it is created and pinned on the thread:
+`harnessProtocol` (`native` or `acp`) beside `agentId` (`codex`, `claude`); it is
+absent for ACP-only agents. In the new-thread form, Codex and Claude are native;
+**ACP agent** reveals ACP Codex, ACP Claude and the other ACP agents, and threads
+on an adapter are labelled "ACP · Codex" / "ACP · Claude Code".
+
+Clients name the choice with an agent key: `codex` and `claude` run natively,
+`acp:codex` and `acp:claude` use the adapters, any other id is an ACP agent. No
+agent means native Codex. The key is accepted as `agentId` by
+`POST /api/threads/start`, thread import, the models and capabilities queries
+(`?agentId=acp:codex`), harness switch and fork targets, `pockymoe thread create
+--agent`, delegates and the MCP `thread_launch` and `thread_switch` tools.
+`GET /api/agent-runtimes/acp/agents` lists native `codex` and `claude` first
+(`acpAgent.harnessProtocol` `native`, `transport` `native`; ready when the base CLI
+is installed, no adapter needed), then the ACP agents, with the adapters keyed
+`acp:codex` / `acp:claude` (`acpAgent.baseAgentId`).
+
+The protocol stays with the thread across reloads, Supervisor restarts and
+forks. A loaded session keeps its runtime until it is released; an unloaded one
+follows the protocol its thread recorded. The harness switch picker moves a
+thread between Codex and ACP Codex (or Claude and ACP Claude) without a handoff:
+both read the same store, so the thread keeps its session, history and settings,
+and the transcript records the change. Switching to another agent hands off
+history as before ([harness-switching.md](harness-switching.md)).
+
+Threads created before threads recorded a protocol run natively from their next
+load. The native runtimes passed the promotion gate below, including ACP →
+native → ACP on one session, so these conversations continue with their full
+history; switch one to ACP Codex or ACP Claude to keep it on the adapter.
+
+There is no device-wide protocol setting: a device default would make "Codex"
+mean a different runtime per device and for delegates, the CLI and MCP clients.
+The former `GET` / `PUT /api/harness-protocols/settings` endpoint is gone and a
+leftover `harness-protocols.json` beside the database is ignored.
 
 The direct Codex backend supports thread start/resume/fork, rollback, streaming
 turns, image inputs, model and effort selection, plan mode, steering, interrupt,
 approval requests and explicit compaction. Its Rust process transport uses the
-same execution-context and process-cleanup implementation as ACP. Native mode
-is experimental: transcript and lifecycle parity must be validated before making
-it the default. Keep ACP selected when a native feature is unavailable.
+same execution-context and process-cleanup implementation as ACP. Create the
+thread under the ACP agent when a feature is only available there.
 
 Native Codex also exposes goals and uses the same local rollout reader as ACP
 for per-request billing, including subagent requests. Context occupancy streams
@@ -190,7 +212,7 @@ message counted once, with its final `message_delta` counts. Context occupancy
 streams from the main agent's latest request, against the window Claude reports
 (`get_context_usage` at load, then the result's `modelUsage`).
 
-Native Claude is experimental. In an isolated environment it starts the
+In an isolated environment native Claude starts the
 image's `claude` through the environment worker and takes exactly the ACP
 adapter's route (`acp/isolated_claude.rs`): the API broker capability or the
 approved native file login, pinned both in the process environment and in the
@@ -237,9 +259,10 @@ The mapping is tested against real Claude Code 2.1.322 sessions recorded with
 
 ## Promotion gate
 
-ACP stays the default. Native can become the default for a harness only when
-every check below passes for that harness on the release candidate, with the
-evidence kept with the release notes. Status as of 2026-11-26:
+Native became the default for Codex and Claude by the owner's decision on
+2026-11-26, with the rows below passing except the release matrix; ACP stays one
+choice away under the ACP agent. Re-run these checks on each release candidate
+and keep the evidence with the release notes. Status as of 2026-11-26:
 
 | Check | Codex | Claude |
 | --- | --- | --- |
@@ -265,15 +288,14 @@ Recommendation after the Codex audit: native Codex now matches or exceeds ACP on
 every row run on Linux (live turn settings, sub-agent rows, warnings as notices).
 The ACP behaviours the audit found against the product's settings (guarded
 escalations approved by Codex's own reviewer, Plan Mode turns without Codex's
-Plan Mode, hidden title requests) are fixed on ACP too. Make native the Codex
-default once the release matrix passes; until then ACP stays the default.
+Plan Mode, hidden title requests) are fixed on ACP too.
 
-A failing or unrun row keeps ACP the default. For Claude, the isolated rows were
+A failing row on a release candidate is a release blocker for that harness's
+native runtime. For Claude, the isolated rows were
 re-run on the audited runtime (Dokploy in Docker-in-Docker, native file login,
 haiku): tools, Write diff, a denied and an allowed approval, stop and continue
 on the same process, a background Agent, resume after a Supervisor restart and
-ACP ↔ native on one thread all passed. The remaining blocker is the release
-matrix.
+ACP ↔ native on one thread all passed. The release matrix remains to be run.
 
 ### What native Claude gives beyond ACP
 
