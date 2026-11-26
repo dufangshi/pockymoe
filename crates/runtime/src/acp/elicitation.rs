@@ -47,7 +47,7 @@ fn custom_field<'a>(params: &'a Value, question_id: &str) -> Option<(&'a String,
         .find(|(id, field)| custom_question_id(id, field, props) == Some(question_id))
 }
 
-pub(super) fn questions(params: &Value, native: bool) -> Result<Vec<Value>> {
+pub(crate) fn questions(params: &Value, native: bool) -> Result<Vec<Value>> {
     let mut out = Vec::new();
     if native {
         for q in params["questions"].as_array().into_iter().flatten() {
@@ -97,7 +97,7 @@ pub(super) fn questions(params: &Value, native: bool) -> Result<Vec<Value>> {
     Ok(out)
 }
 
-pub(super) fn response(
+pub(crate) fn response(
     params: &Value,
     native: bool,
     allow: bool,

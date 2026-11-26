@@ -45,6 +45,9 @@ fn runtime() -> (tempfile::TempDir, Arc<CodexRuntime>) {
 #[tokio::test]
 async fn scripted_start_stream_fork_rollback_compact_resume_release() {
     let (_dir, r) = runtime();
+    let caps = r.capabilities(Some("codex")).await.unwrap();
+    assert_eq!(caps.negotiated.unwrap()["protocol"], "codex-app-server");
+    assert!(caps.effective_capabilities.unwrap().branching.hard_rollback);
     let id = r.start_session(input()).await.unwrap().provider_session_id;
     assert_eq!(id, "codex::shared");
     let items = r
@@ -93,32 +96,34 @@ async fn scripted_crash_is_execution_uncertain_then_resumes() {
 }
 #[tokio::test]
 async fn scripted_guarded_approval_is_visible_and_answerable() {
-    let (_dir, r) = runtime();
-    let id = r.start_session(input()).await.unwrap().provider_session_id;
-    let bus = EventBus::new();
-    let mut rx = bus.subscribe();
-    let runner = r.clone();
-    let session = id.clone();
-    let task = tokio::spawn(async move {
-        runner
-            .start_turn(turn(&session, "approval"), bus, CancellationToken::new())
-            .await
-    });
-    let request = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let event = rx.recv().await.unwrap();
-            if event.event_type == "thread.request.created" {
-                break event.payload["request"]["id"].as_str().unwrap().to_owned();
+    for prompt in ["approval", "approval-permissions"] {
+        let (_dir, r) = runtime();
+        let id = r.start_session(input()).await.unwrap().provider_session_id;
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let runner = r.clone();
+        let session = id.clone();
+        let task = tokio::spawn(async move {
+            runner
+                .start_turn(turn(&session, prompt), bus, CancellationToken::new())
+                .await
+        });
+        let request = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let event = rx.recv().await.unwrap();
+                if event.event_type == "thread.request.created" {
+                    break event.payload["request"]["id"].as_str().unwrap().to_owned();
+                }
             }
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(r.pending_requests("thread").await.len(), 1);
-    r.respond_permission(&request, true, None).await.unwrap();
-    assert!(!task.await.unwrap().unwrap().is_empty());
-    assert!(r.pending_requests("thread").await.is_empty());
-    r.release_session(&id).await.unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(r.pending_requests("thread").await.len(), 1);
+        r.respond_permission(&request, true, None).await.unwrap();
+        assert!(!task.await.unwrap().unwrap().is_empty());
+        assert!(r.pending_requests("thread").await.is_empty());
+        r.release_session(&id).await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -175,11 +180,81 @@ async fn real_codex_smoke() {
         .unwrap();
     assert_eq!(resumed.provider_session_id, id);
     let fork = runtime.fork_session(&id).await.unwrap();
-    let rewind = runtime.rewind_session(&fork.provider_session_id, 1).await;
-    println!("real model catalog, tool use, file edit, release/resume and fork passed; rollback supported: {}",rewind.is_ok());
+    runtime
+        .rewind_session(&fork.provider_session_id, 1)
+        .await
+        .unwrap();
+    runtime
+        .apply_session_settings(
+            &id,
+            SessionSettings {
+                effort: Some("low".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let goal = runtime
+        .set_goal(&id, Some("Native lab goal".into()), Some("paused".into()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(goal.status, "paused");
+    assert_eq!(
+        runtime.get_goal(&id).await.unwrap().unwrap().objective,
+        "Native lab goal"
+    );
+    println!("real model catalog, tool use, file edit, release/resume, fork, rewind, effort and goal passed");
     runtime
         .release_session(&fork.provider_session_id)
         .await
         .unwrap();
     runtime.release_session(&id).await.unwrap();
+}
+
+#[tokio::test]
+async fn steering_and_interrupt_use_native_turn_identity() {
+    for steer in [true, false] {
+        let (_dir, runtime) = runtime();
+        let id = runtime
+            .start_session(input())
+            .await
+            .unwrap()
+            .provider_session_id;
+        let runner = runtime.clone();
+        let session = id.clone();
+        let task = tokio::spawn(async move {
+            runner
+                .start_turn(
+                    turn(&session, "wait"),
+                    EventBus::new(),
+                    CancellationToken::new(),
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !matches!(
+                runtime.execution_state(&id).await,
+                ExecutionState::Running { .. }
+            ) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        if steer {
+            runtime
+                .send_input(&id, "pockymoe-turn", "continue")
+                .await
+                .unwrap();
+        } else {
+            runtime.interrupt(&id, "pockymoe-turn").await.unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        runtime.release_session(&id).await.unwrap();
+    }
 }

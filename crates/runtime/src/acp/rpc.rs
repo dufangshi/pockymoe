@@ -71,7 +71,7 @@ pub struct AcpProcess {
     pub(crate) host_guard: Option<crate::execution::host_process::HostProcessContext>,
     pub(crate) execution: Option<crate::execution::ExecutionContext>,
     pub(crate) context_inspection: bool,
-    context_trace_root: Option<std::path::PathBuf>,
+    pub(crate) context_trace_root: Option<std::path::PathBuf>,
     pub(crate) cli_env: Vec<(String, String)>,
     pub(crate) id: String,
     pub(crate) started_at: String,
