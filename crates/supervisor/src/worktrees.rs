@@ -143,6 +143,32 @@ pub(crate) async fn checkpoint_action(
     };
     result.map(Json).map_err(map_err)
 }
+#[derive(Deserialize)]
+pub(crate) struct StartInWorktree {
+    #[serde(flatten)]
+    thread: pockymoe_protocol::CreateThreadInput,
+    #[serde(default)]
+    worktree: pockymoe_runtime::NewThreadWorktree,
+}
+/// `POST /api/threads/start-worktree`: a new thread in its own managed worktree
+/// (docs/worktrees.md). Owner-only (`access.rs`); not offered to host-integrated
+/// browser scopes, which create threads through their hub.
+pub(crate) async fn start_in_worktree(
+    State(state): State<Arc<Supervisor>>,
+    scope: Option<axum::Extension<crate::treer::Scope>>,
+    Json(body): Json<StartInWorktree>,
+) -> Result<Json<Value>, ApiErr> {
+    if scope.is_some() {
+        return Err(map_err(anyhow::anyhow!(
+            "unsupported_host_worktree: host-integrated browser threads cannot create worktrees"
+        )));
+    }
+    state
+        .start_thread_in_worktree(body.thread, body.worktree)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
 pub(crate) async fn cli(state: &Arc<Supervisor>, input: Value) -> anyhow::Result<Value> {
     let thread = input["threadId"].as_str().unwrap_or("").to_owned();
     if input["operation"] == "threadRewind" {

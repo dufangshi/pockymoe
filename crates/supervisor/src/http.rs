@@ -395,6 +395,10 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
         .route("/api/thread-activity", get(thread_activity))
         .route("/api/stats/summary", get(stats_summary))
         .route("/api/threads/start", post(start_thread))
+        .route(
+            "/api/threads/start-worktree",
+            post(crate::worktrees::start_in_worktree),
+        )
         .route("/api/threads/import", post(import_thread))
         .route("/api/threads/import-candidates", get(import_candidates))
         .route(

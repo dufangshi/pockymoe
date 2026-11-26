@@ -1753,6 +1753,8 @@ async fn a_workspace_grant_lists_starts_and_opens_threads_only_in_its_workspace(
     assert!(authorize_path(&state, &p, "GET", "/api/agent-runtimes").is_ok());
     assert!(authorize_path(&state, &p, "GET", "/api/agent-runtimes/codex/models").is_ok());
     assert!(authorize_path(&state, &p, "POST", "/api/agent-runtimes/codex/install").is_err());
+    // A worktree thread makes a branch and checkout on the device: never a grant's.
+    assert!(authorize_path(&state, &p, "POST", "/api/threads/start-worktree").is_err());
     let stranger = BrowserPrincipal {
         grantee_user_id: Some("stranger".into()),
         ..p.clone()

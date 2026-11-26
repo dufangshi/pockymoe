@@ -886,6 +886,7 @@ async fn roles_supply_defaults_and_prefix_only_the_first_turn() {
                 name: Some("rev".into()),
                 role: Some(role),
                 worktree: None,
+                ..Default::default()
             },
         )
         .await
