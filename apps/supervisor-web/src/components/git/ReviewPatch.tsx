@@ -45,7 +45,9 @@ export function ReviewPatch({ patch, parsed, split, collapsed, area, write, busy
   useEffect(() => { setOverrides({}); }, [collapsed, patch]);
   const move = (delta: number) => { const matches = root.current?.querySelectorAll<HTMLElement>('[data-match="true"]'); if (!matches?.length) return; const index = (match + delta + matches.length) % matches.length; setMatch(index); matches[index]?.scrollIntoView?.({ block: 'center' }); };
   const capture = () => {
-    if (!onReviewQuote) return;
+    // Dialog pointer events bubble through React portals. Keep the selected
+    // lines while editing/submitting the comment, even after DOM selection clears.
+    if (!onReviewQuote || commenting) return;
     const selected = window.getSelection();
     if (!selected || selected.isCollapsed || !root.current?.contains(selected.anchorNode) || !root.current.contains(selected.focusNode)) { setSelection(null); return; }
     const parent = (node: Node | null) => (node instanceof Element ? node : node?.parentElement)?.closest<HTMLElement>('[data-line]');

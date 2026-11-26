@@ -25,3 +25,18 @@ it('addresses Git-quoted UTF-8 paths without changing patch bytes', () => {
   const quoted = 'diff --git "a/\\303\\251.rs" "b/\\303\\251.rs"\n--- "a/\\303\\251.rs"\n+++ "b/\\303\\251.rs"\n@@ -1 +1 @@\n-a\n+b\n';
   expect(hunkPatches(quoted).get('é.rs')).toEqual([quoted]);
 });
+it('keeps selected lines when pointer events bubble from the comment dialog', () => {
+  setLocale('en'); const insert = vi.fn().mockReturnValue(true);
+  render(<ReviewPatch patch={patch} parsed={parsePatch(patch)} single={false} onSelect={() => {}} split={false} collapsed={false} area="turn" write={undefined} busy={false} onReviewQuote={insert} />);
+  const line = screen.getByText('+new');
+  const selection = window.getSelection()!; const range = document.createRange(); range.selectNodeContents(line); selection.removeAllRanges(); selection.addRange(range);
+  fireEvent.mouseUp(line);
+  fireEvent.click(screen.getByRole('button', { name: 'Comment' }));
+  selection.removeAllRanges();
+  const comment = screen.getByRole('textbox', { name: 'Comment' });
+  fireEvent.mouseUp(comment);
+  fireEvent.change(comment, { target: { value: 'Handle malformed input.' } });
+  const add = screen.getByRole('button', { name: 'Add comment' });
+  fireEvent.mouseUp(add); fireEvent.click(add);
+  expect(insert).toHaveBeenCalledWith(expect.objectContaining({ path: 'a.rs', startLine: 1, endLine: 1, text: 'new', comment: 'Handle malformed input.' }));
+});
