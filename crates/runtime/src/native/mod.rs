@@ -263,18 +263,26 @@ impl AgentRuntime for ProtocolRouter {
         allow: bool,
         answer: Option<&str>,
     ) -> Result<()> {
-        let mut last = self.acp.respond_permission(request_id, allow, answer).await;
-        if last.is_ok() {
-            return last;
+        // Native requests carry a backend prefix. ACP tolerates unknown ids,
+        // so broadcasting responses would silently swallow native approvals.
+        let agent = if request_id.starts_with("native-codex:") {
+            Some("codex")
+        } else if request_id.starts_with("claude-native:") {
+            Some("claude")
+        } else {
+            None
+        };
+        if let Some(agent) = agent {
+            return self
+                .backends
+                .get(agent)
+                .ok_or_else(|| anyhow::anyhow!("Native approval backend unavailable"))?
+                .respond_permission(request_id, allow, answer)
+                .await;
         }
-        for backend in self.backends.values() {
-            last = backend.respond_permission(request_id, allow, answer).await;
-            if last.is_ok() {
-                break;
-            }
-        }
-        last
+        self.acp.respond_permission(request_id, allow, answer).await
     }
+
     async fn pending_requests(&self, thread_id: &str) -> Vec<ThreadActionRequestDto> {
         let mut out = self.acp.pending_requests(thread_id).await;
         for backend in self.backends.values() {

@@ -743,3 +743,84 @@ fn native_claude_task_plan_and_edit_snippet_diff() {
     assert_eq!(u[0].items[0].kind, ThreadItemKind::FileChange);
     assert!(u[0].items[0].detail_text.as_ref().unwrap().contains("-old"));
 }
+
+#[tokio::test]
+async fn native_claude_router_delivers_permission_to_owning_backend() {
+    let (dir, native) = fake();
+    let cwd = dir.path().to_str().unwrap();
+    let id = start(&native, cwd).await;
+    // Actual ACP deliberately accepts unknown request ids. Routing must not let
+    // that acknowledgment hide an unanswered native Claude request.
+    let acp = Arc::new(crate::acp::AcpRuntime::catalog(None, 5000));
+    assert!(acp
+        .respond_permission("claude-native:unknown", true, None)
+        .await
+        .is_ok());
+    crate::native::ProtocolSettings {
+        claude: crate::native::HarnessProtocol::Native,
+        ..Default::default()
+    }
+    .save(&dir.path().join("protocol.json"))
+    .unwrap();
+    let router = Arc::new(
+        crate::native::ProtocolRouter::new(acp, None, dir.path().join("protocol.json"))
+            .with_backend("claude", native.clone()),
+    );
+    router
+        .resume_session(&id, Some(cwd), SessionSettings::default())
+        .await
+        .unwrap();
+    let bus = EventBus::new();
+    let mut rx = bus.subscribe();
+    let token = CancellationToken::new();
+    let cancel = token.clone();
+    let input = turn(&id, "approval");
+    let running = router.clone();
+    let task = tokio::spawn(async move { running.start_turn(input, bus, cancel).await });
+    let request = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = rx.recv().await.unwrap();
+            if event.event_type == "thread.request.created" {
+                break event.payload["request"]["id"].as_str().unwrap().to_owned();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert!(request.starts_with("claude-native:"));
+    let pending = router.pending_requests("thread").await;
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, request);
+    router
+        .respond_permission(&request, true, None)
+        .await
+        .unwrap();
+    let done = tokio::time::timeout(Duration::from_secs(2), task).await;
+    if done.is_err() {
+        token.cancel();
+    }
+    let items = done
+        .expect("router swallowed native Claude approval")
+        .unwrap()
+        .unwrap();
+    assert!(items.iter().any(|item| item.text == "allow"));
+    assert!(router.pending_requests("thread").await.is_empty());
+    crate::native::ProtocolSettings::default()
+        .save(&dir.path().join("protocol.json"))
+        .unwrap();
+    // Stale/native-invalid requests must retain the native validation error,
+    // even after the device owner changes the selected protocol back to ACP.
+    assert!(router
+        .respond_permission(&request, true, None)
+        .await
+        .is_err());
+    assert!(router
+        .respond_permission("claude-native:unknown", false, None)
+        .await
+        .is_err());
+    assert!(router
+        .respond_permission("acp-request", false, None)
+        .await
+        .is_ok());
+    native.release_session(&id).await.unwrap();
+}

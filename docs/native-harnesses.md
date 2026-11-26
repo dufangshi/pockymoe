@@ -44,7 +44,9 @@ The backend streams text and thinking, maps tool calls to the shared transcript
 items, forwards TodoWrite plans and subagent attribution, and accepts image
 attachments. It discovers models at initialization and uses control requests
 for model, effort and permission-mode changes. Guarded requests use the normal
-thread approval UI; interactive questions and plan exits still require a human
+thread approval UI. Approval replies route by their native backend prefix even
+when the device protocol setting changes; stale requests return that backend's
+validation error. Interactive questions and plan exits still require a human
 in full-access mode. Read-only callbacks reject execution and write tools.
 Interrupt, steering, compaction, idle release and crash detection use the native
 connection. An unexpected EOF marks execution uncertain and never fabricates a
