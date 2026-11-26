@@ -756,7 +756,7 @@ impl TurnMapper {
         items
     }
 
-    pub(super) fn completed_tool_ids(&self) -> Vec<String> {
+    pub(crate) fn completed_tool_ids(&self) -> Vec<String> {
         self.tools
             .iter()
             .filter(|tool| tool.status.as_deref() == Some("completed"))
@@ -1201,6 +1201,21 @@ fn content_block_text(block: &Value) -> Option<String> {
 }
 
 fn readable_output(output: &Value) -> String {
+    // claude-agent-acp's rawOutput is Claude's tool_result content: a string
+    // or content blocks. Show the text, not its JSON encoding.
+    if let Some(text) = output.as_str() {
+        return text.to_owned();
+    }
+    if let Some(blocks) = output.as_array() {
+        let texts: Vec<_> = blocks
+            .iter()
+            .filter(|b| b["type"] == "text")
+            .filter_map(|b| b["text"].as_str())
+            .collect();
+        if !texts.is_empty() && texts.len() == blocks.len() {
+            return texts.join("\n");
+        }
+    }
     for pointer in [
         "/formatted_output",
         "/aggregatedOutput",
@@ -1692,5 +1707,24 @@ mod background_wait_tests {
             mapper.finish(true)[0].status.as_deref(),
             Some("interrupted")
         );
+    }
+
+    #[test]
+    fn claude_string_and_block_outputs_render_as_text() {
+        let mut mapper = TurnMapper::new("turn");
+        mapper.apply(&json!({"sessionUpdate":"tool_call","toolCallId":"b","kind":"execute","title":"ls","rawInput":{"command":"ls"}}));
+        let done = mapper.apply(&json!({"sessionUpdate":"tool_call_update","toolCallId":"b","status":"completed","rawOutput":"a\nb"}));
+        assert!(done.items[0]
+            .detail_text
+            .as_deref()
+            .unwrap()
+            .ends_with("Output:\na\nb"));
+        mapper.apply(&json!({"sessionUpdate":"tool_call","toolCallId":"c","kind":"execute","title":"ls","rawInput":{"command":"ls"}}));
+        let done = mapper.apply(&json!({"sessionUpdate":"tool_call_update","toolCallId":"c","status":"completed","rawOutput":[{"type":"text","text":"x"}]}));
+        assert!(done.items[0]
+            .detail_text
+            .as_deref()
+            .unwrap()
+            .ends_with("Output:\nx"));
     }
 }

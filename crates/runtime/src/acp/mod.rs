@@ -7,6 +7,8 @@ mod claude_lifecycle;
 mod claude_tasks;
 mod claude_usage;
 pub(crate) use claude_usage::legacy_background_reply_phases;
+/// The Claude JSONL billing reader, shared with the native Claude runtime.
+pub(crate) use claude_usage::ClaudeUsageReader;
 mod codex_bridge;
 pub(crate) mod codex_models;
 pub(crate) mod codex_permissions;

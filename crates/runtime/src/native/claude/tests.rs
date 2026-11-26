@@ -24,16 +24,12 @@ for line in sys.stdin:
   r=v['request']; data={}
   if r['subtype']=='initialize':
    data={'models':[{'value':'fixture','displayName':'Fixture','supportedEffortLevels':['low','high']}],'commands':[]}
-   hooks=r.get('hooks',{})
   emit({'type':'control_response','response':{'subtype':'success','request_id':v['request_id'],'response':data}})
   if r['subtype']=='interrupt': result()
  elif v['type']=='user':
   text=v['message']['content'][0].get('text','')
   if text=='crash': sys.exit(9)
   if text=='hang': continue
-  if text=='write':
-   pre=hooks['PreToolUse'][0]; assert pre['matcher']=='Write'
-   emit({'type':'control_request','request_id':'hook','request':{'subtype':'hook_callback','callback_id':pre['hookCallbackIds'][0],'tool_use_id':'w1','input':{'hook_event_name':'PreToolUse','tool_name':'Write','tool_input':{'file_path':'lab.txt','content':'after\n'}}}}); continue
   if text=='approval':
    emit({'type':'control_request','request_id':'permission','request':{'subtype':'can_use_tool','tool_name':'Bash','input':{'command':'echo fixture'},'tool_use_id':'tool'}}); continue
   if text=='stream':
@@ -42,12 +38,6 @@ for line in sys.stdin:
    assistant('Hello')
   else: assistant(text)
   result()
- elif v['type']=='control_response' and v['response']['request_id']=='hook':
-  assert v['response']['response']=={'continue':True}
-  emit({'type':'assistant','uuid':'u-w','message':{'id':'api-w','model':'fixture','content':[{'type':'tool_use','id':'w1','name':'Write','input':{'file_path':'lab.txt','content':'after\n'}}],'usage':{'input_tokens':5,'output_tokens':1}}})
-  open('lab.txt','w').write('after\n')
-  emit({'type':'user','message':{'role':'user','content':[{'type':'tool_result','tool_use_id':'w1','content':'File written'}]}})
-  assistant('written'); result()
  elif v['type']=='control_response':
   assistant(v['response']['response']['behavior']); result()
 "#).unwrap();
@@ -765,8 +755,11 @@ async fn native_claude_cancellation_cleans_pending_permissions_and_owned_process
         .unwrap()
         .unwrap();
     assert!(runtime.pending_requests("thread").await.is_empty());
+    // A stop interrupts the prompt and keeps the process, like ACP's cancel.
+    assert_eq!(runtime.loaded_sessions().await.len(), 1);
+    assert_eq!(runtime.execution_state(&id).await, ExecutionState::Idle);
+    runtime.release_session(&id).await.unwrap();
     assert!(runtime.loaded_sessions().await.is_empty());
-    assert_eq!(runtime.execution_state(&id).await, ExecutionState::Unknown);
 }
 
 #[test]
@@ -860,33 +853,4 @@ async fn native_claude_router_delivers_permission_to_owning_backend() {
         .await
         .is_ok());
     native.release_session(&id).await.unwrap();
-}
-
-#[tokio::test]
-async fn native_claude_write_diff_comes_from_the_pre_tool_use_hook() {
-    let (dir, runtime) = fake();
-    std::fs::write(dir.path().join("lab.txt"), "before\n").unwrap();
-    let id = start(&runtime, dir.path().to_str().unwrap()).await;
-    let items = runtime
-        .start_turn(
-            turn(&id, "write"),
-            EventBus::new(),
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-    let write = items
-        .iter()
-        .find(|i| i.kind == "fileChange")
-        .expect("write row");
-    let detail = serde_json::to_string(write).unwrap();
-    assert!(
-        detail.contains("before") && detail.contains("after"),
-        "{detail}"
-    );
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("lab.txt")).unwrap(),
-        "after\n"
-    );
-    runtime.release_session(&id).await.unwrap();
 }

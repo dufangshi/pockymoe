@@ -1,8 +1,11 @@
 //! Native Claude Code stream-json runtime. ACP remains an independent backend.
 mod completion;
-mod hooks;
 mod isolated;
 mod mapping;
+mod permissions;
+mod pump;
+#[cfg(test)]
+mod replay_tests;
 #[cfg(test)]
 mod tests;
 mod transport;
@@ -33,14 +36,52 @@ struct Session {
     settings: Mutex<SessionSettings>,
     operation: Mutex<()>,
     active: Mutex<Option<(String, String)>>,
-    background: AtomicBool,
+    /// Session-level CLI state (tasks, idle bookends), fed every frame.
+    completion: std::sync::Mutex<completion::Completion>,
+    /// The running turn's inbox. Frames outside a turn never reach a later
+    /// turn: the pump records them and answers their callbacks.
+    sink: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Value>>>,
+    /// A stop was requested for the running turn: its error result is the
+    /// interruption, not a failure.
+    interrupting: AtomicBool,
+    /// The model's context window once Claude reports it (0 = unknown).
+    window: std::sync::atomic::AtomicU64,
+    /// Claude's current permission mode as the CLI last reported or accepted
+    /// it; a plan approval moves it without us, so each turn re-asserts ours.
+    mode: std::sync::Mutex<String>,
+    /// The account offers Claude's `auto` mode.
+    auto_mode: bool,
     context_delivered: AtomicBool,
     load: Mutex<LoadedSession>,
     models: Vec<ModelOptionDto>,
     subagents: Mutex<Vec<ThreadSubagentDto>>,
 }
+impl Session {
+    /// Track the mode Claude reports (init, a plan exit, `/permissions`).
+    fn observe(&self, frame: &Value) {
+        if frame["type"] == "system" {
+            if let Some(mode) = frame["permissionMode"].as_str() {
+                *self.mode.lock().unwrap() = mode.to_owned();
+            }
+        }
+    }
+    /// Put Claude in the product policy's mode if it drifted.
+    async fn assert_mode(&self, settings: &SessionSettings) -> Result<()> {
+        let desired = desired_mode(settings, self.auto_mode);
+        if *self.mode.lock().unwrap() == desired {
+            return Ok(());
+        }
+        self.process
+            .request(json!({"subtype":"set_permission_mode","mode":desired}))
+            .await?;
+        *self.mode.lock().unwrap() = desired.to_owned();
+        Ok(())
+    }
+}
 struct Permission {
     session: String,
+    choices: Vec<permissions::Choice>,
+    tool_use: Option<String>,
     thread: String,
     native_id: String,
     input: Value,
@@ -178,7 +219,7 @@ impl ClaudeRuntime {
             }
             None => Process::spawn(&self.command, cwd, &args, clean).await?,
         };
-        let init = match process.request(json!({"subtype":"initialize","hooks":hooks::registration(),"sdkMcpServers":[],"agents":{},"forwardSubagentText":true})).await {
+        let init = match process.request(json!({"subtype":"initialize","hooks":{},"sdkMcpServers":[],"agents":{},"forwardSubagentText":false})).await {
             Ok(init) => init,
             Err(e) => { process.stop().await; return Err(e); }
         };
@@ -197,6 +238,13 @@ impl ClaudeRuntime {
                 }
             }
         }
+        let spawned_mode = init["current_permission_mode"]
+            .as_str()
+            .unwrap_or(permission_mode(&settings))
+            .to_owned();
+        let auto_mode = init["models"]
+            .as_array()
+            .is_some_and(|models| models.iter().any(|m| m["supportsAutoMode"] == true));
         let intent = load_intent();
         let now = chrono::Utc::now();
         let load = LoadedSession {
@@ -235,13 +283,45 @@ impl ClaudeRuntime {
                 settings: Mutex::new(settings),
                 operation: Mutex::new(()),
                 active: Mutex::new(None),
-                background: AtomicBool::new(false),
+                completion: Default::default(),
+                sink: Default::default(),
+                interrupting: AtomicBool::new(false),
+                window: Default::default(),
+                mode: std::sync::Mutex::new(spawned_mode),
+                auto_mode,
                 context_delivered: AtomicBool::new(false),
                 load: Mutex::new(load),
                 models: parse_models(&init["models"]),
                 subagents: Mutex::new(Vec::new()),
             }),
         );
+        let session = self.sessions.lock().await.get(id).cloned();
+        if let Some(session) = session {
+            pump::spawn(&session);
+            // The window before the first result: Claude's own context count.
+            let probe = session.clone();
+            tokio::spawn(async move {
+                if let Ok(usage) = probe
+                    .process
+                    .request(json!({"subtype":"get_context_usage","detail":"summary"}))
+                    .await
+                {
+                    if let Some(window) = usage["rawMaxTokens"]
+                        .as_u64()
+                        .or(usage["maxTokens"].as_u64())
+                    {
+                        let _ = probe.window.compare_exchange(
+                            0,
+                            window,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        );
+                    }
+                }
+            });
+            let settings = session.settings.lock().await.clone();
+            session.assert_mode(&settings).await?;
+        }
         Ok(result)
     }
     async fn resolve(
@@ -250,11 +330,19 @@ impl ClaudeRuntime {
         allow: bool,
         answer: Option<&str>,
     ) -> Result<()> {
-        let response = if allow {
-            let mut input = permission.input;
+        let response = if permission.dto.kind != "requestUserInput" {
+            permissions::response(
+                &permission.choices,
+                allow,
+                answer,
+                &permission.input,
+                permission.tool_use.as_deref(),
+            )
+        } else if allow {
+            let mut input = permission.input.clone();
             if let Some(answer) = answer {
                 if let Ok(value) = serde_json::from_str::<Value>(answer) {
-                    if value.is_object() && permission.dto.kind == "requestUserInput" {
+                    if value.is_object() {
                         let mut answers = serde_json::Map::new();
                         for (index, q) in input["questions"]
                             .as_array()
@@ -274,15 +362,16 @@ impl ClaudeRuntime {
                             }
                         }
                         input["answers"] = json!(answers);
-                        // Approval replies choose a decision; they never replace the
-                        // original tool arguments with the UI's answer envelope.
                     }
                 }
             }
             json!({"behavior":"allow","updatedInput":input})
         } else {
-            json!({"behavior":"deny","message":answer.unwrap_or("The user denied this tool request")})
+            json!({"behavior":"deny","message":"The user declined to answer"})
         };
+        self.answer(permission, response).await
+    }
+    async fn answer(&self, permission: Permission, response: Value) -> Result<()> {
         permission.process.write(json!({"type":"control_response","response":{"subtype":"success","request_id":permission.native_id,"response":response}})).await?;
         permission.bus.emit(ThreadEventEnvelope {
             event_type: "thread.request.resolved".into(),
@@ -299,26 +388,12 @@ impl ClaudeRuntime {
         input: &StartTurnInput,
         bus: &EventBus,
         message: &Value,
-        mapper: &mut mapping::Mapper,
     ) -> Result<()> {
         let native_id = message["request_id"]
             .as_str()
             .context("Claude control request missing id")?
             .to_owned();
         let request = &message["request"];
-        if request["subtype"] == "hook_callback" && request["callback_id"] == hooks::WRITE_PREVIEW {
-            // Never blocks or changes the tool: it only records what the file
-            // held before Claude overwrites it, for a truthful diff.
-            if let Some(tool) = request["tool_use_id"].as_str() {
-                let input = &request["input"]["tool_input"];
-                if let Some(path) = input["file_path"].as_str() {
-                    if let Some(previous) = hooks::previous_text(&session.cwd, path) {
-                        mapper.write_preview(tool, path, previous);
-                    }
-                }
-            }
-            return session.process.write(json!({"type":"control_response","response":{"subtype":"success","request_id":native_id,"response":{"continue":true}}})).await;
-        }
         if request["subtype"] != "can_use_tool" {
             // Unsupported callbacks must never hang or silently approve an action.
             return session.process.write(json!({"type":"control_response","response":{"subtype":"error","request_id":native_id,"error":"Unsupported native Claude control callback"}})).await;
@@ -326,23 +401,36 @@ impl ClaudeRuntime {
         let tool = request["tool_name"].as_str().unwrap_or("Tool");
         let settings = session.settings.lock().await.clone();
         let id = format!("claude-native:{}", uuid::Uuid::new_v4());
+        let choices = permissions::choices(tool, request);
+        let ask = tool == "AskUserQuestion";
+        let (title, description, questions) = if ask {
+            (
+                "Question".to_owned(),
+                None,
+                request_questions(tool, &request["input"]),
+            )
+        } else {
+            permissions::dto_parts(tool, request, &choices)
+        };
         let dto = ThreadActionRequestDto {
             id: id.clone(),
-            kind: if tool == "AskUserQuestion" {
+            kind: if ask {
                 "requestUserInput"
             } else {
                 "permissionRequest"
             }
             .into(),
-            title: tool.into(),
-            description: Some(request["input"].to_string()),
+            title,
+            description,
             turn_id: Some(input.turn_id.clone()),
             item_id: request["tool_use_id"].as_str().map(str::to_owned),
             created_at: now_rfc3339(),
-            questions: request_questions(tool, &request["input"]),
+            questions,
         };
         let permission = Permission {
             session: session_id.into(),
+            choices,
+            tool_use: request["tool_use_id"].as_str().map(str::to_owned),
             thread: input.thread_id.clone(),
             native_id,
             input: request["input"].clone(),
@@ -350,12 +438,10 @@ impl ClaudeRuntime {
             dto: dto.clone(),
             bus: bus.clone(),
         };
-        // Full access wins over plan, exactly like the product ACP policy. Ask
-        // tools and ExitPlanMode always require a user decision.
+        // The product policy answers first, as on ACP: full access or yolo
+        // approves (ACP's `auto_approve`), read-only refuses writes. Questions
+        // and plan exits always need a person.
         let interactive = matches!(tool, "AskUserQuestion" | "ExitPlanMode");
-        if permission_mode(&settings) == "bypassPermissions" && !interactive {
-            return self.resolve(permission, true, None).await;
-        }
         if settings.sandbox_mode.as_deref() == Some("read-only")
             && !matches!(
                 tool,
@@ -363,8 +449,14 @@ impl ClaudeRuntime {
             )
         {
             return self
-                .resolve(permission, false, Some("This thread is read-only"))
+                .answer(
+                    permission,
+                    json!({"behavior":"deny","message":"This thread is read-only"}),
+                )
                 .await;
+        }
+        if policy(&settings).auto_approve() && !interactive {
+            return self.resolve(permission, true, None).await;
         }
         self.pending.lock().await.insert(id, permission);
         bus.emit(ThreadEventEnvelope {
@@ -427,12 +519,25 @@ fn canonical_id(id: &str) -> Result<String> {
         raw,
     ))
 }
-fn permission_mode(settings: &SessionSettings) -> &'static str {
-    let policy = crate::acp::ProductSessionPolicy {
+fn policy(settings: &SessionSettings) -> crate::acp::ProductSessionPolicy {
+    crate::acp::ProductSessionPolicy {
         collaboration_mode: settings.collaboration_mode.clone(),
         sandbox_mode: settings.sandbox_mode.clone(),
         approval_mode: settings.approval_mode.clone(),
-    };
+    }
+}
+/// Claude's permission mode for the product policy. Full access wins over
+/// plan; plan and read-only refuse writes. Guarded work uses Claude's `auto`
+/// mode where the account offers it, like the ACP adapter's default mode
+/// (`acp/modes.rs`), and `default` otherwise.
+fn desired_mode(settings: &SessionSettings, auto: bool) -> &'static str {
+    match permission_mode(settings) {
+        "default" if auto => "auto",
+        mode => mode,
+    }
+}
+fn permission_mode(settings: &SessionSettings) -> &'static str {
+    let policy = policy(settings);
     if policy.allows_writes_outside_workspace() {
         "bypassPermissions"
     } else if policy.rejects_writes() {
@@ -662,11 +767,7 @@ impl AgentRuntime for ClaudeRuntime {
         if settings.collaboration_mode.is_some() {
             next.collaboration_mode = settings.collaboration_mode;
         }
-        if permission_mode(&next) != permission_mode(&current) {
-            s.process
-                .request(json!({"subtype":"set_permission_mode","mode":permission_mode(&next)}))
-                .await?;
-        }
+        s.assert_mode(&next).await?;
         *current = next;
         Ok(())
     }
@@ -721,19 +822,58 @@ impl AgentRuntime for ClaudeRuntime {
             load.last_activity_at = chrono::Utc::now();
         }
         crate::native::turn_events::started(&bus, &input);
-        let mut mapper = mapping::Mapper::new(&input.turn_id);
-        let mut lifecycle = completion::Completion::default();
-        let mut events = s.process.events.lock().await;
+        // On the host the JSONL reader bills every request (subagents included)
+        // exactly as the ACP path does; in an environment the stream bills.
+        let host = !input.provider_session_id.contains("::env/");
+        let mut reader =
+            host.then(|| crate::acp::ClaudeUsageReader::new(&input.provider_session_id));
+        let known_window = s.window.load(Ordering::SeqCst);
+        let mut mapper = mapping::Mapper::with(
+            &input.turn_id,
+            !host,
+            (known_window > 0).then_some(known_window),
+        );
+        let include_context = actual_input.prompt != input.prompt;
+        let mut usage_tick = tokio::time::interval(Duration::from_secs(1));
+        let prompt_id = uuid::Uuid::new_v4().to_string();
+        s.interrupting.store(false, Ordering::SeqCst);
+        s.completion.lock().unwrap().begin_turn(&prompt_id);
+        let (tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        *s.sink.lock().unwrap() = Some(tx);
+        let mut waiting_shown = false;
         let outcome: Result<bool> = async {
-            s.process.write(json!({"type":"user","uuid":uuid::Uuid::new_v4().to_string(),"session_id":s.raw,"parent_tool_use_id":null,"message":{"role":"user","content":blocks}})).await?;
+            s.process.write(json!({"type":"user","uuid":prompt_id,"session_id":s.raw,"parent_tool_use_id":null,"message":{"role":"user","content":blocks}})).await?;
             if !input.hidden { s.context_delivered.store(true,Ordering::SeqCst); }
-
+            let mut stopping: Option<tokio::time::Instant> = None;
             loop {
-                let message=tokio::select! {
-                    _=cancel.cancelled()=> { let _=tokio::time::timeout(Duration::from_secs(3),s.process.request(json!({"subtype":"interrupt"}))).await; s.process.stop().await; return Ok(true); }
-                    message=events.recv()=> message.context(ExecutionUncertain("Claude stream closed mid-turn".into()))?
+                let message = tokio::select! {
+                    _ = cancel.cancelled(), if stopping.is_none() => {
+                        // Stop the turn, keep the process: Claude settles the
+                        // interrupted prompt with a result and returns to idle.
+                        s.interrupting.store(true, Ordering::SeqCst);
+                        stopping = Some(tokio::time::Instant::now() + STOP_GRACE);
+                        if tokio::time::timeout(Duration::from_secs(3), s.process.request(json!({"subtype":"interrupt"}))).await.is_err() {
+                            s.process.stop().await;
+                            return Ok(true);
+                        }
+                        continue;
+                    }
+                    _ = tokio::time::sleep_until(stopping.unwrap_or_else(tokio::time::Instant::now)), if stopping.is_some() => {
+                        // Claude did not settle the stop in time: end the process.
+                        s.process.stop().await;
+                        return Ok(true);
+                    }
+                    _ = usage_tick.tick() => {
+                        for usage in reader.as_mut().map(|r| r.poll()).unwrap_or_default() {
+                            crate::acp::runtime::emit_mapped(&bus,&input.thread_id,&input.turn_id,mapping::usage(usage),input.hidden);
+                        }
+                        continue;
+                    }
+                    message = events.recv() => message.context(ExecutionUncertain("Claude stream closed mid-turn".into()))?
                 };
-                if message["type"]=="control_request" { self.control(&input.provider_session_id,&s,&input,&bus,&message,&mut mapper).await?; continue; }
+                s.completion.lock().unwrap().record(&message);
+                s.observe(&message);
+                if message["type"]=="control_request" { self.control(&input.provider_session_id,&s,&input,&bus,&message).await?; continue; }
                 if message["type"]=="control_cancel_request" {
                     let native=message["request_id"].as_str().unwrap_or("");
                     let mut pending=self.pending.lock().await;
@@ -741,16 +881,41 @@ impl AgentRuntime for ClaudeRuntime {
                     for id in ids { if let Some(p)=pending.remove(&id) { p.bus.emit(ThreadEventEnvelope { event_type:"thread.request.resolved".into(), thread_id:p.thread,timestamp:now_rfc3339(),payload:json!({"requestId":id}) }); } }
                     continue;
                 }
-                lifecycle.record(&message);
-                s.background.store(lifecycle.pending(),Ordering::SeqCst);
+                mapper.set_bills(reader.as_ref().is_none_or(|r| !r.found()));
+                if s.interrupting.load(Ordering::SeqCst) { mapper.set_stopping(); }
                 for mapped in mapper.apply(&message) { if let Some(agents)=&mapped.active_subagents { *s.subagents.lock().await=agents.clone(); } crate::acp::runtime::emit_mapped(&bus,&input.thread_id,&input.turn_id,mapped,input.hidden); }
-                if message["type"]=="result" && message["is_error"]==true { bail!("Claude turn failed ({})",message["subtype"].as_str().unwrap_or("unknown")); }
-                if lifecycle.complete() { return Ok(false); }
+                let (complete, waiting, error) = {
+                    let c = s.completion.lock().unwrap();
+                    (c.complete(), c.waiting(), c.error().cloned())
+                };
+                if let Some(count) = waiting.filter(|_| !waiting_shown) {
+                    waiting_shown = true;
+                    crate::acp::runtime::emit_mapped(&bus,&input.thread_id,&input.turn_id,mapper.inner.native_background_wait(count),input.hidden);
+                } else if waiting.is_none() {
+                    waiting_shown = false;
+                }
+                if complete {
+                    if s.interrupting.load(Ordering::SeqCst) { return Ok(true); }
+                    if let Some(error) = error { return Err(TurnResultError(result_error(&error)).into()); }
+                    return Ok(false);
+                }
             }
         }.await;
+        // Frames already forwarded but not read still update the session.
+        s.sink.lock().unwrap().take();
+        while let Ok(frame) = events.try_recv() {
+            s.completion.lock().unwrap().record(&frame);
+        }
         let failed = outcome.is_err();
         let interrupted = outcome.as_ref().copied().unwrap_or(false);
-        if failed {
+        // A result error (API error, refusal, limit) leaves a healthy process;
+        // only a broken stream or protocol fault ends it.
+        if failed
+            && !outcome
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.is::<TurnResultError>())
+        {
             s.process.stop().await;
         }
         *s.active.lock().await = None;
@@ -772,12 +937,49 @@ impl AgentRuntime for ClaudeRuntime {
             }
         }
         drop(pending);
+        if let Some(reader) = reader.as_mut() {
+            for usage in reader.poll_final() {
+                crate::acp::runtime::emit_mapped(
+                    &bus,
+                    &input.thread_id,
+                    &input.turn_id,
+                    mapping::usage(usage),
+                    input.hidden,
+                );
+            }
+        }
+        if let Some(window) = mapper.window() {
+            s.window.store(window, Ordering::SeqCst);
+        }
+        if include_context && !failed && !input.hidden {
+            // Persisted by the service, so a resumed session keeps knowing.
+            bus.emit(ThreadEventEnvelope {
+                event_type: pockymoe_protocol::ThreadEventType::ThreadContextDelivered,
+                thread_id: input.thread_id.clone(),
+                timestamp: now_rfc3339(),
+                payload: json!({"providerSessionId": input.provider_session_id}),
+            });
+        }
+        let completed_tools = mapper.inner.completed_tool_ids();
         let mut items = mapper.finish(interrupted || failed);
-        if failed {
-            for item in &mut items {
-                if item.status.as_deref() == Some("interrupted") {
-                    item.status = Some("failed".into());
-                }
+        if let Some(reader) = reader.as_ref() {
+            reader.annotate_background_reply_phases(&mut items, !interrupted && !failed);
+        }
+        // Like ACP: whatever did not finish takes the turn's status, so no
+        // tool stays "running" in history.
+        let status = match &outcome {
+            Ok(_) if interrupted => "interrupted",
+            Ok(_) => "completed",
+            Err(e) if e.is::<ExecutionUncertain>() => "recovering",
+            Err(_) => "failed",
+        };
+        for item in &mut items {
+            if item.status.as_deref() != Some("failed")
+                && !completed_tools.contains(&item.id)
+                && item.extra.get("origin").and_then(Value::as_str)
+                    != Some("nativeTaskNotification")
+            {
+                item.status = Some(status.into());
             }
         }
         crate::native::turn_events::finished(&bus, &input, &outcome, interrupted, Some(&items));
@@ -794,6 +996,7 @@ impl AgentRuntime for ClaudeRuntime {
                 .is_some_and(|(_, active)| active == turn),
             "Claude turn is no longer active"
         );
+        s.interrupting.store(true, Ordering::SeqCst);
         s.process
             .request(json!({"subtype":"interrupt","cancel_queued_messages":true}))
             .await?;
@@ -809,7 +1012,9 @@ impl AgentRuntime for ClaudeRuntime {
                 .is_some_and(|(_, active)| active == turn),
             "Claude turn is no longer active"
         );
-        s.process.write(json!({"type":"user","uuid":uuid::Uuid::new_v4().to_string(),"session_id":s.raw,"parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"text","text":prompt}]}})).await
+        let uuid = uuid::Uuid::new_v4().to_string();
+        s.completion.lock().unwrap().add_prompt(&uuid);
+        s.process.write(json!({"type":"user","uuid":uuid,"session_id":s.raw,"parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"text","text":prompt}]}})).await
     }
     async fn active_subagents(&self, id: &str) -> Vec<ThreadSubagentDto> {
         match self.session(id).await {
@@ -861,7 +1066,12 @@ impl AgentRuntime for ClaudeRuntime {
             if s.active.lock().await.is_some() {
                 load.busy.push(HarnessBusyReason::Turn);
             }
-            if s.background.load(Ordering::SeqCst) {
+            let idle_turn = s.active.lock().await.is_none();
+            let background = {
+                let c = s.completion.lock().unwrap();
+                c.holds_background_work() || (idle_turn && c.autonomous_running())
+            };
+            if background {
                 load.busy.push(HarnessBusyReason::BackgroundTask);
             }
             loaded.push(load);
@@ -882,7 +1092,10 @@ impl AgentRuntime for ClaudeRuntime {
             "conflict: Claude process changed"
         );
         ensure!(
-            !s.background.load(Ordering::SeqCst),
+            !{
+                let c = s.completion.lock().unwrap();
+                c.holds_background_work() || c.autonomous_running()
+            },
             "conflict: Claude background work is still running"
         );
         s.process.stop().await;
@@ -982,6 +1195,44 @@ impl AgentRuntime for ClaudeRuntime {
         )
     }
 }
+/// How long a stopped turn may take to settle before its process is ended.
+const STOP_GRACE: Duration = Duration::from_secs(10);
+
+/// Claude answered the prompt with an error result. The process stays usable.
+#[derive(Debug)]
+struct TurnResultError(String);
+impl std::fmt::Display for TurnResultError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for TurnResultError {}
+
+/// The message a failed result carries, as claude-agent-acp reports it: the
+/// result text for an API error, otherwise the error list or the subtype.
+fn result_error(result: &Value) -> String {
+    let text = result["result"]
+        .as_str()
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+    let errors = result["errors"]
+        .as_array()
+        .map(|errors| {
+            errors
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|e| !e.starts_with("[ede_diagnostic]"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|e| !e.is_empty());
+    let detail = text
+        .map(str::to_owned)
+        .or(errors)
+        .unwrap_or_else(|| result["subtype"].as_str().unwrap_or("error").to_owned());
+    format!("Claude turn failed: {detail}")
+}
+
 fn prompt_blocks(input: &StartTurnInput, cwd: &str) -> Result<Vec<Value>> {
     let mut blocks = Vec::new();
     for block in crate::acp::prompt::build_prompt_blocks(
