@@ -640,7 +640,15 @@ async fn dispatch(
         }
         return Ok(());
     }
-    if method == "session/update" || method.starts_with('_') {
+    // Direct app-server notifications share this bounded transport.
+    if method == "session/update"
+        || method.starts_with('_')
+        || method.starts_with("thread/")
+        || method.starts_with("turn/")
+        || method.starts_with("item/")
+        || method.starts_with("account/")
+        || method == "error"
+    {
         let mut params = msg.get("params").cloned().unwrap_or(json!({}));
         let Some(object) = params.as_object_mut() else {
             return Ok(());

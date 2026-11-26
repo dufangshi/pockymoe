@@ -5072,6 +5072,37 @@ pub fn bootstrap_runtimes(config: &RuntimeConfig) -> Vec<SharedRuntime> {
             )),
         }
     }
+    out = out
+        .into_iter()
+        .map(|acp| {
+            let provider = acp.provider();
+            let bound = match provider {
+                Provider::Codex => Some("codex".into()),
+                Provider::Claude => Some("claude".into()),
+                Provider::Opencode => Some("opencode".into()),
+                Provider::Acp => None,
+            };
+            let router = crate::native::ProtocolRouter::new(
+                acp.clone(),
+                bound,
+                crate::native::settings_path(&config.database_url),
+            );
+            let router = if matches!(provider, Provider::Acp | Provider::Codex) {
+                router.with_backend(
+                    "codex",
+                    Arc::new(crate::native::codex::CodexRuntime::new(
+                        provider,
+                        acp,
+                        crate::upstreams::directory(&config.database_url),
+                    )),
+                )
+            } else {
+                router
+            };
+            Arc::new(router) as SharedRuntime
+        })
+        .collect();
+
     out
 }
 

@@ -1,6 +1,7 @@
 pub mod acp;
 pub mod actor;
 mod child_process;
+pub mod native;
 pub use child_process::supervisor_secret_env;
 pub mod config;
 pub mod context_inspection;

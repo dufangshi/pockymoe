@@ -303,6 +303,10 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
         )
         .route("/api/config/runtime", get(runtime_config))
         .route(
+            "/api/harness-protocols/settings",
+            get(harness_protocol_settings).put(put_harness_protocol_settings),
+        )
+        .route(
             "/api/context-inspection/settings",
             get(context_inspection_settings).put(put_context_inspection_settings),
         )
@@ -1063,6 +1067,27 @@ async fn put_harness_resource_settings(
                 settings_storage_error(e)
             }
         })
+}
+
+async fn harness_protocol_settings(
+    State(state): State<AppState>,
+) -> Result<Json<pockymoe_runtime::native::ProtocolSettings>, ApiErr> {
+    pockymoe_runtime::native::ProtocolSettings::load(&pockymoe_runtime::native::settings_path(
+        &state.config.database_url,
+    ))
+    .map(Json)
+    .map_err(settings_storage_error)
+}
+async fn put_harness_protocol_settings(
+    State(state): State<AppState>,
+    Json(settings): Json<pockymoe_runtime::native::ProtocolSettings>,
+) -> Result<Json<pockymoe_runtime::native::ProtocolSettings>, ApiErr> {
+    settings
+        .save(&pockymoe_runtime::native::settings_path(
+            &state.config.database_url,
+        ))
+        .map_err(settings_storage_error)?;
+    Ok(Json(settings))
 }
 
 async fn runtime_config(

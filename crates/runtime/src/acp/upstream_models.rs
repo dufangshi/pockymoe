@@ -10,7 +10,7 @@ use std::{
 use tokio::sync::Mutex;
 
 type Cached = (Vec<u8>, Instant, Vec<DiscoveredModel>);
-pub(super) struct UpstreamModels {
+pub(crate) struct UpstreamModels {
     directory: PathBuf,
     cache: Mutex<HashMap<String, Cached>>,
     native: Mutex<Option<(Vec<u8>, Instant, Vec<ModelOptionDto>)>>,

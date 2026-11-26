@@ -3,7 +3,7 @@ use super::modes::ProductSessionPolicy;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-pub(super) fn native_policy(policy: &ProductSessionPolicy) -> Value {
+pub(crate) fn native_policy(policy: &ProductSessionPolicy) -> Value {
     let sandbox = policy
         .sandbox_mode
         .as_deref()
@@ -22,7 +22,7 @@ pub(super) fn native_policy(policy: &ProductSessionPolicy) -> Value {
         "approvalsReviewer":"user"})
 }
 
-pub(super) struct PermissionBridge {
+pub(crate) struct PermissionBridge {
     initial: Value,
     threads: HashMap<String, Value>,
     pending: HashMap<String, (Option<String>, Value)>,
