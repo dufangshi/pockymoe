@@ -238,6 +238,7 @@ button around the icon keeps its label and state (`aria-pressed`,
 | --- | --- |
 | Rail, tabs row and phone top bar | `sidebar`, `back`, `forward`, `home`, `search`, `chat`, `terminal`, `explorer`, `thread-map`, `harness-panel`, `settings`, `notifications`, `help`, `close`; device monitor `cpu`, `memory`, `gpu` |
 | Thread list and tabs | `shortcuts` (section), `shortcut` (thread star), `new-thread`, `thread-tools`, `agents`, `automations`, `split`, `restore`; thread actions `ports`, `share-link`, `sharing`, `download`; thread menu `more`, `open`, `copy`, `rename`, `delete` |
+| Transcript | sent-message action `edit-from-here` |
 | Composer | `attach`, attach menu `photo`, `file`; toolbox rows `plan`, `goal`, `fast`, `compact`, `fork`, `skills`, `mcp`, `hooks`, `harness`, `prompt`, `unsupported` (the send button uses `data-send-intent`) |
 | Transcript | `think`, `wait`, `wake`, `copy`, `copied`; timeline `previous-turn`, `latest`, `next-turn` (step icons use the `is-<tone>` classes) |
 | Explorer and files | nodes `folder`, `folder-open`, `folder-link`, `archive`, `image`, `code`, `file`; header `new-file`, `filter`, `collapse-folders`, `refresh`, `more`, `upload`, `delete`, `expand-viewer`, `collapse-explorer`; rows `copy-path`, `copy-absolute-path`, `more`, `download`, `rename`, `delete`, `properties`; tabs `code`, `close`, `unsaved`; preview `back`, `forward`, `source`, `preview`, `edit`, `save`, `close`, `more`, `expand-explorer`, `collapse-viewer` |

@@ -1,3 +1,8 @@
+import { RestoreNotice } from '../components/git/RestoreNotice';
+import { getLocale } from '@pockymoe/thread-ui/i18n';
+import type { QuoteScope } from '@pockymoe/thread-ui';
+import { fetchCheckpoints, type TurnCheckpoint } from '../lib/gitApi';
+import { RewindDialog } from '../components/git/RewindDialog';
 import { RelayUserMenu } from '../components/RelayUserMenu';
 import { useRetainedRouteActive } from '../desktop/context';
 import { getThreadCaches, rememberThreadDetail } from './threadCaches';
@@ -99,7 +104,6 @@ import {
   createThreadShell,
   disconnectThread,
   deleteThread,
-  fetchAgentBackendModels,
   fetchThreadCapabilitySnapshot,
   postThreadHarnessAction,
   dshConsoleUrl,
@@ -997,8 +1001,21 @@ export function ThreadDetailPage() {
     workbenchPresentation.update(patch);
     return true;
   }, [workbenchPresentation.update, toolsUseReference, toolsDevice, toolsDetail?.workspace.id, relayRouteDeviceId, detail?.workspace.id, setFocusedPane]);
+  const gitQuoteScope = useRef<QuoteScope | null>(null);
+  const registerGitQuoteScope = useCallback((scope: QuoteScope | null) => { gitQuoteScope.current = scope; }, []);
+  const [gitCheckpoints, setGitCheckpoints] = useState<TurnCheckpoint[]>([]);
+  const [rewindUndo, setRewindUndo] = useState<{ threadId: string; undoId: string; deviceId?: string | null } | null>(null);
+  const [rewindTurnId, setRewindTurnId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!detail || !relayThreadReadsLinkedFiles) return;
+    const controller = new AbortController();
+    void fetchCheckpoints(detail.thread.id, relayRouteDeviceId, controller.signal).then(value => setGitCheckpoints(value.turns)).catch(() => setGitCheckpoints([]));
+    return () => controller.abort();
+  }, [detail?.thread.id, detail?.thread.updatedAt, relayRouteDeviceId, relayThreadReadsLinkedFiles]);
   // Git and isolation dock at the right of the conversation (ThreadInspector).
   const threadInspector = useThreadInspector({
+    onAskAgent: prompt => setChatDraft(draft => ({ ...draft, prompt: draft.prompt ? `${draft.prompt}\n\n${prompt}` : prompt })),
+    onReviewQuote: quote => gitQuoteScope.current?.insert(quote) ?? false,
     thread: detail?.thread, deviceId: relayRouteDeviceId, canManage: relayThreadIsOwner,
     gitAvailable: !hostScope && relayThreadReadsLinkedFiles, isolationAvailable: !hostScope,
     filesOpen: workbenchPresentation.value.mode === 'files',
@@ -3989,6 +4006,13 @@ export function ThreadDetailPage() {
   const surfaceAdapter = useMemo(
     () => ({
       openThread,
+      onQuoteScope: registerGitQuoteScope,
+      ...(relayThreadIsOwner && !['running', 'recovering'].includes(detail?.thread.status ?? '') ? { editTurn: setRewindTurnId } : {}),
+      renderTurnChanges: (turnId: string) => {
+        const turn = gitCheckpoints.find(value => value.turnId === turnId);
+        const totals = turn?.workingCopies.filter(copy => copy.available).reduce((sum, copy) => ({ files: sum.files + copy.files, additions: sum.additions + copy.additions, deletions: sum.deletions + copy.deletions }), { files: 0, additions: 0, deletions: 0 });
+        return totals?.files ? <button className="thread-git-turn-chip" onClick={() => threadInspector.openTurn(turnId)}>{totals.files} {getLocale() === 'zh-CN' ? '个文件' : totals.files === 1 ? 'file' : 'files'} +{totals.additions} −{totals.deletions}</button> : null;
+      },
       getThreadHref,
       describeThread,
       // Only people who may start threads see the way to (a share's own workspace).
@@ -4014,6 +4038,7 @@ export function ThreadDetailPage() {
       ...(terminalAvailable ? { shell: localShellAdapter } : {}),
     }),
     [
+      registerGitQuoteScope, gitCheckpoints, threadInspector.openTurn, detail?.thread.status,
       canForkAtTurn,
       onForkTurn,
       getCurrentThreadImageAssetUrl,
@@ -4116,7 +4141,7 @@ export function ThreadDetailPage() {
       handleUpdateThreadShare, relayRouteDeviceId, id,
       threadShareState, relayThreadCanShare,
       detail?.workspace.id, detail?.thread.workspaceId, detail?.workspace.label,
-    , i18nLocale],
+      i18nLocale],
   );
 
   return (
@@ -4241,7 +4266,10 @@ export function ThreadDetailPage() {
         <div className="host-muted flex flex-1 items-center justify-center px-6 py-12 text-center">
           {translate("workbench.unableToResolveThisThread")}</div>
       )}
-      dialogs={<>{dialogs}{settingsDialogVisible && dialogDetail && <HarnessSettingsDialog
+      dialogs={<>{dialogs}{rewindUndo && <RestoreNotice {...rewindUndo} onClose={() => setRewindUndo(null)} />}{rewindTurnId && detail && <RewindDialog hasDraft={!!chatDraft.prompt || !!chatDraft.attachments.length} hasQueuedPrompts={!!detail.pendingSteers?.length} threadId={detail.thread.id} turnId={rewindTurnId} deviceId={relayRouteDeviceId} onUndoAvailable={undoId => setRewindUndo({ threadId: detail.thread.id, undoId, deviceId: relayRouteDeviceId })} onClose={() => setRewindTurnId(null)} onRestored={prompt => {
+        setChatDraft({ prompt: prompt.text, attachments: prompt.attachments });
+        void fetchThreadDetail(detail.thread.id, { limit: INITIAL_DETAIL_TURN_PAGE_SIZE }, relayRouteDeviceId).then(setDetail);
+      }} />}{settingsDialogVisible && dialogDetail && <HarnessSettingsDialog
         key={`${dialogDevice}:${dialogDetail.thread.id}`} thread={dialogDetail.thread}
         models={dialogUseReference ? referenceController.models : modelOptions}
         busy={dialogUseReference ? referenceController.busy : settingsBusy}

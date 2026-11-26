@@ -1,24 +1,34 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileDiff, FileQuestion, GitBranch, Info, MapPin, RefreshCw } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { GitActions, CommitBox, useGitWrite } from './GitActions';
+import { TurnControls } from './TurnControls';
+import { ReviewPatch } from './ReviewPatch';
+import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileDiff, GitBranch, Info, MapPin, RefreshCw } from 'lucide-react';
 import { CopyButton, ErrorMark, MiddleName, PathChip, Select, formatShortTimestamp } from '@pockymoe/thread-ui';
 import { formatNumber, getLocale, translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ApiError } from '../../lib/api';
 import {
-  fetchThreadGitCommits, fetchThreadGitDiff, fetchThreadGitStatus, fetchThreadWorkingContext,
+  fetchThreadGitCommits, fetchThreadGitDiff, fetchThreadGitStatus, fetchThreadWorkingContext, fetchCheckpoints, type TurnCheckpoint,
   type GitCommit, type GitCommits, type GitDiff, type GitDiffArea, type GitStatus, type ThreadWorkingContext, type WorkingCopy,
 } from '../../lib/gitApi';
 import { gitText as gt } from '../../lib/gitI18n';
-import { fileChange, parsePatch, type FileChange, type PatchFile, type PatchLine } from './patch';
+import { fileChange, parsePatch, type FileChange, type PatchFile } from './patch';
 import './thread-git.css';
 
 export interface ThreadGitPanelProps {
   threadId: string;
+  onAskAgent?: ((prompt: string) => void) | undefined;
+  running?: boolean;
+  canWrite?: boolean;
+  initialTurnId?: string | undefined;
+  onReviewQuote?: ((quote: import('@pockymoe/thread-ui').PromptQuote) => boolean) | undefined;
+  renderPullRequests?: (props: { threadId: string; workingCopyId?: string }) => ReactNode;
   deviceId?: string | null | undefined;
   /** Existing thread updates invalidate the open panel; no polling is started. */
   refreshKey?: string | undefined;
 }
 
-type View = 'worktree' | 'index' | 'branch' | 'commits';
+type View = 'worktree' | 'index' | 'branch' | 'commits' | 'turn' | 'pr';
 const SOURCE_KEY = { created: 'workbench.gitSourceCreated', adopted: 'workbench.gitSourceAdopted', observed: 'workbench.gitSourceObserved', configured: 'workbench.gitSourceConfigured' } as const;
 const CHANGE_LETTER: Record<FileChange, string> = { untracked: 'U', added: 'A', modified: 'M', deleted: 'D', renamed: 'R', copied: 'C', conflicted: '!', typeChanged: 'T', changed: '•' };
 const PAGE = 30;
@@ -49,16 +59,22 @@ interface ListedFile { path: string; change: FileChange; originalPath?: string |
     picks what to look at, and the rest is the file list and the diff. Narrow,
     the list sits above the scope's combined diff in one scroll and a file opens
     on its own; wide (a dragged-out dock), they sit side by side (docs/worktrees.md). */
-export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPanelProps) {
+export function ThreadGitPanel({ threadId, deviceId, refreshKey, running = false, canWrite = false, initialTurnId, renderPullRequests, onReviewQuote, onAskAgent }: ThreadGitPanelProps) {
   useI18n();
   const detailsId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const changesRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLElement>(null);
   const diffRef = useRef<HTMLElement>(null);
+  const [turns, setTurns] = useState<TurnCheckpoint[]>([]);
+  const [turnId, setTurnId] = useState(initialTurnId ?? '');
+  const [preferences, setPreferences] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('pockymoe.git.diff') ?? '{}') as { split?: boolean; whitespace?: boolean; collapsed?: boolean }; } catch { return {}; }
+  });
+  const preference = (key: 'split' | 'whitespace' | 'collapsed') => setPreferences(value => { const next = { ...value, [key]: !value[key] }; try { localStorage.setItem('pockymoe.git.diff', JSON.stringify(next)); } catch { /* Optional preference. */ } return next; });
   const [context, setContext] = useState<ThreadWorkingContext | null>(null);
   const [selected, setSelected] = useState('');
-  const [view, setView] = useState<View>('worktree');
+  const [view, setView] = useState<View>(initialTurnId ? 'turn' : 'worktree');
   // A commit opened from the list; its changes show in place of the list.
   const [commit, setCommit] = useState<GitCommit | null>(null);
   const [path, setPath] = useState('');
@@ -100,11 +116,17 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
     return () => controller.abort();
   }, [threadId, deviceId, revision, refreshKey, visible]);
 
-  const area: GitDiffArea | null = view === 'commits' ? commit ? 'commit' : null : view;
-  const diffBase = area === 'commit' ? commit?.oid ?? '' : base;
-  const areaScope = JSON.stringify([selected, area, area === 'branch' || area === 'commit' ? diffBase : '']);
+  const { write, busy, error: writeError } = useGitWrite(threadId, selected, deviceId, running, refresh);
   useEffect(() => {
-    if (!visible || !context) return;
+    const controller = new AbortController();
+    void fetchCheckpoints(threadId, deviceId, controller.signal).then(value => { setTurns(value.turns); setTurnId(current => current || value.turns.at(-1)?.turnId || ''); }).catch(() => {});
+    return () => controller.abort();
+  }, [threadId, deviceId, refreshKey, revision]);
+  const area: GitDiffArea | null = view === 'pr' ? null : view === 'commits' ? commit ? 'commit' : null : view;
+  const diffBase = area === 'commit' ? commit?.oid ?? '' : base;
+  const areaScope = JSON.stringify([selected, area, area === 'branch' || area === 'commit' ? diffBase : area === 'turn' ? turnId : '']);
+  useEffect(() => {
+    if (!visible || !context || view === 'pr' || area === 'turn' && !turnId) return;
     if (!selected) { setLoading(false); return; }
     const controller = new AbortController();
     setLoading(true);
@@ -115,7 +137,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
     const operation = area
       ? Promise.all([
         fetchThreadGitStatus(threadId, selected, deviceId, controller.signal),
-        fetchThreadGitDiff(threadId, selected, { area, ...(path ? { path } : {}), ...(area === 'branch' || area === 'commit' ? { base: diffBase } : {}) }, deviceId, controller.signal),
+        fetchThreadGitDiff(threadId, selected, { area, ...(preferences.whitespace ? { ignoreWhitespace: true } : {}), ...(area === 'turn' ? { turnId } : {}), ...(path ? { path } : {}), ...(area === 'branch' || area === 'commit' ? { base: diffBase } : {}) }, deviceId, controller.signal),
       ]).then(([nextStatus, nextDiff]) => {
         if (controller.signal.aborted) return;
         setStatus(nextStatus); setDiff(nextDiff);
@@ -126,7 +148,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
     return () => controller.abort();
     // areaScope is derived from selected, area and diffBase.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId, deviceId, selected, context, area, path, diffBase, offset, visible]);
+  }, [threadId, deviceId, selected, context, area, path, diffBase, offset, visible, turnId, preferences.whitespace]);
 
   const workingCopy = context?.workingCopies.find(copy => copy.id === selected);
   const manyCopies = (context?.workingCopies.length ?? 0) > 1;
@@ -213,12 +235,18 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
     {!context?.workingCopies.length && !loading && !error && <p className="thread-git-empty is-page">{translate('workbench.gitNoRepository')}</p>}
     {!workingCopy && loading && <p className="thread-git-empty is-page" aria-hidden="true">{translate('workbench.gitLoading')}</p>}
     {workingCopy && <>
+      {canWrite && <GitActions threadId={threadId} workingCopyId={selected} deviceId={deviceId} status={status} write={write} busy={busy} />}
+      {writeError ? <ErrorMark message={String(writeError).split('\n')[0] ?? 'Git'} detail={String(writeError)} /> : null}
       <div className="thread-git-views" role="group" aria-label={translate('workbench.gitScope')}>
+        <button type="button" aria-pressed={view === 'turn'} onClick={() => selectView('turn')}>{gt('turn')}</button>
+        {renderPullRequests && <button type="button" aria-pressed={view === 'pr'} onClick={() => selectView('pr')}>PR</button>}
         <button type="button" aria-pressed={view === 'worktree'} onClick={() => selectView('worktree')}>{translate('workbench.gitUnstaged')}<Count value={counts.worktree} /></button>
         <button type="button" aria-pressed={view === 'index'} onClick={() => selectView('index')}>{translate('workbench.gitStaged')}<Count value={counts.index} /></button>
         <button type="button" aria-pressed={view === 'branch'} onClick={() => selectView('branch')}>{translate('workbench.gitCompare')}</button>
         <button type="button" aria-pressed={view === 'commits'} onClick={() => selectView('commits')}>{translate('workbench.gitCommits')}</button>
       </div>
+      {view === 'turn' && <TurnControls turns={turns} turnId={turnId} onTurn={id => { setTurnId(id); reset(); }} workingCopyId={selected} threadId={threadId} deviceId={deviceId} write={write} busy={busy || !canWrite || running} />}
+      {view === 'pr' && renderPullRequests?.({ threadId, workingCopyId: selected })}
       {view === 'branch' && <form className="thread-git-bar thread-git-base" onSubmit={event => { event.preventDefault(); setBase(baseDraft.trim() || 'HEAD'); reset(); }}>
         <label><span>{gt('base')}</span><input aria-label={translate('workbench.gitBase')} value={baseDraft} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={event => setBaseDraft(event.target.value)} /></label>
         <button type="submit" className="thread-git-button">{gt('apply')}</button>
@@ -228,7 +256,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
         <span className="thread-git-head"><code>{shortOid(commit.oid)}</code><CopyButton value={commit.oid} label={translate('workbench.gitCopyCommit')} /></span>
         <span className="thread-git-commit-bar-subject" title={commit.subject}>{commit.subject}</span>
       </div>}
-      {area ? <div ref={changesRef} className="thread-git-changes" data-empty={listReady && !listed.length || undefined}>
+      {view === 'pr' ? null : area ? <div ref={changesRef} className="thread-git-changes" data-empty={listReady && !listed.length || undefined}>
         <aside ref={listRef} className="thread-git-files" aria-label={translate('workbench.gitChangedFiles')}>
           {listReady && listed.length > 0 && <div className="thread-git-summary">
             <span className="thread-git-summary-text">{gt(listed.length === 1 ? 'oneFile' : 'files', { n: formatNumber(listed.length) })}{known && <Stat file={totals} />}</span>
@@ -244,9 +272,11 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
                 {stat?.binary ? <span className="thread-git-dim thread-git-file-kind">{gt('binary')}</span> : stat && <Stat file={stat} />}
                 <span className="thread-git-sr">{gt(file.change)}</span>
               </button>
+              {canWrite && (area === 'worktree' || area === 'index') && <div className="thread-git-actions thread-git-file-actions"><button disabled={busy} onClick={() => { void write(area === 'index' ? 'git/unstage' : 'git/stage', { paths: [file.path] }).catch(() => {}); }}>{gt(area === 'index' ? 'unstage' : 'stage')}</button>{area === 'worktree' && <button disabled={busy} onClick={() => { void write('git/discard', { paths: [file.path] }).catch(() => {}); }}>{gt('discard')}</button>}</div>}
             </li>; })}
           </ul>}
           {listReady && !listed.length && <p className="thread-git-empty">{area === 'worktree' && !status?.files.length ? <Check aria-hidden="true" /> : null}{scopeEmpty}</p>}
+          {!!status?.conflicted?.length && <div className="thread-git-note"><strong>{gt('conflicts')}</strong>{status.conflicted.map(path => <PathChip key={path} path={path} />)}{onAskAgent && <button onClick={() => onAskAgent(`${gt('resolve')}:\n${status.conflicted!.join('\n')}`)}>{gt('resolve')}</button>}</div>}
           {status?.truncated && <p role="status" className="thread-git-hint thread-git-note">{translate('workbench.gitTruncated')}</p>}
         </aside>
         <section ref={diffRef} className="thread-git-diff" aria-label={path || translate('workbench.gitAllFiles')}>
@@ -256,12 +286,17 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
             {path && current >= 0 && <>
               <button type="button" className="thread-git-icon" disabled={current <= 0} onClick={() => choose(listed[current - 1]!.path)} aria-label={gt('previousFile')} title={gt('previousFile')}><ChevronUp aria-hidden="true" /></button>
               <button type="button" className="thread-git-icon" disabled={current >= listed.length - 1} onClick={() => choose(listed[current + 1]!.path)} aria-label={gt('nextFile')} title={gt('nextFile')}><ChevronDown aria-hidden="true" /></button>
-            </>}
+              {view === 'index' && canWrite && <CommitBox staged={!!staged.length} write={write} busy={busy} />}
+    </>}
             {diff?.patch && <CopyButton value={diff.patch} label={translate('workbench.gitCopyPatch')} />}
+          </div>
+          <div className="thread-git-actions thread-git-preferences">
+            <button aria-pressed={!preferences.split} onClick={() => { if (preferences.split) preference('split'); }}>{gt('unified')}</button><button aria-pressed={!!preferences.split} onClick={() => { if (!preferences.split) preference('split'); }}>{gt('split')}</button>
+            <label><input type="checkbox" checked={!!preferences.whitespace} onChange={() => preference('whitespace')} />{gt('whitespace')}</label><label><input type="checkbox" checked={!!preferences.collapsed} onChange={() => preference('collapsed')} />{gt('collapse')}</label>
           </div>
           {diff?.truncated && <p role="status" className="thread-git-hint thread-git-note">{translate('workbench.gitTruncated')}</p>}
           {diff && (parsed && (parsed.files.length || parsed.preamble.length)
-            ? <PatchView parsed={parsed} single={!!path} onSelect={choose} />
+            ? <ReviewPatch patch={diff.patch} parsed={parsed} single={!!path} onSelect={choose} onReviewQuote={onReviewQuote} split={!!preferences.split} collapsed={!!preferences.collapsed} area={area} write={canWrite && !preferences.whitespace && !diff.truncated ? write : undefined} busy={busy} />
             : <p className="thread-git-empty">{path && ['untracked', 'added'].includes(listed[current]?.change ?? '') ? gt('emptyFile') : gt('noDiff')}</p>)}
         </section>
       </div> : <section className="thread-git-history" aria-label={translate('workbench.gitCommits')}>
@@ -282,6 +317,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
           <button type="button" className="thread-git-icon" disabled={loading || !commits?.hasMore} onClick={() => setOffset(value => value + PAGE)} aria-label={translate('workbench.gitNext')} title={translate('workbench.gitNext')}><ChevronRight aria-hidden="true" /></button>
         </div>}
       </section>}
+      {view === 'index' && canWrite && <CommitBox staged={!!staged.length} write={write} busy={busy} />}
     </>}
   </div>;
 }
@@ -302,34 +338,6 @@ function Count({ value }: { value: number | null }) {
   return value === null ? null : <span className="thread-git-count" data-zero={value === 0 || undefined}>{formatNumber(value)}</span>;
 }
 
-/** The diff, file by file, with additions and deletions colored. Text is unchanged;
-    Git's header lines become the file's heading and a note in words. */
-function PatchView({ parsed, single, onSelect }: { parsed: ReturnType<typeof parsePatch>; single: boolean; onSelect(path: string): void }) {
-  return <div className="thread-git-patch" tabIndex={0}>
-    {parsed.preamble.length > 0 && <Lines lines={parsed.preamble} />}
-    {parsed.files.map((file, index) => <section key={`${file.path}:${index}`} className="thread-git-patch-file">
-      {!single && <button type="button" className="thread-git-patch-file-head" aria-label={translate('workbench.gitViewFile', { path: file.path })} onClick={() => onSelect(file.path)}>
-        <MiddleName name={file.path} />
-        {file.created || file.removed ? <span className="thread-git-dim">{gt(file.created ? 'newFile' : 'deletedFile')}</span> : null}
-        {file.binary ? <span className="thread-git-dim">{gt('binary')}</span> : <Stat file={file} />}
-      </button>}
-      <FileNote file={file} />
-      {file.lines.some(line => line.kind !== 'meta') && <Lines lines={file.lines} />}
-    </section>)}
-  </div>;
-}
-
-/** What the patch cannot show as lines, in words: binary contents, an empty file, a rename. */
-function FileNote({ file }: { file: PatchFile }) {
-  const content = file.lines.some(line => line.kind !== 'meta');
-  const note = file.binary ? gt(file.created ? 'binaryNew' : file.removed ? 'binaryDeleted' : 'binaryChanged')
-    : !content && file.created ? gt('emptyFile')
-    : file.oldPath ? gt(content ? 'renamedFrom' : 'renamedOnly', { path: file.oldPath })
-    : !content ? gt('noContentChange') : null;
-  if (!note) return null;
-  return <p className="thread-git-file-note">{file.binary ? <FileQuestion aria-hidden="true" /> : null}<span>{note}</span></p>;
-}
-
 /** Lines added and removed; a side with none is left out, not shown as a red 0. */
 function Stat({ file }: { file: Pick<PatchFile, 'additions' | 'deletions'> }) {
   if (!file.additions && !file.deletions) return null;
@@ -337,8 +345,4 @@ function Stat({ file }: { file: Pick<PatchFile, 'additions' | 'deletions'> }) {
     {file.additions > 0 && <ins>+{formatNumber(file.additions)}</ins>}
     {file.deletions > 0 && <del>−{formatNumber(file.deletions)}</del>}
   </span>;
-}
-
-function Lines({ lines }: { lines: PatchLine[] }) {
-  return <pre>{lines.map((line, index) => line.kind === 'meta' ? null : <span key={index} className="thread-git-line" data-kind={line.kind}>{line.text || ' '}{'\n'}</span>)}</pre>;
 }
