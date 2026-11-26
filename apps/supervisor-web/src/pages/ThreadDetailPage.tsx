@@ -2893,8 +2893,11 @@ export function ThreadDetailPage() {
         // The prompt response acknowledges persistence. Read only the queue if
         // its WebSocket receipt has not arrived; never wait for a history poll.
         if (!detailRef.current?.pendingSteers.some((item) => item.clientRequestId === clientRequestId)) {
+          // A later load or mutation (such as Steer on this row) is newer than
+          // this read; applying it would put the steered row back (issue #171).
+          const epoch = loadRequestIdRef.current;
           void fetchThreadDelivery(id).then((delivery) => {
-            if (activeThreadIdRef.current !== id) return;
+            if (activeThreadIdRef.current !== id || loadRequestIdRef.current !== epoch) return;
             setDetail((current) => current ? { ...current, pendingSteers: delivery.pendingSteers } : current);
             setOptimisticSteers((current) => current.filter((item) => !steerAcknowledged(item, delivery.pendingSteers)));
           }).catch(() => { /* Realtime or the normal summary poll can recover. */ });
