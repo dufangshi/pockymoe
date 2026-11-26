@@ -180,6 +180,14 @@ enabled, asks Claude itself (`get_context_usage`) after each model request and
 at turn end, on the host and in environments; ACP needs its Node bridge and
 works on the host only.
 
+The composer's `/mcp` panel lists the MCP servers Claude itself is running for
+the thread (`GET /api/threads/{id}/mcp-servers`, from Claude's `mcp_status`),
+with each server's live state: failed (with Claude's error), sign-in needed,
+starting or off. Server configurations (URLs, headers, commands, environment)
+are never returned, and shares cannot read the list, because it names the
+owner's MCP servers and account connectors. ACP reports no MCP state, so the
+panel stays empty there.
+
 Plan allowance also updates live during a turn: each `rate_limit_event` from
 the API (5-hour and 7-day utilization and reset) feeds the shared subscription
 cache and refreshes the composer meter, which ACP drops.
@@ -222,7 +230,8 @@ Measured against the ACP path as Pockymoe runs it (claude-agent-acp 0.106.0):
 command exit status; exact whole-file diffs for Edit, Write and MultiEdit; API
 retry, model fallback and Claude warning notices (ACP drops the retries); live
 plan allowance during a turn; the reason a permission was denied; context
-inspection without a Node bridge, also inside environments; permission cards in
+inspection without a Node bridge, also inside environments; live MCP server
+state in the `/mcp` panel; permission cards in
 Claude's own words with its reason; no
 Node adapter process per session. ACP still has two things native does not
 offer: the plan-approval "clear context" restart and a bypass choice inside the

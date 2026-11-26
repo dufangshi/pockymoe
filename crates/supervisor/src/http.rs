@@ -2892,8 +2892,11 @@ async fn thread_skills() -> Json<Value> {
     Json(json!({ "cwd": ".", "skills": [], "errors": [] }))
 }
 
-async fn thread_mcp() -> Json<Value> {
-    Json(json!({ "servers": [] }))
+async fn thread_mcp(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, ApiErr> {
+    Ok(Json(state.thread_mcp_servers(&id).await.map_err(map_err)?))
 }
 
 async fn thread_hooks() -> Json<Value> {

@@ -395,6 +395,9 @@ impl AgentRuntime for ProtocolRouter {
     ) -> Result<serde_json::Value> {
         self.selected(agent_id).harness_catalog(agent_id, cwd).await
     }
+    async fn mcp_servers(&self, session_id: &str) -> Result<Option<serde_json::Value>> {
+        self.session(session_id).mcp_servers(session_id).await
+    }
     async fn harness_action(
         &self,
         session_id: &str,

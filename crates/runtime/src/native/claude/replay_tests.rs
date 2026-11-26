@@ -672,3 +672,25 @@ async fn replay_mcp_elicitation_is_a_question_answered_as_an_mcp_result() {
         json!({"action":"accept","content":{"priority":"high"}})
     );
 }
+
+#[test]
+fn mcp_status_becomes_the_panel_list_without_configs() {
+    let status = json!({"mcpServers":[
+        {"name":"docs","status":"connected","config":{"type":"claudeai-proxy","url":"https://secret.example/mcp","id":"x"},
+         "scope":"claudeai","tools":[{"name":"read","annotations":{"readOnly":true,"title":"Read doc"}}]},
+        {"name":"tickets","status":"failed","error":"spawn ENOENT","config":{"type":"stdio","command":"/opt/tickets","env":{"TOKEN":"t"}}},
+        {"name":"calendar","status":"needs-auth","config":{"type":"http","url":"https://c.example","headers":{"Authorization":"Bearer z"}}}]});
+    let list = super::mcp_servers(&status);
+    let servers = list["servers"].as_array().unwrap();
+    assert_eq!(servers[0]["authStatus"], "oAuth");
+    assert_eq!(servers[0]["status"], "connected");
+    assert_eq!(servers[0]["tools"][0]["title"], "Read doc");
+    assert_eq!(servers[1]["status"], "failed");
+    assert_eq!(servers[1]["error"], "spawn ENOENT");
+    assert_eq!(servers[2]["authStatus"], "notLoggedIn");
+    assert_eq!(servers[2]["status"], "needsAuth");
+    let text = list.to_string();
+    for secret in ["secret.example", "/opt/tickets", "TOKEN", "Bearer"] {
+        assert!(!text.contains(secret), "{secret} leaked");
+    }
+}

@@ -892,6 +892,15 @@ impl AgentRuntime for ClaudeRuntime {
         }
         Ok(snapshot)
     }
+    async fn mcp_servers(&self, id: &str) -> Result<Option<Value>> {
+        let s = self.session(id).await?;
+        let status = tokio::time::timeout(
+            Duration::from_secs(10),
+            s.process.request(json!({"subtype":"mcp_status"})),
+        )
+        .await??;
+        Ok(Some(mcp_servers(&status)))
+    }
     fn configure_context_inspection(&self, state: Arc<crate::context_inspection::InspectionState>) {
         *self.inspection.write().unwrap() = Some(state);
     }
@@ -1503,8 +1512,47 @@ fn caps(
     caps.branching.fork_at = true;
     caps.branching.resume_at = true;
     caps.sessions.import_local = true;
+    // Live MCP server state from Claude itself (`mcp_status`); ACP has none.
+    caps.management.mcp_status = true;
     crate::acp::runtime::isolated_capabilities::restrict(&mut caps, isolated);
     caps
+}
+
+/// Claude's `mcp_status` as `ThreadMcpServersDto`, plus each server's live
+/// state, which ACP never reports. Configs (URLs, headers, commands) stay out.
+fn mcp_servers(status: &Value) -> Value {
+    let servers: Vec<Value> = status["mcpServers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|server| {
+            let state = server["status"].as_str().unwrap_or("pending");
+            let auth = match (state, server["config"]["type"].as_str()) {
+                ("needs-auth", _) => "notLoggedIn",
+                (_, Some("claudeai-proxy")) => "oAuth",
+                (_, Some("http" | "sse")) if server["config"]["headers"].is_object() => {
+                    "bearerToken"
+                }
+                _ => "unsupported",
+            };
+            json!({
+                "name": server["name"],
+                "authStatus": auth,
+                "status": match state { "needs-auth" => "needsAuth", other => other },
+                "error": server["error"],
+                "scope": server["scope"],
+                "tools": server["tools"].as_array().into_iter().flatten().map(|t| json!({
+                    "name": t["name"],
+                    "title": t["annotations"]["title"],
+                    "description": t["description"],
+                })).collect::<Vec<_>>(),
+                // Claude does not count resources.
+                "resourceCount": null,
+                "resourceTemplateCount": null,
+            })
+        })
+        .collect();
+    json!({ "servers": servers })
 }
 
 /// The toolbox: product actions plus Claude's slash commands and skills.

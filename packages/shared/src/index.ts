@@ -1483,12 +1483,23 @@ export interface AgentMcpToolDto {
   description: string | null;
 }
 
+/** A server's live state, when the harness reports it (native Claude). */
+export type AgentMcpServerStatusDto =
+  | 'connected'
+  | 'failed'
+  | 'needsAuth'
+  | 'pending'
+  | 'disabled';
+
 export interface AgentMcpServerDto {
   name: string;
   authStatus: AgentMcpAuthStatusDto;
+  status?: AgentMcpServerStatusDto;
+  error?: string | null;
   tools: AgentMcpToolDto[];
-  resourceCount: number;
-  resourceTemplateCount: number;
+  /** Null when the harness does not count them. */
+  resourceCount: number | null;
+  resourceTemplateCount: number | null;
 }
 
 export interface ThreadMcpServersDto {

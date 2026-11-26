@@ -614,6 +614,11 @@ pub trait AgentRuntime: Send + Sync {
     ) -> Result<serde_json::Value> {
         Ok(serde_json::Value::Null)
     }
+    /// The session's MCP servers as the harness reports them right now
+    /// (`ThreadMcpServersDto`), or None when the harness cannot say.
+    async fn mcp_servers(&self, _session_id: &str) -> Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
     /// A typed harness-panel action. Adapters accept only their own action
     /// kinds; this is never a raw passthrough to the harness.
     async fn harness_action(
