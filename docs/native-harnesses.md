@@ -257,9 +257,9 @@ evidence kept with the release notes. Status as of 2026-11-26:
 | AskUserQuestion, explicit compaction, Write diffs in a real lab | compaction in the real lab | pass |
 | SDK callback hooks and SDK-hosted MCP | not applicable | not applicable: neither path registers them for Pockymoe; Claude's own hooks and MCP servers run unchanged; MCP form elicitation answered |
 | Background work outside a prompt | not run | pass (background Agent and shell hold the turn and their follow-up stays in it; frames between turns never reach the next turn; release waits for tasks) |
-| A full release matrix (macOS, Windows/WSL, mobile hosts) | not run | not run |
 | Every SDK frame, control request and tool shape of the installed CLI mapped or explicitly ignored, with replay tests of real sessions | not applicable | pass (Claude Code 2.1.322) |
-| Side-by-side real lab, same prompts on both protocols, every difference explained | not run | pass (2026-11-26, haiku; isolated rows were not re-run after this audit's changes) |
+| Side-by-side real lab, same prompts on both protocols, every difference explained | not run | pass (2026-11-26, haiku) |
+| A full release matrix (macOS, Windows/WSL, mobile hosts) | not run | not run |
 
 Recommendation after the Codex audit: native Codex now matches or exceeds ACP on
 every row run on Linux (live turn settings, sub-agent rows, warnings as notices).
@@ -268,9 +268,12 @@ escalations approved by Codex's own reviewer, Plan Mode turns without Codex's
 Plan Mode, hidden title requests) are fixed on ACP too. Make native the Codex
 default once the release matrix passes; until then ACP stays the default.
 
-A failing or unrun row keeps ACP the default. For Claude, the remaining blockers
-are the release matrix and a re-run of the isolated-environment rows on the
-current runtime.
+A failing or unrun row keeps ACP the default. For Claude, the isolated rows were
+re-run on the audited runtime (Dokploy in Docker-in-Docker, native file login,
+haiku): tools, Write diff, a denied and an allowed approval, stop and continue
+on the same process, a background Agent, resume after a Supervisor restart and
+ACP ↔ native on one thread all passed. The remaining blocker is the release
+matrix.
 
 ### What native Claude gives beyond ACP
 
