@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
 import { GitActions, CommitBox, useGitWrite } from './GitActions';
 import { TurnControls } from './TurnControls';
 import { ReviewPatch } from './ReviewPatch';
