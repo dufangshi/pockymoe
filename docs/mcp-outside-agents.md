@@ -34,7 +34,9 @@ Cursor (agent CLI 2026.11) reads `~/.cursor/mcp.json`:
 Add `--access read` or `--access full`, or `--workspace ID`, after `mcp serve`.
 
 `--access read` permits inspection, `supervised` additionally permits creating,
-sending to and stopping guarded threads, and `full` additionally permits yolo
+sending to and stopping guarded threads (guarded is the harness's own guarded
+mode: Codex asks before leaving its workspace sandbox, Claude uses its auto
+mode, which decides itself when to ask), and `full` additionally permits yolo
 threads, answering approvals and switching harnesses. The default is supervised. This is a ceiling;
 tool arguments cannot widen it, and `tools/list` offers only the tools it allows.
 `--workspace ID` (repeatable) limits the client to those workspaces, like the
@@ -43,7 +45,10 @@ workspace choice on the HTTP consent page. Git tools only read status and diffs.
 The Supervisor issues a new CLI token each time it starts. A running
 `pockymoe mcp serve` reads the saved connection again when a call is refused or
 cannot connect, and retries for up to 30 seconds, so a Supervisor restart or
-update does not end the client's session. Errors name the Supervisor's reason.
+update does not end the client's session. A read-only call (by the tool's
+`readOnlyHint`) cut off by a restart, such as a long `thread_wait`, is sent
+again; any other call reports that it may have run, so the client checks before
+repeating it. Errors name the Supervisor's reason.
 
 `--device DEVICE` uses the existing cross-device CLI trust boundary.
 `pockymoe_devices` lists the owner's devices; its `deviceId` values are what
