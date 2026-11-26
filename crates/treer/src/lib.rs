@@ -383,8 +383,8 @@ pub fn item_role(kind: &ThreadItemKind) -> Option<&'static str> {
         UserMessage => Some("user"),
         AgentMessage => Some("assistant"),
         Artifact | Image | ImageView | Plan | ContextCompaction | Reasoning | CommandExecution
-        | WebSearch | FileRead | FileChange | Hook | AgentToolCall | SkillToolCall | ToolCall
-        | Generic | Other | Unknown(_) => None,
+        | WebSearch | FileRead | FileChange | Hook | HarnessSwitch | AgentToolCall
+        | SkillToolCall | ToolCall | Generic | Other | Unknown(_) => None,
     }
 }
 #[derive(Serialize)]
