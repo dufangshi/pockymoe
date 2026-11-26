@@ -1475,11 +1475,33 @@ mod source_control_access_tests {
     fn source_control_endpoints_are_owner_only_for_every_verb() {
         for path in [
             "/api/source-control/settings",
+            "/api/source-control/scan",
+            "/api/source-control/clone",
+            "/api/source-control/jobs/fixture",
             "/api/threads/root/pull-requests",
             "/api/threads/root/source-control/show",
             "/api/threads/root/source-control/merge",
             "/api/threads/root/source-control/watch",
             "/api/threads/root/source-control/link",
+            "/api/threads/root/source-control/unlink",
+            "/api/threads/root/source-control/list",
+            "/api/threads/root/source-control/create",
+            "/api/threads/root/source-control/update",
+            "/api/threads/root/source-control/comment",
+            "/api/threads/root/source-control/checks",
+            "/api/threads/root/source-control/reviews",
+            "/api/threads/root/source-control/comments",
+            "/api/threads/root/source-control/files",
+            "/api/threads/root/source-control/commits",
+            "/api/threads/root/source-control/ready",
+            "/api/threads/root/source-control/autoMerge",
+            "/api/threads/root/source-control/unwatch",
+            "/api/threads/root/source-control/watchStatus",
+            "/api/threads/root/source-control/workOn",
+            "/api/threads/root/source-control/generate",
+            "/api/threads/root/source-control/publish",
+            "/api/threads/root/source-control/cleanup",
+            "/api/threads/root/source-control/removeWorktree",
         ] {
             for method in ["GET", "POST", "PUT", "DELETE"] {
                 assert!(access_allows(&owner_access(), method, path));

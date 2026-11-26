@@ -179,7 +179,9 @@ async fn run_as(
             let action = input["action"]
                 .as_str()
                 .context("source-control action required")?;
-            state.source_control_action(id, action, input.clone()).await
+            let mut scoped = input.clone();
+            scoped["agentCaller"] = json!(caller.is_some());
+            state.source_control_action(id, action, scoped).await
         }
         "checkpointList" | "checkpointDiff" | "checkpointRestore" | "checkpointUndo"
         | "threadRewind" | "worktreeCreate" | "worktreeList" | "worktreeCurrent"

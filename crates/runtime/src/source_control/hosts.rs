@@ -81,6 +81,14 @@ impl Repository {
             parts.len() >= 2 && parts.iter().all(|p| !p.is_empty() && *p != ".."),
             "Remote must name an owner and repository"
         );
+        if host == "ssh.dev.azure.com" && parts.first() == Some(&"v3") && parts.len() == 4 {
+            return Ok(Self {
+                host: "dev.azure.com".into(),
+                owner: format!("{}/{}/_git", parts[1], parts[2]),
+                name: parts[3].into(),
+                kind: HostKind::Azure,
+            });
+        }
         let kind = if host == "github.com" {
             HostKind::Github
         } else if host.contains("gitlab") {
@@ -90,7 +98,11 @@ impl Repository {
         } else if host == "dev.azure.com" || host.ends_with(".visualstudio.com") {
             HostKind::Azure
         } else {
-            HostKind::Forgejo
+            known_hosts()
+                .into_iter()
+                .find(|(name, _)| name == &host)
+                .map(|(_, kind)| kind)
+                .unwrap_or(HostKind::Forgejo)
         };
         Ok(Self {
             host,
@@ -98,6 +110,24 @@ impl Repository {
             name: parts[parts.len() - 1].into(),
             kind,
         })
+    }
+    pub fn pull_request_url(&self, number: u64) -> String {
+        let marker = match self.kind {
+            HostKind::Gitlab => "-/merge_requests",
+            HostKind::Forgejo => "pulls",
+            HostKind::Bitbucket => "pull-requests",
+            HostKind::Azure => "pullrequest",
+            HostKind::Github => "pull",
+        };
+        let scheme = if self.host.starts_with("127.0.0.1:") || self.host.starts_with("localhost:") {
+            "http"
+        } else {
+            "https"
+        };
+        format!(
+            "{scheme}://{}/{}/{}/{marker}/{number}",
+            self.host, self.owner, self.name
+        )
     }
     fn project(&self) -> String {
         enc(&format!("{}/{}", self.owner, self.name))
@@ -187,9 +217,18 @@ fn op(method: &str, path: String, body: Option<Value>) -> Result<Operation> {
         body,
     })
 }
+fn update_fields(input: &Value) -> Value {
+    let mut fields = json!({});
+    for (key, target) in [("title", "title"), ("body", "description")] {
+        if let Some(value) = input.get(key) {
+            fields[target] = value.clone();
+        }
+    }
+    fields
+}
 #[async_trait]
 pub trait Host: Send + Sync {
-    fn identity_path(&self) -> &str;
+    fn identity_path(&self) -> String;
     fn operation(
         &self,
         action: &str,
@@ -221,14 +260,17 @@ pub fn adapter(repo: Repository, token: String) -> Result<Box<dyn Host>> {
 }
 #[async_trait]
 impl Host for Adapter {
-    fn identity_path(&self) -> &str {
-        match self.repo.kind {
-            HostKind::Gitlab => "user",
-            HostKind::Bitbucket => "user",
-            HostKind::Azure => "_apis/connectionData",
-            _ => "user",
+    fn identity_path(&self) -> String {
+        if self.repo.kind == HostKind::Azure {
+            format!(
+                "{}/_apis/connectionData",
+                self.repo.owner.split('/').next().unwrap_or("")
+            )
+        } else {
+            "user".into()
         }
     }
+
     fn operation(
         &self,
         action: &str,
@@ -269,7 +311,6 @@ impl Host for Adapter {
                 match action {
                     "list"
                         if r.kind == HostKind::Github
-                            && issue
                             && input["search"].as_str().is_some_and(|s| !s.is_empty()) =>
                     {
                         op(
@@ -277,9 +318,10 @@ impl Host for Adapter {
                             format!(
                                 "search/issues?q={}",
                                 enc(&format!(
-                                    "repo:{}/{} is:issue {}",
+                                    "repo:{}/{} is:{} {}",
                                     r.owner,
                                     r.name,
+                                    if issue { "issue" } else { "pr" },
                                     input["search"].as_str().unwrap_or("")
                                 ))
                             ),
@@ -336,7 +378,7 @@ impl Host for Adapter {
                         Some(if issue {
                             json!({"title":title,"body":body})
                         } else {
-                            json!({"title":title,"body":body,"head":head,"base":base,"draft":draft})
+                            json!({"title":if r.kind==HostKind::Forgejo&&draft {format!("WIP: {title}")}else{title.into()},"body":body,"head":head,"base":base,"draft":draft})
                         }),
                     ),
                     "update" => {
@@ -360,6 +402,20 @@ impl Host for Adapter {
                             Some(json!({"body":body})),
                         )
                     }
+                    "ready" if r.kind == HostKind::Forgejo => op(
+                        "PATCH",
+                        item,
+                        Some(
+                            json!({"title":title.trim_start_matches("WIP: ").trim_start_matches("[WIP] ")}),
+                        ),
+                    ),
+                    "autoMerge" if r.kind == HostKind::Forgejo => op(
+                        "POST",
+                        format!("{item}/merge"),
+                        Some(
+                            json!({"Do":method,"head_commit_id":input["expectedHead"],"merge_when_checks_succeed":true}),
+                        ),
+                    ),
                     "merge" if r.kind == HostKind::Forgejo => op(
                         "POST",
                         format!("{item}/merge"),
@@ -401,6 +457,10 @@ impl Host for Adapter {
                 }
             }
             HostKind::Gitlab => {
+                ensure!(
+                    !matches!(action, "merge" | "autoMerge") || method != "rebase",
+                    "GitLab merge strategy follows project settings; choose merge or squash"
+                );
                 let root = format!(
                     "projects/{}/{}",
                     r.project(),
@@ -469,7 +529,8 @@ impl Host for Adapter {
                 let item = format!("{root}/{n}");
                 match action {
                     "list" => op("GET", format!("{root}?state=OPEN&pagelen=100"), None),
-                    "show" => op("GET", item, None),
+                    "show" | "reviews" => op("GET", item, None),
+                    "ready" => op("PUT", item, Some(json!({"draft":false}))),
                     "comments" | "commits" => op("GET", format!("{item}/{action}"), None),
                     "checks" => op("GET", format!("{item}/statuses"), None),
                     "files" => op("GET", format!("{item}/diffstat"), None),
@@ -477,10 +538,10 @@ impl Host for Adapter {
                         "POST",
                         root,
                         Some(
-                            json!({"title":title,"description":body,"source":{"branch":{"name":head}},"destination":{"branch":{"name":base}}}),
+                            json!({"title":title,"description":body,"draft":draft,"source":{"branch":{"name":head}},"destination":{"branch":{"name":base}}}),
                         ),
                     ),
-                    "update" => op("PUT", item, Some(json!({"title":title,"description":body}))),
+                    "update" => op("PUT", item, Some(update_fields(input))),
                     "comment" => op(
                         "POST",
                         format!("{item}/comments"),
@@ -508,7 +569,25 @@ impl Host for Adapter {
                         format!("{root}?searchCriteria.status=active&{api}"),
                         None,
                     ),
-                    "show" => op("GET", format!("{item}?{api}"), None),
+                    "show" | "reviews" => op("GET", format!("{item}?{api}"), None),
+                    "iterations" => op("GET", format!("{item}/iterations?{api}"), None),
+                    "files" => op(
+                        "GET",
+                        format!(
+                            "{item}/iterations/{}/changes?{api}",
+                            input["iterationId"]
+                                .as_u64()
+                                .context("Iteration required")?
+                        ),
+                        None,
+                    ),
+                    "autoMerge" => op(
+                        "PATCH",
+                        format!("{item}?{api}"),
+                        Some(
+                            json!({"autoCompleteSetBy":{"id":input["actorId"]},"completionOptions":{"mergeStrategy":if method=="rebase"{"rebase"}else if method=="squash"{"squash"}else{"noFastForward"}}}),
+                        ),
+                    ),
                     "checks" => op("GET", format!("{item}/statuses?{api}"), None),
                     "comments" => op("GET", format!("{item}/threads?{api}"), None),
                     "commits" => op("GET", format!("{item}/commits?{api}"), None),
@@ -526,11 +605,7 @@ impl Host for Adapter {
                             json!({"comments":[{"parentCommentId":0,"content":body,"commentType":1}],"status":1}),
                         ),
                     ),
-                    "update" => op(
-                        "PATCH",
-                        format!("{item}?{api}"),
-                        Some(json!({"title":title,"description":body})),
-                    ),
+                    "update" => op("PATCH", format!("{item}?{api}"), Some(update_fields(input))),
                     "ready" => op(
                         "PATCH",
                         format!("{item}?{api}"),
@@ -598,12 +673,44 @@ impl Host for Adapter {
                 }
             });
         }
+        if self.token.is_empty() && self.repo.kind == HostKind::Azure {
+            let mut args = vec![
+                "rest".into(),
+                "--method".into(),
+                method.into(),
+                "--url".into(),
+                format!("https://{}/{path}", self.repo.host),
+                "--resource".into(),
+                "499b84ac-1321-427f-aa17-267ca6975798".into(),
+            ];
+            let mut file = None;
+            if let Some(body) = body {
+                use std::io::Write;
+                let mut temp = tempfile::NamedTempFile::new()?;
+                temp.write_all(&serde_json::to_vec(&body)?)?;
+                args.extend([
+                    "--body".into(),
+                    format!("@{}", temp.path().display()),
+                    "--headers".into(),
+                    "Content-Type=application/json".into(),
+                ]);
+                file = Some(temp);
+            }
+            let output = command("az", &args, Path::new("/"), None).await?;
+            drop(file);
+            return if output.trim().is_empty() {
+                Ok(json!({}))
+            } else {
+                Ok(serde_json::from_str(&output)?)
+            };
+        }
         ensure!(
             !self.token.is_empty(),
             "Sign in to the source-control host in Settings"
         );
         let base = match self.repo.kind {
             HostKind::Github if self.repo.host == "github.com" => "https://api.github.com".into(),
+            HostKind::Github if path == "graphql" => format!("https://{}/api", self.repo.host),
             HostKind::Github => format!("https://{}/api/v3", self.repo.host),
             HostKind::Gitlab => format!("https://{}/api/v4", self.repo.host),
             HostKind::Forgejo => format!(
@@ -674,6 +781,22 @@ pub async fn command(
     root: &Path,
     input: Option<Vec<u8>>,
 ) -> Result<String> {
+    let (status, out, _) = command_capture(program, args, root, input).await?;
+    // Host error bodies can echo tokens or private URLs. Return the status only.
+    ensure!(
+        status.success(),
+        "Source-control command failed ({status}); check host sign-in and repository permissions"
+    );
+    Ok(out)
+}
+/// Repository setup explicitly returns its command logs to its owner. Host API
+/// callers use `command`, which keeps error bodies out of responses.
+pub(super) async fn command_capture(
+    program: &str,
+    args: &[String],
+    root: &Path,
+    input: Option<Vec<u8>>,
+) -> Result<(std::process::ExitStatus, String, String)> {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
         .current_dir(root)
@@ -703,17 +826,38 @@ pub async fn command(
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(120),async move {
-        let write=async move {if let Some(input)=input {stdin.write_all(&input).await?;}drop(stdin);Ok::<_,std::io::Error>(())};
-        let read=async move {let mut data=Vec::new();stdout.take(LIMIT+1).read_to_end(&mut data).await?;Ok::<_,std::io::Error>(data)};
-        let err=async move {let mut data=Vec::new();stderr.take(LIMIT+1).read_to_end(&mut data).await?;Ok::<_,std::io::Error>(data)};
-        let (_,out,_err)=tokio::try_join!(write,read,err)?;
-        ensure!(out.len()<=LIMIT as usize,"Source-control output too large");
-        let status=child.wait().await?;
-        // Host error bodies can echo tokens or private URLs. Return the status only.
-        ensure!(status.success(),"Source-control command failed ({status}); check host sign-in and repository permissions");
-        Ok(String::from_utf8(out)?)
-    }).await.context("Source-control command timed out")?
+    tokio::time::timeout(std::time::Duration::from_secs(120), async move {
+        let write = async move {
+            if let Some(input) = input {
+                stdin.write_all(&input).await?;
+            }
+            drop(stdin);
+            Ok::<_, std::io::Error>(())
+        };
+        let read = async move {
+            let mut data = Vec::new();
+            stdout.take(LIMIT + 1).read_to_end(&mut data).await?;
+            Ok::<_, std::io::Error>(data)
+        };
+        let err = async move {
+            let mut data = Vec::new();
+            stderr.take(LIMIT + 1).read_to_end(&mut data).await?;
+            Ok::<_, std::io::Error>(data)
+        };
+        let (_, out, err) = tokio::try_join!(write, read, err)?;
+        ensure!(
+            out.len() <= LIMIT as usize && err.len() <= LIMIT as usize,
+            "Source-control output too large"
+        );
+        let status = child.wait().await?;
+        Ok((
+            status,
+            String::from_utf8_lossy(&out).into_owned(),
+            String::from_utf8_lossy(&err).into_owned(),
+        ))
+    })
+    .await
+    .context("Source-control command timed out")?
 }
 pub fn git(root: &Path, args: &[&str]) -> Result<String> {
     // Called from blocking worktree APIs as well as async operations. A dedicated
@@ -786,6 +930,50 @@ mod tests {
         }
     }
     #[test]
+    fn azure_ssh_and_host_specific_drafts_and_guards() {
+        let ssh = Repository::parse("git@ssh.dev.azure.com:v3/org/project/repo").unwrap();
+        assert_eq!(
+            ssh,
+            Repository::parse("https://dev.azure.com/org/project/_git/repo").unwrap()
+        );
+        let host = adapter(
+            Repository {
+                host: "forgejo.example.com".into(),
+                owner: "o".into(),
+                name: "r".into(),
+                kind: HostKind::Forgejo,
+            },
+            String::new(),
+        )
+        .unwrap();
+        let create = host
+            .operation(
+                "create",
+                false,
+                None,
+                &json!({"title":"Change","head":"feature","draft":true}),
+            )
+            .unwrap();
+        assert_eq!(create.body.unwrap()["title"], "WIP: Change");
+        let auto = host
+            .operation(
+                "autoMerge",
+                false,
+                Some(42),
+                &json!({"expectedHead":"reviewed"}),
+            )
+            .unwrap();
+        assert_eq!(auto.body.unwrap()["head_commit_id"], "reviewed");
+        let host = adapter(ssh, String::new()).unwrap();
+        let merge = host
+            .operation("merge", false, Some(1), &json!({"expectedHead":"reviewed"}))
+            .unwrap();
+        assert_eq!(
+            merge.body.unwrap()["lastMergeSourceCommit"]["commitId"],
+            "reviewed"
+        );
+    }
+    #[test]
     fn operations_guard_merges_and_preserve_host_fields() {
         assert!(guard_head("abc", "def").is_err());
         assert!(guard_head("abc", "abc").is_ok());
@@ -836,6 +1024,30 @@ mod tests {
                 "abc"
             );
             assert!(host.operation("merge", false, None, &json!({})).is_err());
+        }
+        for kind in [HostKind::Bitbucket, HostKind::Azure] {
+            let host = adapter(
+                Repository {
+                    host: "example.com".into(),
+                    owner: "o".into(),
+                    name: "r".into(),
+                    kind,
+                },
+                String::new(),
+            )
+            .unwrap();
+            let update = host
+                .operation(
+                    "update",
+                    false,
+                    Some(1),
+                    &json!({"body":"Keep the existing title"}),
+                )
+                .unwrap()
+                .body
+                .unwrap();
+            assert!(update.get("title").is_none());
+            assert_eq!(update["description"], "Keep the existing title");
         }
     }
 }

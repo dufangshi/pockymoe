@@ -135,6 +135,85 @@ mod tests {
         s.source_auto_link(&own, "gh pr create", url).unwrap();
         assert_eq!(s.source_links(&own).unwrap().len(), 1);
     }
+    #[tokio::test]
+    async fn source_control_watch_survives_reopen_and_stops_on_manual_archive_delete() {
+        let fixture = crate::isolation_tests::setup().await;
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = fixture.state.config.clone();
+        config.database_url = directory.path().join("restart.sqlite");
+        config.workspace_root = directory.path().join("workspaces");
+        let open = || {
+            Supervisor::new(
+                config.clone(),
+                pockymoe_runtime::Database::open(&config.database_url).unwrap(),
+                vec![Arc::new(pockymoe_runtime::fake::FakeRuntime::new(
+                    pockymoe_protocol::Provider::Codex,
+                ))],
+            )
+        };
+        let s = open();
+        let workspace = s
+            .create_workspace(pockymoe_protocol::CreateWorkspaceInput {
+                abs_path: Some(directory.path().to_string_lossy().into_owned()),
+                git_url: None,
+                label: None,
+            })
+            .unwrap()
+            .id;
+        let thread = crate::isolation_tests::thread(&s, &workspace).await;
+        let repository =
+            pockymoe_runtime::source_control::Repository::parse("https://github.com/fixture/repo")
+                .unwrap();
+        let key = format!("pr-watch:{thread}");
+        let saved = json!({"repository":repository,"number":42,"state":{"active":true,"failures":3,"commentWakes":4,"stoppedReason":null,"previous":{"state":"open","checks":"pending","comments":[],"conflicts":false,"queued":true}}});
+        s.db.set_kv(&key, &saved.to_string()).unwrap();
+        drop(s);
+        let s = open();
+        assert_eq!(
+            s.source_watch_status(&thread).unwrap()["state"]["failures"],
+            3
+        );
+        assert_eq!(
+            s.source_watch_status(&thread).unwrap()["state"]["commentWakes"],
+            4
+        );
+        s.source_unwatch(&thread).unwrap();
+        assert_eq!(
+            s.source_watch_status(&thread).unwrap()["state"]["active"],
+            false
+        );
+        s.db.set_kv(&key, &saved.to_string()).unwrap();
+        s.db.with(|c| {
+            c.execute(
+                "UPDATE threads SET closed_at='2026-11-26T00:00:00Z' WHERE id=?1",
+                [&thread],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            s.poll_source_watch(&thread).await.unwrap()["state"]["active"],
+            false
+        );
+        s.db.set_kv(&key, &saved.to_string()).unwrap();
+        s.delete_thread(&thread).unwrap();
+        assert_eq!(
+            s.poll_source_watch(&thread).await.unwrap()["state"]["active"],
+            false
+        );
+        let child = crate::isolation_tests::thread(&s, &workspace).await;
+        let parent = crate::isolation_tests::thread(&s, &workspace).await;
+        s.db.with(|c| {
+            c.execute(
+                "UPDATE threads SET parent_thread_id=?2 WHERE id=?1",
+                rusqlite::params![child, parent],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let error = s.source_watch(&child, &repository, 42).await.unwrap_err();
+        assert!(error.to_string().contains("Sub-agents"));
+    }
 }
 
 #[cfg(test)]
@@ -173,6 +252,18 @@ mod live_forgejo_tests {
             .await
             .unwrap();
         let sha = result["data"]["head"]["sha"].as_str().unwrap();
+        let work = s
+            .source_control_action(&thread, "workOn", json!({"number":1,"name":"fixture-pr"}))
+            .await
+            .unwrap();
+        let child = work["thread"]["id"].as_str().unwrap();
+        assert_ne!(child, thread);
+        assert_eq!(s.source_links(child).unwrap().len(), 1);
+        assert_eq!(
+            s.get_thread(child).unwrap().worktree_path.as_deref(),
+            work["workingCopy"]["path"].as_str()
+        );
+
         let bad = s
             .source_control_action(
                 &thread,
@@ -196,6 +287,32 @@ mod live_forgejo_tests {
             s.source_watch_status(&thread).unwrap()["state"]["active"],
             true
         );
+        let reviewer_path =
+            std::env::var("GIT_PR_REVIEWER_TOKEN_FILE").expect("reviewer token file required");
+        let reviewer = std::fs::read_to_string(reviewer_path).unwrap();
+        s.save_source_control_settings(
+            &json!({"host":"127.0.0.1:19123","kind":"forgejo","token":reviewer.trim()}),
+        )
+        .unwrap();
+        s.source_control_action(
+            &thread,
+            "comment",
+            json!({"number":1,"body":"reviewer wake fixture"}),
+        )
+        .await
+        .unwrap();
+        s.save_source_control_settings(
+            &json!({"host":"127.0.0.1:19123","kind":"forgejo","token":token.trim()}),
+        )
+        .unwrap();
+        let wake = s.poll_source_watch(&thread).await.unwrap();
+        assert_eq!(wake["reasons"], json!(["New comments or reviews"]));
+        let queued:i64=s.db.with(|c|Ok(c.query_row("SELECT COUNT(*) FROM thread_pending_steers WHERE thread_id=?1 AND submitted_prompt LIKE 'PR watch:%'",[&thread],|r|r.get(0))?)).unwrap();
+        assert_eq!(queued, 1);
+        assert!(s.poll_source_watch(&thread).await.unwrap()["reasons"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         s.source_control_action(
             &thread,
             "merge",
@@ -203,6 +320,9 @@ mod live_forgejo_tests {
         )
         .await
         .unwrap();
+        let terminal = s.poll_source_watch(&thread).await.unwrap();
+        assert_eq!(terminal["state"]["active"], false);
+        assert_eq!(terminal["reasons"], json!(["PR merged"]));
         let repository = pockymoe_runtime::source_control::Repository::parse(origin).unwrap();
         // A new watch of an ended PR is refused rather than silently polling it.
         assert!(s.source_watch(&thread, &repository, 1).await.is_err());

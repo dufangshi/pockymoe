@@ -3,6 +3,8 @@
 Use `pockymoe pr --help` and `pockymoe issue --help` for flags. Commands use your
 thread's working copy and the owner's saved host sign-in. Local thread credentials
 can act only on their own thread; peers and shares cannot use host credentials.
+For a PR in another repository, link its URL first, then pass
+`--item-url HTTPS_URL` to select that linked item explicitly.
 
 - `pockymoe pr list`, `show NUMBER`, `comments NUMBER`, `reviews NUMBER`, `files NUMBER`, `commits NUMBER`
 - `pockymoe pr create --head BRANCH --base main --title TITLE --body BODY --draft`

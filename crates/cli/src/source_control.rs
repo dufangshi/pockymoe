@@ -8,6 +8,12 @@ use serde_json::{json, Value};
 pub struct SourceControlArgs {
     #[arg(long, global = true, default_value = "self")]
     pub thread: String,
+    /// Select an item already linked to this thread (including another repository).
+    #[arg(long, global = true)]
+    pub item_url: Option<String>,
+    /// Allow an automatic pre-create push while the thread is running.
+    #[arg(long, global = true)]
+    pub confirm_running: bool,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -181,6 +187,10 @@ impl crate::threads::Client {
     pub async fn source_control(&self, args: SourceControlArgs, issue: bool) -> Result<Value> {
         let mut input = args.command.request();
         input["operation"] = json!("sourceControl");
+        input["confirmRunning"] = json!(args.confirm_running);
+        if let Some(url) = args.item_url {
+            input["url"] = json!(url);
+        }
         input["threadId"] = json!(self.id(&args.thread).await?);
         input["fromThreadId"] = json!(self.from);
         input["kind"] = json!(if issue { "issue" } else { "pr" });

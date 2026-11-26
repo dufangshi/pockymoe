@@ -93,6 +93,7 @@ impl Supervisor {
         value["state"]["stoppedReason"] = json!("Stopped by user");
         self.db
             .set_kv(&format!("pr-watch:{thread}"), &value.to_string())?;
+        self.source_control_changed(thread, "pullRequestWatchChanged")?;
         Ok(value)
     }
     pub async fn source_watch(
@@ -124,28 +125,10 @@ impl Supervisor {
             number,
             state,
         })?;
-        let marker = if repo.kind == HostKind::Gitlab {
-            "-/merge_requests"
-        } else if repo.kind == HostKind::Forgejo {
-            "pulls"
-        } else {
-            "pull"
-        };
-        let scheme = if repo.host.starts_with("127.0.0.1:") || repo.host.starts_with("localhost:") {
-            "http"
-        } else {
-            "https"
-        };
-        self.source_link(
-            thread,
-            &format!(
-                "{scheme}://{}/{}/{}/{marker}/{number}",
-                repo.host, repo.owner, repo.name
-            ),
-            false,
-        )?;
+        self.source_link(thread, &repo.pull_request_url(number), false)?;
         self.db
             .set_kv(&format!("pr-watch:{thread}"), &value.to_string())?;
+        self.source_control_changed(thread, "pullRequestWatchChanged")?;
         Ok(value)
     }
     pub(crate) async fn read_pr_snapshot(
@@ -154,9 +137,13 @@ impl Supervisor {
         number: u64,
     ) -> Result<WatchSnapshot> {
         let host = self.source_host(repo)?;
-        if repo.kind == HostKind::Github && repo.host == "github.com" {
-            let value=host.request("POST","graphql",Some(json!({"query":GITHUB_WATCH,"variables":{"owner":repo.owner,"name":repo.name,"number":number}}))).await?;
-            return github_snapshot(&value);
+        if repo.kind == HostKind::Github {
+            let value=host.request("POST","graphql",Some(json!({"query":GITHUB_WATCH,"variables":{"owner":repo.owner,"name":repo.name,"number":number}}))).await;
+            let snapshot = value.and_then(|value| github_snapshot(&value));
+            if repo.host == "github.com" || snapshot.is_ok() {
+                return snapshot;
+            }
+            // Older Enterprise versions may not expose merge queue fields.
         }
         let op = host.operation("show", false, Some(number), &json!({}))?;
         let detail = host.request(&op.method, &op.path, None).await?;
@@ -209,9 +196,10 @@ impl Supervisor {
             "pending"
         }
         .into();
-        let author = detail["user"]["login"]
+        let identity = host.request("GET", &host.identity_path(), None).await?;
+        let author = identity["login"]
             .as_str()
-            .or(detail["author"]["username"].as_str())
+            .or(identity["username"].as_str())
             .unwrap_or("");
         for action in ["comments", "reviews"] {
             let op = host.operation(action, false, Some(number), &json!({}))?;
@@ -232,6 +220,51 @@ impl Supervisor {
         }
         Ok(snapshot)
     }
+    /// One durable poll, also used by the local host integration test.
+    pub async fn poll_source_watch(&self, thread: &str) -> Result<Value> {
+        let key = format!("pr-watch:{thread}");
+        let Some(raw) = self.db.get_kv(&key)? else {
+            return Ok(json!({"reasons":[]}));
+        };
+        let mut watch: SavedWatch = serde_json::from_str(&raw)?;
+        if !watch.state.active {
+            return Ok(json!({"reasons":[],"state":watch.state}));
+        }
+        let reasons = if self
+            .get_thread(thread)
+            .map_or(true, |t| t.closed_at.is_some())
+        {
+            watch.state.active = false;
+            watch.state.stopped_reason = Some("Thread closed or deleted".into());
+            vec![]
+        } else {
+            watch
+                .state
+                .read(self.read_pr_snapshot(&watch.repository, watch.number).await)
+        };
+        // User stop/replacement wins over a network read in flight.
+        if self.db.get_kv(&key)?.as_deref() != Some(raw.as_str()) {
+            return Ok(json!({"reasons":[]}));
+        }
+        if !reasons.is_empty() {
+            use sha2::{Digest, Sha256};
+            let request = hex::encode(Sha256::digest(serde_json::to_vec(&watch)?));
+            let url = watch.repository.pull_request_url(watch.number);
+            let quoted = shell_words::quote(&url);
+            let prompt=format!("PR watch: {}. Inspect PR #{} in {}/{} using pockymoe pr show {} --item-url {} and pockymoe pr checks {} --item-url {} before acting.",reasons.join("; "),watch.number,watch.repository.owner,watch.repository.name,watch.number,quoted,watch.number,quoted);
+            // Stable request identity makes a crash after queueing but before
+            // persisting the snapshot safe to retry after restart.
+            let input = serde_json::from_value(
+                json!({"text":prompt,"delivery":"queue","kind":"task","subject":"PR watch","clientRequestId":format!("pr-watch:{request}")}),
+            )?;
+            self.send_to_thread_locally(thread, input)?;
+        }
+        self.db.set_kv(&key, &serde_json::to_string(&watch)?)?;
+        if !reasons.is_empty() || !watch.state.active {
+            self.source_control_changed(thread, "pullRequestWatchChanged")?;
+        }
+        Ok(json!({"reasons":reasons,"state":watch.state}))
+    }
     pub fn start_source_control_worker(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         tokio::spawn(async move {
@@ -239,51 +272,25 @@ impl Supervisor {
             loop {
                 interval.tick().await;
                 let Some(s) = weak.upgrade() else { break };
-                let entries: Vec<(String, String)> =
+                let keys: Vec<String> =
                     s.db.with(|c| {
-                        let mut q =
-                            c.prepare("SELECT key,value FROM kv WHERE key LIKE 'pr-watch:%'")?;
+                        let mut q = c.prepare("SELECT key FROM kv WHERE key LIKE 'pr-watch:%'")?;
                         let rows = q
-                            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                            .query_map([], |r| r.get(0))?
                             .collect::<std::result::Result<Vec<_>, _>>()?;
                         Ok(rows)
                     })
                     .unwrap_or_default();
-                for (key, raw) in entries {
-                    let Ok(mut watch) = serde_json::from_str::<SavedWatch>(&raw) else {
-                        continue;
-                    };
-                    if !watch.state.active {
-                        continue;
-                    }
-                    let thread = key.trim_start_matches("pr-watch:");
-                    if s.get_thread(thread).map_or(true, |t| t.closed_at.is_some()) {
-                        watch.state.active = false;
-                        watch.state.stopped_reason = Some("Thread deleted".into());
-                    } else {
-                        let reasons = watch
-                            .state
-                            .read(s.read_pr_snapshot(&watch.repository, watch.number).await);
-                        if !reasons.is_empty() {
-                            let prompt=format!("PR watch: {}. Inspect PR #{} in {}/{} using pockymoe pr show {} and pockymoe pr checks {} before acting.",reasons.join("; "),watch.number,watch.repository.owner,watch.repository.name,watch.number,watch.number);
-                            if let Ok(input) = serde_json::from_value(
-                                json!({"text":prompt,"delivery":"queue","kind":"task","subject":"PR watch"}),
-                            ) {
-                                let _ = s.send_to_thread_locally(thread, input);
-                            }
-                        }
-                    }
-                    // A user stopping/replacing a watch while a network read was in
-                    // progress wins over this stale poll result.
-                    if s.db.get_kv(&key).ok().flatten().as_deref() == Some(raw.as_str()) {
-                        let _ =
-                            s.db.set_kv(&key, &serde_json::to_string(&watch).unwrap_or_default());
-                    }
+                for key in keys {
+                    let _ = s
+                        .poll_source_watch(key.trim_start_matches("pr-watch:"))
+                        .await;
                 }
             }
         });
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

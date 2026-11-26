@@ -104,8 +104,15 @@ impl WorktreeSetup {
             let (shell, flag) = ("sh", "-c");
             #[cfg(windows)]
             let (shell, flag) = ("cmd", "/C");
-            output
-                .push(hosts::command(shell, &[flag.into(), command.clone()], &target, None).await?);
+            let (status, stdout, stderr) =
+                hosts::command_capture(shell, &[flag.into(), command.clone()], &target, None)
+                    .await?;
+            output.push(format!("{stdout}{stderr}"));
+            if !status.success() {
+                return Ok(
+                    json!({"completed":false,"output":output,"error":format!("Setup command {} failed ({status})", output.len())}),
+                );
+            }
         }
         Ok(json!({"completed":true,"output":output}))
     }
@@ -130,6 +137,27 @@ mod tests {
             std::fs::read_to_string(target.path().join(".env")).unwrap(),
             "fixture"
         );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn setup_failure_keeps_stdout_and_stderr_and_stops_commands() {
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let setup = WorktreeSetup {
+            commands: vec![
+                "printf 'before failure'; printf 'diagnostic' >&2; exit 3".into(),
+                "touch should-not-run".into(),
+            ],
+            ..Default::default()
+        };
+        let result = setup.run(source.path(), target.path()).await.unwrap();
+        assert_eq!(result["completed"], false);
+        assert!(result["output"][0]
+            .as_str()
+            .unwrap()
+            .contains("before failure"));
+        assert!(result["output"][0].as_str().unwrap().contains("diagnostic"));
+        assert!(!target.path().join("should-not-run").exists());
     }
 }
 
