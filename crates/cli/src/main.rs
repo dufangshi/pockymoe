@@ -808,8 +808,13 @@ async fn run() -> Result<()> {
         ),
         Commands::Model { command } => threads::Client::new(cli.connection)?.model(command).await?,
         Commands::Mcp {
-            command: plugins::McpCommand::Serve { device, access },
-        } => mcp::serve(threads::Client::new(cli.connection)?, device, access).await?,
+            command:
+                plugins::McpCommand::Serve {
+                    device,
+                    access,
+                    workspaces,
+                },
+        } => mcp::serve(cli.connection, device, access, workspaces).await?,
         Commands::Mcp { command } => println!(
             "{}",
             serde_json::to_string_pretty(

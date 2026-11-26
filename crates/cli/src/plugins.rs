@@ -89,6 +89,9 @@ pub enum McpCommand {
         device: Option<String>,
         #[arg(long, default_value="supervised", value_parser=["read","supervised","full"])]
         access: String,
+        /// Limit the client to these workspace IDs (repeat the flag); default all.
+        #[arg(long = "workspace", value_name = "WORKSPACE_ID")]
+        workspaces: Vec<String>,
     },
     /// Device MCP servers passed to ACP sessions; values of env and headers are hidden.
     List,

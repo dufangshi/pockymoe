@@ -3,7 +3,7 @@ use clap::{Args, Subcommand};
 use serde_json::{json, Value};
 use std::{io::Read, path::PathBuf};
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct Connection {
     #[arg(long, global = true, env = "POCKYMOE_URL")]
     pub url: Option<String>,
