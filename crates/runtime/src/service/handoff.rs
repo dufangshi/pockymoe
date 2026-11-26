@@ -41,6 +41,35 @@ pub(super) fn record_seen(conn: &Connection, id: &str, now: &str) -> Result<()> 
     Ok(())
 }
 
+/// Stage a fresh portable session inside the caller's journal transaction.
+/// The caller holds the thread's exclusive claim and has released its native
+/// session. Retained history and the pending prefix must commit together.
+pub(super) fn stage_portable_session(conn: &Connection, id: &str, kept_turns: usize) -> Result<()> {
+    let count = conn.query_row(
+        "SELECT COUNT(*) FROM thread_turns WHERE thread_id=?1",
+        [id],
+        |r| r.get::<_, usize>(0),
+    )?;
+    ensure!(
+        count == kept_turns,
+        "retained journal does not match kept_turns"
+    );
+    conn.execute(
+        "UPDATE threads SET provider_session_id=NULL WHERE id=?1",
+        [id],
+    )?;
+    conn.execute(
+        "DELETE FROM thread_harness_sessions WHERE thread_id=?1",
+        [id],
+    )?;
+    conn.execute(
+        "INSERT OR REPLACE INTO kv(key,value) VALUES(?1,'1')",
+        [format!("handoff:pending:{id}")],
+    )?;
+    conn.execute("DELETE FROM kv WHERE key=?1", [harness_context_key(id)])?;
+    Ok(())
+}
+
 impl Supervisor {
     pub fn handoff_token_cap(&self) -> Result<usize> {
         Ok(self
@@ -427,7 +456,7 @@ impl Supervisor {
     pub async fn start_portable_session(&self, id: &str, kept_turns: usize) -> Result<()> {
         let thread = self.get_thread(id)?;
         ensure!(
-            thread.status != "running",
+            !matches!(thread.status.as_str(), "running" | "recovering"),
             "conflict: Stop the thread before replacing its session"
         );
         let count = self.db.with(|c| {
@@ -442,22 +471,12 @@ impl Supervisor {
             "retained journal does not match kept_turns"
         );
         self.release_thread_harness(id, false, None).await?;
-        let _guard = self.hold_harness(id).await;
+        let _claim = self
+            .try_claim(&[id.into()])
+            .ok_or_else(|| anyhow!("conflict: Thread is busy; retry"))?;
         self.db.with(|c| {
             let tx = c.unchecked_transaction()?;
-            tx.execute(
-                "UPDATE threads SET provider_session_id=NULL WHERE id=?1",
-                [id],
-            )?;
-            tx.execute(
-                "DELETE FROM thread_harness_sessions WHERE thread_id=?1",
-                [id],
-            )?;
-            tx.execute(
-                "INSERT OR REPLACE INTO kv(key,value) VALUES(?1,'1')",
-                [format!("handoff:pending:{id}")],
-            )?;
-            tx.execute("DELETE FROM kv WHERE key=?1", [harness_context_key(id)])?;
+            stage_portable_session(&tx, id, kept_turns)?;
             tx.commit()?;
             Ok(())
         })
@@ -495,6 +514,56 @@ fn select_blocks(blocks: &[(String, String)], budget: usize) -> (Vec<usize>, Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn portable_staging_commits_or_rolls_back_with_retained_journal() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads(id TEXT,provider_session_id TEXT);
+             CREATE TABLE thread_turns(thread_id TEXT,id TEXT);
+             CREATE TABLE thread_harness_sessions(thread_id TEXT);
+             CREATE TABLE kv(key TEXT PRIMARY KEY,value TEXT);
+             INSERT INTO threads VALUES('thread','native');
+             INSERT INTO thread_turns VALUES('thread','keep'),('thread','discard');
+             INSERT INTO thread_harness_sessions VALUES('thread');",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO kv VALUES(?1,'delivered')",
+            [harness_context_key("thread")],
+        )
+        .unwrap();
+        {
+            let tx = conn.unchecked_transaction().unwrap();
+            tx.execute("DELETE FROM thread_turns WHERE id='discard'", [])
+                .unwrap();
+            assert!(stage_portable_session(&tx, "thread", 2).is_err());
+            // Dropping the failed transaction preserves native state and history.
+        }
+        let count: usize = conn
+            .query_row("SELECT COUNT(*) FROM thread_turns", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+        let session: String = conn
+            .query_row("SELECT provider_session_id FROM threads", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(session, "native");
+        let tx = conn.unchecked_transaction().unwrap();
+        tx.execute("DELETE FROM thread_turns WHERE id='discard'", [])
+            .unwrap();
+        stage_portable_session(&tx, "thread", 1).unwrap();
+        tx.commit().unwrap();
+        let state: (bool, usize, String, bool) = conn
+            .query_row(
+                "SELECT provider_session_id IS NULL,
+                 (SELECT COUNT(*) FROM thread_harness_sessions),
+                 (SELECT value FROM kv WHERE key='handoff:pending:thread'),
+                 EXISTS(SELECT 1 FROM kv WHERE key=?1) FROM threads",
+                [harness_context_key("thread")],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(state, (true, 0, "1".into(), false));
+    }
     #[test]
     fn failures_survive_when_middle_successes_do_not_fit() {
         let blocks = vec![

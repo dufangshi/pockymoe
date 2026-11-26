@@ -709,4 +709,16 @@ async fn harness_handoff_round_trip_preserves_sessions_and_only_sends_delta() {
         .unwrap()
         .text
         .contains("emerald"));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state.start_portable_session(&fork.id, 1),
+    )
+    .await
+    .expect("portable fallback does not reenter its exclusive claim")
+    .unwrap();
+    send(&state, &fork.id, "continue after portable rewind").await;
+    assert!(pockymoe_runtime::fake::model_prompts(&fork.id)
+        .last()
+        .unwrap()
+        .contains("emerald"));
 }
