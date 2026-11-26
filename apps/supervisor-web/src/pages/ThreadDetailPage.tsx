@@ -45,6 +45,7 @@ import { ThreadWatchesControl } from '../components/ThreadWatchesControl';
 import { ThreadSourceLinksControl } from '../components/git/pr/ThreadSourceLinksControl';
 import { useThreadInspector } from '../components/ThreadInspector';
 import { requestThreadPageCatalog } from './threadPageCatalog';
+import { useModelPickerSource } from './useModelPickerSource';
 import { ThreadSubagentsControl } from '../components/ThreadSubagentsControl';
 import { PortMappingsControl } from '../components/PortMappingsControl';
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
@@ -3778,6 +3779,40 @@ export function ThreadDetailPage() {
     [id, relayRouteDeviceId],
   );
   const describeHandoffModel = useHandoffModelNames(detail?.turns, relayRouteDeviceId);
+  // A thread moved to another agent (the model picker, the CLI or another window):
+  // its models, capabilities and commands follow the new agent.
+  const contextAgentRef = useRef<string | null>(null);
+  useEffect(() => {
+    const thread = detail?.thread;
+    if (!thread) return;
+    const key = `${thread.id}\u0000${thread.provider}\u0000${thread.agentId ?? ''}`;
+    const previous = contextAgentRef.current;
+    contextAgentRef.current = key;
+    if (previous && previous !== key && previous.startsWith(`${thread.id}\u0000`)) void loadPageContext({ seedThread: thread });
+  }, [detail?.thread, loadPageContext]);
+  const modelPicker = useModelPickerSource({
+    thread: detail?.thread,
+    deviceId: relayRouteDeviceId,
+    cwd: detail?.workspace.absPath,
+    agentOptions,
+    canSwitch: relayThreadIsOwner,
+    onSwitched: (thread) => {
+      setDetail((current) => (current && current.thread.id === thread.id ? { ...current, thread } : current));
+      setThreads((current) => mergeThreadIntoList(current, thread));
+    },
+    onForked: (thread) => {
+      setThreads((current) => mergeThreadIntoList(current, thread));
+      openThread(thread.id);
+    },
+  });
+  // The split pane's thread may live on another device: its own source.
+  const referenceModelPicker = useModelPickerSource({
+    thread: referenceController.detail?.thread,
+    deviceId: referenceDevice === 'local' ? null : referenceDevice,
+    cwd: referenceController.detail?.workspace.absPath,
+    canSwitch: referenceHarnessOwner,
+    onSwitched: () => referenceController.retry(),
+  });
   const timelineProps = useMemo<Partial<ThreadTimelineProps>>(
     () => ({
       livePlan,
@@ -3851,6 +3886,7 @@ export function ThreadDetailPage() {
         capabilities: hostScope && backendCapabilities ? { ...backendCapabilities, branching: { ...backendCapabilities.branching, fork: false, forkAt: false, resumeAt: false }, management: { ...backendCapabilities.management, hooks: false, hostConfigFiles: false } } : backendCapabilities,
         toolboxItems: hostScope ? [] : backendManagementSchema?.toolboxItems ?? [],
         onOpenHarness: (composerFocusOwner?: string) => setHarnessSettingsTarget({ pane: 'primary', deviceId: relayRouteDeviceId ?? 'local', threadId: id, ...(composerFocusOwner ? {composerFocusOwner} : {}) }),
+        modelPicker,
         hookCommandTemplates:
           backendManagementSchema?.hookCommandTemplates ?? [],
         mcpConfigFormat: backendManagementSchema?.mcpConfigFormat ?? 'none',
@@ -4179,7 +4215,7 @@ export function ThreadDetailPage() {
         onPresentationChange: changePresentation,
         candidates: threads.filter(thread => thread.id !== id).map(thread => ({ id: thread.id, title: thread.title })),
         referenceTitle: referenceController.detail?.thread.title ?? threads.find(thread => thread.id === referenceId)?.title ?? translate('workbench.loadingThreadDetail'),
-        referenceContent: referenceId ? <ThreadPluginScope key={`${referenceDevice}:${referenceId}`} threadId={referenceId} adapter={referencePluginAdapter}><WorkbenchReferencePane key={`${referenceDevice}:${referenceId}`} controller={referenceController} onOpenThread={openReferenceThread} onOpenWorkspaceFile={openReferenceFile} onOpenHarness={composerFocusOwner => setHarnessSettingsTarget({pane:'reference',deviceId:referenceDevice,threadId:referenceId,...(composerFocusOwner ? {composerFocusOwner} : {})})} draft={referenceDraft} onDraftChange={setReferenceDraft} sendShortcut={shellNav?.sendShortcut ?? 'ctrlEnter'} /></ThreadPluginScope> : null,
+        referenceContent: referenceId ? <ThreadPluginScope key={`${referenceDevice}:${referenceId}`} threadId={referenceId} adapter={referencePluginAdapter}><WorkbenchReferencePane key={`${referenceDevice}:${referenceId}`} controller={referenceController} onOpenThread={openReferenceThread} onOpenWorkspaceFile={openReferenceFile} onOpenHarness={composerFocusOwner => setHarnessSettingsTarget({pane:'reference',deviceId:referenceDevice,threadId:referenceId,...(composerFocusOwner ? {composerFocusOwner} : {})})} draft={referenceDraft} onDraftChange={setReferenceDraft} sendShortcut={shellNav?.sendShortcut ?? 'ctrlEnter'} {...(referenceModelPicker ? { modelPicker: referenceModelPicker } : {})} /></ThreadPluginScope> : null,
         collaborationContent: <WorkbenchCollaboration detail={detail} threads={threads} onCompare={onCompareThread} onOpen={openThread} sourceKey={routeKey} visible={workbenchPresentation.value.mode === 'collaboration'} liveItems={liveItems} onNativeResult={target => {
           const source = routeKey;
           void fetchThreadTurnDetail(id, target.turnId, relayRouteDeviceId).then(async turn => {
@@ -4281,8 +4317,6 @@ export function ThreadDetailPage() {
         void fetchThreadDetail(detail.thread.id, { limit: INITIAL_DETAIL_TURN_PAGE_SIZE }, relayRouteDeviceId).then(setDetail);
       }} />}{settingsDialogVisible && dialogDetail && <HarnessSettingsDialog
         key={`${dialogDevice}:${dialogDetail.thread.id}`} thread={dialogDetail.thread}
-        switchDeviceId={dialogDevice}
-        onForked={thread=>openThread(thread.id)}
         models={dialogUseReference ? referenceController.models : modelOptions}
         busy={dialogUseReference ? referenceController.busy : settingsBusy}
         readOnly={dialogUseReference ? !referenceController.canControl : !relayThreadCanControl}

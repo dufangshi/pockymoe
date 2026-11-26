@@ -18,7 +18,7 @@ import { resolveThreadContextUsage } from '../pages/threadDetailModel';
 export function WorkbenchReferencePane({
   controller,
   onOpenThread,
-  draft, onDraftChange, sendShortcut, onOpenWorkspaceFile, onOpenHarness,
+  draft, onDraftChange, sendShortcut, onOpenWorkspaceFile, onOpenHarness, modelPicker,
 }: {
   controller: ReturnType<typeof useWorkbenchReference>;
   onOpenThread: (id: string) => void;
@@ -26,6 +26,8 @@ export function WorkbenchReferencePane({
   onDraftChange: ThreadComposerProps['onDraftChange'];
   sendShortcut: ThreadComposerProps['sendShortcut'];
   onOpenHarness?: (composerFocusOwner?: string) => void;
+  /** The pane's own model picker source: facts and, for its owner, switching agents. */
+  modelPicker?: ThreadComposerProps['modelPicker'];
   onOpenWorkspaceFile?: (input: {path: string; line?: number}) => void;
 }) {
   useI18n();
@@ -130,6 +132,7 @@ export function WorkbenchReferencePane({
               canInterrupt: Boolean(controller.canControl && detail.thread.activeTurnId),
               ...(controller.canControl ? {
                 ...(onOpenHarness ? { onOpenHarness } : {}),
+                ...(modelPicker ? { modelPicker } : {}),
                 onInterrupt: async () => { await controller.interrupt(); },
                 onUpdateSettings: async input => { await controller.updateSettings(input); },
               } : {}),
