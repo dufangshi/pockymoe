@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { PathChip, type PromptQuote } from '@pockymoe/thread-ui';
+import { PathChip, type PromptQuote, matchesModKey } from '@pockymoe/thread-ui';
 import { FormDialog } from '../FormDialog';
 import { translate } from '@pockymoe/thread-ui/i18n';
 import { gitText as gt } from '../../lib/gitI18n';
@@ -78,7 +78,7 @@ export function ReviewPatch({ patch, parsed, split, collapsed, area, write, busy
     setSelection({ path: a.dataset.file!, startLine: start, endLine: end, text, from: 'user', turn: null, turnId: null, itemId: null });
   };
   return <div ref={root} className="thread-git-review thread-git-patch" data-split={split || undefined} onMouseUp={capture} onTouchEnd={capture} onKeyDown={event => {
-    if ((event.metaKey || event.ctrlKey) && event.key === 'f') { event.preventDefault(); setFinding(true); queueMicrotask(() => search.current?.focus()); }
+    if (matchesModKey(event) && event.key === 'f') { event.preventDefault(); setFinding(true); queueMicrotask(() => search.current?.focus()); }
   }} tabIndex={0}>
     {(!hideFind || selection) && <div className="thread-git-actions">{!hideFind && <button onClick={() => { setFinding(value => !value); queueMicrotask(() => search.current?.focus()); }}>{gt('find')}</button>}{selection && <button className="thread-git-comment-selection" onClick={() => setCommenting(true)}>{commentLabel ?? gt('comment')}</button>}</div>}
     {finding && <div className="thread-git-actions"><input ref={search} aria-label={gt('find')} value={query} onChange={event => { setQuery(event.target.value); setMatch(0); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); move(event.shiftKey ? -1 : 1); } if (event.key === 'Escape') { event.stopPropagation(); setFinding(false); setQuery(''); } }} /><button onClick={() => move(-1)} aria-label={gt('previousMatch')}>↑</button><button onClick={() => move(1)} aria-label={gt('nextMatch')}>↓</button><button onClick={() => { setFinding(false); setQuery(''); }}>{gt('closeFind')}</button></div>}

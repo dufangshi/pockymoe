@@ -30,18 +30,20 @@ type Call = { client: string; clientName?: string; tool: string; target: string 
 type Data = { endpoint: string; clients: Client[]; calls: Call[] };
 const post = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) });
 
-export function OutsideAgentsSettings() {
+/** `deviceId` names the device whose outside agents show (null: this Supervisor). */
+export function OutsideAgentsSettings({ deviceId = null }: { deviceId?: string | null } = {}) {
+  const apiRoot = deviceId ? `relay/devices/${encodeURIComponent(deviceId)}/api` : 'api';
   useI18n();
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState<string | null>(null);
-  async function load() { try { setData(await request<Data>('api/mcp/clients')); setError(null); } catch (e) { setError(String(e)); } }
+  async function load() { try { setData(await request<Data>(`${apiRoot}/mcp/clients`)); setError(null); } catch (e) { setError(String(e)); } }
   useEffect(() => { void load(); }, []);
   const [workspaceNames, setWorkspaceNames] = useState<Record<string, string>>({});
   useEffect(() => { request<{ id: string; label: string }[]>('api/workspaces').then(list => setWorkspaceNames(Object.fromEntries(list.map(w => [w.id, w.label])))).catch(() => {}); }, []);
   async function revoke(client: Client) {
     const confirmed = await confirmAsync({ title: text('revokeTitle').replace('{name}', client.clientName), description: text('revokeBody'), confirmLabel: text('revoke') });
     if (!confirmed) return;
-    try { await request(`api/mcp/clients/${encodeURIComponent(client.id)}`, { method: 'DELETE' }); await load(); } catch (e) { setError(String(e)); }
+    try { await request(`${apiRoot}/mcp/clients/${encodeURIComponent(client.id)}`, { method: 'DELETE' }); await load(); } catch (e) { setError(String(e)); }
   }
   const time = (seconds: number) => new Date(seconds * 1000).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
   const callClient = (call: Call) => call.clientName ?? (call.client === 'local-stdio' ? text('stdioClient') : text('revokedClient'));

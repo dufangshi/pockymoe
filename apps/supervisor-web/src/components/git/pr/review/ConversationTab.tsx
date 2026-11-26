@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Check, ChevronDown, ChevronRight, MessageSquare, Plus, RotateCcw, X } from 'lucide-react';
-import { PathChip } from '@pockymoe/thread-ui';
+import { PathChip, matchesSendModKey } from '@pockymoe/thread-ui';
 import type { DetailResponse, ReviewThread } from './reviewApi';
 import { Ago, Body } from './parts';
 import { rt, type ReviewMessage } from './reviewText';
@@ -34,7 +34,7 @@ export function ThreadCard({ thread, act, busy, compact = false }: { thread: Rev
       </div>
       {reply !== null && <form className="pr-reply" onSubmit={event => { event.preventDefault(); void act('reply', { threadId: thread.id, body: reply }).then(ok => { if (ok) setReply(null); }); }}>
         <textarea aria-label={rt('reply')} placeholder={rt('replyPlaceholder')} value={reply} autoFocus onChange={event => setReply(event.target.value)}
-          onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') event.currentTarget.form?.requestSubmit(); if (event.key === 'Escape') { event.stopPropagation(); setReply(null); } }} />
+          onKeyDown={event => { if (matchesSendModKey(event) && event.key === 'Enter') event.currentTarget.form?.requestSubmit(); if (event.key === 'Escape') { event.stopPropagation(); setReply(null); } }} />
         <div className="pr-reply-actions"><button type="button" onClick={() => setReply(null)}>{rt('cancel')}</button><button type="submit" className="pr-primary" disabled={busy || !reply.trim()}>{rt('reply')}</button></div>
       </form>}
     </>}
@@ -82,7 +82,7 @@ export function ConversationTab({ data, act, busy }: { data: DetailResponse; act
     </section>}
     <form className="pr-composer" onSubmit={event => { event.preventDefault(); void act('comment', { body: comment }).then(ok => { if (ok) setComment(''); }); }}>
       <textarea aria-label={rt('comment')} placeholder={rt('commentPlaceholder')} value={comment} onChange={event => setComment(event.target.value)}
-        onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') event.currentTarget.form?.requestSubmit(); }} />
+        onKeyDown={event => { if (matchesSendModKey(event) && event.key === 'Enter') event.currentTarget.form?.requestSubmit(); }} />
       <div className="pr-reply-actions"><button type="submit" className="pr-primary" disabled={busy || !comment.trim()}>{rt('postComment')}</button></div>
     </form>
   </div>;

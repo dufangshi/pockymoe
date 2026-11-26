@@ -10,8 +10,9 @@ import { relayDeviceIdFromPath } from '../../../lib/relayRoutes';
 import { sourceRoot, type SourceSettings } from './api';
 import { prText as t } from './text';
 import './pr.css';
-export function SourceControlSettings() {
-  useI18n();const {pathname}=useLocation();const deviceId=relayDeviceIdFromPath(pathname);
+/** `deviceId` names the device whose settings show (a device page passes it); without it the route's device. */
+export function SourceControlSettings({ deviceId: explicitDeviceId }: { deviceId?: string | null } = {}) {
+  useI18n();const {pathname}=useLocation();const deviceId=explicitDeviceId!==undefined?explicitDeviceId:relayDeviceIdFromPath(pathname);
   if(relayModeActive()&&!deviceId)return <p>{t('chooseDevice')}</p>;
   return <Settings key={deviceId} apiRoot={sourceRoot(deviceId)}/>;
 }

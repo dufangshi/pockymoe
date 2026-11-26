@@ -33,7 +33,7 @@ import { DeviceSettingsLink, SettingsDeviceBar } from './SettingsDeviceBar';
 import { WorkspaceDefaultsSettings } from './WorkspaceDefaultsSettings';
 
 /** The tabs that administer one device; the others belong to this browser or the account. */
-const DEVICE_SECTIONS = new Set(['harnesses', 'upstreams', 'resources', 'environments', 'device', 'workspace', 'plugins']);
+const DEVICE_SECTIONS = new Set(['harnesses', 'sourceControl', 'upstreams', 'resources', 'environments', 'device', 'workspace', 'outside-agents', 'plugins']);
 
 export function AppShellSettingsDialog({
   embedded = false,
@@ -231,11 +231,11 @@ export function AppShellSettingsDialog({
 
           {section === 'workspace' && !target.missing && <WorkspaceDefaultsSettings key={target.deviceId ?? 'local'} deviceId={target.deviceId} />}
           {section === 'upstreams' && !target.missing && <UpstreamsSettings deviceId={target.deviceId} />}
-          {section === 'sourceControl' && !target.missing && <SourceControlSettings />}
+          {section === 'sourceControl' && !target.missing && <SourceControlSettings {...(target.deviceId !== undefined ? { deviceId: target.deviceId } : {})} />}
           {section === 'resources' && !target.missing && <HarnessResourceSettings deviceId={target.deviceId} />}
           {section === 'environments' && !target.missing && <DokploySettings deviceId={target.deviceId} />}
           {section === 'device' && !hostScope && <LocalPasscodeSettings />}
-          {section === 'outside-agents' && !hostScope && <OutsideAgentsSettings />}
+          {section === 'outside-agents' && !hostScope && !target.missing && <OutsideAgentsSettings deviceId={target.deviceId ?? null} />}
           {(section === 'device' || section === 'harnesses') && !target.missing && (
             <RuntimeManagement deviceId={target.deviceId} view={section === 'device' && hostScope ? 'supervisor' : section} />
           )}
@@ -271,7 +271,7 @@ export function AppShellSettingsDialog({
 
 /** The tabs that administer one device and, in Relay mode, live on that device's
  * own page (its Settings tab, issue #115), not in the settings window. */
-const DEVICE_PAGE_SECTIONS = ['device', 'harnesses', 'upstreams', 'resources', 'environments', 'workspace'];
+const DEVICE_PAGE_SECTIONS = ['device', 'harnesses', 'sourceControl', 'upstreams', 'resources', 'environments', 'workspace', 'outside-agents'];
 
 /** Plugin settings open from the gear on their row in Plugins, not as top-level tabs.
  * A host scope (Treer Agent UI) gets Preferences and Device, which there holds only
@@ -295,7 +295,7 @@ export function deviceSettingsSections(deviceId: string, general: ReactNode): Se
     { id: 'general', label: translate('devices.settingsGeneral'), description: translate('devices.settingsGeneralDescription'), content: general },
     // "Supervisor" here: on a device's page the device is already named.
     { ...byId('device'), label: 'Supervisor', content: <AppShellSettingsDialog embedded section="device" deviceId={deviceId} /> },
-    ...['harnesses', 'upstreams', 'resources', 'environments', 'workspace'].map(id => ({ ...byId(id), content: <AppShellSettingsDialog embedded section={id} deviceId={deviceId} /> })),
+    ...['harnesses', 'sourceControl', 'upstreams', 'resources', 'environments', 'workspace', 'outside-agents'].map(id => ({ ...byId(id), content: <AppShellSettingsDialog embedded section={id} deviceId={deviceId} /> })),
   ];
 }
 

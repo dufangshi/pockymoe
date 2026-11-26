@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { ChevronLeft, ExternalLink, FileCode2, GitCommitHorizontal, GitMerge, Link2, ListChecks, Map as MapIcon, MessageSquareText, MessagesSquare, MoreHorizontal, RefreshCw, type LucideIcon } from 'lucide-react';
-import { ErrorMark, Select, confirmAsync, copyText } from '@pockymoe/thread-ui';
+import { ErrorMark, Select, confirmAsync, copyText, matchesSendModKey } from '@pockymoe/thread-ui';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
 import { useNavigate } from 'react-router-dom';
 import { FormDialog } from '../../../FormDialog';
@@ -242,7 +242,7 @@ function SubmitDialog({ drafts, events, head, moved, busy, host, onSummary, onDi
         {events.map(item => <button key={item} type="button" role="radio" className="product-segment" aria-checked={event === item} data-event={item} onClick={() => setEvent(item)}>{rt(EVENT_LABEL[item])}</button>)}
       </div>
       <label>{needsBody ? rt('summaryRequired') : rt('summaryOptional')}<textarea value={body} onChange={change => setBody(change.target.value)} onBlur={persist}
-        onKeyDown={key => { if ((key.metaKey || key.ctrlKey) && key.key === 'Enter') key.currentTarget.form?.requestSubmit(); }} /></label>
+        onKeyDown={key => { if (matchesSendModKey(key) && key.key === 'Enter') key.currentTarget.form?.requestSubmit(); }} /></label>
       <p className="pr-dim pr-pending-line">{pending.length ? (pending.length === 1 ? rt('pendingOne') : rt('pendingComments', { n: pending.length })) : rt('noPending')}
         {pending.length > 0 && <button type="button" className="pr-link pr-danger" onClick={() => { void confirmAsync({ title: rt('discardConfirm', { n: pending.length }), description: rt('pendingNote'), confirmLabel: rt('discard'), tone: 'danger' }).then(ok => { if (ok) onDiscardAll(); }); }}>{rt('discardAll')}</button>}</p>
       {moved && <div className="pr-banner"><span>{rt('newCommits', { sha: head.slice(0, 7) })}</span><button type="button" onClick={onLoadNew}>{rt('loadNew')}</button></div>}
