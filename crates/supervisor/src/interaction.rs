@@ -538,8 +538,22 @@ async fn run_as(
             )?)
         }
         "create" => {
+            // A thread credential creates only as itself, like every other
+            // operation: an omitted --from is the caller (never a top-level
+            // thread that escapes the lineage caps), and a different one is
+            // refused. The machine credential acts for the owner and may name any
+            // thread, or none.
+            let from = match caller.as_deref() {
+                Some(caller) => {
+                    anyhow::ensure!(
+                        from.is_none_or(|from| from == caller),
+                        "forbidden: --from cannot override the authenticated caller for create"
+                    );
+                    Some(caller.to_owned())
+                }
+                None => from.map(str::to_owned),
+            };
             let mut input = input;
-            let from = input["fromThreadId"].as_str().map(str::to_owned);
             if let Some(from) = from {
                 let caller = state.get_thread(&from)?;
                 // Record who asked, so the new thread groups under its lineage root
@@ -773,6 +787,66 @@ mod tests {
             filtered["timedOut"], true,
             "only replies to that message count"
         );
+    }
+
+    fn create(extra: Value) -> Value {
+        let mut input = json!({"operation":"create","provider":"codex","model":"default"});
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        input
+    }
+
+    fn created(receipt: &Value) -> String {
+        receipt["threadId"].as_str().unwrap().to_owned()
+    }
+
+    #[tokio::test]
+    async fn a_thread_credential_creates_only_as_itself_and_the_machine_credential_for_anyone() {
+        let f = setup().await;
+        let caller = thread(&f.state, &f.open).await;
+        let other = thread(&f.state, &f.open).await;
+        // Naming another thread is refused, so it cannot graft onto their lineage.
+        let refused = cli(&f, Some(&caller), create(json!({"fromThreadId":other})))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.starts_with("forbidden:"), "{refused}");
+        // An empty POCKYMOE_THREAD_ID sends no fromThreadId: still the caller's
+        // child, not a top-level thread outside the lineage caps. A raw
+        // parentThreadId cannot pick another parent either.
+        for extra in [json!({}), json!({"parentThreadId":other})] {
+            let id = created(&cli(&f, Some(&caller), create(extra)).await.unwrap());
+            let t = f.state.get_thread(&id).unwrap();
+            assert_eq!(t.parent_thread_id.as_deref(), Some(caller.as_str()));
+            assert_eq!(t.workspace_id, f.open);
+        }
+        let mine = created(
+            &cli(&f, Some(&caller), create(json!({"fromThreadId":caller})))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            f.state.get_thread(&mine).unwrap().parent_thread_id,
+            Some(caller.clone())
+        );
+        // The machine credential keeps acting for the owner.
+        let owners = created(
+            &cli(&f, None, create(json!({"fromThreadId":other})))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            f.state.get_thread(&owners).unwrap().parent_thread_id,
+            Some(other.clone())
+        );
+        let top = created(
+            &cli(&f, None, create(json!({"workspaceId":f.open})))
+                .await
+                .unwrap(),
+        );
+        assert!(f.state.get_thread(&top).unwrap().parent_thread_id.is_none());
     }
 
     fn sorted<const N: usize>(ids: [&String; N]) -> Vec<String> {
