@@ -1,5 +1,10 @@
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 const messages = {
+  linkedItems: ['关联的 PR 与议题', 'Linked PRs and issues'],
+  open: ['开放', 'Open'], closed: ['已关闭', 'Closed'], merged: ['已合并', 'Merged'],
+  conflicts: ['存在合并冲突', 'Merge conflicts'], mergeable: ['可以合并', 'Mergeable'], search: ['搜索', 'Search'],
+  cleanup: ['清理建议', 'Cleanup suggestions'], removeWorktree: ['移除工作副本', 'Remove worktree'], removeWorktreeBody: ['仅在没有线程使用且没有未提交文件时移除此工作副本。', 'Remove this worktree only after checking that no threads use it and it has no uncommitted files.'],
+  generationSource: ['文本生成方式', 'Text generation'], automatic: ['自动', 'Automatic'], runningConfirm: ['线程正在运行，推送可能与智能体的改动同时进行。继续创建？', 'The thread is running. Pushing may overlap the agent’s changes. Continue creating?'],
   issues: ['议题', 'Issues'], browse: ['浏览', 'Browse'], clone: ['克隆仓库', 'Clone repository'], publish: ['发布仓库', 'Publish repository'], repositoryName: ['仓库名', 'Repository name'], private: ['私有仓库', 'Private repository'], gitUrl: ['Git 地址', 'Git URL'],
   title: ['拉取请求', 'Pull requests'], sourceControl: ['源代码管理', 'Source control'],
   description: ['设备上的 Git 托管账号与写作偏好', 'Git host accounts and writing preferences on this device'],

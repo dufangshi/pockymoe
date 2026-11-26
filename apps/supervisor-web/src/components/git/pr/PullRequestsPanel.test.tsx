@@ -11,12 +11,12 @@ it('merges only the displayed head and keeps its thread, working copy and linked
  render(<PullRequestsPanel threadId="thread" workingCopyId="copy" deviceId="device"/>);
  fireEvent.click(await screen.findByRole('button',{name:'a/b · PR #42'}));
  await screen.findByDisplayValue('Review me');
- fireEvent.click(screen.getByRole('button',{name:'Merge',exact:true}));
+ fireEvent.click(screen.getByRole('button',{name:/^Merge$/}));
  await waitFor(()=>expect(action).toHaveBeenCalledWith('thread','merge',expect.objectContaining({number:42,expectedHead:'reviewed-head',workingCopyId:'copy',url:'https://github.com/a/b/pull/42'}),'device'));
 });
 it('preserves comment drafts after a failed host request',async()=>{
  render(<PullRequestsPanel threadId="thread"/>);fireEvent.click(await screen.findByRole('button',{name:'a/b · PR #42'}));await screen.findByDisplayValue('Review me');
  action.mockRejectedValueOnce(new Error('Host unavailable'));
- fireEvent.change(screen.getByLabelText('Comment'),{target:{value:'Keep this draft'}});fireEvent.click(screen.getByRole('button',{name:'Comment',exact:true}));
+ fireEvent.change(screen.getByLabelText('Comment'),{target:{value:'Keep this draft'}});fireEvent.click(screen.getByRole('button',{name:/^Comment$/}));
  await screen.findByText('Error: Host unavailable');expect(screen.getByDisplayValue('Keep this draft')).toBeTruthy();
 });

@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileDiff, FileQuestion, GitBranch, Info, MapPin, RefreshCw } from 'lucide-react';
 import { CopyButton, ErrorMark, MiddleName, PathChip, Select, formatShortTimestamp } from '@pockymoe/thread-ui';
@@ -13,12 +14,13 @@ import './thread-git.css';
 
 export interface ThreadGitPanelProps {
   threadId: string;
+  renderPullRequests?: ((props: { threadId: string; workingCopyId?: string }) => ReactNode) | undefined;
   deviceId?: string | null | undefined;
   /** Existing thread updates invalidate the open panel; no polling is started. */
   refreshKey?: string | undefined;
 }
 
-type View = 'worktree' | 'index' | 'branch' | 'commits';
+type View = 'worktree' | 'index' | 'branch' | 'commits' | 'pr';
 const SOURCE_KEY = { created: 'workbench.gitSourceCreated', adopted: 'workbench.gitSourceAdopted', observed: 'workbench.gitSourceObserved', configured: 'workbench.gitSourceConfigured' } as const;
 const CHANGE_LETTER: Record<FileChange, string> = { untracked: 'U', added: 'A', modified: 'M', deleted: 'D', renamed: 'R', copied: 'C', conflicted: '!', typeChanged: 'T', changed: '•' };
 const PAGE = 30;
@@ -49,7 +51,7 @@ interface ListedFile { path: string; change: FileChange; originalPath?: string |
     picks what to look at, and the rest is the file list and the diff. Narrow,
     the list sits above the scope's combined diff in one scroll and a file opens
     on its own; wide (a dragged-out dock), they sit side by side (docs/worktrees.md). */
-export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPanelProps) {
+export function ThreadGitPanel({ threadId, deviceId, refreshKey, renderPullRequests }: ThreadGitPanelProps) {
   useI18n();
   const detailsId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -100,11 +102,11 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
     return () => controller.abort();
   }, [threadId, deviceId, revision, refreshKey, visible]);
 
-  const area: GitDiffArea | null = view === 'commits' ? commit ? 'commit' : null : view;
+  const area: GitDiffArea | null = view === 'pr' ? null : view === 'commits' ? commit ? 'commit' : null : view;
   const diffBase = area === 'commit' ? commit?.oid ?? '' : base;
   const areaScope = JSON.stringify([selected, area, area === 'branch' || area === 'commit' ? diffBase : '']);
   useEffect(() => {
-    if (!visible || !context) return;
+    if (!visible || !context || view === 'pr') return;
     if (!selected) { setLoading(false); return; }
     const controller = new AbortController();
     setLoading(true);
@@ -126,7 +128,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
     return () => controller.abort();
     // areaScope is derived from selected, area and diffBase.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [threadId, deviceId, selected, context, area, path, diffBase, offset, visible]);
+  }, [threadId, deviceId, selected, context, area, path, diffBase, offset, visible, view]);
 
   const workingCopy = context?.workingCopies.find(copy => copy.id === selected);
   const manyCopies = (context?.workingCopies.length ?? 0) > 1;
@@ -217,6 +219,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
         <button type="button" aria-pressed={view === 'worktree'} onClick={() => selectView('worktree')}>{translate('workbench.gitUnstaged')}<Count value={counts.worktree} /></button>
         <button type="button" aria-pressed={view === 'index'} onClick={() => selectView('index')}>{translate('workbench.gitStaged')}<Count value={counts.index} /></button>
         <button type="button" aria-pressed={view === 'branch'} onClick={() => selectView('branch')}>{translate('workbench.gitCompare')}</button>
+        {renderPullRequests && <button type="button" aria-pressed={view === 'pr'} onClick={() => selectView('pr')}>PR</button>}
         <button type="button" aria-pressed={view === 'commits'} onClick={() => selectView('commits')}>{translate('workbench.gitCommits')}</button>
       </div>
       {view === 'branch' && <form className="thread-git-bar thread-git-base" onSubmit={event => { event.preventDefault(); setBase(baseDraft.trim() || 'HEAD'); reset(); }}>
@@ -228,7 +231,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey }: ThreadGitPane
         <span className="thread-git-head"><code>{shortOid(commit.oid)}</code><CopyButton value={commit.oid} label={translate('workbench.gitCopyCommit')} /></span>
         <span className="thread-git-commit-bar-subject" title={commit.subject}>{commit.subject}</span>
       </div>}
-      {area ? <div ref={changesRef} className="thread-git-changes" data-empty={listReady && !listed.length || undefined}>
+      {view === 'pr' ? renderPullRequests?.({ threadId, workingCopyId: selected }) : area ? <div ref={changesRef} className="thread-git-changes" data-empty={listReady && !listed.length || undefined}>
         <aside ref={listRef} className="thread-git-files" aria-label={translate('workbench.gitChangedFiles')}>
           {listReady && listed.length > 0 && <div className="thread-git-summary">
             <span className="thread-git-summary-text">{gt(listed.length === 1 ? 'oneFile' : 'files', { n: formatNumber(listed.length) })}{known && <Stat file={totals} />}</span>

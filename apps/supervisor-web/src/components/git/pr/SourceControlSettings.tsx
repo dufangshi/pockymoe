@@ -22,13 +22,14 @@ function Settings({apiRoot}:{apiRoot:string}) {
   return <section className="pr-panel" aria-label={t('sourceControl')}>
     <div className="pr-toolbar"><strong>{t('sourceControl')}</strong><button type="button" aria-label={t('refresh')} disabled={busy} onClick={()=>{void load().catch(e=>setError(String(e)));}}><RefreshCw size={16}/></button></div>
     {error&&<ErrorMark message={error}/>}{saved&&<p role="status">{t('saved')}</p>}
-    <ul>{settings.hosts.map(h=><li key={h.host}><span>{h.host} · {h.hasToken?t('configured'):t('cli')}</span><label className="pr-checkbox"><input type="checkbox" checked={h.enabled} disabled={busy} onChange={e=>{void save({host:h.host,kind:h.kind,enabled:e.target.checked});}}/>{t('enabled')}</label></li>)}</ul>
+    <ul>{settings.hosts.map(h=><li key={h.host}><span>{h.host} · {h.authenticated===undefined?(h.hasToken?t('configured'):t('cli')):(h.authenticated?t('signedIn'):t('signedOut'))}</span><label className="pr-checkbox"><input type="checkbox" checked={h.enabled} disabled={busy} onChange={e=>{void save({host:h.host,kind:h.kind,enabled:e.target.checked});}}/>{t('enabled')}</label></li>)}</ul>
     <form className="pr-form" onSubmit={e=>{e.preventDefault();void save({host,kind,...(token?{token}:{})});}}>
       <label>{t('host')}<input required value={host} onChange={e=>setHost(e.target.value)}/></label>
       <label>{t('kind')}<Select value={kind} onValueChange={setKind} options={[{value:'github',label:'GitHub'},{value:'gitlab',label:'GitLab'},{value:'forgejo',label:'Forgejo / Gitea'},{value:'bitbucket',label:'Bitbucket'},{value:'azure',label:'Azure DevOps'}]}/></label>
       <label>{t('token')}<input type="password" autoComplete="new-password" value={token} onChange={e=>setToken(e.target.value)}/></label><p className="settings-note">{t('secretHint')}</p><button className="pr-primary" disabled={busy||!host.trim()}>{t('save')}</button>
     </form>
     <CloneRepository apiRoot={apiRoot}/>
+    <label>{t('generationSource')}<Select value={settings.generation?.source||'auto'} onValueChange={source=>{void save({generation:{...settings.generation,source}});}} options={[{value:'auto',label:t('automatic')},{value:'codex',label:'Codex'},{value:'claude',label:'Claude'}]}/></label>
     <form className="pr-form" onSubmit={e=>{e.preventDefault();void save({writingInstructions:instructions});}}><label>{t('instructions')}<textarea value={instructions} onChange={e=>setInstructions(e.target.value)}/></label><p className="settings-note">{t('instructionsHint')}</p><button className="pr-primary" disabled={busy||instructions===settings.writingInstructions}>{t('save')}</button></form>
   </section>;
 }

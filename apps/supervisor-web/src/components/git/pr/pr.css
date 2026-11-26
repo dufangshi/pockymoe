@@ -22,3 +22,5 @@
 .pr-panel .pr-result { display: grid; padding: 8px; border-bottom: 1px solid var(--theme-border); overflow-wrap: anywhere; }
 
 .pr-panel .pr-primary { background: var(--theme-accent-solid); color: var(--theme-accent-solid-fg); border-color: var(--theme-accent-solid); }
+
+@media (hover: hover) { .pr-panel .pr-primary:hover { background: var(--theme-accent-solid-hover); } }
