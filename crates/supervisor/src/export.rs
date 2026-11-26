@@ -48,6 +48,25 @@ pub fn html_transcript(
     let title = escape_html(&selected.thread.title);
     let workspace = escape_html(&selected.workspace.label);
     let mut body = String::new();
+    let switch_html = |after: Option<&str>| -> String {
+        selected
+            .harness_switches
+            .iter()
+            .filter(|entry| entry.extra.get("afterTurnId").and_then(|v| v.as_str()) == after)
+            .map(|entry| {
+                let change = &entry.extra["harnessSwitch"];
+                format!(
+                    "<p class=\"harness-switch\">{} · {} → {} · {} · {} turns handed over</p>",
+                    escape_html(change["fromAgentId"].as_str().unwrap_or("")),
+                    escape_html(change["fromModel"].as_str().unwrap_or("")),
+                    escape_html(change["agentId"].as_str().unwrap_or("")),
+                    escape_html(change["model"].as_str().unwrap_or("")),
+                    change["turns"].as_u64().unwrap_or(0)
+                )
+            })
+            .collect()
+    };
+    body.push_str(&switch_html(None));
     for numbered in &selected.turns {
         let (number, turn) = (numbered.number, &numbered.turn);
         let turn_meta = turn_meta(turn, options);
@@ -79,6 +98,7 @@ pub fn html_transcript(
             }
         }
         body.push_str("</section>");
+        body.push_str(&switch_html(Some(&turn.id)));
     }
 
     Ok(format!(

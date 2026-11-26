@@ -9,8 +9,12 @@ in an isolated execution environment are refused.
 Each harness retains its own native session. Returning to a harness resumes its
 saved session and transfers only journal turns after its last use. The thread's
 identity and public conversation stay together; turns keep the provider, agent
-and model that produced them. A compact divider shows the agents and catalog model names at each change. Its info
-control shows the full names and settings reset note on hover, focus or tap.
+and model that produced them. Each switch is saved immediately as a standalone
+transcript entry, including repeated idle switches and switches before the first
+prompt. Entries survive reload and export and do not count as model turns or change
+handoff deltas. A compact divider shows the agents and catalog model names at each
+change. Its info control shows the full names and settings reset note on hover,
+focus or tap.
 
 ## Portable history
 
@@ -58,6 +62,11 @@ The provider defaults to `acp`. HTTP endpoints are owner-only:
 
 Switching an imported thread adopts its durable journal for subsequent turns, so
 its new harness does not require connecting to the old imported session first.
+Thread detail responses include `harnessSwitches`, an ordered list of standalone
+`harnessSwitch` history items. Each item has a stable ID, `createdAt`,
+`harnessSwitch` metadata and an `afterTurnId` anchor (`null` before the first
+prompt). Existing switch markers on old user messages remain supported.
+
 Harness session positions and turn identity survive Supervisor restarts. If a
 saved native session has been removed outside Pockymoe, its harness may refuse
 to resume it. External effects from earlier turns are never undone by switching.

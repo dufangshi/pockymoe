@@ -524,6 +524,8 @@ pub struct ThreadGoalDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadDetailDto {
+    #[serde(default)]
+    pub harness_switches: Vec<ThreadHistoryItemDto>,
     pub thread: ThreadDto,
     pub workspace: WorkspaceDto,
     pub workspace_path_status: String,

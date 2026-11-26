@@ -33,3 +33,11 @@ it('does not download PHOTO syntax examples in assistant replies as attachments'
   expect(Object.keys(snapshot.images!)).toEqual(['./real.png']);
   expect(snapshot.turns[0]?.messages[1]?.text).toBe(reply);
 });
+
+it.each(['turn',null])('exports every standalone switch anchored at %s', async (anchor) => {
+  const switches = ['one','two'].map(id => ({id,kind:'harnessSwitch',text:'switch',afterTurnId:anchor,harnessSwitch:{fromAgentId:'codex',agentId:'claude',turns:1}}));
+  vi.mocked(fetchThreadDetail).mockResolvedValue({thread:{title:'Switches'},turns:anchor ? [{id:'turn',status:'completed',items:[]}] : [],harnessSwitches:switches} as never);
+  const snapshot=await loadExportSnapshot('thread',{mode:'latest',limit:10});
+  expect(snapshot.harnessSwitches).toEqual(switches);
+  expect(snapshot.turnCount).toBe(anchor ? 1 : 0);
+});

@@ -1,6 +1,6 @@
 import { relayUrl, relayFetchInit } from './relayOrigin';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
-import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
+import { translate } from '@pockymoe/thread-ui/i18n';
 import { createRoot } from 'react-dom/client';
 import { flushSync } from 'react-dom';
 import {
@@ -37,6 +37,7 @@ export async function loadExportSnapshot(
   const limit = Math.min(100, Math.max(1, input.limit ?? 10));
   if (selected && (!selected.size || selected.size > 10_000))
     throw new Error(translate("sharing.selectBetween1And10000Turns"));
+  let switches: import('@pockymoe/shared').ThreadHistoryItemDto[] = [];
   let turns: ThreadTurnDto[] = [];
   let cursor: string | undefined;
   let title = translate("sharing.thread");
@@ -47,6 +48,7 @@ export async function loadExportSnapshot(
       ...(cursor ? { beforeTurnId: cursor } : {}),
     });
     title = page.thread.title;
+    switches = page.harnessSwitches ?? [];
     const fresh = page.turns.filter((turn) => !seen.has(turn.id));
     if (!fresh.length) break;
     fresh.forEach((turn) => seen.add(turn.id));
@@ -71,6 +73,7 @@ export async function loadExportSnapshot(
       : 'light';
   turns = await Promise.all(turns.map(turn => turn.hasDeferredItems ? fetchThreadTurnDetail(id, turn.id) : turn));
   const snapshot = transcriptSnapshot(title, turns, theme);
+  snapshot.harnessSwitches = switches.filter(entry => !entry.afterTurnId || turns.some(turn => turn.id === entry.afterTurnId));
   if (input.options?.includeTokenAndPrice === false)
     snapshot.turns.forEach((turn) => {
       delete turn.tokenUsage;
@@ -124,7 +127,7 @@ async function standaloneCss() {
       }
       let css = rule.cssText;
       const urls = Array.from(
-        css.matchAll(/url\(\s*['"]?([^'"\)]+)['"]?\s*\)/g),
+        css.matchAll(/url\(\s*['"]?([^'")]+)['"]?\s*\)/g),
       );
       for (const match of urls) {
         const path = match[1]!.trim();

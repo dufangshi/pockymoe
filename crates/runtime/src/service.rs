@@ -2529,6 +2529,7 @@ impl Supervisor {
             vec![]
         };
         Ok(ThreadDetailDto {
+            harness_switches: self.load_harness_switches(id)?,
             thread,
             workspace_path_status: if Path::new(&workspace.abs_path).exists() {
                 "present"
@@ -2638,6 +2639,7 @@ impl Supervisor {
         };
         let thread = self.get_thread(id)?;
         Ok(ThreadDetailDto {
+            harness_switches: self.load_harness_switches(id)?,
             thread,
             workspace,
             workspace_path_status: if present { "present" } else { "missing" }.into(),
@@ -3213,7 +3215,7 @@ impl Supervisor {
             };
             let origin = pending_steer_id.map(|pending| thread_summary::prompt_origin(conn, pending)).transpose()?.flatten().unwrap_or("user");
             if let Some(raw)=conn.query_row("SELECT value FROM kv WHERE key=?1",[format!("handoff:pending:{}",thread.id)],|r|r.get::<_,String>(0)).optional()? {
-                if let Ok(mut switch)=serde_json::from_str::<Value>(&raw) {if switch.is_object() {
+                if let Ok(mut switch)=serde_json::from_str::<Value>(&raw) {if switch.is_object() && switch["recorded"] != true {
                     if let Some(prefix)=&handoff {switch["turns"]=json!(prefix.turns);}
                     user_item.extra.insert("harnessSwitch".into(),switch);
                 }}
@@ -4225,8 +4227,10 @@ impl Supervisor {
                     detail.thread.fast_mode
                 ],
             )?;
+            let mut copied_turns = HashMap::new();
             for (ordinal, turn) in detail.turns.iter().take(turn_count).enumerate() {
                 let new_turn_id = Uuid::new_v4().to_string();
+                copied_turns.insert(turn.id.clone(), new_turn_id.clone());
                 let display_prompt = turn
                     .items
                     .iter()
@@ -4285,6 +4289,7 @@ impl Supervisor {
                     )?;
                 }
             }
+            handoff::copy_switch_entries(conn, detail, &new_id, &copied_turns, selected_turn_id.as_deref())?;
             Ok(())
         })?;
         Ok((

@@ -20,3 +20,10 @@ it('resolves aliases through the historical harness catalogs and isolates device
   expect(result.current('claude','haiku')).toBeUndefined();
   await waitFor(() => expect(deviceRequest).toHaveBeenCalledWith('offline','api/agent-runtimes/acp/models?agentId=claude'));
 });
+
+it('resolves standalone switches before another prompt exists', async () => {
+  vi.mocked(deviceRequest).mockResolvedValue([{id:'haiku',model:'haiku',displayName:'Haiku 5.5'}]);
+  const entries = [{id:'switch',kind:'harnessSwitch' as const,text:'',harnessSwitch:{fromAgentId:'codex',agentId:'claude',turns:0}}];
+  const {result} = renderHook(() => useHandoffModelNames([], 'device-b', entries));
+  await waitFor(() => expect(result.current('claude','haiku')).toBe('Haiku 5.5'));
+});
