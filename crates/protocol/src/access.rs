@@ -175,6 +175,7 @@ pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool
         || pathname.ends_with("/harness/preview")
         || pathname.ends_with("/harness/fork")
         || pathname == "/api/harness-handoff/settings"
+        || pathname == "/api/harness-protocols/settings"
     {
         return false;
     }
@@ -1496,5 +1497,30 @@ mod tests {
         assert!(!grant_matches_in(&device, None, Some("ws"), &[], &[]));
         assert!(!grant_matches_in(&device, Some("t"), None, &[], &[]));
         assert!(!grant_matches_in(&device, None, None, &[], &[]));
+    }
+}
+
+#[cfg(test)]
+mod native_protocol_access_tests {
+    use super::*;
+    #[test]
+    fn protocol_settings_are_owner_only() {
+        for method in ["GET", "PUT", "POST"] {
+            assert!(access_allows(
+                &owner_access(),
+                method,
+                "/api/harness-protocols/settings"
+            ));
+            for scope in ["thread", "workspace", "device"] {
+                let mut shared = owner_access();
+                shared.kind = "share";
+                shared.scope = scope.into();
+                assert!(!access_allows(
+                    &shared,
+                    method,
+                    "/api/harness-protocols/settings"
+                ));
+            }
+        }
     }
 }

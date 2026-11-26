@@ -8,8 +8,8 @@ mod claude_tasks;
 mod claude_usage;
 pub(crate) use claude_usage::legacy_background_reply_phases;
 mod codex_bridge;
-mod codex_models;
-mod codex_permissions;
+pub(crate) mod codex_models;
+pub(crate) mod codex_permissions;
 mod context;
 pub use codex_bridge::run as run_codex_app_server_bridge;
 mod deepseek;
@@ -23,11 +23,11 @@ pub(crate) mod mapper;
 mod working_locations;
 pub(crate) use mapper::TurnMapper;
 mod modes;
-mod prompt;
+pub(crate) mod prompt;
 pub(crate) mod rpc;
-mod runtime;
+pub(crate) mod runtime;
 mod terminal;
-mod upstream_models;
+pub(crate) mod upstream_models;
 
 pub use adapter::{
     adapter_for, ClaudeAdapter, CodexAdapter, CursorAdapter, DeepSeekAdapter, GrokAdapter,

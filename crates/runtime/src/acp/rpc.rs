@@ -640,7 +640,15 @@ async fn dispatch(
         }
         return Ok(());
     }
-    if method == "session/update" || method.starts_with('_') {
+    // Direct app-server notifications share this bounded transport.
+    if method == "session/update"
+        || method.starts_with('_')
+        || method.starts_with("thread/")
+        || method.starts_with("turn/")
+        || method.starts_with("item/")
+        || method.starts_with("account/")
+        || method == "error"
+    {
         let mut params = msg.get("params").cloned().unwrap_or(json!({}));
         let Some(object) = params.as_object_mut() else {
             return Ok(());
@@ -1209,7 +1217,7 @@ mod tests {
 
 // Include explicit command overrides as well as inherited variable names. This
 // also makes tests deterministic without mutating the process environment.
-fn clear_native_oauth_environment(cmd: &mut tokio::process::Command, harness: &str) {
+pub(crate) fn clear_native_oauth_environment(cmd: &mut tokio::process::Command, harness: &str) {
     let names = std::env::vars_os()
         .map(|(key, _)| key)
         .chain(cmd.as_std().get_envs().map(|(key, _)| key.to_owned()))
