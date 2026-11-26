@@ -39,6 +39,7 @@ pub use catalog::{
 };
 pub use dependencies::cleanup_installations as cleanup_adapter_installations;
 pub use modes::{parse_available_modes, ProductSessionPolicy};
+pub(crate) use modes::{permission_questions, select_permission_option, PermissionChoice};
 pub use runtime::AcpRuntime;
 
 mod usage;

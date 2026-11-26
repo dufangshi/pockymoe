@@ -5,10 +5,43 @@ pub fn apply(mapper: &mut TurnMapper, event: &Value) -> Vec<MappedUpdate> {
     let p = &event["params"];
     let method = event["method"].as_str().unwrap_or("");
     let update = match method {
+        // A new reasoning summary section, as codex-acp sends it.
+        "item/reasoning/summaryPartAdded" => {
+            json!({"sessionUpdate":"agent_thought_chunk","messageId":p["itemId"],"content":{"type":"text","text":"\n\n"}})
+        }
+        "thread/goal/cleared" => {
+            json!({"sessionUpdate":"session_info_update","_meta":{"goal":null}})
+        }
+        // ACP drops retry warnings and MCP startup failures; a notice says why
+        // a turn stalls or a configured tool is missing.
+        "error" if p["willRetry"] == true => notice(
+            "warning",
+            "Reconnecting to the model",
+            p["error"]["message"].as_str(),
+        ),
+        "mcpServer/startupStatus/updated" => match p["status"].as_str() {
+            Some("failed") => notice(
+                "warning",
+                &format!(
+                    "MCP server {} failed to start",
+                    p["name"].as_str().unwrap_or("?")
+                ),
+                p["error"].as_str().or_else(|| {
+                    (p["failureReason"] == "reauthenticationRequired")
+                        .then_some("Sign in to this MCP server again.")
+                }),
+            ),
+            _ => return vec![],
+        },
         "item/agentMessage/delta"
         | "item/reasoning/summaryTextDelta"
         | "item/reasoning/textDelta" => {
             json!({"sessionUpdate":if method.contains("agentMessage"){"agent_message_chunk"}else{"agent_thought_chunk"},"messageId":p["itemId"],"content":{"type":"text","text":p["delta"]}})
+        }
+        // What the agent typed into an interactive command, shown in its output
+        // the way codex-acp's command reporter shows it.
+        "item/commandExecution/terminalInteraction" => {
+            json!({"sessionUpdate":"tool_call_update","toolCallId":p["itemId"],"_meta":{"terminal_output_delta":{"data":format!("\n{}\n",p["stdin"].as_str().unwrap_or("")),"terminal_id":p["itemId"]}}})
         }
         "item/commandExecution/outputDelta" => {
             json!({"sessionUpdate":"tool_call_update","toolCallId":p["itemId"],"_meta":{"terminal_output_delta":{"data":p["delta"],"terminal_id":p["itemId"]}}})
@@ -142,7 +175,11 @@ pub fn apply(mapper: &mut TurnMapper, event: &Value) -> Vec<MappedUpdate> {
                     "collabAgentToolCall" | "subAgentActivity" => ("agent", "Subagent"),
                     _ => ("other", kind),
                 };
-                let content: Vec<Value> = if kind == "fileChange" {
+                // A command row references its terminal, as codex-acp's does, so
+                // output deltas show live; the final output stays authoritative.
+                let content: Vec<Value> = if kind == "commandExecution" {
+                    vec![json!({"type":"terminal","terminalId":item["id"]})]
+                } else if kind == "fileChange" {
                     item["changes"]
                         .as_array()
                         .into_iter()
@@ -152,7 +189,7 @@ pub fn apply(mapper: &mut TurnMapper, event: &Value) -> Vec<MappedUpdate> {
                 } else {
                     vec![]
                 };
-                json!({"sessionUpdate":if method.ends_with("completed"){"tool_call_update"}else{"tool_call"},"toolCallId":item["id"],"kind":tool,"name":item["tool"].as_str().unwrap_or(kind),"title":title,"status":if item["status"]=="failed" || item["success"]==false{"failed"}else if method.ends_with("completed"){"completed"}else{"in_progress"},"rawInput":item,"rawOutput":if kind=="commandExecution"{json!({"formatted_output":item["aggregatedOutput"],"exit_code":item["exitCode"]})}else{item.clone()},"content":content})
+                json!({"sessionUpdate":if method.ends_with("completed"){"tool_call_update"}else{"tool_call"},"toolCallId":item["id"],"kind":tool,"name":item["tool"].as_str().unwrap_or(kind),"title":title,"status":if item["status"]=="failed" || item["success"]==false{"failed"}else if method.ends_with("completed"){"completed"}else{"in_progress"},"rawInput":item,"rawOutput":if kind=="commandExecution"{if method.ends_with("completed"){json!({"formatted_output":item["aggregatedOutput"],"exit_code":item["exitCode"]})}else{Value::Null}}else{item.clone()},"content":content})
             }
         }
         "error" => {
@@ -473,6 +510,81 @@ mod tests {
                 .iter()
                 .all(|i| i.text == "(no output)")
         );
+    }
+
+    #[test]
+    fn retries_mcp_failures_goal_clearing_and_reasoning_sections() {
+        let mut m = TurnMapper::new("t");
+        apply(
+            &mut m,
+            &json!({"method":"error","params":{"willRetry":true,"error":{"message":"stream disconnected"}}}),
+        );
+        apply(
+            &mut m,
+            &json!({"method":"mcpServer/startupStatus/updated","params":{"name":"docs","status":"failed","error":"spawn ENOENT"}}),
+        );
+        apply(
+            &mut m,
+            &json!({"method":"mcpServer/startupStatus/updated","params":{"name":"docs","status":"ready"}}),
+        );
+        let cleared = apply(&mut m, &json!({"method":"thread/goal/cleared","params":{}}));
+        assert!(matches!(cleared[0].goal, Some(None)));
+        apply(
+            &mut m,
+            &json!({"method":"item/reasoning/summaryTextDelta","params":{"itemId":"r","delta":"First"}}),
+        );
+        apply(
+            &mut m,
+            &json!({"method":"item/reasoning/summaryPartAdded","params":{"itemId":"r","summaryIndex":1}}),
+        );
+        apply(
+            &mut m,
+            &json!({"method":"item/reasoning/summaryTextDelta","params":{"itemId":"r","delta":"Second"}}),
+        );
+        let items = m.finish(false);
+        let all: Vec<String> = items
+            .iter()
+            .map(|i| format!("{} | {}", i.text, i.detail_text.clone().unwrap_or_default()))
+            .collect();
+        let all = all.join("\n");
+        assert!(
+            all.contains("Reconnecting to the model") && all.contains("stream disconnected"),
+            "{all}"
+        );
+        assert!(
+            all.contains("MCP server docs failed to start") && all.contains("spawn ENOENT"),
+            "{all}"
+        );
+        // A section break starts a new reasoning segment, as for ACP.
+        let reasoning: Vec<_> = items
+            .iter()
+            .filter(|i| i.kind == "reasoning")
+            .map(|i| i.text.as_str())
+            .collect();
+        assert_eq!(reasoning, ["First", "Second"]);
+        // A retry is a notice, not a failed row; only a final error fails.
+        assert!(!items.iter().any(|i| i.status.as_deref() == Some("failed")));
+    }
+
+    #[test]
+    fn terminal_input_joins_the_command_output() {
+        let mut m = TurnMapper::new("t");
+        apply(
+            &mut m,
+            &json!({"method":"item/started","params":{"item":{"id":"c","type":"commandExecution","command":"python3"}}}),
+        );
+        let live = apply(
+            &mut m,
+            &json!({"method":"item/commandExecution/outputDelta","params":{"itemId":"c","delta":">>> "}}),
+        );
+        let shown = live[0].items[0].detail_text.clone().unwrap_or_default();
+        assert!(shown.contains(">>> "), "live output: {shown}");
+        let typed = apply(
+            &mut m,
+            &json!({"method":"item/commandExecution/terminalInteraction","params":{"itemId":"c","processId":"1","stdin":"print(1)"}}),
+        );
+        let shown = typed[0].items[0].detail_text.clone().unwrap_or_default();
+        assert!(shown.contains(">>> \nprint(1)\n"), "{shown}");
     }
 
     #[test]

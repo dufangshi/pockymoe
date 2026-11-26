@@ -242,6 +242,17 @@ async fn steering_and_interrupt_use_native_turn_identity() {
         })
         .await
         .unwrap();
+        // A mid-turn model change reaches the running native turn.
+        runtime
+            .apply_session_settings(
+                &id,
+                SessionSettings {
+                    model: Some("live-model".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
         if steer {
             runtime
                 .send_input(&id, "pockymoe-turn", "continue")
@@ -338,4 +349,142 @@ async fn account_rate_limit_pushes_reach_viewers_during_a_turn() {
     assert_eq!(windows[0]["label"], "7d");
     assert_eq!(windows[0]["usedPercent"], 42.0);
     r.release_session(&id).await.unwrap();
+}
+
+#[tokio::test]
+async fn approvals_offer_codex_decisions_and_codex_settled_requests_close() {
+    let (_dir, r) = runtime();
+    let id = r.start_session(input()).await.unwrap().provider_session_id;
+    let bus = EventBus::new();
+    let mut rx = bus.subscribe();
+    r.start_turn(turn(&id, "settled"), bus, CancellationToken::new())
+        .await
+        .unwrap();
+    let mut shown = vec![];
+    let mut resolved = vec![];
+    while let Ok(event) = rx.try_recv() {
+        match event.event_type.as_str() {
+            "thread.request.created" => shown.push(event.payload["request"].clone()),
+            "thread.request.resolved" => resolved.push(event.payload["requestId"].clone()),
+            _ => {}
+        }
+    }
+    // Every card shown is closed: by Codex's own settlement or by the turn's end.
+    for card in &shown {
+        assert!(resolved.contains(&card["id"]), "{card} never resolved");
+    }
+    assert!(shown.iter().any(|c| c["title"] == "Edit files"));
+    assert!(!shown.iter().any(|c| c["title"] == "pwd") || resolved.len() == shown.len());
+    let created = shown[0].clone();
+    assert_eq!(created["title"], "ls");
+    let labels: Vec<_> = created["questions"][0]["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["label"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(labels.len(), 4, "{labels:?}");
+    assert!(labels[1].contains("don't ask again"));
+    assert!(r.pending_requests("thread").await.is_empty());
+    r.release_session(&id).await.unwrap();
+}
+
+#[tokio::test]
+async fn slash_commands_run_review_mode_and_answer_mcp_status_natively() {
+    let (_dir, r) = runtime();
+    let id = r.start_session(input()).await.unwrap().provider_session_id;
+    let review = r
+        .start_turn(
+            turn(&id, "/review-branch main"),
+            EventBus::new(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(review
+        .iter()
+        .any(|i| i.kind == "agentMessage" && i.text == "No issues found."));
+    let bus = EventBus::new();
+    let mut rx = bus.subscribe();
+    let mcp = r
+        .start_turn(turn(&id, "/mcp"), bus, CancellationToken::new())
+        .await
+        .unwrap();
+    assert!(
+        mcp[0]
+            .text
+            .contains("| docs | connected | 1 | unsupported |"),
+        "{:?}",
+        mcp
+    );
+    let mut kinds = vec![];
+    while let Ok(e) = rx.try_recv() {
+        kinds.push(e.event_type.as_str().to_owned());
+    }
+    assert_eq!(
+        kinds.first().map(String::as_str),
+        Some("thread.turn.started")
+    );
+    assert_eq!(
+        kinds.last().map(String::as_str),
+        Some("thread.turn.completed")
+    );
+    let toolbox = r.toolbox(Some("codex"));
+    assert!(toolbox.iter().any(|t| t.command == "/review-commit"));
+    r.release_session(&id).await.unwrap();
+}
+
+#[tokio::test]
+async fn plan_mode_asks_to_implement_and_continues_in_the_same_turn() {
+    for (answer, implement) in [
+        (super::plan_review::IMPLEMENT, true),
+        (super::plan_review::REVISE, false),
+    ] {
+        let (_dir, r) = runtime();
+        let id = r.start_session(input()).await.unwrap().provider_session_id;
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let mut planned = turn(&id, "make a plan");
+        planned.collaboration_mode = Some("plan".into());
+        let runner = r.clone();
+        let task = tokio::spawn(async move {
+            runner
+                .start_turn(planned, bus, CancellationToken::new())
+                .await
+        });
+        let request = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let e = rx.recv().await.unwrap();
+                if e.event_type == "thread.request.created" {
+                    break e.payload["request"].clone();
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(request["title"], "Implement this plan?");
+        assert_eq!(r.pending_requests("thread").await.len(), 1);
+        let reply = format!(r#"{{"permission":{{"answers":["{answer}"]}}}}"#);
+        r.respond_permission(request["id"].as_str().unwrap(), true, Some(&reply))
+            .await
+            .unwrap();
+        let items = tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(items.iter().any(|i| i.text.contains("1. Add tests")));
+        assert_eq!(
+            items.iter().any(|i| i.text == "Implemented"),
+            implement,
+            "{items:?}"
+        );
+        let mut collaboration = false;
+        while let Ok(e) = rx.try_recv() {
+            collaboration |= e.event_type == "thread.collaboration.updated";
+        }
+        assert_eq!(collaboration, implement);
+        assert!(r.pending_requests("thread").await.is_empty());
+        r.release_session(&id).await.unwrap();
+    }
 }
