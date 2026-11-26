@@ -45,11 +45,17 @@ The Supervisor issues a new CLI token each time it starts. A running
 cannot connect, and retries for up to 30 seconds, so a Supervisor restart or
 update does not end the client's session. Errors name the Supervisor's reason.
 
-`--device DEVICE` uses the existing cross-device CLI trust boundary. Remote
-connections advertise only tools supported by that boundary: directory/workspace
-listing, threads, harnesses/models, reading, launching and waiting. Remote sending
-requires full access because the peer status API does not attest a thread’s
-approval mode; stop, approval, Git and event tools are local only.
+`--device DEVICE` uses the existing cross-device CLI trust boundary.
+`pockymoe_devices` lists the owner's devices; its `deviceId` values are what
+`--device` takes. Remote connections advertise only tools supported by that
+boundary: devices, workspaces, threads, harnesses and models, reading,
+launching and waiting. Remote sending requires full access because the peer
+status API does not attest a thread's approval mode; stop, approval, Git,
+harness switching and events work only on the device itself, and a call to them
+says so. Results have the local shapes, except that a remote `thread_wait`
+returns a summary `transcript` instead of the thread detail. `--workspace`
+limits remote lists and thread calls too. A remote launch uses ACP and names
+the thread after the first line of its prompt unless `title` is given.
 
 ## HTTP clients
 

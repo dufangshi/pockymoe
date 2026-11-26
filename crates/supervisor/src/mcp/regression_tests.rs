@@ -544,3 +544,61 @@ async fn mcp_settings_names_the_client_of_each_call() {
     );
     assert!(calls.iter().find(|c| c["client"] == "local-stdio").unwrap()["clientName"].is_null());
 }
+
+#[tokio::test]
+async fn mcp_and_oauth_refuse_relay_forwarded_requests() {
+    use axum::body::Body;
+    use tower::ServiceExt;
+    let f = crate::isolation_tests::setup().await;
+    let bearer = token(&f.state, "full");
+    for (method, path) in [
+        ("POST", "/mcp"),
+        ("GET", "/mcp"),
+        ("DELETE", "/mcp"),
+        ("POST", "/oauth/mcp/register"),
+        ("GET", "/oauth/mcp/authorize"),
+        ("POST", "/oauth/mcp/token"),
+        ("POST", "/oauth/mcp/revoke"),
+        ("GET", "/.well-known/oauth-authorization-server"),
+        ("GET", "/.well-known/oauth-protected-resource/mcp"),
+    ] {
+        // Even with a valid MCP token: OAuth and /mcp never travel the tunnel.
+        let request = axum::http::Request::builder()
+            .method(method)
+            .uri(path)
+            .header("content-type", "application/json")
+            .header("authorization", &bearer)
+            .extension(crate::auth::TrustedRelayForward)
+            .body(Body::from(
+                json!({"jsonrpc":"2.0","id":1,"method":"ping"}).to_string(),
+            ))
+            .unwrap();
+        let response = crate::http::router(f.state.clone())
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{method} {path}");
+    }
+}
+
+#[test]
+fn mcp_remote_titles_and_refusals_explain_themselves() {
+    assert_eq!(
+        remote::title(&json!({"prompt":"\n  Review the parser  \nthen report"})).as_deref(),
+        Some("Review the parser")
+    );
+    assert_eq!(
+        remote::title(&json!({"title":"Mine","prompt":"x"})).as_deref(),
+        Some("Mine")
+    );
+    assert!(remote::title(&json!({})).is_none());
+    let send = remote::unavailable("pockymoe_thread_send", "supervised").to_string();
+    assert!(send.contains("needs full access"), "{send}");
+    let stop = remote::unavailable("pockymoe_thread_stop", "full").to_string();
+    assert!(
+        stop.contains("Run `pockymoe mcp serve` on that device"),
+        "{stop}"
+    );
+    assert!(remote::supported("pockymoe_thread_send", "full"));
+    assert!(!remote::supported("pockymoe_thread_send", "supervised"));
+}

@@ -259,12 +259,20 @@ pub async fn call(
                     )
                     .ok())
             })?;
-            let peers = match crate::peer_link::directory(state).await {
-                Ok(devices) => json!({"devices":devices}),
-                Err(e) => json!({"devices":[],"directoryError":e.to_string()}),
+            let (peers, account_id) = match crate::peer_link::directory(state).await {
+                Ok(devices) => {
+                    let id = devices
+                        .iter()
+                        .find(|d| d["self"] == true)
+                        .map(|d| d["deviceId"].clone());
+                    (json!({"devices":devices}), id)
+                }
+                Err(e) => (json!({"devices":[],"directoryError":e.to_string()}), None),
             };
+            // `deviceId` is what `--device` takes: the account's ID for this
+            // device once it is bound, else the local host ID.
             Ok(
-                json!({"deviceId":state.db.host_id,"name":name,"app":state.config.app_name,"peers":peers}),
+                json!({"deviceId":account_id.unwrap_or_else(|| json!(state.db.host_id)),"hostId":state.db.host_id,"name":name,"app":state.config.app_name,"peers":peers}),
             )
         }
         "pockymoe_workspaces" => Ok(
