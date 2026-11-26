@@ -160,7 +160,14 @@ reads.
 On Linux every Host command, Git read, terminal and harness runs under a
 guardian, `pockymoe environment-worker host-run <id>` (or `host-shell`), which
 reaps its descendants and signs a receipt when they are gone
-(`execution/host_process.rs`). A guardian ends with its command, or when the
+(`execution/host_process.rs`). The guardian, like the managed-environment
+worker, is a child subreaper, so a program whose shell exits first becomes its
+child. While the command runs it reaps such adopted children once they exit, on
+`SIGCHLD` and at least once a second, each by its own PID and never the command
+it waits on, whose exit code it reports. Through 0.13.68 they stayed zombies until
+the guardian ended, and a thread open for days collected thousands. At the end
+it still kills and reaps every descendant, and only an empty wait (`ECHILD`)
+lets it sign the receipt. A guardian ends with its command, or when the
 Supervisor stops it. It always leaves through `std::process::exit`: it reads its
 launch frame from stdin on a blocking thread, and returning from `main` would
 wait for that read for as long as the Supervisor holds the pipe. Before 0.13.61
