@@ -661,6 +661,10 @@ export interface AcpAgentOptionMetadataDto {
   baseVersion: string | null;
   serverVersion: string | null;
   installCommand: string | null;
+  /** Command that signs the agent in from a terminal on its device, when known. */
+  signInCommand?: string | null;
+  /** Last ACP check; `sign_in_required` when the agent answered ACP's auth_required. */
+  connectionStatus?: 'unavailable' | 'verified' | 'sign_in_required' | 'failed' | 'unverified';
   busy: boolean;
   statusMessage: string;
 }
@@ -1863,6 +1867,8 @@ export interface ShellSessionDto {
   lastActivityAt: string | null;
   /** A command, not the prompt, owns the terminal; null when the device cannot tell. */
   commandRunning?: boolean | null;
+  /** The harness a sign-in terminal signs in; its `threadId` is then empty. */
+  signIn?: string | null;
 }
 
 export interface ThreadShellStateDto {

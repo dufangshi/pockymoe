@@ -500,6 +500,7 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
             "/api/threads/{id}/shell",
             get(thread_shell).post(create_shell),
         )
+        .route("/api/shells/sign-in", post(crate::sign_in_shell::create))
         .route("/api/shells/{id}", patch(update_shell))
         .route("/api/shells/{id}/terminate", post(terminate_shell))
         .route(

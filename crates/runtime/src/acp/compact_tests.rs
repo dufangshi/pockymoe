@@ -25,6 +25,7 @@ async fn compact_uses_the_loaded_sessions_late_command_and_rejects_withdrawal() 
             server_command: command,
             install_command: None,
             model_list_command: None,
+            sign_in_command: None,
         };
         let runtime = AcpRuntime::bound(
             if agent == "claude" {

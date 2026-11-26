@@ -474,6 +474,11 @@ pub trait AgentRuntime: Send + Sync {
     fn descriptor(&self) -> AgentBackendDto;
     async fn start(&self) -> Result<()>;
     async fn invalidate_models(&self, _agent_id: &str) {}
+    /// The "Sign-in required: …" message when the harness's last ACP check
+    /// answered `auth_required`; `None` when it did not or was not checked.
+    fn sign_in_error(&self, _agent_id: &str) -> Option<String> {
+        None
+    }
     async fn restart(&self, _agent_id: &str) -> Result<usize> {
         self.start().await?;
         Ok(0)
