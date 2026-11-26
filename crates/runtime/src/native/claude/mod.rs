@@ -1095,6 +1095,7 @@ impl AgentRuntime for ClaudeRuntime {
                         // Stop the turn, keep the process: Claude settles the
                         // interrupted prompt with a result and returns to idle.
                         s.interrupting.store(true, Ordering::SeqCst);
+                        s.completion.lock().unwrap().stop();
                         stopping = Some(tokio::time::Instant::now() + STOP_GRACE);
                         if tokio::time::timeout(Duration::from_secs(3), s.process.request(json!({"subtype":"interrupt"}))).await.is_err() {
                             s.process.stop().await;
@@ -1286,6 +1287,7 @@ impl AgentRuntime for ClaudeRuntime {
             "Claude turn is no longer active"
         );
         s.interrupting.store(true, Ordering::SeqCst);
+        s.completion.lock().unwrap().stop();
         s.process
             .request(json!({"subtype":"interrupt","cancel_queued_messages":true}))
             .await?;
@@ -1303,7 +1305,11 @@ impl AgentRuntime for ClaudeRuntime {
         );
         let uuid = uuid::Uuid::new_v4().to_string();
         s.completion.lock().unwrap().add_prompt(&uuid);
-        s.process.write(json!({"type":"user","uuid":uuid,"session_id":s.raw,"parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"text","text":prompt}]}})).await
+        // Like claude-agent-acp's steering: into the running turn now, or after
+        // an open question or permission so its card is not withdrawn.
+        let waiting = self.pending.lock().await.values().any(|p| p.session == id);
+        let priority = if waiting { "later" } else { "now" };
+        s.process.write(json!({"type":"user","uuid":uuid,"session_id":s.raw,"parent_tool_use_id":null,"priority":priority,"message":{"role":"user","content":[{"type":"text","text":prompt}]}})).await
     }
     async fn active_subagents(&self, id: &str) -> Vec<ThreadSubagentDto> {
         match self.session(id).await {

@@ -514,6 +514,10 @@ impl Mapper {
             Some("api_retry") => {
                 let attempt = message["attempt"].as_u64().unwrap_or(0);
                 let max = message["max_retries"].as_u64().unwrap_or(0);
+                // The first retry and the last one, not a row per attempt.
+                if attempt > 1 && attempt < max {
+                    return;
+                }
                 let status = message["error_status"].as_u64();
                 let title = if status.is_none() {
                     format!("Reconnecting to Claude, attempt {attempt} of {max}")

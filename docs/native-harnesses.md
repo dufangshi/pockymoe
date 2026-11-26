@@ -110,6 +110,11 @@ idle. Background work therefore holds the turn, shows one waiting row, and the
 task's notification and Claude's follow-up answer stay in the same turn, as on
 ACP. A task left running after a turn keeps the session busy for release.
 
+Steering sends the message into the running turn with priority `now`, or
+`later` while a question or permission card is open, as claude-agent-acp does;
+an error-shaped result from the cycle the steer interrupted does not fail the
+turn.
+
 Stop sends `interrupt` and keeps the process: the turn ends `interrupted` when
 Claude settles it, and only a stop that does not settle within 10 seconds ends
 the process. Tools refused by the stop are `interrupted`, not failed. An error
@@ -127,7 +132,7 @@ original file, so line numbers and counts are exact), MultiEdit diffs, and a
 Agent result; its tool calls are attributed to it. A backgrounded Agent stays in
 the subagent list until its task ends. TodoWrite and the Task tools update the
 plan instead of adding rows. Compaction is a compaction item with Claude's
-summary, and the context meter drops to the retained size. API retries, model
+summary, and the context meter drops to the retained size. API retries (the first and the last attempt), model
 refusal fallbacks, Claude warnings and MCP servers that failed to start appear
 as notices.
 

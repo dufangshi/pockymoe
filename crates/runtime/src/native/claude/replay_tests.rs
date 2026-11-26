@@ -694,3 +694,83 @@ fn mcp_status_becomes_the_panel_list_without_configs() {
         assert!(!text.contains(secret), "{secret} leaked");
     }
 }
+
+#[tokio::test]
+async fn replay_steering_now_answers_in_the_same_turn() {
+    let r = replay("steernow", "guarded").await;
+    let t = run(
+        &r,
+        "now",
+        "story",
+        |runtime: Arc<ClaudeRuntime>, session: String, event: ThreadEventEnvelope| async move {
+            if event.event_type == "thread.output.delta"
+                && event.payload["delta"]
+                    .as_str()
+                    .is_some_and(|d| !d.is_empty())
+            {
+                let _ = runtime
+                    .send_input(
+                        &session,
+                        "now",
+                        "Stop the story now and reply only with the word STEERED42.",
+                    )
+                    .await;
+            }
+        },
+    )
+    .await;
+    assert!(t.result.is_ok());
+    assert!(t.text().ends_with("STEERED42"), "{}", t.text());
+    let steer = r
+        .inputs()
+        .into_iter()
+        .filter(|v| v["type"] == "user")
+        .nth(1)
+        .unwrap();
+    assert_eq!(steer["priority"], "now");
+}
+
+#[test]
+fn a_preempted_cycle_error_does_not_fail_the_steered_turn() {
+    let mut c = completion::Completion::default();
+    c.begin_turn("p");
+    c.record(&json!({"type":"system","subtype":"session_state_changed","state":"running"}));
+    c.add_prompt("s");
+    // The interrupted cycle ends with an error-shaped result for the prompt.
+    c.record(&json!({"type":"result","is_error":true,"subtype":"error_during_execution","user_message_uuids":["p"]}));
+    assert!(c.error().is_none());
+    c.record(
+        &json!({"type":"result","is_error":false,"subtype":"success","user_message_uuids":["s"]}),
+    );
+    c.record(&json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
+    assert!(c.complete() && c.error().is_none());
+    // A stop cancels queued steering, so the stop's error result settles it.
+    let mut c = completion::Completion::default();
+    c.begin_turn("p");
+    c.add_prompt("s");
+    c.stop();
+    c.record(&json!({"type":"result","is_error":true,"user_message_uuids":["p"]}));
+    assert!(c.complete());
+}
+
+#[test]
+fn api_retries_and_fallbacks_are_notices_without_a_row_per_attempt() {
+    let mut m = mapping::Mapper::new("turn");
+    let mut rows = 0;
+    for attempt in 1..=10 {
+        let updates = m.apply(&json!({"type":"system","subtype":"api_retry","attempt":attempt,"max_retries":10,"retry_delay_ms":2000,"error_status":529,"error":"overloaded"}));
+        rows += updates.iter().map(|u| u.items.len()).sum::<usize>();
+    }
+    assert_eq!(rows, 2);
+    let fallback = m.apply(&json!({"type":"system","subtype":"model_refusal_fallback","direction":"retry","original_model":"opus","fallback_model":"sonnet","api_refusal_explanation":"policy"}));
+    assert!(fallback[0].items[0].text.contains("retried with sonnet"));
+    let items = m.finish(false);
+    assert!(items.iter().all(|i| i.extra["origin"] == "sessionNotice"));
+    assert!(items[0]
+        .text
+        .starts_with("Retrying Claude, attempt 1 of 10"));
+    assert_eq!(
+        items[0].detail_text.as_deref(),
+        Some("overloaded (HTTP 529); next try in 2s")
+    );
+}
