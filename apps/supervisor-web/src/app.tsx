@@ -95,6 +95,7 @@ import { startQuietEnrollment } from './lib/quietEnrollment';
 import { effectiveColorMode, themeChromeColor, useThemeRegistry } from './lib/themePacks';
 
 // The relay admin console is for the relay's administrator only.
+const PullRequestsPage = lazy(() => import('./pages/PullRequestsPage'));
 const RelayAdminPage = lazy(() => import('./pages/RelayAdminPage').then(module => ({ default: module.RelayAdminPage })));
 const DesktopWindowFrame = lazy(() => import('./desktop/DesktopWindowFrame'));
 const DesktopEntry = lazy(() => import('./desktop/DesktopEntry'));
@@ -333,7 +334,11 @@ function AppShell({
   const isThreadsRoute =
     location.pathname === '/threads' ||
     /^\/devices\/[^/]+\/threads$/.test(location.pathname);
-  const isViewportLockedRoute = isThreadDetailRoute || isThreadsRoute;
+  // The Pull requests page scrolls its list and its open PR on their own.
+  const isPullRequestsRoute =
+    location.pathname === '/pull-requests' ||
+    /^\/devices\/[^/]+\/pull-requests$/.test(location.pathname);
+  const isViewportLockedRoute = isThreadDetailRoute || isThreadsRoute || isPullRequestsRoute;
   const isThreadWorkspaceRoute =
     isThreadsRoute || isThreadDetailRoute;
   const isWorkspacesRoute =
@@ -347,7 +352,7 @@ function AppShell({
     media.addEventListener('change', update);
     return () => media.removeEventListener('change', update);
   }, []);
-  const webNavigation = surface === 'browser' && wideBrowser && relayModeActive() && (location.pathname.startsWith('/desktop/devices') || location.pathname === '/relay-account' || isThreadWorkspaceRoute || isWorkspacesRoute);
+  const webNavigation = surface === 'browser' && wideBrowser && relayModeActive() && (location.pathname.startsWith('/desktop/devices') || location.pathname === '/relay-account' || isThreadWorkspaceRoute || isWorkspacesRoute || isPullRequestsRoute);
   const isNativeApp =
     new URLSearchParams(location.search).get('nativeApp') === '1';
 
@@ -462,7 +467,7 @@ function AppShell({
               ? 'pt-0'
               : isThreadWorkspaceRoute
                 ? 'pt-0'
-                : isWorkspacesRoute
+                : isWorkspacesRoute || isPullRequestsRoute
                   ? 'pt-[env(safe-area-inset-top)] sm:pt-4'
                   : 'pt-4'
           } ${
@@ -710,6 +715,7 @@ function SupervisorRoutes({
         <Route path="/desktop/devices/:id" element={<Suspense fallback={<DesktopOpening />}>{surface === 'desktop' ? <DesktopDevicesRoute /> : <WebDevicesRoute />}</Suspense>} />
         <Route path="/workspaces" element={<WorkspacesPage />} />
         <Route path="/workspaces/new" element={<WorkspaceNewPage />} />
+        <Route path="/pull-requests" element={<Suspense fallback={null}><PullRequestsPage /></Suspense>} />
         <Route path="/relay-account" element={<RelayAccountPage />} />
         <Route path="/relay-devices" element={<DevicesEntryRoute />} />
         <Route path={SHARE_PENDING_PATH} element={<SharePendingPage />} />
@@ -720,6 +726,7 @@ function SupervisorRoutes({
         <Route path="/threads/:id" element={<ThreadRoutePluginScope><ThreadDetailPage /></ThreadRoutePluginScope>} />
         <Route path="/devices/:relayDeviceId/workspaces" element={<WorkspacesPage />} />
         <Route path="/devices/:relayDeviceId/workspaces/new" element={<WorkspaceNewPage />} />
+        <Route path="/devices/:relayDeviceId/pull-requests" element={<Suspense fallback={null}><PullRequestsPage /></Suspense>} />
         <Route path="/devices/:relayDeviceId/threads" element={<ThreadsPage />} />
         <Route path="/devices/:relayDeviceId/threads/import" element={<ThreadImportPage />} />
         <Route path="/devices/:relayDeviceId/threads/new" element={<ThreadNewPage />} />

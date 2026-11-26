@@ -1,5 +1,6 @@
 import { PullRequestsPanel } from './git/pr/PullRequestsPanel';
 import { useCallback, useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Box, GitBranch } from 'lucide-react';
 import type { WorkbenchInspector, WorkbenchToolPanel } from '@pockymoe/thread-ui';
 import { StatusMark } from '@pockymoe/thread-ui';
@@ -39,7 +40,10 @@ export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, 
 }): { toolPanels: WorkbenchToolPanel[]; inspector: WorkbenchInspector | null; openTurn(id: string): void } {
   useI18n();
   const [turnId, setTurnId] = useState<string>();
-  const [view, setViewState] = useState<InspectorView | null>(readView);
+  // `?pr=URL` (from the Pull requests page's "Open beside thread") opens the
+  // Git dock on that PR's review once; the URL keeps no other dock state.
+  const pullRequest = new URLSearchParams(useLocation().search).get('pr') ?? undefined;
+  const [view, setViewState] = useState<InspectorView | null>(() => pullRequest ? 'git' : readView());
   const setView = useCallback((next: InspectorView | null) => {
     setViewState(next);
     try { if (next) localStorage.setItem(STORAGE_KEY, next); else localStorage.removeItem(STORAGE_KEY); } catch { /* Optional preference. */ }
@@ -47,6 +51,7 @@ export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, 
   // Files and the inspectors share the dock: Files opening closes an inspector,
   // and forgets it, so a reload does not bring back the view Files replaced.
   useEffect(() => { if (filesOpen) setView(null); }, [filesOpen, setView]);
+  useEffect(() => { if (pullRequest) setViewState('git'); }, [pullRequest]);
   const shown = view === 'git' && gitAvailable ? 'git' : view === 'isolation' && isolationAvailable ? 'isolation' : null;
   const attention = useIsolationAttention(isolationAvailable ? thread?.id : undefined, thread?.status, deviceId, shown === 'isolation');
   const toggle = (next: InspectorView) => {
@@ -71,7 +76,7 @@ export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, 
     // Keyed by device and thread: switching threads never shows the previous
     // thread's diff, request or decision target.
     content: shown === 'git'
-      ? <ThreadGitPanel key={`git:${scope}:${turnId ?? ''}`} initialTurnId={turnId} canWrite={canManage} running={thread.status === 'running' || thread.status === 'recovering'} onReviewQuote={onReviewQuote} onAskAgent={onAskAgent} threadId={thread.id} deviceId={deviceId} refreshKey={thread.updatedAt} renderPullRequests={canManage ? props => <PullRequestsPanel {...props} deviceId={deviceId} /> : undefined} />
+      ? <ThreadGitPanel key={`git:${scope}:${turnId ?? ''}:${pullRequest ?? ''}`} initialTurnId={turnId} initialPullRequest={pullRequest} canWrite={canManage} running={thread.status === 'running' || thread.status === 'recovering'} onReviewQuote={onReviewQuote} onAskAgent={onAskAgent} threadId={thread.id} deviceId={deviceId} refreshKey={thread.updatedAt} renderPullRequests={canManage ? props => <PullRequestsPanel {...props} deviceId={deviceId} /> : undefined} />
       : <ThreadIsolationPanel key={`isolation:${scope}`} thread={thread} deviceId={deviceId} canManage={canManage} />,
     onClose: () => setView(null),
   } : null;
