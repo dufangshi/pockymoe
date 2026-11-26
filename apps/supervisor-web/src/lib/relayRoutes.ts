@@ -8,6 +8,24 @@ export function relayDeviceIdFromPath(pathname: string) {
   return match ? decodeURIComponent(match[1] ?? '') : null;
 }
 
+// The device's own page. Kept apart from RELAY_DEVICE_PATH_RE: `apiPath` reads
+// that one to choose a request prefix, and this page is not served by a device.
+const DEVICE_PAGE_PATH_RE = /^\/desktop\/devices\/([^/]+)(?:\/|$)/;
+
+/**
+ * The device a settings window opened on this page acts on: the routed device
+ * (`/devices/:id/...`) or the device whose page is open (`/desktop/devices/:id`).
+ * Never a remembered one.
+ */
+export function settingsDeviceId(pathname?: string) {
+  if (pathname === undefined) {
+    if (typeof window === 'undefined') return null;
+    pathname = appPathname(window.location.pathname);
+  }
+  const match = RELAY_DEVICE_PATH_RE.exec(pathname) ?? DEVICE_PAGE_PATH_RE.exec(pathname);
+  return match ? decodeURIComponent(match[1] ?? '') : null;
+}
+
 export function currentRelayDeviceIdFromPath() {
   if (typeof window === 'undefined') {
     return null;

@@ -673,7 +673,7 @@ impl Supervisor {
                 |r| r.get(0),
             )?)
         })?;
-        let mut status = json!({"threadId":id,"name":thread.agent_name,"role":thread.agent_role,"parentThreadId":thread.parent_thread_id,"rootThreadId":thread.root_thread_id,"worktreePath":thread.worktree_path,"closedAt":thread.closed_at,"title":thread.title,"workspaceId":thread.workspace_id,"provider":thread.provider,"agentId":thread.agent_id,"model":thread.model,"reasoningEffort":thread.reasoning_effort,"status":thread.status,"activeTurnId":thread.active_turn_id,"updatedAt":thread.updated_at,"lastError":thread.last_error,"waitingForInput":!pending.is_empty(),"queuedCount":queued,"unreadMessageCount":self.inbox_unread_count(id)?});
+        let mut status = json!({"threadId":id,"name":thread.agent_name,"role":thread.agent_role,"parentThreadId":thread.parent_thread_id,"rootThreadId":thread.root_thread_id,"createdByThreadId":thread.created_by_thread_id,"worktreePath":thread.worktree_path,"closedAt":thread.closed_at,"title":thread.title,"workspaceId":thread.workspace_id,"provider":thread.provider,"agentId":thread.agent_id,"model":thread.model,"reasoningEffort":thread.reasoning_effort,"status":thread.status,"activeTurnId":thread.active_turn_id,"updatedAt":thread.updated_at,"lastError":thread.last_error,"waitingForInput":!pending.is_empty(),"queuedCount":queued,"unreadMessageCount":self.inbox_unread_count(id)?});
         // The coordination view `thread wait` reports: `state` adds stalled and
         // blocked to `status`, `outcome` says how the last turn ended.
         if let Ok(member) = self.member_state(id).await {

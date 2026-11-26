@@ -665,6 +665,10 @@ export interface AcpAgentOptionMetadataDto {
   baseVersion: string | null;
   serverVersion: string | null;
   installCommand: string | null;
+  /** Command that signs the agent in from a terminal on its device, when known. */
+  signInCommand?: string | null;
+  /** Last ACP check; `sign_in_required` when the agent answered ACP's auth_required. */
+  connectionStatus?: 'unavailable' | 'verified' | 'sign_in_required' | 'failed' | 'unverified';
   busy: boolean;
   statusMessage: string;
   /** `native` for the native Codex/Claude entries, `acp` for every ACP agent;
@@ -1057,6 +1061,8 @@ export interface ThreadDto {
   worktreePath?: string | null;
   /** Set once the delegate was closed; it then holds no slot and no name. */
   closedAt?: string | null;
+  /** Thread that started this one with `thread create --detach`; audit only, not a parent. */
+  createdByThreadId?: string | null;
 }
 
 /** A thread's turns (all time), the time they ran in all and since `since`, and its latest prompt. */
@@ -1890,6 +1896,8 @@ export interface ShellSessionDto {
   lastActivityAt: string | null;
   /** A command, not the prompt, owns the terminal; null when the device cannot tell. */
   commandRunning?: boolean | null;
+  /** The harness a sign-in terminal signs in; its `threadId` is then empty. */
+  signIn?: string | null;
 }
 
 export interface ThreadShellStateDto {

@@ -1,10 +1,8 @@
 import { useState } from 'react';
 import { Plus, RefreshCw } from 'lucide-react';
-import { useLocation } from 'react-router-dom';
 import { ErrorMark } from '@pockymoe/thread-ui';
 import { formatNumber, useI18n } from '@pockymoe/thread-ui/i18n';
-import { relayModeActive } from '../lib/api';
-import { relayDeviceIdFromPath } from '../lib/relayRoutes';
+import { useSettingsDevice } from '../lib/settingsDevice';
 import { testEnvironmentConnection, type EnvironmentConnectionDto, type EnvironmentDto } from '../lib/environmentApi';
 import { environmentText as t } from '../lib/environmentI18n';
 import { EnvironmentRequests } from './environments/EnvironmentRequests';
@@ -15,11 +13,12 @@ import { environmentError, gibValue, useEnvironmentSnapshot } from './environmen
 import { SectionHeading, Tag, useThreadTitles } from './environments/ui';
 import './environments/environments.css';
 
-export function DokploySettings() {
+/** `deviceId` names the device (null: this Supervisor). Without it the panel follows
+ *  the page's device or the one chosen in the settings window, never a remembered one. */
+export function DokploySettings({ deviceId: explicitDeviceId }: { deviceId?: string | null } = {}) {
   useI18n();
-  const { pathname } = useLocation();
-  const deviceId = relayDeviceIdFromPath(pathname);
-  if (relayModeActive() && !deviceId) return <p className="env-empty">{t('chooseDevice')}</p>;
+  const { deviceId, missing } = useSettingsDevice(explicitDeviceId);
+  if (missing) return null;
   return <DeviceEnvironmentSettings key={deviceId ?? 'local'} deviceId={deviceId} />;
 }
 

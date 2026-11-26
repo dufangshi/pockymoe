@@ -477,7 +477,7 @@ fn handle_relay_message(
                 }
             }
         }
-        Some("preview.open") => crate::ports::open(state, &message),
+        Some("preview.open") => crate::ports::open(state, &message, outgoing),
         Some("relay.request") => {
             let Some(request_id) = message
                 .get("requestId")

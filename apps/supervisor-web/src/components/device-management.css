@@ -14,3 +14,8 @@
 }
 @keyframes management-sheet-in { from { margin-bottom: -24px; opacity: 0; } to { margin-bottom: 0; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .device-management-dialog[data-state='open'] { animation: none; } }
+/* A destructive action inside a window: danger by colour and outline, not a solid button (§11, §15). */
+.device-danger-button { border-color: currentColor; background: transparent; color: var(--status-danger-fg); }
+.device-danger-button:active { background: var(--status-danger-bg); }
+@media (hover: hover) { .device-danger-button:hover { background: var(--status-danger-bg); } }
+.device-danger-button:focus-visible { outline: 2px solid var(--theme-accent-strong); outline-offset: 2px; }

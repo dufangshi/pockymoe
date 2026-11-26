@@ -28,6 +28,9 @@ pub struct AgentOptions {
     pub worktree_name: Option<String>,
     /// The revision a new worktree branch starts from; defaults to `HEAD`.
     pub worktree_base: Option<String>,
+    /// `thread create --detach`: the creating thread, recorded as
+    /// `createdByThreadId`. The new thread has no parent and is its own root.
+    pub detached_from: Option<String>,
 }
 
 pub struct RoleTemplate {

@@ -1,6 +1,6 @@
 import { useHostScope } from '../../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { Select, ErrorMark, PathChip, agentDisplayName, agentKeyBase, formatReasoningEffortLabel } from '@pockymoe/thread-ui';
+import { Select, ErrorMark, PathChip, agentDisplayName, agentKeyBase, formatReasoningEffortLabel, matchesSendModKey } from '@pockymoe/thread-ui';
 import type { FormEvent, ReactNode } from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { seedThreadDraft } from '../useThreadDrafts';
@@ -16,6 +16,7 @@ import {
   WorkspaceDto,
 } from '@pockymoe/shared';
 import { FormDialog } from '../../components/FormDialog';
+import { HarnessSignInDialog } from '../../components/HarnessSignInDialog';
 import { useAppShellNav } from '../../components/AppShellNavContext';
 import { dshRunModeHint, dshRunModeName, type DshRunMode } from '../../components/DshHarnessPanel';
 import {
@@ -215,6 +216,32 @@ export function ThreadCreateForm({
   const [agentsByProtocol, setAgentsByProtocol] = useState(false);
   // The ACP agent last chosen, restored when the "ACP agent" choice is picked again.
   const lastAcpAgent = useRef('');
+  // Sign in from the picker: the device's owner only (`/api/shells/*`), in the
+  // same window as Settings → Harnesses.
+  const [signInEntry, setSignInEntry] = useState<ModelOptionDto | null>(null);
+  const [signInOwner, setSignInOwner] = useState(false);
+  useEffect(() => {
+    if (hostScope) { setSignInOwner(false); return; }
+    if (!relayModeActive()) { setSignInOwner(true); return; }
+    if (!environmentDeviceId) { setSignInOwner(false); return; }
+    let cancelled = false;
+    fetchRelayAccess({ deviceId: environmentDeviceId }).then(
+      (access) => { if (!cancelled) setSignInOwner(access.kind === 'owner'); },
+      () => { if (!cancelled) setSignInOwner(false); },
+    );
+    return () => { cancelled = true; };
+  }, [environmentDeviceId, Boolean(hostScope)]);
+  async function afterSignIn() {
+    setSignInEntry(null);
+    try {
+      const agents = await fetchAgentBackendAgents('acp');
+      if (!alive.current) return;
+      setAgentOptions(agents);
+      setModelsAttempt(value => value + 1);
+    } catch {
+      /* The list keeps its last state; reopening the form reloads it. */
+    }
+  }
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
@@ -660,7 +687,7 @@ export function ThreadCreateForm({
           onChange={(event) => setFirstPrompt(event.target.value)}
           onKeyDown={(event) => {
             // The composer's own send keys: Ctrl or Command with Enter creates and sends.
-            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) {
+            if (event.key === 'Enter' && matchesSendModKey(event) && !event.nativeEvent.isComposing) {
               event.preventDefault();
               event.currentTarget.form?.requestSubmit();
             }
@@ -814,6 +841,8 @@ export function ThreadCreateForm({
               const ready = isolatedCreation || meta?.availability === 'ready' || meta?.availability === 'adapter_missing';
               const adapterMissing = meta?.availability === 'adapter_missing';
               const installing = installingAgentId === entry.id || meta?.busy === true;
+              const signInNeeded = !isolatedCreation && meta?.availability === 'ready' && meta.connectionStatus === 'sign_in_required';
+              const canSignIn = signInNeeded && signInOwner && Boolean(meta?.signInCommand);
               const selected = entry.model === agentId;
               const statusLabel =
                 isolatedCreation ? environmentLabel('harnessUnverified') : meta?.availability === 'base_missing'
@@ -822,7 +851,7 @@ export function ThreadCreateForm({
                     ? translate("workbench.adapterNeeded")
                     : meta?.availability === 'server_unavailable'
                       ? translate("workbench.aCPUnavailable")
-                      : meta?.statusMessage === 'Ready' ? translate("workbench.ready") : meta?.statusMessage?.startsWith('ACP verification failed:') ? translate("workbench.connectionFailed") : translate("workbench.installed_7bb440");
+                      : signInNeeded ? translate("workbench.signInNeeded") : meta?.statusMessage === 'Ready' ? translate("workbench.ready") : meta?.statusMessage?.startsWith('ACP verification failed:') ? translate("workbench.connectionFailed") : translate("workbench.installed_7bb440");
               return (
                 <div key={entry.id} className="flex min-w-0 items-stretch gap-2 px-2 py-2">
                   <label
@@ -851,7 +880,26 @@ export function ThreadCreateForm({
                     {!isolatedCreation && <span className="mt-1 block truncate font-mono text-[0.68rem] text-[var(--theme-fg-muted)]">
                       {meta?.serverCommand ?? translate("workbench.unavailable")}
                     </span>}
+                    {/* How to sign in stays visible: a title is not reachable by touch. */}
+                    {signInNeeded && <span className="mt-1 block text-[0.68rem] leading-4 text-[var(--theme-fg-muted)]">
+                      {canSignIn
+                        ? translate("workbench.signInFromTheWeb", { value1: meta?.signInCommand })
+                        : meta?.signInCommand
+                          ? translate("workbench.signInWithCommand", { value1: meta?.signInCommand })
+                          : translate("workbench.signInWithTheAgentCli")}
+                    </span>}
                   </label>
+                  {canSignIn ? (
+                    <button
+                      type="button"
+                      onClick={() => setSignInEntry(entry)}
+                      disabled={fieldsLocked || installingAgentId !== null}
+                      aria-label={translate('devices.signInTo', { value1: entry.displayName })}
+                      className="host-secondary-button my-auto min-h-11 shrink-0 rounded-md border px-3 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {translate('workbench.signInAction')}
+                    </button>
+                  ) : null}
                   {!hostScope && !isolatedCreation && adapterMissing && meta?.installCommand ? (
                     <button
                       type="button"
@@ -1010,6 +1058,14 @@ export function ThreadCreateForm({
         />
       </Field>
 
+      {signInEntry && (
+        <HarnessSignInDialog
+          deviceId={relayModeActive() ? environmentDeviceId : null}
+          agentId={signInEntry.id}
+          name={signInEntry.displayName}
+          onClose={() => void afterSignIn()}
+        />
+      )}
       {adapterPrompt ? (
         <FormDialog title={translate('workbench.adapterInstallTitle')}
           description={translate('workbench.adapterInstallDescription', { agent: adapterPrompt.entry.displayName })}

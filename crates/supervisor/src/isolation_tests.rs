@@ -207,6 +207,7 @@ async fn an_isolated_workspace_keeps_out_threads_from_other_workspaces_but_not_i
         json!({"operation":"taskAdd","fromThreadId":outside,"title":"x","assignThreadId":inside}),
         json!({"operation":"models","workspaceId":f.isolated}),
         json!({"operation":"create","workspaceId":f.isolated,"title":"helper"}),
+        json!({"operation":"create","workspaceId":f.isolated,"detach":true}),
     ] {
         let error = forbidden(cli(&f, Some(&outside), input.clone()).await);
         assert!(error.contains("private"), "{input}: {error}");

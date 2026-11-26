@@ -1,5 +1,5 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { ErrorMark, formatShortcut, isMacPlatform } from '@pockymoe/thread-ui';
 import { useAppShellNav } from './AppShellNavContext';
 
 export function ComposerShortcutSettings() {
@@ -24,21 +24,23 @@ export function ComposerShortcutSettings() {
       {/* Where the choice is saved (§15): the account, or this browser in local
           mode. A note, never hidden by a pack. */}
       <p className="settings-note mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">
-        {translate(nav?.sendShortcutScope === 'browser' ? "settings.savedInThisBrowserShortcut" : "settings.savedToYourAccountAndAppliedAcross")}</p>
+        {translate(nav?.sendShortcutScope === 'browser' ? "settings.savedInThisBrowserShortcut" : "settings.savedToYourAccountAndAppliedAcross",
+          // The keys are written as this platform has them (§19); send takes Ctrl or ⌘ on both.
+          { keys: translate(isMacPlatform() ? "settings.sendKeysOnMac" : "settings.sendKeysElsewhere") })}</p>
       <div className="settings-choice-group mt-3 space-y-2">
         {(
           [
             {
               value: 'ctrlEnter',
-              label: translate("settings.ctrlEnterToSend"),
+              label: translate("settings.ctrlEnterToSend", { shortcut: formatShortcut('Mod+Enter') }),
               description:
-                translate("settings.enterInsertsANewLineCtrlShift"),
+                translate("settings.enterInsertsANewLineCtrlShift", { steer: formatShortcut('Mod+Shift+Enter') }),
             },
             {
               value: 'enter',
               label: translate("settings.enterToSend"),
               description:
-                translate("settings.shiftEnterInsertsANewLineCtrl"),
+                translate("settings.shiftEnterInsertsANewLineCtrl", { newline: formatShortcut('Shift+Enter'), steer: formatShortcut('Mod+Enter') }),
             },
           ] as const
         ).map((option) => (

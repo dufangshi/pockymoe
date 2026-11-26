@@ -163,11 +163,21 @@ pub(crate) async fn run(state: &Supervisor, input: &Value, caller: Option<&str>)
                 .context("Mapping ID or port required")?;
             let mapping = crate::ports::snapshot(state)
                 .into_iter()
-                .find(|m| {
-                    (m.id == target || target.parse::<u16>().ok() == Some(m.port))
-                        && caller.is_none_or(|thread| m.thread_id.as_deref() == Some(thread))
-                })
+                .find(|m| m.id == target || target.parse::<u16>().ok() == Some(m.port))
                 .context("Port mapping not found; use preview create first")?;
+            // A thread checks and stops the mappings it holds. Say whose it is
+            // instead of "not found": the port is mapped, and `create` moves it.
+            if caller.is_some_and(|thread| mapping.thread_id.as_deref() != Some(thread)) {
+                let holder = match mapping.thread_id.as_deref() {
+                    Some(holder) => format!("thread {holder}"),
+                    None => "the device owner".into(),
+                };
+                bail!(
+                    "conflict: port {port} is mapped by {holder}, so this thread cannot check or stop it. \
+                     Run `pockymoe preview create --port {port}` to move the mapping to this thread (its address stays the same), then repeat the command.",
+                    port = mapping.port
+                );
+            }
             if operation == "previewStop" {
                 crate::ports::remove_mapping(state, &mapping.id)?;
                 return Ok(json!({"id":mapping.id,"port":mapping.port,"stopped":true}));
@@ -479,6 +489,63 @@ mod tests {
         assert_eq!(renewed["access"], "thread");
         assert_eq!(renewed["threadId"], "thread-b");
         assert_eq!(thread_of(&shared["id"]).as_deref(), Some("thread-b"));
+    }
+
+    #[tokio::test]
+    async fn another_threads_mapping_is_named_as_such_not_reported_missing() {
+        let (_dir, state) =
+            crate::tunnel::tests::state_with_relay_url("https://remote.example.test");
+        let (connection, _outbound) = crate::peer_link::tests::connected(&state, "device");
+        connection.connected(Some(crate::peer_link::RelayIdentity {
+            device_id: "device".into(),
+            device_name: "Device".into(),
+            port_preview_base_url: Some("https://example.test".into()),
+            public_base_url: Some("https://remote.example.test".into()),
+        }));
+        state.relay_connected.store(true, Ordering::SeqCst);
+        let create = json!({"operation":"previewCreate","port":4020});
+        run(&state, &create, Some("thread-a")).await.unwrap();
+        for operation in ["previewCheck", "previewStop"] {
+            let error = run(
+                &state,
+                &json!({"operation":operation,"target":"4020"}),
+                Some("thread-b"),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.starts_with("conflict: port 4020 is mapped by thread thread-a"),
+                "{error}"
+            );
+            assert!(error.contains("preview create --port 4020"), "{error}");
+            assert!(!error.contains("not found"), "{error}");
+        }
+        assert_eq!(
+            crate::ports::snapshot(&state).len(),
+            1,
+            "nothing was stopped"
+        );
+        // A port nobody mapped is still simply missing.
+        let missing = run(
+            &state,
+            &json!({"operation":"previewCheck","target":"4999"}),
+            Some("thread-b"),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(missing.contains("Port mapping not found"), "{missing}");
+        // Taking the port over, as the message says, makes it this thread's.
+        run(&state, &create, Some("thread-b")).await.unwrap();
+        let stopped = run(
+            &state,
+            &json!({"operation":"previewStop","target":"4020"}),
+            Some("thread-b"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stopped["stopped"], true);
     }
 
     #[test]

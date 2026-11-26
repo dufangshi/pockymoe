@@ -348,6 +348,10 @@ pub struct ThreadDto {
     /// Set when the delegate was closed; it then holds no slot and no name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<String>,
+    /// The thread that created this one with `thread create --detach`. Recorded
+    /// for audit only: it is not a parent and has no control over this thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_thread_id: Option<String>,
 }
 
 impl ThreadDto {

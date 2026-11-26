@@ -1,8 +1,7 @@
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
-import { useLocation } from 'react-router-dom';
-import { relayModeActive, request } from '../lib/api';
-import { relayDeviceIdFromPath } from '../lib/relayRoutes';
+import { request } from '../lib/api';
+import { useSettingsDevice } from '../lib/settingsDevice';
 import { useConnectionCatalog } from '../lib/useConnectionCatalog';
 import { ConnectionCatalog } from './ConnectionCatalog';
 import {
@@ -10,17 +9,13 @@ import {
   type InventoryHarness,
 } from './HarnessConnections';
 
-export function UpstreamsSettings() {
+/** `deviceId` names the device (null: this Supervisor). Without it the panel follows
+ *  the page's device or the one chosen in the settings window, never a remembered one. */
+export function UpstreamsSettings({ deviceId: explicitDeviceId }: { deviceId?: string | null } = {}) {
   useI18n();
-  const { pathname } = useLocation();
-  const deviceId = relayDeviceIdFromPath(pathname);
-  if (relayModeActive() && !deviceId) {
-    return (
-      <p className="py-5 text-sm text-[var(--theme-fg-muted)]">
-        {translate('settings.upstreamsChooseDevice')}
-      </p>
-    );
-  }
+  const { deviceId, missing } = useSettingsDevice(explicitDeviceId);
+  // The settings window asks for the device (SettingsDeviceBar); there is nothing to list yet.
+  if (missing) return null;
   const apiRoot = deviceId
     ? `relay/devices/${encodeURIComponent(deviceId)}/api`
     : 'api';

@@ -3,32 +3,44 @@ import { seed } from './fixtures';
 
 const evidence = process.env.DESKTOP_EVIDENCE_DIR ?? 'test-results/desktop';
 test('partial lifetime data, offline cache, device rename and unsupported relay fallback', async ({ page }) => {
+  // The tour's welcome card would sit over the device page's header.
+  await page.addInitScript(() => localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'relay:devices-test'])}`, JSON.stringify({ welcomeDismissed: true, completed: [], resume: {} })));
   await seed(page, 'classic', false, true);
   await expect(page.getByRole('article', { name: 'MacBook Pro', exact: true }).getByRole('button', { name: '更新以获取完整统计', exact: true })).toBeVisible();
-  await page.getByRole('combobox', { name: '统计设备', exact: true }).click();
+  await page.getByRole('combobox', { name: '统计范围', exact: true }).click();
   await page.getByRole('option', { name: 'MacBook Pro', exact: true }).click();
   await expect(page.locator('.pd-usage-table tfoot')).toContainText('—');
   await page.getByRole('group', { name: '统计时间范围', exact: true }).getByRole('button', { name: '全部', exact: true }).click();
   await expect(page.locator('.pd-usage-table tfoot')).toContainText('315');
   await page.locator('.pd-account-usage').scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${evidence}/partial-lifetime-classic-light.png` });
-  await page.getByRole('button', { name: 'MacBook Pro 的操作', exact: true }).click();
+  // Choosing a device for the statistics opens its page, whose header holds its one menu.
+  const content = page.getByTestId('desktop-devices');
+  await content.getByRole('button', { name: 'MacBook Pro 的更多操作', exact: true }).click();
   await page.getByRole('menuitem', { name: '重命名', exact: true }).click();
   await page.getByRole('textbox', { name: '设备名称' }).fill('Studio Mac');
   await page.keyboard.press('Escape');
-  const discard = page.getByRole('dialog', { name: '放弃名称修改？', exact: true });
+  const discard = page.getByRole('dialog', { name: '放弃未保存的更改？', exact: true });
   await expect(discard).toBeVisible();
   await discard.getByRole('button', { name: '取消', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '设备名称' })).toHaveValue('Studio Mac');
   await page.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(page.getByRole('article', { name: 'Studio Mac', exact: true })).toBeVisible();
+  await expect(content.getByRole('heading', { level: 1 })).toHaveText('Studio Mac');
   await page.route(/\/relay\/devices\/device-[0-2]$/, route => route.fulfill({ status: 405, json: { code: 'unsupported', message: '旧版 Relay' } }));
-  await page.getByRole('button', { name: 'Studio Mac 的操作', exact: true }).click();
+  await content.getByRole('button', { name: 'Studio Mac 的更多操作', exact: true }).click();
   await page.getByRole('menuitem', { name: '重命名', exact: true }).click();
   await page.getByRole('textbox', { name: '设备名称' }).fill('Another Mac');
   await page.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '重命名设备' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Studio Mac 的操作', exact: true }).click();
+  // The reason is beside Save, in the window that asked; the page behind did not change.
+  const rename = page.getByRole('dialog', { name: '重命名设备' });
+  await rename.locator('.error-mark').click();
+  await expect(page.locator('.error-mark-bubble')).toContainText('当前 Relay 暂不支持重命名设备。');
+  await rename.locator('.error-mark').click();
+  // Nothing can be saved on this relay, so Cancel asks nothing.
+  await rename.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(rename).toHaveCount(0);
+  expect(await page.evaluate(() => location.pathname)).toBe('/desktop/devices/device-0');
+  await content.getByRole('button', { name: 'Studio Mac 的更多操作', exact: true }).click();
   await expect(page.getByRole('menuitem', { name: '重命名', exact: true })).toBeDisabled();
   await page.keyboard.press('Escape');
   await page.goto('/?desktopMockHost=1');

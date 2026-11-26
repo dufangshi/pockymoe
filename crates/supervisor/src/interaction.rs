@@ -154,7 +154,9 @@ async fn run_as(
     let requester = requester(caller.as_deref(), peer);
     let reach = |thread: &str| state.ensure_agent_reaches_thread(requester, thread);
     let id = input.get("threadId").and_then(Value::as_str).unwrap_or("");
-    let from = input["fromThreadId"].as_str();
+    // An empty id (an empty `POCKYMOE_THREAD_ID`) names no thread: treat it
+    // as omitted rather than as a claim to be someone else.
+    let from = input["fromThreadId"].as_str().filter(|id| !id.is_empty());
     let me = || from.context("this command needs the caller's thread identity; pass --from ID");
     let number = || input["number"].as_i64().context("task number required");
     let all = input["all"] == true;
@@ -299,7 +301,7 @@ async fn run_as(
             threads.retain(|t| state.agent_reaches_workspace(requester, &t.workspace_id));
             let limit = input["limit"].as_u64().unwrap_or(20).clamp(1, 100) as usize;
             Ok(
-                json!({"threads":threads.iter().take(limit).map(|t|json!({"id":t.id,"name":t.agent_name,"title":t.title,"workspaceId":t.workspace_id,"provider":t.provider,"agentId":t.agent_id,"harnessProtocol":t.harness_protocol,"model":t.model,"status":t.status,"updatedAt":t.updated_at,"parentThreadId":t.parent_thread_id,"rootThreadId":t.root_thread_id,"agentThreadCount":t.descendant_count,"closedAt":t.closed_at})).collect::<Vec<_>>(),"totalCount":threads.len()}),
+                json!({"threads":threads.iter().take(limit).map(|t|json!({"id":t.id,"name":t.agent_name,"title":t.title,"workspaceId":t.workspace_id,"provider":t.provider,"agentId":t.agent_id,"harnessProtocol":t.harness_protocol,"model":t.model,"status":t.status,"updatedAt":t.updated_at,"parentThreadId":t.parent_thread_id,"rootThreadId":t.root_thread_id,"createdByThreadId":t.created_by_thread_id,"agentThreadCount":t.descendant_count,"closedAt":t.closed_at})).collect::<Vec<_>>(),"totalCount":threads.len()}),
             )
         }
         "show" | "status" => {
@@ -317,7 +319,17 @@ async fn run_as(
                 "forbidden: --from cannot override the authenticated parent for deletion"
             );
             reach(id)?;
-            state.delete_child_thread(&caller, id).await
+            let served = crate::ports::served_by_thread(state, id).await;
+            anyhow::ensure!(
+                served.is_empty() || input["stopPreviewServers"] == true,
+                "{}",
+                crate::ports::serving_previews_refusal("delete", &served)
+            );
+            let mut deleted = state.delete_child_thread(&caller, id).await?;
+            if !served.is_empty() {
+                deleted["stoppedPreviewServers"] = json!(served);
+            }
+            Ok(deleted)
         }
         "send" => {
             reach(id)?;
@@ -459,13 +471,25 @@ async fn run_as(
                 "forbidden: --from cannot override the authenticated caller for close"
             );
             reach(id)?;
-            state
+            // Closing ends the delegate's whole process tree, including a dev
+            // server whose preview link the caller may be about to hand over.
+            let served = crate::ports::served_by_thread(state, id).await;
+            anyhow::ensure!(
+                served.is_empty() || input["stopPreviewServers"] == true,
+                "{}",
+                crate::ports::serving_previews_refusal("close", &served)
+            );
+            let mut closed = state
                 .close_agent_thread_releasing(
                     caller.as_deref().or(from),
                     id,
                     input["removeWorktree"] == true,
                 )
-                .await
+                .await?;
+            if !served.is_empty() {
+                closed["stoppedPreviewServers"] = json!(served);
+            }
+            Ok(closed)
         }
         "roles" => Ok(list_roles(Path::new(&caller_cwd(state, from)?))),
         "inboxWait" | "inboxWake" => {
@@ -592,9 +616,46 @@ async fn run_as(
             )?)
         }
         "create" => {
+            // A thread credential creates only as itself, like every other
+            // operation: an omitted --from is the caller (never a top-level
+            // thread that escapes the lineage caps), and a different one is
+            // refused. The machine credential acts for the owner and may name any
+            // thread, or none.
+            let from = match caller.as_deref() {
+                Some(caller) => {
+                    anyhow::ensure!(
+                        from.is_none_or(|from| from == caller),
+                        "forbidden: --from cannot override the authenticated caller for create"
+                    );
+                    Some(caller.to_owned())
+                }
+                None => from.map(str::to_owned),
+            };
             let mut input = input;
-            let from = input["fromThreadId"].as_str().map(str::to_owned);
-            if let Some(from) = from {
+            let mut detached_from = None;
+            if input["detach"] == true {
+                let creator = from.context(
+                    "--detach needs the creating thread's identity; run it from a managed thread or pass --from ID",
+                )?;
+                anyhow::ensure!(
+                    input["name"].is_null(),
+                    "--name addresses a thread within a lineage, and a detached thread starts its own; use --title and address it by its thread id"
+                );
+                let creator_thread = state.get_thread(&creator)?;
+                // Its own root: no parent, so no lineage caps, tree entry or
+                // ancestor control. The workspace defaults to the creator's (and
+                // is still checked below); the approval mode is not inherited.
+                input["parentThreadId"] = Value::Null;
+                if input.get("workspaceId").is_none() {
+                    input["workspaceId"] = json!(creator_thread.workspace_id);
+                }
+                if input.get("approvalMode").is_none() {
+                    // Nobody above it reviews a detached thread's work but the
+                    // person, so it asks them unless the creator chose otherwise.
+                    input["approvalMode"] = json!("guarded");
+                }
+                detached_from = Some(creator);
+            } else if let Some(from) = from {
                 let caller = state.get_thread(&from)?;
                 // Record who asked, so the new thread groups under its lineage root
                 // instead of appearing as another top-level entry in the workspace.
@@ -681,11 +742,17 @@ async fn run_as(
                         name,
                         role,
                         worktree,
+                        detached_from,
                         ..Default::default()
                     },
                 )
                 .await?;
             let mut receipt = json!({"threadId":t.id,"name":t.agent_name,"role":t.agent_role,"worktreePath":t.worktree_path,"workspaceId":t.workspace_id,"provider":t.provider,"agentId":t.agent_id,"harnessProtocol":t.harness_protocol,"model":t.model,"reasoningEffort":t.reasoning_effort,"status":t.status});
+            if let Some(creator) = &t.created_by_thread_id {
+                receipt["detached"] = json!(true);
+                receipt["createdByThreadId"] = json!(creator);
+                receipt["approvalMode"] = json!(t.approval_mode);
+            }
             if effort_unconfirmed {
                 receipt["reasoningEffortUnconfirmed"] = json!(true);
                 receipt["note"] = json!("Model discovery lists no efforts for this model yet; the harness applies the effort when the session starts.");
@@ -828,6 +895,212 @@ mod tests {
             filtered["timedOut"], true,
             "only replies to that message count"
         );
+    }
+
+    fn create(extra: Value) -> Value {
+        let mut input = json!({"operation":"create","provider":"codex","model":"default"});
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        input
+    }
+
+    fn created(receipt: &Value) -> String {
+        receipt["threadId"].as_str().unwrap().to_owned()
+    }
+
+    #[tokio::test]
+    async fn a_thread_credential_creates_only_as_itself_and_the_machine_credential_for_anyone() {
+        let f = setup().await;
+        let caller = thread(&f.state, &f.open).await;
+        let other = thread(&f.state, &f.open).await;
+        // Naming another thread is refused, so it cannot graft onto their lineage.
+        let refused = cli(&f, Some(&caller), create(json!({"fromThreadId":other})))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.starts_with("forbidden:"), "{refused}");
+        // An empty POCKYMOE_THREAD_ID sends no fromThreadId: still the caller's
+        // child, not a top-level thread outside the lineage caps. A raw
+        // parentThreadId cannot pick another parent either.
+        for extra in [
+            json!({}),
+            json!({"fromThreadId":""}),
+            json!({"parentThreadId":other}),
+        ] {
+            let id = created(&cli(&f, Some(&caller), create(extra)).await.unwrap());
+            let t = f.state.get_thread(&id).unwrap();
+            assert_eq!(t.parent_thread_id.as_deref(), Some(caller.as_str()));
+            assert_eq!(t.workspace_id, f.open);
+        }
+        let mine = created(
+            &cli(&f, Some(&caller), create(json!({"fromThreadId":caller})))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            f.state.get_thread(&mine).unwrap().parent_thread_id,
+            Some(caller.clone())
+        );
+        // The machine credential keeps acting for the owner.
+        let owners = created(
+            &cli(&f, None, create(json!({"fromThreadId":other})))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            f.state.get_thread(&owners).unwrap().parent_thread_id,
+            Some(other.clone())
+        );
+        let top = created(
+            &cli(&f, None, create(json!({"workspaceId":f.open})))
+                .await
+                .unwrap(),
+        );
+        assert!(f.state.get_thread(&top).unwrap().parent_thread_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_detached_thread_is_its_own_root_outside_the_creator_s_limits_and_control() {
+        let f = setup().await;
+        let root = thread(&f.state, &f.open).await;
+        let c1 = child(&f.state, &f.open, &root).await;
+        let c2 = child(&f.state, &f.open, &c1).await;
+        // At the depth limit: a child is refused, a detached thread is not.
+        let creator = child(&f.state, &f.open, &c2).await;
+        f.state
+            .db
+            .with(|c| {
+                c.execute(
+                    "UPDATE threads SET approval_mode='yolo' WHERE id=?1",
+                    [&creator],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let nested = cli(&f, Some(&creator), create(json!({})))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(nested.contains("nesting is limited"), "{nested}");
+        let receipt = cli(
+            &f,
+            Some(&creator),
+            create(json!({"detach":true,"title":"release"})),
+        )
+        .await
+        .unwrap();
+        assert_eq!(receipt["detached"], true);
+        assert_eq!(receipt["createdByThreadId"], creator);
+        let id = created(&receipt);
+        let t = f.state.get_thread(&id).unwrap();
+        assert!(t.parent_thread_id.is_none() && t.root_thread_id.is_none());
+        assert_eq!(t.lineage_depth, 0);
+        assert_eq!(t.created_by_thread_id.as_deref(), Some(creator.as_str()));
+        // The creator's workspace by default; its approval mode is not inherited.
+        assert_eq!(t.workspace_id, f.open);
+        assert_eq!(t.approval_mode, "guarded");
+        let status = cli(
+            &f,
+            Some(&creator),
+            json!({"operation":"show","threadId":id}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(status["createdByThreadId"], creator);
+        assert!(status["parentThreadId"].is_null());
+        // Not in the creator's tree; the creator has no ancestor powers over it.
+        let tree = cli(
+            &f,
+            Some(&creator),
+            json!({"operation":"tree","fromThreadId":creator}),
+        )
+        .await
+        .unwrap();
+        assert!(tree["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["threadId"] != id));
+        for input in [
+            json!({"operation":"stop","threadId":id,"reason":"no"}),
+            json!({"operation":"close","threadId":id}),
+            json!({"operation":"delete","threadId":id}),
+        ] {
+            assert!(
+                cli(&f, Some(&creator), input.clone()).await.is_err(),
+                "{input}"
+            );
+        }
+        let stop = cli(
+            &f,
+            Some(&creator),
+            json!({"operation":"stop","threadId":id,"reason":"no"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(stop.starts_with("forbidden:"), "{stop}");
+        // It can still be sent work, with the result in the creator's inbox.
+        cli(&f, Some(&creator), json!({"operation":"send","threadId":id,"delivery":"queue","kind":"task","subject":"more","text":"one more","notifyOnComplete":true}))
+            .await
+            .unwrap();
+        // An explicit approval mode and workspace are taken.
+        let yolo = created(
+            &cli(
+                &f,
+                Some(&creator),
+                create(json!({"detach":true,"approvalMode":"yolo","workspaceId":f.isolated})),
+            )
+            .await
+            .unwrap(),
+        );
+        let yolo = f.state.get_thread(&yolo).unwrap();
+        assert_eq!(
+            (yolo.approval_mode.as_str(), yolo.workspace_id.as_str()),
+            ("yolo", f.isolated.as_str())
+        );
+        // Names are lineage addresses; a detached thread starts its own lineage.
+        let named = cli(
+            &f,
+            Some(&creator),
+            create(json!({"detach":true,"name":"helper"})),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(named.contains("--name"), "{named}");
+        // A detached lineage cannot detach again.
+        let chained = cli(&f, Some(&id), create(json!({"detach":true})))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(chained.starts_with("forbidden:"), "{chained}");
+        // The hourly budget is shared by the creator's whole lineage.
+        for _ in 2..pockymoe_runtime::service::MAX_DETACHED_PER_HOUR {
+            cli(&f, Some(&root), create(json!({"detach":true})))
+                .await
+                .unwrap();
+        }
+        let over = cli(&f, Some(&c1), create(json!({"detach":true})))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(over.starts_with("conflict:"), "{over}");
+        // Another lineage has its own.
+        let elsewhere = thread(&f.state, &f.open).await;
+        cli(&f, Some(&elsewhere), create(json!({"detach":true})))
+            .await
+            .unwrap();
+        // Detaching needs a creator.
+        assert!(cli(
+            &f,
+            None,
+            create(json!({"detach":true,"workspaceId":f.open}))
+        )
+        .await
+        .is_err());
     }
 
     fn sorted<const N: usize>(ids: [&String; N]) -> Vec<String> {

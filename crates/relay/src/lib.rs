@@ -4435,6 +4435,9 @@ async fn handle_supervisor_with_timeout(
                                         }
                                     }
                                 }
+                                Some("preview.refused") => {
+                                    preview::refused(&state, &device_id, connection_id, &msg);
+                                }
                                 Some("relay.notification") => {
                                     let result = notifications::accept(&*state.store.conn.lock().await, &device_id, &msg["payload"]);
                                     if let (Ok(turn_id), Some(tx)) = (result, ack.upgrade()) {

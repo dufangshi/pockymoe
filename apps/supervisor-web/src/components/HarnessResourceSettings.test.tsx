@@ -123,14 +123,18 @@ it('validates each range like the Supervisor', () => {
   expect(parseResourceField('maxHarnessMemoryBytes', true, '0.29', 300 * 2 ** 20)).toBe(300 * 2 ** 20);
 });
 
-it('targets the routed relay device and asks for one without it', async () => {
+it('targets the routed relay device, or the device page, and reads nothing without one', async () => {
   vi.mocked(relayModeActive).mockReturnValue(true);
-  const { unmount } = renderAt('/workspaces');
-  expect(screen.getByText('Open a device to manage its resources.')).toBeVisible();
+  const { unmount, container } = renderAt('/workspaces');
+  // The settings window asks for the device above this panel (SettingsDeviceBar).
+  expect(container).toBeEmptyDOMElement();
   expect(fetchHarnessResourceSettings).not.toHaveBeenCalled();
   unmount();
-  renderAt('/devices/dev-1/threads/t');
+  const routed = renderAt('/devices/dev-1/threads/t');
   await waitFor(() => expect(fetchHarnessResourceSettings).toHaveBeenCalledWith('dev-1'));
+  routed.unmount();
+  renderAt('/desktop/devices/dev-2');
+  await waitFor(() => expect(fetchHarnessResourceSettings).toHaveBeenCalledWith('dev-2'));
 });
 
 it('explains an older Supervisor instead of failing', async () => {

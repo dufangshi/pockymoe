@@ -173,7 +173,12 @@ pub enum ThreadCommand {
         device: Option<String>,
     },
     /// Delete your own finished or unused direct child. Running/queued children and children with descendants are refused.
-    Delete { id: String },
+    Delete {
+        id: String,
+        /// Delete even though its processes serve a web preview; the service ends with it.
+        #[arg(long)]
+        stop_preview_servers: bool,
+    },
     Backends {
         #[arg(long)]
         device: Option<String>,
@@ -197,6 +202,8 @@ pub enum ThreadCommand {
   - The model defaults to `default`, not yours. Pass explicitly requested models as given.
   - --worktree branches from COMMITTED HEAD; commit what the delegate builds on first.
   - If sending fails after creation, reuse the returned thread ID instead of creating again.
+  - --detach starts an independent thread: no parent, outside your tree and limits, and
+    you cannot stop or close it. 10 per lineage per hour; no --name.
 
 More: pockymoe guide delegate"#)]
     Create {
@@ -234,6 +241,11 @@ More: pockymoe guide delegate"#)]
         /// Branch for --worktree; an existing branch is checked out as is.
         #[arg(long, value_name = "BRANCH")]
         worktree_branch: Option<String>,
+        /// Start an independent thread instead of a delegate: it has no parent,
+        /// is not in your tree or limits, and you have no control over it. It
+        /// records you as its creator; it starts guarded unless --approval-mode.
+        #[arg(long, conflicts_with_all = ["name", "device"])]
+        detach: bool,
         #[command(flatten)]
         body: Body,
     },
@@ -293,6 +305,10 @@ More: pockymoe guide delegate"#)]
         /// Also `git worktree remove` its worktree (fails if it has uncommitted changes).
         #[arg(long)]
         remove_worktree: bool,
+        /// Close even though the delegate's processes serve a web preview. Closing
+        /// ends them, so without this flag such a delegate is refused.
+        #[arg(long)]
+        stop_preview_servers: bool,
     },
     /// Stop what a delegate is doing now. For when it is on the wrong path and
     /// steering is not enough; its history stays, and it runs again on its next
@@ -776,7 +792,7 @@ impl Client {
                 self.target(&id, device.as_deref()).await?.apply(&mut input);
                 self.request(input).await
             }
-            ThreadCommand::Delete { id } => self.request(json!({"operation":"delete","threadId":self.id(&id).await?,"fromThreadId":self.from})).await,
+            ThreadCommand::Delete { id, stop_preview_servers } => self.request(json!({"operation":"delete","threadId":self.id(&id).await?,"stopPreviewServers":stop_preview_servers,"fromThreadId":self.from})).await,
             ThreadCommand::Backends { device } => {
                 let mut input = json!({"operation":"backends"});
                 if let Some(device) = device { input["deviceId"] = json!(device); }
@@ -804,11 +820,11 @@ impl Client {
                 let root = match root { Some(r) => Some(self.id(&r).await?), None => None };
                 self.request(json!({"operation":"tree","rootThreadId":root,"all":all,"fromThreadId":self.from})).await
             }
-            ThreadCommand::Close { ids, remove_worktree } => {
+            ThreadCommand::Close { ids, remove_worktree, stop_preview_servers } => {
                 let (mut closed, mut failed) = (Vec::new(), Vec::new());
                 for id in &ids {
                     let result = match self.id(id).await {
-                        Ok(resolved) => self.request(json!({"operation":"close","threadId":resolved,"removeWorktree":remove_worktree,"fromThreadId":self.from})).await,
+                        Ok(resolved) => self.request(json!({"operation":"close","threadId":resolved,"removeWorktree":remove_worktree,"stopPreviewServers":stop_preview_servers,"fromThreadId":self.from})).await,
                         Err(e) => Err(e),
                     };
                     match result { Ok(v) => closed.push(v), Err(e) => failed.push(json!({"thread":id,"error":e.to_string()})) }
@@ -826,12 +842,13 @@ impl Client {
                 let text = read_text(text, text_file, 262145)?.context("thread ask requires --text or --text-file")?;
                 self.ask(&id, &subject, text, timeout, request_id).await
             }
-            ThreadCommand::Create { device, workspace, title, provider, agent, model, reasoning_effort, approval_mode, name, role, worktree, worktree_branch, body } => {
+            ThreadCommand::Create { device, workspace, title, provider, agent, model, reasoning_effort, approval_mode, name, role, worktree, worktree_branch, detach, body } => {
                 ensure!(device.is_none() || workspace.is_some(), "cross-device create requires --workspace");
                 ensure!(!body.notify_on_complete || body.text.is_some() || body.text_file.is_some(), "notification requires an initial prompt");
                 ensure!(!body.notify_on_complete || self.from.is_some(), "notification requires --from ID or managed thread context");
                 let mut input = json!({"operation":"create","title":title.clone().or_else(||name.clone()),"provider":provider,"agentId":agent,"model":model,"reasoningEffort":reasoning_effort,"fromThreadId":self.from,"name":name,"role":role,"worktree":worktree,"worktreeBranch":worktree_branch});
                 if let Some(device) = &device { input["deviceId"] = json!(device); }
+                if detach { input["detach"] = json!(true); }
                 if let Some(ws) = workspace { input["workspaceId"] = json!(ws); }
                 if let Some(mode) = approval_mode { input["approvalMode"] = json!(mode); }
                 let mut result = self.request(input).await?;
@@ -877,7 +894,15 @@ impl Client {
             }
             PreviewCommand::Stop { target } => json!({"operation":"previewStop","target":target}),
         };
-        self.request(input).await.context("Preview command requires a Supervisor and Relay with CLI preview support; update older installations")
+        // Only a Supervisor without the operation needs updating; every other
+        // refusal already says what is wrong.
+        self.request(input).await.map_err(|error| {
+            if format!("{error:#}").contains("unknown CLI operation") {
+                error.context("This Supervisor has no CLI preview support; update it")
+            } else {
+                error
+            }
+        })
     }
     pub async fn device(&self, command: DeviceCommand) -> Result<Value> {
         let input = match command {
@@ -1538,6 +1563,7 @@ mod tests {
                 role: None,
                 worktree: false,
                 worktree_branch: None,
+                detach: false,
                 body,
             })
             .await
@@ -1555,5 +1581,56 @@ mod tests {
         assert!(requests
             .iter()
             .all(|r| r["deviceId"] == "Treer" && r["fromThreadId"] == THREAD));
+    }
+
+    #[tokio::test]
+    async fn detached_create_asks_for_an_independent_thread_and_queues_its_prompt() {
+        let (client, task) = mock_client(vec![
+            json!({"threadId":THREAD,"detached":true}),
+            json!({"delivery":"queued"}),
+        ])
+        .await;
+        let body = Body {
+            delivery: None,
+            notify_delivery: "inbox".into(),
+            subject: None,
+            kind: None,
+            in_reply_to: None,
+            interrupt_reason: None,
+            topic_key: None,
+            text: Some("look after the release".into()),
+            text_file: None,
+            notify_on_complete: false,
+            request_id: None,
+            retry_failed: false,
+        };
+        let result = client
+            .thread(ThreadCommand::Create {
+                device: None,
+                workspace: None,
+                title: Some("Release".into()),
+                provider: "acp".into(),
+                agent: None,
+                model: "default".into(),
+                reasoning_effort: None,
+                approval_mode: None,
+                name: None,
+                role: None,
+                worktree: false,
+                worktree_branch: None,
+                detach: true,
+                body,
+            })
+            .await
+            .unwrap();
+        assert_eq!(result["send"]["delivery"], "queued");
+        let requests = task.await.unwrap();
+        assert_eq!(requests[0]["operation"], "create");
+        assert_eq!(requests[0]["detach"], true);
+        assert_eq!(requests[0]["fromThreadId"], THREAD);
+        assert!(requests[0].get("approvalMode").is_none());
+        assert_eq!(requests[1]["operation"], "send");
+        assert_eq!(requests[1]["delivery"], "queue");
+        assert_eq!(requests[1]["threadId"], THREAD);
     }
 }

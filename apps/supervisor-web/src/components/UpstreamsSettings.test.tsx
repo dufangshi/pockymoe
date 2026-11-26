@@ -1,5 +1,6 @@
 import { changeControl, selectOptions } from '../test/formControls';
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -10,6 +11,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { UpstreamsSettings } from './UpstreamsSettings';
 import { relayModeActive, request } from '../lib/api';
+import { chooseSettingsDevice } from '../lib/settingsDevice';
 vi.mock('../lib/api', () => ({
   request: vi.fn(),
   relayModeActive: vi.fn(),
@@ -237,17 +239,38 @@ it('ignores an old inventory response after switching devices', async () => {
   expect(screen.queryByRole('listitem', { name: 'OpenAI Codex' })).toBeNull();
 });
 
-it('requires a device selection on relay home', () => {
+it('lists nothing on relay home until a device is chosen, then lists that device', async () => {
   vi.mocked(relayModeActive).mockReturnValue(true);
+  vi.mocked(request).mockImplementation(async (path) => String(path).endsWith('/harnesses') ? [] : { ...catalog, connections: [], bindings: {} });
+  localStorage.setItem('remote-codex-relay-device-id', 'remembered-device');
+  try {
+    const view = render(
+      <MemoryRouter initialEntries={['/workspaces']}>
+        <UpstreamsSettings />
+      </MemoryRouter>,
+    );
+    // The settings window asks for the device above this panel (SettingsDeviceBar).
+    expect(view.container).toBeEmptyDOMElement();
+    expect(request).not.toHaveBeenCalled();
+    act(() => chooseSettingsDevice('chosen'));
+    await waitFor(() => expect(request).toHaveBeenCalledWith('relay/devices/chosen/api/management/harnesses', expect.anything()));
+    expect(vi.mocked(request).mock.calls.every(([path]) => String(path).startsWith('relay/devices/chosen/'))).toBe(true);
+  } finally {
+    act(() => chooseSettingsDevice(null));
+    localStorage.removeItem('remote-codex-relay-device-id');
+  }
+});
+
+it('acts on the device its owner names, whatever the page', async () => {
+  vi.mocked(relayModeActive).mockReturnValue(true);
+  vi.mocked(request).mockImplementation(async (path) => String(path).endsWith('/harnesses') ? [] : { ...catalog, connections: [], bindings: {} });
   render(
-    <MemoryRouter initialEntries={['/workspaces']}>
-      <UpstreamsSettings />
+    <MemoryRouter initialEntries={['/devices/a/workspaces']}>
+      <UpstreamsSettings deviceId="named" />
     </MemoryRouter>,
   );
-  expect(
-    screen.getByText('Open a device to manage its upstreams.'),
-  ).toBeVisible();
-  expect(request).not.toHaveBeenCalled();
+  await waitFor(() => expect(request).toHaveBeenCalledWith('relay/devices/named/api/management/harnesses', expect.anything()));
+  expect(vi.mocked(request).mock.calls.every(([path]) => String(path).startsWith('relay/devices/named/'))).toBe(true);
 });
 
 it('offers a connection to every harness whose format its upstream serves', async () => {

@@ -129,11 +129,13 @@ test('a signed workspace share waits for the safety code, then reaches its threa
     });
 
     // The same share, from the workspace's menu on the device's Workspaces page,
-    // whose header names the device.
+    // which names the device: in the header on a phone, in the sidebar's device
+    // switcher on a computer (docs/ui-principles.md §9).
+    const deviceNamed = owner.page.locator('.product-navigation-subtitle, .desktop-workspace-device').first();
     await owner.page.goto(`${f.base}/devices/${d1.id}/workspaces`);
-    await expect(owner.page.locator('.product-navigation-subtitle')).not.toBeEmpty();
+    await expect(deviceNamed).not.toBeEmpty();
     await owner.page.getByRole('button', { name: `More actions for ${sharedWs.label}`, exact: true }).click();
-    await owner.page.getByRole('menuitem', { name: 'Share workspace', exact: true }).click();
+    await owner.page.getByRole('menuitem', { name: 'Share…', exact: true }).click();
     const menuDialog = owner.page.getByRole('dialog');
     await expect(menuDialog.getByText('Choose who can view or collaborate on the threads in this workspace.')).toBeVisible();
     await expect(menuDialog.getByRole('radio', { name: /^This workspace/ })).toBeChecked();
@@ -147,11 +149,11 @@ test('a signed workspace share waits for the safety code, then reaches its threa
         window.dispatchEvent(new StorageEvent('storage', { key: 'pockymoe-theme-preset' }));
       }, [theme, mode]);
       await owner.page.reload();
-      await expect(owner.page.locator('.product-navigation-subtitle')).not.toBeEmpty();
+      await expect(deviceNamed).not.toBeEmpty();
       await screenshot(owner.page, info, `workspace-menu-page-${theme}-${mode}-${width}`);
       await owner.page.getByRole('button', { name: `More actions for ${sharedWs.label}`, exact: true }).click();
       await screenshot(owner.page, info, `workspace-menu-open-${theme}-${mode}-${width}`);
-      await owner.page.getByRole('menuitem', { name: 'Share workspace', exact: true }).click();
+      await owner.page.getByRole('menuitem', { name: 'Share…', exact: true }).click();
       await expect(owner.page.getByRole('dialog').getByText('ws-recipient', { exact: true })).toBeVisible();
       await screenshot(owner.page, info, `workspace-menu-share-${theme}-${mode}-${width}`);
     }
@@ -199,8 +201,8 @@ test('a signed workspace share waits for the safety code, then reaches its threa
     await expect(recipient.page.getByText('Signed thread 1').first()).toBeVisible();
 
     // Controlled by someone else now, the device names that share as why its
-    // agents cannot reach the owner's other devices.
-    await owner.page.goto(f.base + '/relay-devices');
+    // agents cannot reach the owner's other devices: on its own page (issue #115).
+    await owner.page.goto(f.base + `/desktop/devices/${d1.id}`);
     const controlMark = owner.page.getByRole('button', { name: 'Shared for control', exact: true });
     await controlMark.click();
     const reasons = owner.page.getByRole('dialog', { name: 'Shared for control' });

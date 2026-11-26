@@ -63,6 +63,7 @@ mod usage;
 
 mod harness_processes;
 mod native_subagents;
+mod port_listeners;
 mod usage_history;
 
 mod pricing;

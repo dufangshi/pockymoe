@@ -65,14 +65,17 @@ Collaborating:
 - Blocked on a decision another thread must make: `thread ask parent --subject S --text
   T` waits for the answer; do not guess or stop. On a timeout, wait again for the same
   question (`inbox wait --in-reply-to ID`) instead of asking again.
+- Closing a delegate ends every process it started. A web service behind a preview link
+  must run in a thread that stays open; `thread close` refuses a delegate that serves one.
 - A settled delegate finished executing, which is not success. Check `outcome` and the
   evidence (files, commit, exact test command and result) before merging or closing. A
   `stalled` delegate cannot start its work: fix the cause or withdraw it. A delegate
   that failed 3 turns in a row refuses more tasks until you investigate
   (`--retry-failed` overrides).
 - Lineage limits are depth 3 and 20 open threads per root. Close delegates once
-  collected; on a refusal, do not repeat the same call. Prefer 3-5 concurrent delegates.
-  Give delegates editing the same files their own `--worktree` (it starts from
+  collected; on a refusal, do not repeat the same call. `thread create --detach`
+  (independent work you give up control of) is not a way around them. Prefer 3-5
+  concurrent delegates. Give delegates editing the same files their own `--worktree` (it starts from
   **committed** HEAD).
 - Create, register and remove worktrees through `pockymoe worktree`; use `adopt`
   for existing checkouts. Use the returned absolute path for subsequent tools:

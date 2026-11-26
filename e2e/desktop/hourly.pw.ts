@@ -61,7 +61,7 @@ for (const pack of ['classic']) for (const dark of [false]) for (const width of 
     // The offline device retains valid hourly data. Scope this separate fallback
     // scenario to a device whose refreshed response genuinely has no hourly data.
     await page.getByRole('button', { name: '今天', exact: true }).click();
-    await page.getByRole('combobox', { name: '统计设备', exact: true }).click();
+    await page.getByRole('combobox', { name: '统计范围', exact: true }).click();
     await page.getByRole('option', { name: 'MacBook Pro', exact: true }).click();
     const runtime = page.getByRole('group', { name: '今日每小时运行时长，按设备堆叠', exact: true });
     await expect(runtime.locator('g[tabindex]')).toHaveCount(24);

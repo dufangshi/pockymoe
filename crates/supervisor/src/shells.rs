@@ -136,6 +136,8 @@ struct LiveShell {
     #[allow(dead_code)]
     events: broadcast::Sender<String>,
     thread_id: String,
+    /// The harness a sign-in terminal signs in; such a terminal belongs to no thread.
+    sign_in: Option<String>,
     execution: Option<pockymoe_runtime::execution::ExecutionContext>,
     host_receipt: Option<std::path::PathBuf>,
     workspace_id: String,
@@ -175,6 +177,17 @@ impl Default for ShellHub {
     }
 }
 
+/// A program a terminal runs in place of the owner's shell: a harness's
+/// sign-in command from the catalog, never a command line from a client.
+pub struct ShellProgram {
+    pub program: String,
+    pub args: Vec<String>,
+    /// Added to the terminal's usual environment.
+    pub env: Vec<(String, String)>,
+    /// The harness it signs in (`signIn` in the terminal's JSON).
+    pub sign_in: String,
+}
+
 pub fn hub() -> &'static ShellHub {
     static HUB: std::sync::OnceLock<ShellHub> = std::sync::OnceLock::new();
     HUB.get_or_init(ShellHub::default)
@@ -190,6 +203,52 @@ impl ShellHub {
         rows: u16,
         label: Option<String>,
     ) -> Result<(String, Value)> {
+        self.spawn(thread_id, workspace_id, cwd, cols, rows, label, None, None)
+    }
+
+    /// A terminal on this device, outside any thread or isolated environment,
+    /// that runs a harness's sign-in command and ends with it. One per harness:
+    /// a new one replaces a sign-in left open elsewhere. `on_exit` runs once the
+    /// process has ended, whether it exited or was terminated.
+    pub fn create_sign_in(
+        &self,
+        program: ShellProgram,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+        on_exit: Box<dyn FnOnce() + Send>,
+    ) -> Result<(String, Value)> {
+        anyhow::ensure!(
+            pockymoe_runtime::execution::current().is_none(),
+            "A sign-in terminal runs on the device, not in an isolated environment"
+        );
+        let open = self
+            .inner
+            .lock()
+            .unwrap()
+            .shells
+            .iter()
+            .filter(|(_, shell)| shell.sign_in.as_deref() == Some(program.sign_in.as_str()))
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in open {
+            let _ = self.terminate(&id);
+        }
+        self.spawn("", "", cwd, cols, rows, None, Some(program), Some(on_exit))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn(
+        &self,
+        thread_id: &str,
+        workspace_id: &str,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+        label: Option<String>,
+        program: Option<ShellProgram>,
+        on_exit: Option<Box<dyn FnOnce() + Send>>,
+    ) -> Result<(String, Value)> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows,
@@ -204,7 +263,14 @@ impl ShellHub {
         } else {
             None
         };
-        let mut cmd = if let Some(context) = &execution {
+        let sign_in = program.as_ref().map(|program| program.sign_in.clone());
+        let mut program_env = Vec::new();
+        let mut cmd = if let Some(program) = program {
+            let mut command = CommandBuilder::new(&program.program);
+            command.args(&program.args);
+            program_env = program.env;
+            command
+        } else if let Some(context) = &execution {
             let env = context.checked()?;
             let docker = context.std_docker()?;
             let mut cmd = CommandBuilder::new(docker.get_program());
@@ -244,6 +310,9 @@ impl ShellHub {
             terminal_env(&mut cmd, |name| std::env::var_os(name));
             // `codex`, `claude` and their Node right after a first install.
             cmd.env("PATH", pockymoe_runtime::acp::child_path());
+        }
+        for (key, value) in program_env {
+            cmd.env(key, value);
         }
         let child = pair.slave.spawn_command(cmd)?;
         let host_receipt = guardian.map(|(_, path)| path);
@@ -346,6 +415,10 @@ impl ShellHub {
                 }
                 let _ = child.wait();
             }
+            // Before viewers hear of the exit, so what they read next is current.
+            if let Some(on_exit) = on_exit {
+                on_exit();
+            }
             let seq = output_replay.lock().unwrap().seq + 1;
             let _ = all.send(ShellOutput {
                 shell_id: output_id,
@@ -365,6 +438,7 @@ impl ShellHub {
                 execution,
                 host_receipt,
                 thread_id: thread_id.into(),
+                sign_in,
                 workspace_id: workspace_id.into(),
                 cwd: cwd.into(),
                 tmux_session_name: format!("pockymoe-pty-{id}"),
@@ -544,7 +618,9 @@ impl ShellHub {
         let metadata = shell.metadata.lock().unwrap();
         json!({
             "id": id,
+            // Empty for a sign-in terminal, which belongs to no thread.
             "threadId": shell.thread_id,
+            "signIn": shell.sign_in,
             "workspaceId": shell.workspace_id,
             "label": metadata.label,
             "tmuxSessionName": shell.tmux_session_name,

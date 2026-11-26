@@ -982,17 +982,19 @@ export function rejectRelayRegistration(requestId: string) {
   );
 }
 
-export function fetchWorkspaceSettings() {
+/** `deviceId` names the device explicitly (null: this Supervisor); without it the
+ *  request follows the page, as every unscoped request does. */
+export function fetchWorkspaceSettings(deviceId?: string | null) {
   return request<WorkspaceSettingsDto>('api/config/workspace-settings', {
     cache: 'no-store',
-  });
+  }, { deviceId });
 }
 
-export function updateWorkspaceSettings(input: UpdateWorkspaceSettingsInput) {
+export function updateWorkspaceSettings(input: UpdateWorkspaceSettingsInput, deviceId?: string | null) {
   return request<WorkspaceSettingsDto>('api/config/workspace-settings', {
     method: 'PATCH',
     body: JSON.stringify(input),
-  });
+  }, { deviceId });
 }
 
 export function fetchAgentBackends() {

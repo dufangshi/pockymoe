@@ -1,17 +1,8 @@
-The Git panel and the isolated environments panel are redesigned, and a thread whose environment migration failed can be opened and recovered again.
+Sign in to Claude, Codex and the other harnesses from the Web, without SSH to the device.
 
-**Fixes**
+**New**
 
-- **A thread stuck after a failed migration.** When an approved move into an isolated environment failed, the thread page said "Unable to resolve this thread" and the Retry and Restore buttons could not be reached. The thread now opens; everything that runs stays blocked until its owner retries or restores this device.
-- **Stop or start interrupted by closing the page.** An environment could stay in "stopping" forever when the tab was closed mid-action. The action now finishes on the device.
-- **Retry after a failed migration.** Retry stops the failed environment first instead of failing again.
-- **Git diff under the wrong file.** An untracked binary file made the next file's changes appear under its name. Each file's changes now show under its own name, and binary and empty files say so in words.
-
-**Changes**
-
-- **Environments start when you create or switch to them.** Before, the environment stayed stopped and prompts waited without a word.
-- **Git panel.** One line shows where you are (branch, short commit, working-copy switch), one line switches between Unstaged, Staged, Compare and Commits, and the rest is the file list with the changes under it. Paths and details open on request.
-- **Isolated environments panel.** One list shows where the thread runs and what it can switch to, with the current place first: its state, image and limits. A line of text says why something cannot be changed, for example "Needs a Dokploy connection first", with a button to Settings. An environment you left running says it still uses the device's budget and offers Stop.
-- A steer sent into a running wake turn shows at once while the wake is folded, and "Show less" sits at the left with its arrow pointing up.
+- **Harness sign-in.** Settings → Harnesses has a Sign in button for each harness that has a login command. It opens a terminal on the device running that command (for example `claude auth login` or `codex login --device-auth`), with the same configuration directory the harness uses, so you finish the sign-in in the browser. When the command ends, Pockymoe checks again and shows whether the harness is signed in. Only the device owner can open it, and it runs only the harness's own login command.
+- **Sign-in needed.** An agent that is not signed in now shows "Sign-in needed" in the new-thread picker, with a button to sign in, instead of a raw error.
 
 Update a device from Settings → Check/Update.

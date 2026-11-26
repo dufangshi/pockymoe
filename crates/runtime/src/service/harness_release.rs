@@ -103,6 +103,53 @@ impl DisplayState {
     }
 }
 
+/// A process in a thread's harness tree that listens on a TCP port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PortListener {
+    pub port: u16,
+    pub pid: u32,
+    /// Executable and one argument, never the full command line.
+    pub name: String,
+}
+
+/// Root PIDs of the harness processes that end with `thread`: its own loaded
+/// sessions, except a process that also serves another thread (a Claude or
+/// Grok fork runs in its source's process, which stays).
+/// `sessions` is `(owning thread, process, root PID)` per loaded session.
+fn roots_ending_with(thread: &str, sessions: &[(Option<String>, String, Option<u32>)]) -> Vec<u32> {
+    sessions
+        .iter()
+        .filter(|(owner, _, _)| owner.as_deref() == Some(thread))
+        .filter(|(_, process, _)| {
+            !sessions.iter().any(|(owner, other, _)| {
+                other == process && owner.as_deref().is_some_and(|owner| owner != thread)
+            })
+        })
+        .filter_map(|(_, _, root)| *root)
+        .collect()
+}
+
+/// Blocking: reads the process table. The harness itself is not a tool, but a
+/// service it served directly would end with it just the same, so roots count.
+fn listeners_in_trees(roots: &[u32], ports: &[u16]) -> Vec<PortListener> {
+    if roots.is_empty() {
+        return Vec::new();
+    }
+    let sample = ProcessSample::collect(false);
+    let mut tree = Vec::new();
+    for root in roots {
+        tree.extend(sample.descendants(*root));
+    }
+    crate::port_listeners::among(&tree, ports)
+        .into_iter()
+        .map(|(port, pid)| PortListener {
+            port,
+            pid,
+            name: sample.name(pid).unwrap_or_default(),
+        })
+        .collect()
+}
+
 /// Settings rejected for their values (HTTP 400), not for storage failures.
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -1233,6 +1280,32 @@ impl Supervisor {
                 tracing::warn!(thread_id = %thread.id, %error, "harness was not released; the idle check retries")
             }
         }
+    }
+
+    /// Processes of `thread_id` that accept connections on one of `ports`:
+    /// they end with the thread's harness when it is closed, deleted or
+    /// released. Best effort: empty when the process table is unreadable.
+    pub async fn thread_port_listeners(&self, thread_id: &str, ports: &[u16]) -> Vec<PortListener> {
+        if ports.is_empty() {
+            return Vec::new();
+        }
+        let Ok(by_session) = self.threads_by_session() else {
+            return Vec::new();
+        };
+        let mut sessions = Vec::new();
+        for runtime in self.runtimes.values() {
+            for session in runtime.loaded_sessions().await {
+                let owner = Self::session_thread(&by_session, &session)
+                    .map(|thread| thread.id)
+                    .or_else(|| session.thread_id.clone());
+                sessions.push((owner, session.process_id, session.root_pid));
+            }
+        }
+        let roots = roots_ending_with(thread_id, &sessions);
+        let ports = ports.to_vec();
+        tokio::task::spawn_blocking(move || listeners_in_trees(&roots, &ports))
+            .await
+            .unwrap_or_default()
     }
 
     /// Delete a top-level thread and end its harness.

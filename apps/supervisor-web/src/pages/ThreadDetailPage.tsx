@@ -49,7 +49,7 @@ import { useModelPickerSource } from './useModelPickerSource';
 import { composerAgentLabel } from './threadAgentLabel';
 import { ThreadSubagentsControl } from '../components/ThreadSubagentsControl';
 import { PortMappingsControl } from '../components/PortMappingsControl';
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
+import { startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Download, Link2, MonitorSmartphone, Network, Puzzle, Users } from 'lucide-react';
 
@@ -69,7 +69,9 @@ import {
   ThreadTurnTokenUsageDto,
   truncateAutoThreadTitle,
 } from '../../../../packages/shared/src/index';
-import { appSettingsSections } from '../components/AppShellSettingsDialog';
+import { appSettingsSections, useAppSettingsChrome } from '../components/AppShellSettingsDialog';
+import { IndexedDeviceSwitcher } from '../components/DeviceSwitcher';
+import { DesktopStoreContext } from '../desktop/data/context';
 import { OpenFullPageButton } from '../components/OpenFullPageButton';
 import { useAppShellNav } from '../components/AppShellNavContext';
 import {
@@ -183,6 +185,7 @@ import {
   currentWorkspacesHref,
   relayDeviceIdFromPath,
   threadIdFromPath,
+  workspacesHref,
 } from '../lib/relayRoutes';
 import { useMediaQuery } from '../lib/useMediaQuery';
 import { useMobileComposerLayout } from './useMobileComposerLayout';
@@ -982,6 +985,10 @@ export function ThreadDetailPage() {
   // The rail is for navigation: on every computer this conversation's device and
   // its labelled readings end the sidebar; phones keep them in the top bar.
   const phoneWidth = useMediaQuery('(max-width: 639px)');
+  const settingsChrome = useAppSettingsChrome();
+  // A computer's navigation shell starts the sidebar with the device switcher (issue #115).
+  const indexStore = useContext(DesktopStoreContext);
+  const sidebarSwitcher = indexStore && !hostScope && !phoneWidth && relayRouteDeviceId ? <div className="desktop-workspace-device"><IndexedDeviceSwitcher currentId={relayRouteDeviceId} hrefFor={workspacesHref} /></div> : null;
   const sidebarDevice = !hostScope && !phoneWidth ? <>
     <MonitorSmartphone aria-hidden="true" className="matter-sidebar-device-icon" />
     <span className="matter-sidebar-device-name" title={deviceLabel}>{deviceLabel}</span>
@@ -2922,8 +2929,11 @@ export function ThreadDetailPage() {
         // The prompt response acknowledges persistence. Read only the queue if
         // its WebSocket receipt has not arrived; never wait for a history poll.
         if (!detailRef.current?.pendingSteers.some((item) => item.clientRequestId === clientRequestId)) {
+          // A later load or mutation (such as Steer on this row) is newer than
+          // this read; applying it would put the steered row back (issue #171).
+          const epoch = loadRequestIdRef.current;
           void fetchThreadDelivery(id).then((delivery) => {
-            if (activeThreadIdRef.current !== id) return;
+            if (activeThreadIdRef.current !== id || loadRequestIdRef.current !== epoch) return;
             setDetail((current) => current ? { ...current, pendingSteers: delivery.pendingSteers } : current);
             setOptimisticSteers((current) => current.filter((item) => !steerAcknowledged(item, delivery.pendingSteers)));
           }).catch(() => { /* Realtime or the normal summary poll can recover. */ });
@@ -4202,7 +4212,7 @@ export function ThreadDetailPage() {
       restrictedNavigation={Boolean(hostScope)}
       scopedSettings={Boolean(hostScope)}
       deviceMonitor={hostScope ? <OpenFullPageButton /> : desktopSurface || !phoneWidth ? <TourLauncherButton /> : <><DeviceMonitor key={relayRouteDeviceId ?? 'local'} /><TourLauncherButton /></>}
-      workbench={workbenchUrls({ ...workbenchNavigation, ...desktopWorkbench, ...(sidebarDevice ? { sidebarFooter: sidebarDevice } : {}), panels: {
+      workbench={workbenchUrls({ ...workbenchNavigation, ...desktopWorkbench, ...(sidebarDevice ? { sidebarFooter: sidebarDevice } : {}), ...(sidebarSwitcher ? { sidebarHeader: sidebarSwitcher } : {}), panels: {
         deviceLabel,
         workspaceLabel: detail?.workspace.label ?? workbenchNavigation.workspacePath,
         primaryTitle: detail?.thread.title ?? translate('workbench.loadingThreadDetail'),
@@ -4274,6 +4284,9 @@ export function ThreadDetailPage() {
       settingsContent={settingsContent}
       {...(relayModeActive() && !hostScope ? { renderRailSettings: (open: () => void) => <RelayUserMenu rail onSettings={open} /> } : {})}
       settingsSections={appSettingsSections({ scoped: Boolean(hostScope) })}
+      settingsTitle={settingsChrome.title}
+      settingsDescription={settingsChrome.description}
+      settingsExtraContent={settingsChrome.extraContent}
       mobileHeaderAction={mobileSessionConnectionButton}
       workspaceReturnHref={workspaceReturnHref}
       onCloseAppNavigation={shellNav?.closeNav ?? (() => {})}

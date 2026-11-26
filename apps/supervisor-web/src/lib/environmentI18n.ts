@@ -6,7 +6,6 @@ const messages = {
   outsideAgentsDescription: ['连接、授权与调用记录', 'Connections, grants and calls'],
   title: ['隔离环境', 'Isolated environments'],
   description: ['此设备的 Dokploy 连接、资源预算与线程环境。', 'Dokploy connections, resource budget and thread environments on this device.'],
-  chooseDevice: ['先打开一台设备，再管理它的隔离环境。', 'Open a device to manage its isolated environments.'],
   connections: ['Dokploy 连接', 'Dokploy connections'],
   addConnection: ['添加连接', 'Add connection'],
   add: ['添加', 'Add'],

@@ -27,6 +27,158 @@ struct Mapping {
     /// that do not report a limit accept `LEGACY_MAPPING_STREAMS`.
     stream_limit: usize,
 }
+/// Why the device would not serve one preview connection, as it reports it in
+/// `preview.refused`. `Unanswered` is the Relay's own: the device said nothing
+/// before the deadline (offline, or a Supervisor that predates the frame).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Refusal {
+    ServiceNotRunning,
+    LeaseRequired,
+    MappingStopped,
+    EnvironmentUnavailable,
+    Busy,
+    PreviewsDisabled,
+    Unanswered,
+    /// The Relay itself has no such mapping: the preview was stopped, or its
+    /// device is offline or no longer reports it. The port is not known here.
+    NotMapped,
+}
+impl Refusal {
+    fn parse(reason: &str) -> Self {
+        match reason {
+            "serviceNotRunning" => Self::ServiceNotRunning,
+            "leaseRequired" => Self::LeaseRequired,
+            "mappingStopped" => Self::MappingStopped,
+            "environmentUnavailable" => Self::EnvironmentUnavailable,
+            "busy" => Self::Busy,
+            "previewsDisabled" => Self::PreviewsDisabled,
+            // A reason a newer device added: still an immediate, honest answer.
+            _ => Self::Unanswered,
+        }
+    }
+    fn code(self) -> &'static str {
+        match self {
+            Self::ServiceNotRunning => "service-not-running",
+            Self::LeaseRequired => "lease-required",
+            Self::MappingStopped => "mapping-stopped",
+            Self::EnvironmentUnavailable => "environment-unavailable",
+            Self::Busy => "busy",
+            Self::PreviewsDisabled => "previews-disabled",
+            Self::Unanswered => "device-unavailable",
+            Self::NotMapped => "not-mapped",
+        }
+    }
+    /// Never 502 or 504: a CDN in front of the Relay (Cloudflare by default)
+    /// replaces those with its own error page, which hides this explanation
+    /// and reads as a broken Relay.
+    fn status(self) -> StatusCode {
+        match self {
+            Self::LeaseRequired => StatusCode::FORBIDDEN,
+            Self::MappingStopped | Self::PreviewsDisabled | Self::NotMapped => {
+                StatusCode::NOT_FOUND
+            }
+            _ => StatusCode::SERVICE_UNAVAILABLE,
+        }
+    }
+    fn title(self) -> &'static str {
+        match self {
+            Self::ServiceNotRunning => "Nothing is running on this port",
+            Self::LeaseRequired => "This preview link has expired",
+            Self::MappingStopped => "This preview was stopped",
+            Self::EnvironmentUnavailable => "The preview's environment is not running",
+            Self::Busy => "This preview is busy",
+            Self::PreviewsDisabled => "Previews are turned off on this device",
+            Self::Unanswered => "The device did not answer",
+            Self::NotMapped => "This preview is not available",
+        }
+    }
+    fn explanation(self, port: u16) -> String {
+        match self {
+            Self::ServiceNotRunning => format!(
+                "The preview address works, but no web service accepts connections on port {port} of the device. \
+                 Start the service again there, listening on 127.0.0.1:{port}, then reload this page. \
+                 A service that an agent thread started ends when that thread is closed."
+            ),
+            Self::LeaseRequired => format!(
+                "The device no longer accepts this link for port {port}. Open the port again from Pockymoe, \
+                 or have the agent run `pockymoe preview create --port {port}` for a fresh link."
+            ),
+            Self::MappingStopped => format!(
+                "Port {port} is no longer mapped on the device. Enabling the port again gives it a new address."
+            ),
+            Self::EnvironmentUnavailable => format!(
+                "Port {port} belongs to a thread whose isolated environment was stopped or replaced. \
+                 Start the environment, or create the preview again from that thread."
+            ),
+            Self::Busy => format!(
+                "Port {port} already serves as many connections as the device allows. Reload in a moment."
+            ),
+            Self::PreviewsDisabled => "This device does not serve web previews in its current mode.".into(),
+            Self::Unanswered => format!(
+                "The device did not open a connection to port {port} in time. Check that its Supervisor is online \
+                 and up to date, and that the service on 127.0.0.1:{port} is running."
+            ),
+            Self::NotMapped => "This address does not lead to a running preview: it was stopped, or its device \
+                 is offline. Check the device in Pockymoe, and open the port again from there or have the agent \
+                 run `pockymoe preview create` for a fresh link. A stopped preview gets a new address."
+                .into(),
+        }
+    }
+    /// A page for a browser navigation; one line for scripts, assets and tools.
+    fn response(self, port: Option<u16>, document: bool) -> Response {
+        let (title, explanation) = (self.title(), self.explanation(port.unwrap_or_default()));
+        let mut response = if document {
+            let escape = |text: &str| {
+                text.replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+            };
+            let body = format!(
+                "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+                 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+                 <meta name=\"color-scheme\" content=\"light dark\"><title>{title}</title>\
+                 <style>body{{font:16px/1.5 system-ui,sans-serif;margin:0;padding:12vh 24px;display:flex;justify-content:center}}\
+                 main{{max-width:34rem}}h1{{font-size:1.25rem;margin:0 0 .75rem}}p{{margin:0 0 1rem}}\
+                 small{{opacity:.7}}a{{color:inherit}}</style></head><body><main>\
+                 <h1>{title}</h1><p>{explanation}</p><p><a href=\"\">Try again</a></p>\
+                 <small>Pockymoe preview gateway{port} · {code}</small></main></body></html>",
+                title = escape(title),
+                explanation = escape(&explanation),
+                port = port.map(|port| format!(" · port {port}")).unwrap_or_default(),
+                code = self.code(),
+            );
+            (
+                self.status(),
+                [
+                    (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                    (
+                        header::CONTENT_SECURITY_POLICY,
+                        "default-src 'none'; style-src 'unsafe-inline'",
+                    ),
+                ],
+                body,
+            )
+                .into_response()
+        } else {
+            (self.status(), format!("{title}. {explanation}")).into_response()
+        };
+        let headers = response.headers_mut();
+        // Marked so the gateway's answer is never taken for the application's.
+        headers.insert("x-pockymoe-gateway", self.code().parse().unwrap());
+        headers.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+        if self == Self::Busy {
+            headers.insert(header::RETRY_AFTER, "1".parse().unwrap());
+        }
+        response
+    }
+}
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+impl std::error::Error for Refusal {}
+
 #[derive(Clone, PartialEq, Eq)]
 struct Grant {
     mapping: String,
@@ -51,7 +203,8 @@ struct Launch {
 struct Stream {
     mapping: Mapping,
     grant: Grant,
-    tx: Option<tokio::sync::oneshot::Sender<DuplexStream>>,
+    /// The device's answer: its data stream, or why it will not open one.
+    tx: Option<tokio::sync::oneshot::Sender<std::result::Result<DuplexStream, Refusal>>>,
     cancel: CancellationToken,
     closed: CancellationToken,
 }
@@ -887,6 +1040,41 @@ pub(super) fn update(
     });
 }
 
+/// A browser loading a page in a tab, as opposed to a script, asset or tool.
+fn navigation(request: &Request) -> bool {
+    matches!(*request.method(), Method::GET | Method::HEAD)
+        && request
+            .headers()
+            .get("sec-fetch-mode")
+            .is_some_and(|v| v == "navigate")
+        && request
+            .headers()
+            .get(header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("text/html"))
+}
+
+/// `preview.refused` from a device: the waiting request gets the reason now
+/// instead of the data-channel deadline. Only the connection that was asked
+/// can answer, and only before it opened the stream.
+pub(super) fn refused(state: &AppState, device: &str, connection: Uuid, message: &Value) {
+    let (Some(ticket), Some(reason)) = (message["ticket"].as_str(), message["reason"].as_str())
+    else {
+        return;
+    };
+    let waiting = {
+        let mut streams = state.preview.streams.lock().unwrap();
+        let ours = streams.get(ticket).is_some_and(|s| {
+            s.tx.is_some() && s.mapping.device == device && s.mapping.connection == connection
+        });
+        ours.then(|| streams.remove(ticket)).flatten()
+    };
+    if let Some(tx) = waiting.and_then(|stream| stream.tx) {
+        state.preview.released.notify_waiters();
+        let _ = tx.send(Err(Refusal::parse(reason)));
+    }
+}
+
 pub(super) fn disconnected(state: &AppState, device: &str, connection: Uuid) {
     let mut catalog = state.preview.mappings.lock().unwrap();
     catalog.retain(|_, m| !(m.device == device && m.connection == connection));
@@ -995,7 +1183,8 @@ pub(super) async fn middleware(
         return next.run(request).await;
     };
     let Some(mapping) = state.preview.mappings.lock().unwrap().get(&id).cloned() else {
-        return StatusCode::NOT_FOUND.into_response();
+        // Stopped or offline: still say so, in the gateway's words.
+        return Refusal::NotMapped.response(None, navigation(&request));
     };
     let Some(origin) = state.preview.origin(&id) else {
         return StatusCode::NOT_FOUND.into_response();
@@ -1091,6 +1280,9 @@ pub(super) async fn middleware(
         .headers()
         .get(header::UPGRADE)
         .is_some_and(|s| s.as_bytes().eq_ignore_ascii_case(b"websocket"));
+    // A person looking at a tab gets a page that says what to do; scripts,
+    // assets and WebSockets get the status and one line.
+    let document = !websocket && navigation(&request);
     let browser_upgrade = websocket.then(|| hyper::upgrade::on(&mut request));
     let query = app_query(request.uri().query().unwrap_or(""));
     let target = if query.is_empty() {
@@ -1142,7 +1334,13 @@ pub(super) async fn middleware(
     .await;
     result.unwrap_or_else(|error| {
         tracing::debug!(%error, mapping_id = %id, "port preview request failed");
-        (StatusCode::BAD_GATEWAY,"The device's local web service is unavailable. Check that the service and Supervisor are running.").into_response()
+        // Anything else (a reset stream, a timeout on headers) is the device or
+        // its service failing to answer.
+        let refusal = error
+            .downcast_ref::<Refusal>()
+            .copied()
+            .unwrap_or(Refusal::Unanswered);
+        refusal.response(Some(mapping.port), document)
     })
 }
 
@@ -1450,7 +1648,11 @@ async fn open_stream(
             json!({"type":"preview.open","mappingId":mapping.id,"ticket":ticket,"leaseId":grant.lease}).to_string(),
         )?;
     }
-    let stream = tokio::time::timeout(Duration::from_secs(10), rx).await??;
+    let stream = match tokio::time::timeout(Duration::from_secs(10), rx).await {
+        Ok(Ok(answer)) => answer?,
+        // The device never answered, or its connection went away meanwhile.
+        _ => return Err(Refusal::Unanswered.into()),
+    };
     drop(pending);
     Ok((stream, cancel, closed))
 }
@@ -1497,7 +1699,7 @@ async fn device_stream(
         .max_frame_size(128 * 1024)
         .on_upgrade(move |socket| async move {
             let (stream, bridge) = tokio::io::duplex(128 * 1024);
-            if tx.send(stream).is_ok() {
+            if tx.send(Ok(stream)).is_ok() {
                 guard.drained = bridge_socket(socket, bridge, cancel, &guard.state, grant).await;
             }
             drop(guard);
@@ -1889,7 +2091,7 @@ mod tests {
             .take()
             .unwrap();
         let (stream, _device) = tokio::io::duplex(1024);
-        tx.send(stream).unwrap();
+        tx.send(Ok(stream)).unwrap();
         assert!(task.await.unwrap().is_ok());
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
@@ -2297,7 +2499,7 @@ mod tests {
                     };
                     (stream.tx.take().unwrap(), stream.closed.clone())
                 };
-                if tx.send(relay).is_err() {
+                if tx.send(Ok(relay)).is_err() {
                     closed.cancel();
                     continue;
                 }
@@ -3208,7 +3410,7 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(failed.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(failed.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(posts.load(std::sync::atomic::Ordering::Relaxed), 1);
         assert_eq!(
             fixture.opens(),
@@ -3862,7 +4064,7 @@ mod tests {
             .tx
             .take()
             .unwrap();
-        sender.send(browser).unwrap();
+        sender.send(Ok(browser)).unwrap();
         let response = caller.await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.text().await.unwrap(), "ok");
@@ -3875,5 +4077,167 @@ mod tests {
         relay.abort();
         drop(state);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_device_refusal_answers_at_once_with_its_reason_and_never_a_502() {
+        let (state, dir, headers, mut rx, mapping) = lease_fixture("preview-refused").await;
+        state.preview.sessions.lock().unwrap().insert(
+            "test-cookie".into(),
+            Grant {
+                mapping: mapping.clone(),
+                device: "device".into(),
+                session: extract_session_token(&headers, &TokenQuery::default()).unwrap(),
+                lease: Some("test-lease".into()),
+                expires: std::time::Instant::now() + Duration::from_secs(60),
+            },
+        );
+        let connection = state.sockets.read().await["device"].connection_id;
+        let reason = Arc::new(std::sync::Mutex::new("serviceNotRunning"));
+        let (responder, answer) = (state.clone(), reason.clone());
+        let device = tokio::spawn(async move {
+            while let Some(frame) = rx.recv().await {
+                let frame: Value = serde_json::from_str(&frame).unwrap();
+                assert_eq!(frame["type"], "preview.open");
+                // Only the connection that was asked may answer for its ticket.
+                let stranger = json!({"ticket":frame["ticket"],"reason":"busy"});
+                refused(&responder, "device", Uuid::new_v4(), &stranger);
+                refused(&responder, "other-device", connection, &stranger);
+                let reason = *answer.lock().unwrap();
+                refused(
+                    &responder,
+                    "device",
+                    connection,
+                    &json!({"ticket":frame["ticket"],"reason":reason}),
+                );
+            }
+        });
+        let app = Router::new()
+            .fallback(|| async { StatusCode::IM_A_TEAPOT })
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                middleware,
+            ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let relay = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let browser = reqwest::Client::new();
+        let request = |path: &str| {
+            browser
+                .get(format!("{base}{path}"))
+                .header(header::HOST, format!("p-{mapping}.preview.example.test"))
+                .header(header::COOKIE, "__Host-rc_port_preview=test-cookie")
+        };
+
+        // A tab navigating to the preview gets a page that says what to do.
+        let started = std::time::Instant::now();
+        let page = request("/docs")
+            .header("sec-fetch-mode", "navigate")
+            .header(header::ACCEPT, "text/html,application/xhtml+xml")
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the reason arrives without waiting out the data-channel deadline"
+        );
+        assert_eq!(page.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(page.headers()["x-pockymoe-gateway"], "service-not-running");
+        assert_eq!(page.headers()[header::CACHE_CONTROL], "no-store");
+        assert!(page.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"));
+        let body = page.text().await.unwrap();
+        assert!(body.contains("Nothing is running on this port"), "{body}");
+        assert!(body.contains("127.0.0.1:4013"), "{body}");
+        assert!(!body.contains("<script"), "{body}");
+        // A script or asset request gets the same status and one line of text.
+        let asset = request("/app.js").send().await.unwrap();
+        assert_eq!(asset.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(asset.headers()["x-pockymoe-gateway"], "service-not-running");
+        let text = asset.text().await.unwrap();
+        assert!(
+            text.starts_with("Nothing is running on this port."),
+            "{text}"
+        );
+        assert!(!text.contains('<'), "{text}");
+        // A refused ticket frees its slot.
+        assert!(state.preview.streams.lock().unwrap().is_empty());
+
+        for (answer, status, code) in [
+            ("leaseRequired", StatusCode::FORBIDDEN, "lease-required"),
+            ("mappingStopped", StatusCode::NOT_FOUND, "mapping-stopped"),
+            (
+                "environmentUnavailable",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "environment-unavailable",
+            ),
+            ("busy", StatusCode::SERVICE_UNAVAILABLE, "busy"),
+            (
+                "previewsDisabled",
+                StatusCode::NOT_FOUND,
+                "previews-disabled",
+            ),
+            // A reason from a newer device is still an immediate answer.
+            (
+                "somethingNewer",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "device-unavailable",
+            ),
+        ] {
+            *reason.lock().unwrap() = answer;
+            let response = request("/").send().await.unwrap();
+            assert_eq!(response.status(), status, "{answer}");
+            assert_eq!(response.headers()["x-pockymoe-gateway"], code, "{answer}");
+            // A CDN replaces an origin 502 or 504 with its own error page.
+            assert!(!matches!(response.status().as_u16(), 502 | 504), "{answer}");
+        }
+        // After `preview stop` the Relay no longer knows the mapping: the link
+        // still explains itself instead of an empty 404.
+        update(&state, "device", connection, &json!([]), None);
+        let stopped = request("/docs")
+            .header("sec-fetch-mode", "navigate")
+            .header(header::ACCEPT, "text/html")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stopped.status(), StatusCode::NOT_FOUND);
+        assert_eq!(stopped.headers()["x-pockymoe-gateway"], "not-mapped");
+        let body = stopped.text().await.unwrap();
+        assert!(body.contains("This preview is not available"), "{body}");
+        assert!(!body.contains("port 0"), "{body}");
+        let asset = request("/app.js").send().await.unwrap();
+        assert_eq!(asset.status(), StatusCode::NOT_FOUND);
+        assert_eq!(asset.headers()["x-pockymoe-gateway"], "not-mapped");
+        relay.abort();
+        device.abort();
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn refusal_pages_escape_and_never_use_a_status_a_cdn_replaces() {
+        for refusal in [
+            Refusal::ServiceNotRunning,
+            Refusal::LeaseRequired,
+            Refusal::MappingStopped,
+            Refusal::EnvironmentUnavailable,
+            Refusal::Busy,
+            Refusal::PreviewsDisabled,
+            Refusal::Unanswered,
+            Refusal::NotMapped,
+        ] {
+            assert!(!matches!(refusal.status().as_u16(), 502 | 504), "{refusal}");
+            assert!(!refusal.explanation(4013).contains('<'), "{refusal}");
+            assert_eq!(
+                refusal.response(Some(4013), true).headers()["x-pockymoe-gateway"],
+                refusal.code()
+            );
+        }
+        assert_eq!(
+            Refusal::Busy.response(Some(4013), false).headers()[header::RETRY_AFTER],
+            "1"
+        );
     }
 }

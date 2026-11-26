@@ -46,6 +46,7 @@ for line in sys.stdin:
         server_command: command,
         install_command: None,
         model_list_command: None,
+        sign_in_command: None,
     };
     let runtime = AcpRuntime::bound(Provider::Codex, "codex", 5_000);
     let (_, mut live) = runtime
@@ -72,4 +73,63 @@ for line in sys.stdin:
     .unwrap();
     assert_eq!(live.model.as_deref(), Some("gpt-6.2-sol"));
     live.process.shutdown().await.unwrap();
+}
+
+/// An agent without an account: initialize succeeds, session/new answers
+/// ACP's auth_required (as `agy acp` 1.5.18 and other agents do).
+#[tokio::test]
+async fn an_unsigned_agent_reports_sign_in_required_instead_of_a_raw_rpc_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("agent.py");
+    std::fs::write(&script, r#"
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    if request['method'] == 'initialize':
+        result = {'protocolVersion': 1, 'agentInfo': {'name': 'Fixture Agent', 'version': '1.0.0'},
+                  'agentCapabilities': {'loadSession': True, 'promptCapabilities': {'image': True}},
+                  'authMethods': [{'id': 'oauth-personal', 'name': 'Log in'}]}
+        print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+    else:
+        print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32000, 'message': 'Authentication required'}}), flush=True)
+"#).unwrap();
+    let command = shell_words::join([
+        which::which("python3").unwrap().to_str().unwrap(),
+        script.to_str().unwrap(),
+    ]);
+    let def = AcpAgentDef {
+        id: "copilot".into(),
+        display_name: "GitHub Copilot CLI".into(),
+        description: String::new(),
+        transport: "native".into(),
+        base_command: command.clone(),
+        server_command: command,
+        install_command: None,
+        model_list_command: None,
+        sign_in_command: Some("copilot login --device-code".into()),
+    };
+    let runtime = AcpRuntime::bound(Provider::Acp, "copilot", 5_000);
+    let error = runtime
+        .spawn_session(
+            &def,
+            dir.path().to_str().unwrap(),
+            ProductSessionPolicy::default(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        error,
+        "Sign-in required: GitHub Copilot CLI is not signed in. To use it, run \
+         `copilot login --device-code` in a terminal on this machine, then try again."
+    );
+    // Settings and the agent list read it as a sign-in, not a failure.
+    use crate::actor::AgentRuntime;
+    assert_eq!(runtime.sign_in_error("copilot"), Some(error));
+    assert_eq!(runtime.sign_in_error("claude"), None);
 }

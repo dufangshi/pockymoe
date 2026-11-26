@@ -7,7 +7,7 @@
 | Ctrl+Enter to send（默认） | Ctrl+Enter | Enter（Shift+Enter 也可） | Ctrl+Shift+Enter |
 | Enter to send | Enter | Shift+Enter | Ctrl+Enter |
 
-macOS 上 Command 可代替 Ctrl。中文等输入法组合期间 Enter 不触发发送；持续按住快捷键不重复提交。Shell 保留原有按键行为。
+发送是唯一同时接受 Ctrl 和 ⌘ 的快捷键（见[界面原则 §19](ui-principles.md)），在所有系统上都如此。界面按当前平台写按键：Mac 上显示 ⌘Enter、⇧⌘Enter，并注明 Ctrl 也可用；其他系统显示 Ctrl+Enter、Ctrl+Shift+Enter，并注明 Mac 上用 ⌘。中文等输入法组合期间 Enter 不触发发送；持续按住快捷键不重复提交。Shell 保留原有按键行为。
 
 此设置通过 `/relay/account/preferences` 的 GET/PATCH 存在 Relay 的 `relay_account_preferences` 中，以当前登录用户为唯一键。同账号的设备和浏览器共用，其他账号独立。页面打开、重新获得焦点或从后台返回时读取账号配置；保存失败会提示错误并保留上一次成功保存的模式。独立本地 Supervisor 页没有 Relay 账号时，选择存在此浏览器的 localStorage（`pockymoe.composer.sendShortcut`），设置页写明「保存在此浏览器」；登录 Relay 后以账号为准。
 

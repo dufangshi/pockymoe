@@ -314,16 +314,37 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 26,
+        name: "detached_thread_creator",
+        apply: |conn| {
+            // The thread that asked for a detached thread. Audit only: it is not a
+            // parent and grants no control. NULL for every existing row.
+            if !table_columns(conn, "threads")?.contains("created_by_thread_id") {
+                conn.execute(
+                    "ALTER TABLE threads ADD COLUMN created_by_thread_id TEXT",
+                    [],
+                )?;
+            }
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS threads_created_by_idx
+                 ON threads(created_by_thread_id, created_at)
+                 WHERE created_by_thread_id IS NOT NULL",
+                [],
+            )?;
+            Ok(())
+        },
+    },
+    Migration {
+        version: 27,
         name: "turn_checkpoints",
         apply: crate::worktrees::checkpoints::migrate,
     },
     Migration {
-        version: 27,
+        version: 28,
         name: "checkpoint_statistics_and_rewound_accounting",
         apply: crate::worktrees::checkpoints::migrate_review,
     },
     Migration {
-        version: 28,
+        version: 29,
         name: "harness_handoff",
         apply: |conn| {
             for column in ["provider", "agent_id"] {
@@ -339,17 +360,17 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
         },
     },
     Migration {
-        version: 29,
+        version: 30,
         name: "thread_source_links",
         apply: crate::source_control::migrate,
     },
     Migration {
-        version: 30,
+        version: 31,
         name: "pull_request_review",
         apply: crate::source_control::review::store::migrate,
     },
     Migration {
-        version: 31,
+        version: 32,
         name: "thread_harness_protocol",
         // NULL on threads created before the column: Codex and Claude threads
         // then run natively at their next load (docs/native-harnesses.md).

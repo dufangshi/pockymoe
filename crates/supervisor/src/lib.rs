@@ -39,6 +39,7 @@ mod plugins;
 mod ports;
 mod secure_transport;
 mod shells;
+mod sign_in_shell;
 mod socket;
 mod thread_uploads;
 mod treer;

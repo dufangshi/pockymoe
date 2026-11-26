@@ -11,14 +11,16 @@ in the Web UI, or what people you share threads and devices with can do.
 
 | Where | Effect |
 | --- | --- |
-| **Devices** page, a device's **⋯ → Agent isolation…** | Agents on other devices cannot list, read or message this device's threads, list its workspaces, read its files or create threads on it. |
-| **Workspaces** page, a workspace's **⋯ → Isolate workspace** | Agents outside the workspace, on this device or another one, cannot list, read, message, wait for, close or create threads in it, set automations on them, run commands there or read its files. |
+| A device's **⋯ → Isolate…** (its card, its row on a phone, the map) | Agents on other devices cannot list, read or message this device's threads, list its workspaces, read its files or create threads on it. |
+| **Workspaces** page, a workspace's **⋯ → Isolate** (**Stop isolating** to undo) | Agents outside the workspace, on this device or another one, cannot list, read, message, wait for, close or create threads in it, set automations on them, run commands there or read its files. |
 
 Isolation is inbound only: threads of an isolated device or workspace can still
-reach unisolated ones. An isolated workspace shows an **Isolated** badge; a
-device row shows one once the Devices page has talked to the device. On a
-computer's Devices page a card shows a small lock after the device's name, read
-from the device while it is online and again after its settings close.
+reach unisolated ones. An isolated workspace or device shows the same mark, a lock
+with **Isolated**; tapping it says what isolation keeps out. A device card and
+the device's own page read it from the device while it is online and again after
+one of its windows closes (a narrow card keeps the lock alone). The switch is the
+device's **⋯ → Isolate…** window and the **General** section of its page's
+**Settings** tab.
 
 Isolation is stored on the device (KV key `agent:isolation`) and enforced there;
 the relay can neither see nor change it. Only the owner can change it:
@@ -69,8 +71,8 @@ change:
   list, so that agent only learns that the owner can see the shares on the
   Devices page (`crates/supervisor/src/peer_shared.rs`). The device's command
   line (a machine credential) always gets the list.
-- On the Devices page the icon on the device row, and the device's **Agent
-  isolation** window, list the same shares from the owner's own sharing list,
+- On the device's own page the icon in its status line, and the device's
+  **Isolation** window and settings, list the same shares from the owner's own sharing list,
   with a link to **Sharing**. Revoke them or make them view only without new
   threads to lift the rule.
 

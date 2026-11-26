@@ -14,6 +14,11 @@ vi.mock('../../lib/api', async original => ({
   fetchAgentBackends: api.backends, fetchWorkspaces: api.workspaces,
   fetchAgentHarnessCatalog: api.catalog, postThreadHarnessAction: api.harness,
 }));
+vi.mock('../../components/HarnessSignInDialog', () => ({
+  HarnessSignInDialog: ({ agentId, name, deviceId, onClose }: { agentId: string; name: string; deviceId: string | null; onClose: () => void }) => (
+    <div role="dialog" aria-label={`Sign in to ${name}`} data-agent={agentId} data-device={String(deviceId)}><button type="button" onClick={onClose}>Close sign-in</button></div>
+  ),
+}));
 vi.mock('../../components/AppShellNavContext', () => ({ useAppShellNav: () => ({ defaultBackend: 'acp' }) }));
 const host = vi.hoisted(() => ({ scoped: false }));
 vi.mock('../../lib/hostCapabilities', () => ({ useHostScope: () => host.scoped ? { kind:'treerAgent' } : null }));
@@ -384,4 +389,40 @@ it('offers no worktree to a host-scoped form', async () => {
   host.scoped = true; installed = true; mount();
   await screen.findByRole('button', { name: /New thread/i });
   expect(screen.queryByRole('switch', { name: 'New worktree' })).toBeNull();
+});
+it('marks an agent that needs a sign-in, says how, and opens the sign-in window', async () => {
+  const signInMessage = 'Sign-in required: GitHub Copilot CLI is not signed in. To use it, run `copilot login --device-code` in a terminal on this machine, then try again.';
+  const signedOut = [
+    agent(true),
+    { ...agent(true), id: 'copilot', model: 'copilot', displayName: 'GitHub Copilot CLI', isDefault: false, acpAgent: { ...agent(true).acpAgent, transport: 'native', serverCommand: 'copilot --acp', connectionStatus: 'sign_in_required', signInCommand: 'copilot login --device-code', statusMessage: signInMessage } },
+    { ...agent(true), id: 'gemini', model: 'gemini', displayName: 'Gemini CLI', isDefault: false, acpAgent: { ...agent(true).acpAgent, transport: 'native', serverCommand: 'gemini --acp', connectionStatus: 'sign_in_required', signInCommand: null, statusMessage: 'Sign-in required: Gemini CLI is not signed in.' } },
+  ];
+  api.agents.mockResolvedValue(signedOut);
+  mount();
+  const copilot = (await screen.findByText('GitHub Copilot CLI')).closest('label')!;
+  expect(copilot).toHaveTextContent('Sign-in needed');
+  expect(copilot).toHaveTextContent('Sign in here: this opens a terminal on the device that runs copilot login --device-code.');
+  expect(within(copilot).getByRole('radio')).toBeEnabled();
+  const gemini = screen.getByText('Gemini CLI').closest('label')!;
+  expect(gemini).toHaveTextContent('Sign in with the agent\'s own command-line tool on this device, then try again.');
+  // Only an agent with a sign-in command gets the button.
+  expect(screen.getAllByRole('button', { name: /^Sign in to / })).toHaveLength(1);
+  expect(screen.getByText('OpenAI Codex').closest('label')).not.toHaveTextContent('Sign-in needed');
+  const agentsBefore = api.agents.mock.calls.length;
+  fireEvent.click(screen.getByRole('button', { name: 'Sign in to GitHub Copilot CLI' }));
+  const window = await screen.findByRole('dialog', { name: 'Sign in to GitHub Copilot CLI' });
+  expect(window).toHaveAttribute('data-agent', 'copilot');
+  expect(window).toHaveAttribute('data-device', 'null');
+  fireEvent.click(within(window).getByRole('button', { name: 'Close sign-in' }));
+  // Closing the window shows the refreshed state.
+  await waitFor(() => expect(api.agents.mock.calls.length).toBeGreaterThan(agentsBefore));
+  expect(screen.queryByRole('dialog', { name: /Sign in to/ })).toBeNull();
+});
+it('a scoped agent interface explains the sign-in but cannot open a terminal', async () => {
+  host.scoped = true;
+  api.agents.mockResolvedValue([agent(true), { ...agent(true), id: 'copilot', model: 'copilot', displayName: 'GitHub Copilot CLI', isDefault: false, acpAgent: { ...agent(true).acpAgent, connectionStatus: 'sign_in_required', signInCommand: 'copilot login --device-code', statusMessage: 'Sign-in required: x' } }]);
+  mount();
+  const copilot = (await screen.findByText('GitHub Copilot CLI')).closest('label')!;
+  expect(copilot).toHaveTextContent('Run copilot login --device-code in a terminal on this device to sign in, then try again.');
+  expect(screen.queryByRole('button', { name: /^Sign in to / })).toBeNull();
 });

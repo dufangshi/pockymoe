@@ -5,6 +5,7 @@ import { ArrowLeftRight, Ban, ChevronDown, ChevronRight, Container, Cpu, Gpu, In
 import type { DeviceMetricsDto, HarnessProcessDto, HarnessProcessesDto, LoadedThreadDto, TemperatureReadingDto } from '@pockymoe/shared';
 import { ApiError, fetchHarnessProcesses, releaseThread, request } from '../lib/api';
 import { onHarnessRuntimeChange } from '../lib/harnessRuntimeEvents';
+import { chooseSettingsDevice } from '../lib/settingsDevice';
 import { useDocumentVisible } from '../lib/useDocumentVisible';
 import { useAppShellNav } from './AppShellNavContext';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -247,6 +248,9 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
         const sample = await request<DeviceMetricsDto>('api/device/metrics', {
           signal: controller.signal,
         }, { deviceId });
+        // An answer without the readings (a proxy, an odd Supervisor) is no sample:
+        // it must not take down the page that shows it, such as a phone's device cards.
+        if (!sample?.cpu || !Array.isArray(sample.cpu.cores) || !sample.memory || !sample.swap || !sample.cpuPower || !Array.isArray(sample.gpus) || !Array.isArray(sample.hardwareNotes)) throw new Error('Malformed device metrics');
         if (!disposed) {
           setData(sample);
           setError(null);
@@ -485,7 +489,7 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
                         )}
                         {shellNav?.openSettingsSection && (
                           <button type="button" className="dm-harness-settings" title={translate('devices.harnessResourceSettings')} aria-label={translate('devices.harnessResourceSettings')}
-                            onClick={() => { setOpen(false); shellNav.openSettingsSection?.('resources'); }}>
+                            onClick={() => { setOpen(false); if (deviceId) chooseSettingsDevice(deviceId); shellNav.openSettingsSection?.('resources', deviceId); }}>
                             <Settings aria-hidden />
                           </button>
                         )}

@@ -238,7 +238,7 @@ it('opens the resources settings from the gear', async () => {
   const openSettingsSection = vi.fn();
   fireEvent.click(await openMonitor({ openSettingsSection }));
   fireEvent.click(await screen.findByRole('button', { name: 'Resource settings' }));
-  expect(openSettingsSection).toHaveBeenCalledWith('resources');
+  expect(openSettingsSection).toHaveBeenCalledWith('resources', undefined);
   await waitFor(() => expect(screen.queryByText('Supervisor 680 MiB')).toBeNull());
 });
 
@@ -248,4 +248,14 @@ it('labels busy, viewed and recently active threads', () => {
   expect(harnessState(thread({ busy: ['goal', 'turn'] }), now)).toBe('Running');
   expect(harnessState(thread({ displayed: true }), now)).toBe('Viewing');
   expect(harnessState(thread({ lastActivityAt: new Date(now - 30_000).toISOString() }), now)).toBe('Idle');
+});
+
+// A phone's device cards show this monitor (issue #115): an answer without
+// readings must not take the page down with it.
+it('keeps a malformed metrics answer from crashing the page', async () => {
+  vi.mocked(request).mockReset().mockResolvedValue({});
+  render(<DeviceMonitor />);
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  fireEvent.click(screen.getByRole('button', { name: 'Device monitor' }));
+  expect(await screen.findByText('Device metrics unavailable; showing the last sample')).toBeTruthy();
 });

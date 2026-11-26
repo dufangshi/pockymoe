@@ -2,14 +2,20 @@
 @import "./matter-theme.css";
 @import "./theme-presets/picker.css";
 @import "@pockymoe/thread-ui/settings.css";
-.device-presence-dot { display: inline-block; width: 10px; height: 10px; flex-shrink: 0; border-radius: 50%; }
-.device-presence-dot.is-online { background: oklch(0.48 0.13 155); box-shadow: 0 0 0 3px oklch(0.48 0.13 155 / 14%); }
-.device-presence-dot.is-offline { border: 2px solid var(--theme-fg-muted); background: transparent; }
-.device-presence-label { flex-shrink: 0; border-radius: 999px; padding: 2px 7px; font-size: 11px; font-weight: 600; }
-.device-presence-label.is-online { color: oklch(0.36 0.1 155); background: oklch(0.85 0.07 155); }
-.device-presence-label.is-offline { color: var(--theme-fg-muted); background: var(--theme-muted); }
-:root[data-theme-effective='dark'] .device-presence-dot.is-online { background: oklch(0.78 0.18 155); box-shadow: 0 0 0 3px oklch(0.78 0.18 155 / 16%); }
-:root[data-theme-effective='dark'] .device-presence-label.is-online { color: oklch(0.85 0.13 155); background: oklch(0.3 0.055 155); }
+/* Which device the device-level settings act on (SettingsDeviceBar). */
+.settings-device-bar { display: flex; min-width: 0; min-height: 44px; align-items: center; gap: 10px; border-bottom: 1px solid var(--theme-border); padding-block: 4px; font-size: 13px; }
+.settings-device-bar-label { flex: none; color: var(--theme-fg-muted); }
+.settings-device-bar-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--theme-fg); }
+.settings-device-bar-select { min-width: 0; max-width: min(20rem, 100%); flex: 0 1 auto; }
+.settings-device-bar .admin-device-state { flex: none; color: var(--theme-fg-muted); font-size: 12px; }
+/* The settings window's one line to a device's own settings page (issue #115). */
+.settings-device-link { display: flex; min-width: 0; min-height: 44px; align-items: center; gap: 8px; border-bottom: 1px solid var(--theme-border); padding: 4px 26px; color: var(--theme-fg); font-size: 13px; font-weight: 600; text-decoration: none; }
+.settings-device-link > svg { flex: none; width: 15px; height: 15px; margin-left: auto; color: var(--theme-fg-muted); }
+.settings-device-link-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-device-link:active { background: var(--theme-hover); }
+.settings-device-link:focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: -2px; }
+@media (hover: hover) { .settings-device-link:hover { background: var(--theme-hover); } }
+@media (max-width: 639px) { .settings-device-link { padding-inline: 16px; } }
 .device-status-chip { display: inline-flex; min-height: 24px; flex-shrink: 0; align-items: center; gap: 4px; border: 1px solid transparent; border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 600; line-height: 1.2; white-space: nowrap; color: var(--theme-fg-muted); background: var(--theme-muted); }
 .device-status-chip:active { border-color: var(--theme-border); }
 @media (hover: hover) {
@@ -20,6 +26,13 @@
 /* Icon-only mark; the pseudo-element gives touch a 40px target. */
 .device-status-chip[data-tone='mark'] { position: relative; min-width: 24px; justify-content: center; padding: 2px; background: transparent; }
 .device-status-chip[data-tone='mark']::after { content: ''; position: absolute; inset: -8px; }
+/* "Isolated" on a device or a workspace (IsolationMark): a lock with the word, tapped for what it means.
+   Its own class: `.device-status-chip` in a device row is the protection state. */
+.isolation-mark { position: relative; display: inline-flex; min-height: 22px; flex-shrink: 0; align-items: center; gap: 3px; border: 1px solid var(--theme-border); border-radius: 999px; background: transparent; padding: 1px 7px; color: var(--theme-fg-muted); font-size: 11px; font-weight: 500; line-height: 1.2; white-space: nowrap; }
+.isolation-mark::after { content: ''; position: absolute; inset: -9px -4px; }
+.isolation-mark:active { background: var(--theme-hover); }
+@media (hover: hover) { .isolation-mark:hover { background: var(--theme-hover); } }
+.isolation-mark:focus-visible { outline: 2px solid var(--theme-accent-strong); outline-offset: 1px; }
 .device-status-chip[data-tone='info'] { color: var(--status-info-fg); background: var(--status-info-bg); }
 .device-status-chip[data-tone='warn'] { color: var(--status-warning-fg); background: var(--status-warning-bg); }
 .device-status-chip[data-tone='error'] { color: var(--status-danger-fg); background: var(--status-danger-bg); }
@@ -3009,6 +3022,13 @@ main:has(.product-navigation) { padding-top: 0 !important; }
     border-radius: 18px 18px 0 0; padding: 20px 20px max(20px, env(safe-area-inset-bottom));
     animation: host-secondary-enter 180ms ease-out;
   }
+}
+/* The sign-in window (HarnessSignInDialog): the command may be a long path,
+   and on a phone the sheet keeps narrower side padding so the terminal's key
+   bar still has nine keys of at least 40px (UI §10). */
+.harness-sign-in-dialog [data-slot='dialog-description'] { overflow-wrap: anywhere; }
+@media (max-width: 639px) {
+  .harness-sign-in-dialog.host-secondary-window[data-slot='dialog-content'] { padding-inline: 12px; }
 }
 /* Rises 24px from wherever it sits, above a keyboard too. */
 @keyframes host-secondary-enter { from { opacity: 0; margin-bottom: -24px; } }

@@ -39,7 +39,8 @@ test('route content frame sampling', async ({ page }) => {
   });
   await go('/devices/device-0/threads/t-0');
   await expect(page.locator('[data-testid="thread-scroll-container"]').first()).toBeVisible();
-  await page.getByRole('button', { name: '展开', exact: true }).click();
+  // The long message folds behind "展开全文（还有约 N 字）" (shared UI chat.showMoreChars).
+  await page.getByRole('button', { name: /^展开全文/ }).click();
   await expect(page.locator('[data-testid="thread-scroll-container"]').first()).toContainText('History line 99 for t-0.');
   await page.locator('[data-testid="thread-scroll-container"]').first().evaluate(el => { el.setAttribute('data-retained-probe', 'yes'); el.scrollTop = el.scrollHeight; });
   // Let the initial tail-follow frames finish, then model the reader moving

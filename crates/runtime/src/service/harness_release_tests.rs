@@ -1199,3 +1199,39 @@ async fn a_thread_stops_its_delegate_and_withdraws_only_its_own_queued_messages(
         (json!(false), json!(0))
     );
 }
+
+#[test]
+fn only_processes_that_end_with_the_thread_count_as_its_preview_servers() {
+    let session = |thread: &str, process: &str, root: u32| {
+        (Some(thread.to_owned()), process.to_owned(), Some(root))
+    };
+    let sessions = vec![
+        session("delegate", "own", 10),
+        // A fork served by its source's process: closing the fork keeps it.
+        session("fork", "shared", 20),
+        session("source", "shared", 20),
+        session("other", "elsewhere", 30),
+        (None, "unknown".to_owned(), Some(40)),
+        (Some("unloaded".to_owned()), "no-pid".to_owned(), None),
+    ];
+    assert_eq!(super::roots_ending_with("delegate", &sessions), vec![10]);
+    assert!(super::roots_ending_with("fork", &sessions).is_empty());
+    assert!(super::roots_ending_with("unloaded", &sessions).is_empty());
+    assert!(super::roots_ending_with("nobody", &sessions).is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_service_in_the_thread_process_tree_is_found_by_its_port() {
+    // This test process stands in for a harness whose tree holds a dev server.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let me = std::process::id();
+    let found = super::listeners_in_trees(&[me], &[port, 1]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!((found[0].port, found[0].pid), (port, me));
+    assert!(!found[0].name.is_empty());
+    assert!(super::listeners_in_trees(&[], &[port]).is_empty());
+    drop(listener);
+    assert!(super::listeners_in_trees(&[me], &[port]).is_empty());
+}

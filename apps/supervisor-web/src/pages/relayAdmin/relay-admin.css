@@ -687,13 +687,7 @@
 .admin-key-mark { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .admin-key-mark.is-set { color: var(--status-success-fg); }
 .admin-key-mark.is-missing { color: var(--status-warning-fg); }
-/* Device connection state, by shape (docs/ui-principles.md): solid dot online,
-   hollow circle offline, diamond reconnecting often. */
-.admin-device-state { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.admin-device-state-mark { flex: none; width: 9px; height: 9px; border-radius: 999px; }
-.admin-device-state.is-online .admin-device-state-mark { background: var(--admin-state-ink, var(--status-success-fg)); }
-.admin-device-state.is-offline .admin-device-state-mark { border: 1.5px solid var(--admin-state-ink, var(--theme-fg-muted)); background: transparent; }
-.admin-device-state.is-unstable .admin-device-state-mark { width: 8px; height: 8px; border-radius: 1px; background: var(--admin-state-ink, var(--status-warning-fg)); transform: rotate(45deg); }
+/* Device connection state: components/device-state.css, loaded with DeviceStateMark. */
 .admin-protection { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .admin-protection.is-protected { color: var(--status-success-fg); }
 .admin-protection.is-unprotected { color: var(--status-warning-fg); }

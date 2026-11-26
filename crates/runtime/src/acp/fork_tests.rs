@@ -20,6 +20,7 @@ async fn codex_fork_releases_writer_before_independent_load() {
         server_command: command,
         install_command: None,
         model_list_command: None,
+        sign_in_command: None,
     };
     let runtime = AcpRuntime::bound(Provider::Codex, "codex", 5_000);
     let cwd = dir.path().to_str().unwrap();
