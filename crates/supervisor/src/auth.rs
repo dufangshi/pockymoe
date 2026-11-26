@@ -111,6 +111,14 @@ pub async fn require_auth(
     {
         return next.run(request).await;
     }
+    // Without sign-in, a browser page on a rebound DNS name could drive the
+    // whole API; tunnel requests never come from such a page.
+    if !auth_required(&state) && request.extensions().get::<TrustedRelayForward>().is_none() {
+        if let Some(refusal) = crate::local_hosts::refuse(&state, request.headers(), request.uri())
+        {
+            return refusal;
+        }
+    }
     let path = request.uri().path();
     if let Some((enabled, feature)) = crate::host_policy::route_feature(&state, path) {
         if let Err(error) = pockymoe_runtime::host_mode::require_feature(enabled, feature) {

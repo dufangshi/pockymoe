@@ -16,6 +16,7 @@ mod isolation;
 #[cfg(test)]
 mod isolation_tests;
 mod linked_files;
+mod local_hosts;
 #[cfg(test)]
 mod local_passcode_tests;
 mod management;
