@@ -208,6 +208,9 @@ async fn run_as(
                 .context("source-control action required")?;
             let mut scoped = input.clone();
             scoped["agentCaller"] = json!(caller.is_some());
+            if action == "review" {
+                return state.source_review_action(id, &scoped).await;
+            }
             state.source_control_action(id, action, scoped).await
         }
         "checkpointList" | "checkpointDiff" | "checkpointRestore" | "checkpointUndo"

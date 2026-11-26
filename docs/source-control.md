@@ -47,6 +47,105 @@ Bitbucket and Azure watch are currently unavailable. REST summaries do not provi
 the same required-check and merge-queue detail as GitHub GraphQL.
 One watch is active per thread. Starting another replaces the previous watch.
 
+## Pull requests page and review
+
+Workspaces → Pull requests (`/pull-requests`, `/devices/ID/pull-requests`) lists the
+PRs of every repository this device knows: the remotes of its workspaces (fork
+upstreams included) and repositories of linked PRs. The state (open, merged,
+closed, all) is read from the hosts; involvement (authored, review requested),
+review decision, checks, drafts and repository narrow the same list, and the
+search box accepts `author:`, `label:`, `-label:`, `draft:`, `is:draft` and
+`review:`. Sorts: merge readiness (approved and passing first, drafts and
+failing later), updated, newest, oldest, largest, smallest. The last filters are
+kept per browser; saved views are kept on the Supervisor
+(`/api/source-control/pull-request-views`), so every browser of the device sees them.
+
+An open PR shows Conversation (description, reviewers, comments, reviews, review
+threads with Reply and Resolve), Code (changed files with the Git panel's diff
+viewer, a file list with Viewed ticks, threads and drafts under their lines),
+Commits, Checks (logs, Rerun failed jobs where the host allows it) and Guide.
+"Open beside thread" opens a linked thread with `?pr=URL`, which shows the same
+review in its Git dock; the dock's PR view also has a Review button per linked PR.
+
+- **Drafts.** Selected diff lines or a whole file become draft comments, stored
+  on the Supervisor (table `pull_request_drafts`) per PR and per author, so a phone
+  and a desktop see the same drafts. Agents have their own drafts and never see or
+  send the owner's. The review summary is a draft too. Submit sends Comment,
+  Approve or Request changes with every draft in one review; only what was sent is
+  cleared. A draft written on an older head says so.
+- **Head guard.** The page pins the head it loaded. A poll (every minute and when
+  the page shows again) notices new commits and offers "Load new commits". Submit
+  and merge carry that head and are refused when the host has moved on (GitHub,
+  Forgejo, Azure and GitLab approval also guard in the write itself).
+- **Viewed files.** A ticked file folds away. GitHub keeps the state itself
+  (`markFileAsViewed`; its dismissed state shows as Changed). Other hosts keep it
+  in `pull_request_viewed` with the file's blob id (else a digest of its diff): a
+  push that changes the file shows it as Changed.
+- **Merging.** Methods follow the repository. "Remove agent credits" (default in
+  Settings → Source control) reads the host's default message (GitHub
+  `viewerMergeBodyText`, GitLab default merge/squash messages, otherwise built
+  from the commits), drops `Co-authored-by` lines whose e-mail belongs to a coding
+  agent (`noreply@anthropic.com`, `codex@openai.com`, Copilot, Cursor and others)
+  and "Generated with …" lines, keeps human co-authors and code blocks, and shows
+  the result before merging. Rebase merges keep the original commits, so credits
+  stay there. Auto-merge, ready for review, convert to draft, close, reopen and
+  request reviewers follow the host; GitHub also opens revert PRs.
+- **Diffs after a push.** Forgejo, Bitbucket and Azure refresh a PR's diff some
+  time after a push. With a local checkout the Code tab and the guide fetch the
+  head branch (from the fork for fork PRs) into `refs/pockymoe/review/…`, check it
+  is the head the host reports, and diff locally; the refs are removed afterwards.
+
+### Review guides
+
+Guide → Write guide produces an ordered tour of the change: stops in reading
+order with a summary, an optional "look closely" call (tradeoff, contract,
+product, risk, accessibility), code excerpts, line notes and questions; mechanical
+files are grouped at the end. The writer runs in a temporary shared clone of the
+local repository at the PR head (no checkout in the user's working tree, files
+read-only): Codex with `--sandbox read-only`, or Claude Code limited to Read, Grep,
+Glob and `git diff/log/show`, 15 minutes at most; "Saved model connection" sends
+the diff in the prompt instead. The answer is checked against the real diff
+(excerpts clamped into one hunk and 25 lines, notes inside excerpts, every changed
+file placed once, an "Other files" stop for the rest) and stored per PR in
+`pull_request_guides`; a guide for an older head is marked and can be rewritten.
+Selected excerpt lines become drafts or a question for an agent ("Ask agent"
+sends to a linked thread's composer or starts a new thread with the question).
+Settings → Source control → Pull request review holds the writer, model and the
+guide instructions, with an override per workspace. A guide needs a workspace with
+the repository on this device.
+
+### Hosts
+
+| Host | Review | Line / file comments | Reply / resolve | Viewed | Rerun | Other |
+| --- | --- | --- | --- | --- | --- | --- |
+| GitHub | Comment, Approve, Request changes (one GraphQL review) | both, ranges | both | on GitHub | failed jobs of a run | revert PR, auto-merge |
+| GitLab | Comment, Approve (`sha` guard), Request changes | both (range noted in the text) | both | device | pipeline retry | auto-merge |
+| Forgejo / Gitea | Comment, Approve, Request changes (needs a summary) | lines; file comments go into the review text; ranges noted | reply as a one-comment review on the line; no resolve API | device | — | auto-merge |
+| Bitbucket | Comment, Approve, Request changes | both | both | device | — | no merge (no atomic head guard), cannot reopen |
+| Azure DevOps | Comment, Approve and Request changes as votes | both | both | device | — | files without patches unless the repository is local |
+
+### Agents
+
+`pockymoe pr review show|files|comment|drafts|discard|submit|reply|resolve|viewed|reviewers|state|merge|rerun|revert|guide`
+gives agents the same review state and actions on their own thread's repository
+or a linked PR (`pockymoe guide pr`). Agent drafts are separate from the owner's.
+
+### HTTP
+
+Owner-only, like every `/api/source-control/` route:
+
+- `GET /api/source-control/pull-requests?state=open|closed|merged|all` → `{pulls, repositories, viewers, fetchedAt}`
+- `POST /api/source-control/pull-requests/{action}` with `url` and the action's fields:
+  `detail`, `head`, `files`, `drafts`, `draftSave`, `draftDelete`, `submit`
+  (`event`, `body`, `expectedHead`), `reply`, `resolve`, `comment`, `update`, `viewed`
+  (`paths`, `viewed`, `revisions`), `reviewers` (`add`, `remove`), `state`
+  (`close|reopen|draft|ready`), `merge` / `autoMerge` (`method`, `expectedHead`,
+  `removeAgentCredits`), `mergeMessage`, `rerun` (`token`), `revert`, `guide`,
+  `guideShow`, `link` (`threadId`), `workOn` (`workspaceId`).
+- `GET/PUT /api/source-control/pull-request-views`
+- Settings: `review` in `/api/source-control/settings` (`removeAgentCredits`,
+  `guideSource`, `guideModel`, `guideInstructions`, `guideWorkspaceInstructions`).
+
 ## Repository creation
 
 Settings → Source control can clone a Git URL into the configured development

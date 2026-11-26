@@ -1,4 +1,8 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render as baseRender, screen, waitFor } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { MemoryRouter } from 'react-router-dom';
+// The dock reads `?pr=` from the route, so it renders inside a router.
+const render = (ui: ReactElement) => { const view = baseRender(ui, { wrapper: MemoryRouter }); return view; };
 import { beforeEach, expect, it, vi } from 'vitest';
 import { setLocale } from '@pockymoe/thread-ui/i18n';
 import * as api from '../lib/environmentApi';

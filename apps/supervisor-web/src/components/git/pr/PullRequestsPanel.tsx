@@ -1,6 +1,10 @@
 import { PublishRepository } from './RepositoryActions';
 import { useCallback, useEffect, useState } from 'react';
-import { ExternalLink, RefreshCw, X } from 'lucide-react';
+import { ExternalLink, GitPullRequest, MessageSquareText, RefreshCw, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { relayScopedPath } from '../../../lib/relayRoutes';
+import { PullRequestReview } from './review/PullRequestReview';
+import { rt } from './review/reviewText';
 import { Select, confirmAsync, ErrorMark, PathChip } from '@pockymoe/thread-ui';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
 import { request } from '../../../lib/api';
@@ -11,8 +15,10 @@ type Data = Record<string, unknown>;
 function string(value:unknown) {return typeof value === 'string' ? value : '';}
 function stateLabel(value:unknown){const state=string(value).toLowerCase();return ['open','opened','active'].includes(state)?t('open'):['closed','declined','abandoned'].includes(state)?t('closed'):['merged','completed'].includes(state)?t('merged'):state;}
 function headOid(data:Data) { return string((data.head as Data)?.sha) || string(data.sha) || string(((data.source as Data)?.commit as Data)?.hash) || string((data.lastMergeSourceCommit as Data)?.commitId); }
-export function PullRequestsPanel({threadId,workingCopyId,deviceId}:{threadId:string;workingCopyId?:string|undefined;deviceId?:string|null|undefined}) {
+export function PullRequestsPanel({threadId,workingCopyId,deviceId,initialUrl}:{threadId:string;workingCopyId?:string|undefined;deviceId?:string|null|undefined;initialUrl?:string|undefined}) {
   useI18n();
+  // A linked PR under review fills the dock; Back returns to the links.
+  const [reviewing,setReviewing]=useState<string|null>(initialUrl??null);
   const [links,setLinks]=useState<ItemLink[]>([]); const [url,setUrl]=useState(''); const [error,setError]=useState(''); const [busy,setBusy]=useState(false);
   const [itemKind,setItemKind]=useState('pr');const [search,setSearch]=useState('');
   const [creating,setCreating]=useState(false);const [title,setTitle]=useState('');const [body,setBody]=useState('');const [head,setHead]=useState('');const [base,setBase]=useState('main');const [draft,setDraft]=useState(true);
@@ -22,8 +28,9 @@ export function PullRequestsPanel({threadId,workingCopyId,deviceId}:{threadId:st
   const run=async(action:string,input:Record<string,unknown>={})=>{setBusy(true);setError('');try {const result=await sourceAction<Data>(threadId,action,{workingCopyId,...input},deviceId);await reload();return result;}catch(e){if(String(e).includes('confirmRunning')&&await confirmAsync({title:t('create'),description:t('runningConfirm'),confirmLabel:t('create')})){try{const result=await sourceAction<Data>(threadId,action,{workingCopyId,...input,confirmRunning:true},deviceId);await reload();return result;}catch(retry){setError(String(retry));return null;}}setError(String(e));return null;}finally{setBusy(false);}};
   const open=async(link:ItemLink)=>{setSelected(link);setExtra(null);setDetail(null);const result=await run('show',{number:link.number,kind:link.kind,url:link.url});if(result){const data=result.data as Data;setDetail(data);setTitle(string(data.title));setBody(string(data.body)||string(data.description));const watch=await run('watchStatus');setWatching(Boolean((watch?.state as Data)?.active));}};
   const itemInput=()=>({number:selected?.number,kind:selected?.kind,url:selected?.url});
+  if(reviewing)return <PullRequestReview url={reviewing} deviceId={deviceId} onBack={()=>setReviewing(null)}/>;
   return <section className="pr-panel" aria-label={t('title')}>
-    <div className="pr-toolbar"><strong>{t('title')}</strong><button type="button" disabled={busy} onClick={()=>{void run('scan').then(v=>{if(v)setExtra({repository:v.repository,authenticated:v.authenticated});});}} title={t('refresh')} aria-label={t('refresh')}><RefreshCw size={16}/></button><button type="button" onClick={()=>{setCreating(!creating);setSelected(null);setTitle('');setBody('');}}>{creating?t('cancel'):t('newPr')}</button></div>
+    <div className="pr-toolbar"><strong>{t('title')}</strong><Link className="pr-all-link" to={relayScopedPath('/pull-requests',deviceId)} aria-label={rt('allPullRequests')} title={rt('allPullRequests')}><GitPullRequest size={16} aria-hidden="true"/></Link><button type="button" disabled={busy} onClick={()=>{void run('scan').then(v=>{if(v)setExtra({repository:v.repository,authenticated:v.authenticated});});}} title={t('refresh')} aria-label={t('refresh')}><RefreshCw size={16}/></button><button type="button" onClick={()=>{setCreating(!creating);setSelected(null);setTitle('');setBody('');}}>{creating?t('cancel'):t('newPr')}</button></div>
     <form className="pr-toolbar" onSubmit={e=>{e.preventDefault();void run('list',{kind:itemKind,search}).then(v=>{if(v)setExtra(v.data);});}}><Select aria-label={t('kind')} value={itemKind} onValueChange={setItemKind} options={[{value:'pr',label:t('title')},{value:'issue',label:t('issues')}]}/><input aria-label={t('search')} placeholder={t('search')} value={search} onChange={e=>setSearch(e.target.value)}/><button disabled={busy}>{t('browse')}</button></form>
     {error&&<ErrorMark message={error}/>}
     <form className="pr-toolbar" onSubmit={e=>{e.preventDefault();void run('link',{url}).then(v=>{if(v)setUrl('');});}}><input aria-label={t('url')} placeholder={t('url')} type="url" required value={url} onChange={e=>setUrl(e.target.value)}/><button disabled={busy}>{t('link')}</button></form>
@@ -36,7 +43,7 @@ export function PullRequestsPanel({threadId,workingCopyId,deviceId}:{threadId:st
     <button type="button" disabled={busy} onClick={()=>{void run('cleanup').then(v=>{if(v)setExtra(v);});}}>{t('cleanup')}</button>
     {!links.length&&<PublishRepository threadId={threadId} deviceId={deviceId}/>}
     {!links.length&&<p>{t('empty')}</p>}
-    <ul>{links.map(link=><li key={link.url}><button className="pr-item" type="button" onClick={()=>{void open(link);}}>{link.repository.owner}/{link.repository.name} · {link.kind==='issue'?t('issues'):'PR'} #{link.number}</button><a href={link.url} target="_blank" rel="noreferrer" aria-label={link.url}><ExternalLink size={14}/></a><button type="button" disabled={busy} aria-label={`${t('unlink')} #${link.number}`} onClick={()=>{void run('unlink',{url:link.url});}}><X size={14}/></button></li>)}</ul>
+    <ul>{links.map(link=><li key={link.url}><button className="pr-item" type="button" onClick={()=>{void open(link);}}>{link.repository.owner}/{link.repository.name} · {link.kind==='issue'?t('issues'):'PR'} #{link.number}</button>{link.kind==='pr'&&<button type="button" aria-label={`${rt('viewLink')} #${link.number}`} title={rt('viewLink')} onClick={()=>setReviewing(link.url)}><MessageSquareText size={14}/></button>}<a href={link.url} target="_blank" rel="noreferrer" aria-label={link.url}><ExternalLink size={14}/></a><button type="button" disabled={busy} aria-label={`${t('unlink')} #${link.number}`} onClick={()=>{void run('unlink',{url:link.url});}}><X size={14}/></button></li>)}</ul>
     {selected&&<div className="pr-form"><div className="pr-toolbar"><strong>#{selected.number} {detail&&string(detail.title)}</strong><button type="button" aria-label={t('close')} onClick={()=>{setSelected(null);setExtra(null);}}><X size={16}/></button></div>
       {!detail?<p>{t('loading')}</p>:<>
         <p>{t('state')}: {stateLabel(detail.merged===true?'merged':detail.state||detail.status)} {watching&&` · ${t('watching')}`}</p>

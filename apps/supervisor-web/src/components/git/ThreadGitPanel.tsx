@@ -22,7 +22,9 @@ export interface ThreadGitPanelProps {
   canWrite?: boolean;
   initialTurnId?: string | undefined;
   onReviewQuote?: ((quote: import('@pockymoe/thread-ui').PromptQuote) => boolean) | undefined;
-  renderPullRequests?: ((props: { threadId: string; workingCopyId?: string }) => ReactNode) | undefined;
+  renderPullRequests?: ((props: { threadId: string; workingCopyId?: string; initialUrl?: string | undefined }) => ReactNode) | undefined;
+  /** Open the PR view on this pull request (a thread link with `?pr=`). */
+  initialPullRequest?: string | undefined;
   deviceId?: string | null | undefined;
   /** Existing thread updates invalidate the open panel; no polling is started. */
   refreshKey?: string | undefined;
@@ -59,7 +61,7 @@ interface ListedFile { path: string; change: FileChange; originalPath?: string |
     picks what to look at, and the rest is the file list and the diff. Narrow,
     the list sits above the scope's combined diff in one scroll and a file opens
     on its own; wide (a dragged-out dock), they sit side by side (docs/worktrees.md). */
-export function ThreadGitPanel({ threadId, deviceId, refreshKey, running = false, canWrite = false, initialTurnId, renderPullRequests, onReviewQuote, onAskAgent }: ThreadGitPanelProps) {
+export function ThreadGitPanel({ threadId, deviceId, refreshKey, running = false, canWrite = false, initialTurnId, renderPullRequests, onReviewQuote, onAskAgent, initialPullRequest }: ThreadGitPanelProps) {
   useI18n();
   const detailsId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -74,7 +76,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey, running = false
   const preference = (key: 'split' | 'whitespace' | 'collapsed') => setPreferences(value => { const next = { ...value, [key]: !value[key] }; try { localStorage.setItem('pockymoe.git.diff', JSON.stringify(next)); } catch { /* Optional preference. */ } return next; });
   const [context, setContext] = useState<ThreadWorkingContext | null>(null);
   const [selected, setSelected] = useState('');
-  const [view, setView] = useState<View>(initialTurnId ? 'turn' : 'worktree');
+  const [view, setView] = useState<View>(initialTurnId ? 'turn' : initialPullRequest && renderPullRequests ? 'pr' : 'worktree');
   // A commit opened from the list; its changes show in place of the list.
   const [commit, setCommit] = useState<GitCommit | null>(null);
   const [path, setPath] = useState('');
@@ -246,7 +248,7 @@ export function ThreadGitPanel({ threadId, deviceId, refreshKey, running = false
         <button type="button" aria-pressed={view === 'commits'} onClick={() => selectView('commits')}>{translate('workbench.gitCommits')}</button>
       </div>
       {view === 'turn' && <TurnControls turns={turns} turnId={turnId} onTurn={id => { setTurnId(id); reset(); }} workingCopyId={selected} threadId={threadId} deviceId={deviceId} write={write} busy={busy || !canWrite || running} />}
-      {view === 'pr' && renderPullRequests?.({ threadId, workingCopyId: selected })}
+      {view === 'pr' && renderPullRequests?.({ threadId, workingCopyId: selected, initialUrl: initialPullRequest })}
       {view === 'branch' && <form className="thread-git-bar thread-git-base" onSubmit={event => { event.preventDefault(); setBase(baseDraft.trim() || 'HEAD'); reset(); }}>
         <label><span>{gt('base')}</span><input aria-label={translate('workbench.gitBase')} value={baseDraft} spellCheck={false} autoCapitalize="off" autoCorrect="off" onChange={event => setBaseDraft(event.target.value)} /></label>
         <button type="submit" className="thread-git-button">{gt('apply')}</button>

@@ -9,6 +9,7 @@ import { DeviceProtectionPrompt } from '../components/DeviceSetupProgress';
 import { TourLauncherButton } from '../components/onboarding/TourProvider';
 import { useAppShellNav } from '../components/AppShellNavContext';
 import { ProductHeader } from '../components/ProductHeader';
+import { prText } from '../components/git/pr/text';
 import {
   useEffect,
   useMemo,
@@ -22,6 +23,7 @@ import {
   ChevronDown,
   Eye,
   FileInput,
+  GitPullRequest,
   LayoutDashboard,
   Lock,
   LockOpen,
@@ -336,6 +338,7 @@ export function WorkspacesPage() {
       {desktopLayout ? <header className="desktop-workspaces-title"><h1>{translate('files.workspaces')}</h1><button className="product-icon-button" aria-label={translate('desktopDevices.refresh')} title={translate('desktopDevices.refresh')} disabled={loading} onClick={() => { setLoading(true); setLoadAttempt(attempt => attempt + 1); }}><RefreshCw size={16} className={loading ? 'request-spin' : undefined} aria-hidden /></button></header> : <ProductHeader title={translate("files.workspaces")} subtitle={deviceName?.deviceId === deviceId ? deviceName.name : undefined} {...(relayDeviceId ? {backHref: devicesHref(), backLabel: translate("files.backToDevices")} : {})} actions={<>
         {!relayDeviceId && <TourLauncherButton showLabel />}
         {shellNav?.openThreadMap && <button type="button" onClick={shellNav.openThreadMap} aria-label={translate('workbench.threadMap')} title={translate('workbench.threadMap')} className="product-icon-button"><LayoutDashboard data-icon="thread-map" size={19} /></button>}
+        {!sharedOnly && <Link to={currentRelayScopedPath('/pull-requests')} aria-label={prText('title')} title={prText('title')} className="product-icon-button"><GitPullRequest data-icon="pull-requests" size={19} /></Link>}
         {!sharedOnly && <Link to={currentRelayScopedPath('/threads/import')} aria-label={translate("files.importSession")} title={translate("files.importSession")} className="product-icon-button"><FileInput data-icon="import" size={19} /></Link>}
         {!sharedOnly && <Link to={currentRelayScopedPath('/workspaces/new')} aria-label={translate("files.addWorkspace")} title={translate("files.addWorkspace")} className="product-icon-button"><Plus data-icon="add" size={20} /></Link>}
       </>} />}

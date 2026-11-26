@@ -15,6 +15,8 @@ export function ThreadNewPage() {
   const [searchParams] = useSearchParams();
   const requestedWorkspaceId = searchParams.get('workspaceId');
   const requestedTitle = searchParams.get('title');
+  // A question started elsewhere (a PR review stop) arrives as the first prompt.
+  const requestedPrompt = searchParams.get('prompt');
 
   function handleCancel() {
     if (requestedWorkspaceId) {
@@ -36,6 +38,7 @@ export function ThreadNewPage() {
       <ThreadCreateForm
         initialWorkspaceId={requestedWorkspaceId}
         initialTitle={requestedTitle}
+        initialPrompt={requestedPrompt}
         onCancel={handleCancel}
         onCreated={(thread) => navigate(currentThreadHref(thread.id))}
       />
