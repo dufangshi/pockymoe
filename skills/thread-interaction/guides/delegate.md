@@ -123,6 +123,31 @@ When either refusal arrives, **do not retry the same call** — it will fail ide
 Close what you have collected, wait for outstanding work, or reuse an idle peer. Prefer
 a handful of concurrent delegates (3-5) over a large burst.
 
+You always create as yourself: `--from` cannot name another thread, and an empty
+`POCKYMOE_THREAD_ID` still makes your child, not a top-level thread.
+
+### Detached threads
+
+`thread create --detach` starts independent work that is **not** your delegate: use it
+only when the work should outlive your interest in it and someone else (the person)
+will look after it. Do not use it to get around the limits above.
+
+```bash
+pockymoe thread create --detach --title 'Nightly release check' --kind task   --subject 'Check the release' --text-file /tmp/release.txt
+```
+
+- It has no parent and is its own root: it is not in your `thread tree` and does not
+  count toward your depth or 20 open threads. It records you as `createdByThreadId`.
+- You cannot `stop`, `unqueue`, `close` or `delete` it; you can still read it, wait for
+  it and send it work. `--notify-on-complete` sends its result to your inbox.
+- Workspace is yours unless `--workspace`. It starts `guarded` unless you pass
+  `--approval-mode`; it does not inherit yours. From an isolated environment it is
+  refused: create a child instead.
+- No `--name` (names live in a lineage): address it by the returned thread id.
+  `--role` and `--worktree` work as for a delegate.
+- Your lineage may create 10 per hour; a lineage started with `--detach` cannot detach
+  again. On either refusal, do not retry.
+
 ### Names, closing, roles and worktrees
 
 - `--name reviewer` gives a delegate an address unique among the open threads of your

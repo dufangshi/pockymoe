@@ -73,8 +73,9 @@ Collaborating:
   that failed 3 turns in a row refuses more tasks until you investigate
   (`--retry-failed` overrides).
 - Lineage limits are depth 3 and 20 open threads per root. Close delegates once
-  collected; on a refusal, do not repeat the same call. Prefer 3-5 concurrent delegates.
-  Give delegates editing the same files their own `--worktree` (it starts from
+  collected; on a refusal, do not repeat the same call. `thread create --detach`
+  (independent work you give up control of) is not a way around them. Prefer 3-5
+  concurrent delegates. Give delegates editing the same files their own `--worktree` (it starts from
   **committed** HEAD).
 - Create, register and remove worktrees through `pockymoe worktree`; use `adopt`
   for existing checkouts. Use the returned absolute path for subsequent tools:
