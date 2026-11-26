@@ -5,7 +5,8 @@ model picker ([Model and reasoning effort](model-settings.md)); there is no
 separate step. Choose the agent on the picker's rail, or search, and its models
 are listed. A short note above the foot says what moves with it: "Hands over N
 turns · ≈T tokens", or "Resumes its session · N new turns" when the agent was used
-in this thread before, with **Preview** for the exact text, and one line on what
+in this thread before, with **Preview** (the exact text; its Git state reads as a short summary there,
+while Copy all and the agent get it unchanged), and one line on what
 resets. Picking a model of an idle thread switches it at once; the picker closes
 and the timeline shows a divider at the next prompt. While a turn runs, a pick
 is marked and **Stop and switch** interrupts the turn, waits for it to settle and
@@ -13,7 +14,9 @@ switches. A refused switch (an active or paused goal must be cleared first)
 keeps the picker open with the reason on its mark.
 
 Plan, sandbox, fast mode and reasoning effort reset; the approval mode stays in
-effect. The new model's default effort applies. Harnesses unavailable in an
+effect. The effort row under the note shows the target model's levels (the
+pending pick's, else the agent's default model's); the level chosen there
+applies with the switch when the picked model offers it, else its default. Harnesses unavailable in an
 isolated execution environment are refused. The rail lists only agents ready on
 the device and is shown only to the thread's owner; a split pane offers the same
 picker for its own thread and device.

@@ -3,22 +3,23 @@
 A thread's model and reasoning effort are chosen in the composer's model picker,
 opened from the model key (a popover on desktop, a bottom sheet on phones):
 
-- A search box (when there are agents to switch to or more than eight models),
-  then the models of the agent in view under a header with the
+- A search box with a Harness settings icon beside it, then the models of the
+  agent in view under a header with the
   agent's mark and name. Rows show the model's context window and its price per
   million input and output tokens from the device's pricing catalog
   (`GET /api/config/model-pricing`, matched like the cost estimate); a model the
   catalog does not know leaves those cells empty. The current model is checked
   and scrolled into view.
-- The current model's effort slider below the list.
+- The current model's effort below the list: one row of chips with the level
+  names, the chosen one in its effort colour; ←/→, Home and End choose.
 - For the thread's owner, a rail of the device's ready agents on the left, the
   current one first and marked with a dot; ←/→ move between agents. Picking a
   model of another agent moves the thread to it (see
   [Switching harnesses](harness-switching.md)). Typing in the search lists
   matching models of every agent, grouped by agent.
-- Harness settings at the foot opens the harness plugin snapshot and DSH panel
-  on desktop and phone, including Treer scoped surfaces. It has no access-level
-  control or capability notice.
+- The settings icon beside the search opens Harness settings: the harness plugin
+  snapshot and DSH panel on desktop and phone, including Treer scoped surfaces.
+  It has no access-level control or capability notice.
 
 Both model selectors use `GET /api/threads/{id}/models` and write through
 `PATCH /api/threads/{id}/settings`; other agents' models come from
