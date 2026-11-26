@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { CopyButton, ErrorMark } from '@pockymoe/thread-ui';
+import { confirmAsync, CopyButton, ErrorMark } from '@pockymoe/thread-ui';
 import { getLocale, useI18n } from '@pockymoe/thread-ui/i18n';
 import { request } from '../lib/api';
 import { FormDialog } from './FormDialog';
+import { setupCommands, type SetupCommand } from '../lib/outsideAgentSetup';
 
 const words = {
   title: ['外部智能体', 'Outside agents'], allow: ['允许', 'Allow'], deny: ['拒绝', 'Deny'],
@@ -14,13 +15,18 @@ const words = {
   note: ['此设备保存授权。需审批访问只能操作受保护线程。', 'Grants are saved on this device. Supervised access operates guarded threads.'],
   redirect: ['返回地址', 'Redirect URI'], access: ['访问级别', 'Access level'],
   copy: ['复制设置', 'Copy setup'],
+  local: ['本机（stdio）', 'This computer (stdio)'], http: ['HTTP（OAuth 登录）', 'HTTP (OAuth sign-in)'],
+  flags: ['默认需审批。可加 --access read|full、--workspace 工作区ID。', 'Supervised by default. Add --access read|full or --workspace WORKSPACE_ID.'],
   empty: ['暂无', 'None'], loading: ['加载中…', 'Loading…'],
+  revokeTitle: ['撤销 {name}？', 'Revoke {name}?'],
+  revokeBody: ['它的令牌立即失效；要再次使用，需要重新登录并获得你的同意。', 'Its tokens stop working now; to use Pockymoe again it must sign in and get your consent.'],
+  stdioClient: ['本机 stdio', 'Local stdio'], revokedClient: ['已撤销的客户端', 'Revoked client'],
   signIn: ['请先在此设备登录，然后重试。', 'Sign in to this device, then retry.'],
 } as const;
 const text = (key: keyof typeof words) => words[key][getLocale() === 'zh-CN' ? 0 : 1];
 type Access = 'read' | 'supervised' | 'full';
 type Client = { id: string; clientName: string; access: Access; workspaces: string[] | null; lastUsedAt: number };
-type Call = { client: string; tool: string; target: string | null; result: string; time: number };
+type Call = { client: string; clientName?: string; tool: string; target: string | null; result: string; time: number };
 type Data = { endpoint: string; clients: Client[]; calls: Call[] };
 const post = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) });
 
@@ -30,26 +36,31 @@ export function OutsideAgentsSettings() {
   const [error, setError] = useState<string | null>(null);
   async function load() { try { setData(await request<Data>('api/mcp/clients')); setError(null); } catch (e) { setError(String(e)); } }
   useEffect(() => { void load(); }, []);
-  async function revoke(id: string) { try { await request(`api/mcp/clients/${encodeURIComponent(id)}`, { method: 'DELETE' }); await load(); } catch (e) { setError(String(e)); } }
-  const commands: [string, string][] = [
-    ['Claude Code', 'claude mcp add pockymoe -- pockymoe mcp serve'],
-    ['Codex', 'codex mcp add pockymoe -- pockymoe mcp serve'],
-    ['Cursor', JSON.stringify({ mcpServers: { pockymoe: { command: 'pockymoe', args: ['mcp', 'serve'] } } })],
-    ['Gemini CLI', 'gemini mcp add pockymoe pockymoe mcp serve'],
-    ['MCP', 'pockymoe mcp serve --access supervised'],
-  ];
+  const [workspaceNames, setWorkspaceNames] = useState<Record<string, string>>({});
+  useEffect(() => { request<{ id: string; label: string }[]>('api/workspaces').then(list => setWorkspaceNames(Object.fromEntries(list.map(w => [w.id, w.label])))).catch(() => {}); }, []);
+  async function revoke(client: Client) {
+    const confirmed = await confirmAsync({ title: text('revokeTitle').replace('{name}', client.clientName), description: text('revokeBody'), confirmLabel: text('revoke') });
+    if (!confirmed) return;
+    try { await request(`api/mcp/clients/${encodeURIComponent(client.id)}`, { method: 'DELETE' }); await load(); } catch (e) { setError(String(e)); }
+  }
+  const time = (seconds: number) => new Date(seconds * 1000).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+  const callClient = (call: Call) => call.clientName ?? (call.client === 'local-stdio' ? text('stdioClient') : text('revokedClient'));
+  const setup = setupCommands(data?.endpoint);
+  const rows = (list: SetupCommand[]) => list.map(([app, command]) => <div key={app}><b>{app}</b><div className="flex items-start gap-2"><code className="min-w-0 whitespace-pre-wrap break-all text-xs">{command}</code><CopyButton value={command} label={text('copy')} /></div></div>);
   return <section className="space-y-4 min-w-0">
-    <div className="flex items-center justify-between"><h3 className="text-[13px] font-semibold">{text('title')}</h3><button className="relay-button-secondary px-3 py-2" onClick={() => void load()}>{text('refresh')}</button></div>
-    <p className="settings-note text-sm">{text('note')}</p>
-    {error && <ErrorMark message={error} />}
-    <details><summary>{text('setup')}</summary><div className="space-y-3 py-3">{commands.map(([app, command]) => <div key={app}><b>{app}</b><div className="flex items-start gap-2"><code className="break-all text-xs">{command}</code><CopyButton value={command} label={text('copy')} /></div></div>)}{data && <div className="flex gap-2"><code className="break-all">{data.endpoint}</code><CopyButton value={data.endpoint} label={text('copy')} /></div>}</div></details>
+    <div className="flex items-center justify-between gap-3"><p className="settings-note min-w-0 text-sm">{text('note')}</p><span className="flex shrink-0 items-center gap-2">{error && <ErrorMark message={error} />}<button className="relay-button-secondary px-3 py-2" onClick={() => void load()}>{text('refresh')}</button></span></div>
+    <details><summary>{text('setup')}</summary><div className="space-y-3 py-3">
+      <h4 className="text-xs font-semibold">{text('local')}</h4>{rows(setup.local)}<p className="settings-note text-xs">{text('flags')}</p>
+      {data && <><h4 className="text-xs font-semibold">{text('http')}</h4><div className="flex gap-2"><code className="min-w-0 break-all text-xs">{data.endpoint}</code><CopyButton value={data.endpoint} label={text('copy')} /></div>{rows(setup.http)}</>}
+    </div></details>
     <h3 className="text-[13px] font-semibold">{text('clients')}</h3>
     {data?.clients.length === 0 && <p>{text('empty')}</p>}
-    {data?.clients.map(client => <div key={client.id} className="rounded border border-[var(--theme-border)] p-3 space-y-1">
-      <div className="flex items-center justify-between gap-2"><b className="break-all">{client.clientName}</b><button className="relay-button-secondary px-3 py-2 text-[var(--status-danger-fg)]" onClick={() => void revoke(client.id)}>{text('revoke')}</button></div>
-      <p>{text('access')}: {text(client.access)}</p><p className="break-all">{text('workspaces')}: {client.workspaces?.join(', ') ?? text('all')}</p><p>{text('lastUse')}: {new Date(client.lastUsedAt * 1000).toLocaleString()}</p>
+    {data?.clients.map(client => <div key={client.id} className="flex items-center gap-3 rounded border border-[var(--theme-border)] px-3 py-2">
+      <div className="min-w-0 flex-1"><b className="block truncate" title={client.clientName}>{client.clientName}</b>
+        <p className="settings-note text-xs">{text(client.access)} · {client.workspaces?.map(id => workspaceNames[id] ?? id).join(', ') ?? text('all')} · {text('lastUse')} {time(client.lastUsedAt)}</p></div>
+      <button className="relay-button-secondary shrink-0 px-3 py-2 text-[var(--status-danger-fg)]" onClick={() => void revoke(client)}>{text('revoke')}</button>
     </div>)}
-    <details><summary>{text('calls')}</summary><div className="space-y-2">{data?.calls.map((call, index) => <div key={index} className="border-b border-[var(--theme-border)] py-2 text-xs break-all"><p>{call.tool} · {call.result}</p><p>{call.client} · {call.target} · {new Date(call.time * 1000).toLocaleString()}</p></div>)}</div></details>
+    <details><summary>{text('calls')}</summary><div>{data?.calls.map((call, index) => <div key={index} className="border-b border-[var(--theme-border)] py-2 text-xs"><p className="break-all"><b>{call.tool.replace(/^pockymoe_/, '')}</b> · {call.result} · {callClient(call)}</p><p className="settings-note">{time(call.time)}{call.target && <> · <span className="break-all">{call.target}</span></>}</p></div>)}</div></details>
   </section>;
 }
 

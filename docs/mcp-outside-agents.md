@@ -11,13 +11,27 @@ Supervisor using the same saved `cli.json` connection as the owner CLI. Use
 `--cli-config PATH` for another installation. A managed thread credential cannot
 start an outside-agent server.
 
-Examples:
+Settings → Outside agents shows these commands with this Supervisor's address.
+Each one was run as written with the client version in brackets:
 
 ```sh
-claude mcp add pockymoe -- pockymoe mcp serve
+# Claude Code (2.1): user scope, so it works in every project, not only the current one
+claude mcp add --scope user pockymoe -- pockymoe mcp serve
+# Codex CLI (0.169): global by default
 codex mcp add pockymoe -- pockymoe mcp serve
-# Generic clients: command=pockymoe, args=["mcp", "serve"]
+# Gemini CLI (0.71): its default project scope fails outside a trusted folder
+gemini mcp add --scope user pockymoe pockymoe mcp serve
+# MCP Inspector (2.13), one-shot calls
+npx -y @modelcontextprotocol/inspector --cli pockymoe mcp serve --method tools/list
 ```
+
+Cursor (agent CLI 2026.11) reads `~/.cursor/mcp.json`:
+
+```json
+{"mcpServers":{"pockymoe":{"command":"pockymoe","args":["mcp","serve"]}}}
+```
+
+Add `--access read` or `--access full`, or `--workspace ID`, after `mcp serve`.
 
 `--access read` permits inspection, `supervised` additionally permits creating,
 sending to and stopping guarded threads, and `full` additionally permits yolo
@@ -40,7 +54,23 @@ approval mode; stop, approval, Git and event tools are local only.
 ## HTTP clients
 
 Point an OAuth-capable MCP client at `http://127.0.0.1:PORT/mcp`, or a direct
-HTTPS reverse proxy for this Supervisor. Set `POCKYMOE_MCP_ISSUER` to its canonical
+HTTPS reverse proxy for this Supervisor. Use the address Settings shows: OAuth
+clients check that the authorization server's issuer matches the URL they were
+given, so `localhost` does not stand in for `127.0.0.1`.
+
+```sh
+# Claude Code: add, then sign in (or use /mcp inside a session)
+claude mcp add --scope user --transport http pockymoe-http http://127.0.0.1:PORT/mcp
+claude mcp login pockymoe-http
+# Codex: adding starts the sign-in; `codex mcp login pockymoe-http` repeats it
+codex mcp add pockymoe-http --url http://127.0.0.1:PORT/mcp
+```
+
+Cursor: put `{"mcpServers":{"pockymoe-http":{"url":"http://127.0.0.1:PORT/mcp"}}}`
+in `~/.cursor/mcp.json`, then run `cursor-agent mcp login pockymoe-http`.
+Clients that take a fixed header instead of OAuth (Gemini CLI `-H`, MCP
+Inspector `--header`) need an access token, which expires after 15 minutes;
+prefer stdio for them. Set `POCKYMOE_MCP_ISSUER` to its canonical
 origin when using HTTPS. Issuers and redirects must use HTTPS or loopback HTTP.
 The relay does not forward this endpoint.
 
@@ -98,8 +128,8 @@ latest 1,000 turn-completed, turn-failed, approval and PR-change events with
 their thread, turn and request IDs (never text). Poll with the returned cursor;
 it survives Supervisor restarts. Events outside the grant are filtered.
 
-Settings shows setup commands, connected grants, last use, revocation and recent
-calls. Audit records contain client, tool, target, timestamp and success/error;
+Settings shows setup commands, connected grants (access, workspaces by name, last
+use), revocation after a confirmation and recent calls with the client's name. Audit records contain client, tool, target, timestamp and success/error;
 they omit prompts, replies and tokens. Retention is 30 days and at most 1,000
 calls. No MCP credential is returned by the settings API.
 

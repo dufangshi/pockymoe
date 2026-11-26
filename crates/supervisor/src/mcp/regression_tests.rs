@@ -525,3 +525,22 @@ async fn mcp_arguments_take_the_schema_type() {
     .unwrap_err();
     assert!(err.to_string().contains("invalid argument type"), "{err}");
 }
+
+#[tokio::test]
+async fn mcp_settings_names_the_client_of_each_call() {
+    let f = crate::isolation_tests::setup().await;
+    let s = &f.state;
+    store::transaction(s, |db| {
+        store::put(db, "grant", "g", &json!({"id":"g","clientId":"pmcp_c","clientName":"Codex","access":"read","workspaces":null,"createdAt":store::now()}), 900)?;
+        store::put(db, "audit", "a", &json!({"client":"pmcp_c","tool":"pockymoe_threads","target":null,"time":store::now(),"result":"ok"}), 900)?;
+        store::put(db, "audit", "b", &json!({"client":"local-stdio","tool":"pockymoe_threads","target":null,"time":store::now(),"result":"ok"}), 900)
+    })
+    .unwrap();
+    let (_, _, body) = req(s, "GET", "/api/mcp/clients", Value::Null, &[]).await;
+    let calls = body["calls"].as_array().unwrap();
+    assert_eq!(
+        calls.iter().find(|c| c["client"] == "pmcp_c").unwrap()["clientName"],
+        "Codex"
+    );
+    assert!(calls.iter().find(|c| c["client"] == "local-stdio").unwrap()["clientName"].is_null());
+}

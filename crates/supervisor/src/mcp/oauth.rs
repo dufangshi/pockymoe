@@ -448,11 +448,23 @@ pub fn authenticate(s: &Supervisor, h: &HeaderMap) -> Result<(String, Grant)> {
 }
 pub async fn settings(State(s): State<Arc<Supervisor>>) -> Response {
     response(transaction(&s, |db| {
-        let clients: Vec<Value> = list(db, "grant")?
-            .into_iter()
-            .filter(|g| g["pending"] != true)
+        let grants = list(db, "grant")?;
+        let names: HashMap<&str, &Value> = grants
+            .iter()
+            .filter_map(|g| Some((g["clientId"].as_str()?, &g["clientName"])))
             .collect();
-        Ok(json!({"endpoint":resource(&s),"clients":clients,"calls":list(db,"audit")?}))
+        // Calls record the client ID; the owner recognises the client's name.
+        let calls: Vec<Value> = list(db, "audit")?
+            .into_iter()
+            .map(|mut call| {
+                if let Some(name) = call["client"].as_str().and_then(|id| names.get(id)) {
+                    call["clientName"] = (*name).clone();
+                }
+                call
+            })
+            .collect();
+        let clients: Vec<&Value> = grants.iter().filter(|g| g["pending"] != true).collect();
+        Ok(json!({"endpoint":resource(&s),"clients":clients,"calls":calls}))
     }))
 }
 pub async fn remove(State(s): State<Arc<Supervisor>>, Path(id): Path<String>) -> Response {
