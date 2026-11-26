@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { ChevronLeft, ExternalLink, FileCode2, GitCommitHorizontal, GitMerge, Link2, ListChecks, Map as MapIcon, MessageSquareText, MessagesSquare, MoreHorizontal, RefreshCw, type LucideIcon } from 'lucide-react';
 import { ErrorMark, Select, confirmAsync, copyText } from '@pockymoe/thread-ui';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
@@ -62,6 +62,8 @@ export function PullRequestReview({ url, deviceId, tab: controlledTab, onTab, on
   const [focusPath, setFocusPath] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const filesWanted = useRef(false);
+  // Comments shown inside the diff's <pre> keep the page's (the theme pack's) text font.
+  const [bodyFont] = useState(() => typeof document === 'undefined' ? '' : getComputedStyle(document.body).fontFamily);
 
   const load = useCallback(async (moveHead: boolean) => {
     setLoading(true);
@@ -157,7 +159,7 @@ export function PullRequestReview({ url, deviceId, tab: controlledTab, onTab, on
     ...(detail.state === 'closed' && caps.reopen ? [{ label: rt('reopen'), onSelect: () => { void act('state', { state: 'reopen' }); } }] : []),
     ...(detail.state === 'merged' && caps.revert ? [{ label: rt('revert'), danger: true, onSelect: () => { void confirmAsync({ title: rt('revertConfirm', { n: detail.number }), description: rt('revertBody'), confirmLabel: rt('revert'), tone: 'primary' }).then(ok => { if (ok) void act('revert').then(result => { const opened = result as { url?: string }; if (opened?.url) setNotice(`${rt('revertOpened')}: ${opened.url}`); }); }); } }] : []),
   ].filter((item, index, all) => !(item.separator && (index === 0 || all[index - 1]?.separator || index === all.length - 1)));
-  return <div className="pr-review" data-testid="pr-review">
+  return <div className="pr-review" data-testid="pr-review" style={{ '--pr-body-font': bodyFont } as CSSProperties}>
     <header className="pr-review-head">
       {onBack && <button type="button" className="pr-icon pr-back" onClick={onBack} aria-label={rt('back')} title={rt('back')}><ChevronLeft aria-hidden="true" /></button>}
       <PullStateMark state={detail.state} draft={detail.draft} />

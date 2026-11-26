@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, CircleCheck, CircleDashed, CircleMinus, CircleX, ExternalLink, MessageCircleQuestion, RotateCw, TriangleAlert } from 'lucide-react';
+import { Hourglass, ChevronLeft, ChevronRight, CircleCheck, CircleDashed, CircleMinus, CircleX, ExternalLink, MessageCircleQuestion, RotateCw, TriangleAlert } from 'lucide-react';
 import { CopyButton, ErrorMark, PathChip } from '@pockymoe/thread-ui';
 import { ReviewPatch, type LineComment } from '../../ReviewPatch';
 import { parsePatch } from '../../patch';
@@ -69,7 +69,7 @@ export function GuideTab({ detail, guide, shownHead, act, busy, saveDraft, onAsk
   const comment = (input: LineComment) => { void saveDraft({ kind: 'line', path: input.path, side: input.side === 'old' ? 'left' : 'right', line: input.endLine, startLine: input.startLine === input.endLine ? null : input.startLine, body: input.comment, headSha: shownHead }); return true; };
   const pending = useMemo(() => drafts.filter(draft => draft.kind === 'line'), [drafts]);
   if (!guide.guide) return <div className="pr-tab-body pr-guide-empty">
-    {running ? <p aria-busy="true"><RotateCw aria-hidden="true" className="request-spin" /> {rt('guideRunning')}</p> : <>
+    {running ? <p aria-busy="true"><Hourglass aria-hidden="true" /> {rt('guideRunning')}</p> : <>
       <h3>{failed ? rt('guideFailed') : rt('guideEmpty')}</h3>
       {failed ? <ErrorMark message={failed.detail} /> : <p className="pr-dim">{rt('guideHint')}</p>}
       <button type="button" className="pr-primary" disabled={busy} onClick={() => { void act('guide'); }}>{failed ? rt('tryAgain') : rt('writeGuide')}</button>
@@ -77,7 +77,7 @@ export function GuideTab({ detail, guide, shownHead, act, busy, saveDraft, onAsk
   </div>;
   return <div className="pr-guide">
     {(guide.stale || running || failed) && <div className="pr-banner">
-      {running ? <span><RotateCw aria-hidden="true" className="request-spin" /> {rt('guideRunning')}</span> : failed ? <><span>{rt('guideFailed')}</span><ErrorMark message={failed.detail} /></> : <span>{rt('guideStale')}</span>}
+      {running ? <span><Hourglass aria-hidden="true" /> {rt('guideRunning')}</span> : failed ? <><span>{rt('guideFailed')}</span><ErrorMark message={failed.detail} /></> : <span>{rt('guideStale')}</span>}
       {!running && <button type="button" disabled={busy} onClick={() => { void act('guide'); }}>{rt('rewriteGuide')}</button>}
     </div>}
     <nav className="pr-guide-rail" aria-label={rt('guide')}>
