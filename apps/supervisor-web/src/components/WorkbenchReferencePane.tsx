@@ -31,7 +31,7 @@ export function WorkbenchReferencePane({
   useI18n();
   const { detail, error, loadEarlier, loadingEarlier, retry } = controller;
   const threadId = detail?.thread.id;
-  const describeHandoffModel = useHandoffModelNames(detail?.turns, controller.deviceId);
+  const describeHandoffModel = useHandoffModelNames(detail?.turns, controller.deviceId, detail?.harnessSwitches);
   // The pane's own device, and no settings link: it may be another device than the page's.
   const contextInspector = useMemo<ThreadContextInspector | null>(() => threadId && controller.canControl ? {
     load: options => fetchThreadContext(threadId, options, controller.deviceId),

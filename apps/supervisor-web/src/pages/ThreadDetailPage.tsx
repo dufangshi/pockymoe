@@ -3777,7 +3777,7 @@ export function ThreadDetailPage() {
     (turnId: string) => <TurnNotification key={`${relayRouteDeviceId}:${id}:${turnId}`} deviceId={relayRouteDeviceId} threadId={id!} turnId={turnId} />,
     [id, relayRouteDeviceId],
   );
-  const describeHandoffModel = useHandoffModelNames(detail?.turns, relayRouteDeviceId);
+  const describeHandoffModel = useHandoffModelNames(detail?.turns, relayRouteDeviceId, detail?.harnessSwitches);
   const timelineProps = useMemo<Partial<ThreadTimelineProps>>(
     () => ({
       livePlan,

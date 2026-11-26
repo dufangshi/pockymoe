@@ -1088,6 +1088,7 @@ export interface ThreadPeerWorkDto {
 }
 
 export type ThreadItemKindDto =
+  | 'harnessSwitch'
   | 'userMessage'
   | 'agentMessage'
   | 'artifact'
@@ -1116,6 +1117,7 @@ export interface MessageSenderDto {
 }
 
 export interface ThreadHistoryItemDto {
+  afterTurnId?: string | null;
   harnessSwitch?: { fromAgentId?: string; fromModel?: string; agentId?: string; model?: string; turns: number };
   /** Set when storage cleanup removed this command's output or this edit's diff. */
   outputPrunedAt?: string | null;
@@ -1683,6 +1685,7 @@ export interface ThreadLiveItemsDto {
 }
 
 export interface ThreadDetailDto {
+  harnessSwitches?: ThreadHistoryItemDto[];
   thread: ThreadDto;
   workspace: WorkspaceDto;
   workspacePathStatus: 'present' | 'missing';
