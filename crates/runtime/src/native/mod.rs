@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::{Arc, LazyLock, Mutex, RwLock, Weak},
 };
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -28,6 +28,10 @@ pub struct ProtocolSettings {
     #[serde(default)]
     pub claude: HarnessProtocol,
 }
+type SharedSettings = Arc<RwLock<ProtocolSettings>>;
+static SETTINGS: LazyLock<Mutex<HashMap<PathBuf, Weak<RwLock<ProtocolSettings>>>>> =
+    LazyLock::new(Mutex::default);
+
 impl ProtocolSettings {
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read(path) {
@@ -37,23 +41,40 @@ impl ProtocolSettings {
         }
     }
     pub fn save(&self, path: &Path) -> Result<()> {
-        crate::upstreams::private_write(path, &serde_json::to_vec(self)?)
+        // Serialize initialization and writes so every router for this device
+        // sees the same successfully persisted selection. A failed PUT leaves
+        // the running selection intact.
+        let registry = SETTINGS.lock().unwrap();
+        crate::upstreams::private_write(path, &serde_json::to_vec(self)?)?;
+        if let Some(settings) = registry.get(path).and_then(Weak::upgrade) {
+            *settings.write().unwrap() = self.clone();
+        }
+        Ok(())
+    }
+    fn shared(path: &Path) -> SharedSettings {
+        let mut registry = SETTINGS.lock().unwrap();
+        if let Some(settings) = registry.get(path).and_then(Weak::upgrade) {
+            return settings;
+        }
+        registry.retain(|_, settings| settings.strong_count() > 0);
+        let settings = Arc::new(RwLock::new(Self::load(path).unwrap_or_default()));
+        registry.insert(path.to_path_buf(), Arc::downgrade(&settings));
+        settings
     }
 }
 pub fn settings_path(database: &Path) -> PathBuf {
     database.with_extension("harness-protocols.json")
 }
-fn agent_of(session: &str) -> &str {
+fn agent_of(session: &str) -> Option<&str> {
     session
-        .split(':')
-        .next()
-        .filter(|s| matches!(*s, "codex" | "claude" | "grok" | "opencode" | "deepseek"))
-        .unwrap_or("codex")
+        .split_once("::")
+        .filter(|(agent, raw)| !agent.is_empty() && !raw.is_empty())
+        .map(|(agent, _)| agent)
 }
 pub struct ProtocolRouter {
     acp: SharedRuntime,
     bound_agent: Option<String>,
-    path: PathBuf,
+    settings: SharedSettings,
     backends: HashMap<String, SharedRuntime>,
     owners: RwLock<HashMap<String, SharedRuntime>>,
     events: broadcast::Sender<SessionLifecycle>,
@@ -64,7 +85,7 @@ impl ProtocolRouter {
         let router = Self {
             acp,
             bound_agent,
-            path,
+            settings: ProtocolSettings::shared(&path),
             backends: HashMap::new(),
             owners: RwLock::new(HashMap::new()),
             events,
@@ -96,15 +117,17 @@ impl ProtocolRouter {
         }
     }
     fn selected(&self, agent: Option<&str>) -> SharedRuntime {
-        let agent = self.bound_agent.as_deref().or(agent).unwrap_or("codex");
-        let settings = ProtocolSettings::load(&self.path).unwrap_or_default();
+        self.selected_agent(self.bound_agent.as_deref().or(agent))
+    }
+    fn selected_agent(&self, agent: Option<&str>) -> SharedRuntime {
+        let settings = self.settings.read().unwrap();
         let protocol = match agent {
-            "codex" => settings.codex,
-            "claude" => settings.claude,
+            Some("codex") => settings.codex,
+            Some("claude") => settings.claude,
             _ => HarnessProtocol::Acp,
         };
         if protocol == HarnessProtocol::Native {
-            if let Some(backend) = self.backends.get(agent) {
+            if let Some(backend) = agent.and_then(|agent| self.backends.get(agent)) {
                 return backend.clone();
             }
         }
@@ -122,8 +145,10 @@ impl ProtocolRouter {
             .cloned()
     }
     fn session(&self, id: &str) -> SharedRuntime {
+        // Session identity takes precedence over the provider's bound agent.
+        // Missing and unknown prefixes must never become a native Codex session.
         self.owner(id)
-            .unwrap_or_else(|| self.selected(Some(agent_of(id))))
+            .unwrap_or_else(|| self.selected_agent(agent_of(id)))
     }
 }
 #[async_trait]
@@ -177,6 +202,16 @@ impl AgentRuntime for ProtocolRouter {
     ) -> Result<Vec<ModelOptionDto>> {
         self.selected(agent_id).list_models(agent_id, cwd).await
     }
+    async fn session_models(
+        &self,
+        agent_id: Option<&str>,
+        session_id: &str,
+        cwd: Option<&str>,
+    ) -> Result<Vec<ModelOptionDto>> {
+        self.session(session_id)
+            .session_models(agent_id, session_id, cwd)
+            .await
+    }
     async fn list_agents(&self) -> Result<Vec<ModelOptionDto>> {
         self.acp.list_agents().await
     }
@@ -195,6 +230,14 @@ impl AgentRuntime for ProtocolRouter {
     fn negotiated_caps(&self, agent_id: Option<&str>) -> AgentProviderCapabilitiesDto {
         self.selected(agent_id).negotiated_caps(agent_id)
     }
+    fn session_negotiated_caps(
+        &self,
+        agent_id: Option<&str>,
+        session_id: &str,
+    ) -> AgentProviderCapabilitiesDto {
+        self.session(session_id)
+            .session_negotiated_caps(agent_id, session_id)
+    }
     async fn start_session(&self, input: StartSessionInput) -> Result<StartSessionResult> {
         let backend = self.selected(input.agent_id.as_deref());
         let result = backend.start_session(input).await?;
@@ -207,9 +250,7 @@ impl AgentRuntime for ProtocolRouter {
         cwd: Option<&str>,
         settings: SessionSettings,
     ) -> Result<StartSessionResult> {
-        let backend = self
-            .owner(session_id)
-            .unwrap_or_else(|| self.selected(Some(agent_of(session_id))));
+        let backend = self.session(session_id);
         let result = backend.resume_session(session_id, cwd, settings).await?;
         self.remember(session_id, backend.clone());
         self.remember(&result.provider_session_id, backend);
@@ -423,13 +464,18 @@ mod tests {
             _: Option<&str>,
             _: Option<&str>,
         ) -> Result<Vec<ModelOptionDto>> {
-            Ok(vec![])
+            anyhow::bail!(self.name)
         }
         async fn list_agents(&self) -> Result<Vec<ModelOptionDto>> {
             Ok(vec![])
         }
         async fn capabilities(&self, _: Option<&str>) -> Result<AgentCapabilitySnapshotDto> {
             anyhow::bail!(self.name)
+        }
+        fn negotiated_caps(&self, _: Option<&str>) -> AgentProviderCapabilitiesDto {
+            let mut caps = AgentProviderCapabilitiesDto::conversational();
+            caps.turns.steer = self.name == "native";
+            caps
         }
         async fn start_session(&self, _: StartSessionInput) -> Result<StartSessionResult> {
             self.loaded.write().unwrap().push("codex::shared".into());
@@ -514,6 +560,36 @@ mod tests {
             .unwrap();
             assert_eq!(
                 router
+                    .capabilities(Some("codex"))
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "native"
+            );
+            assert_eq!(
+                router
+                    .session_capabilities(Some("codex"), "codex::shared")
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "acp"
+            );
+            assert_eq!(
+                router
+                    .session_models(Some("codex"), "codex::shared", None)
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "acp"
+            );
+            assert!(
+                !router
+                    .session_negotiated_caps(Some("codex"), "codex::shared")
+                    .turns
+                    .steer
+            );
+            assert_eq!(
+                router
                     .resume_session("codex::shared", None, SessionSettings::default())
                     .await
                     .unwrap()
@@ -534,6 +610,36 @@ mod tests {
             ProtocolSettings::default().save(&path).unwrap();
             assert_eq!(
                 router
+                    .capabilities(Some("codex"))
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "acp"
+            );
+            assert_eq!(
+                router
+                    .session_capabilities(Some("codex"), "codex::shared")
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "native"
+            );
+            assert_eq!(
+                router
+                    .session_models(Some("codex"), "codex::shared", None)
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "native"
+            );
+            assert!(
+                router
+                    .session_negotiated_caps(Some("codex"), "codex::shared")
+                    .turns
+                    .steer
+            );
+            assert_eq!(
+                router
                     .resume_session("codex::shared", None, SessionSettings::default())
                     .await
                     .unwrap()
@@ -550,6 +656,80 @@ mod tests {
                     .model
                     .as_deref(),
                 Some("acp")
+            );
+        }
+    }
+    #[tokio::test]
+    async fn settings_are_shared_and_reload_only_after_a_successful_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("protocol.json");
+        let acp = Arc::new(Backend {
+            name: "acp",
+            loaded: Default::default(),
+        });
+        let native = Arc::new(Backend {
+            name: "native",
+            loaded: Default::default(),
+        });
+        let catalog = ProtocolRouter::new(acp.clone(), None, path.clone())
+            .with_backend("codex", native.clone());
+        let bound = ProtocolRouter::new(acp, Some("codex".into()), path.clone())
+            .with_backend("codex", native);
+        let selection = ProtocolSettings {
+            codex: HarnessProtocol::Native,
+            ..Default::default()
+        };
+        // Disk changes cannot silently flip a live router's model/capability probes.
+        std::fs::write(&path, serde_json::to_vec(&selection).unwrap()).unwrap();
+        for router in [&catalog, &bound] {
+            assert_eq!(
+                router
+                    .capabilities(Some("codex"))
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "acp"
+            );
+            assert_eq!(
+                router
+                    .list_models(Some("codex"), None)
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "acp"
+            );
+        }
+        // This is also the owner PUT handler's persistence/reload path.
+        selection.save(&path).unwrap();
+        for router in [&catalog, &bound] {
+            assert_eq!(
+                router
+                    .capabilities(Some("codex"))
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "native"
+            );
+            assert_eq!(
+                router
+                    .list_models(Some("codex"), None)
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "native"
+            );
+        }
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(ProtocolSettings::default().save(&path).is_err());
+        for router in [&catalog, &bound] {
+            assert_eq!(
+                router
+                    .capabilities(Some("codex"))
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "native"
             );
         }
     }
@@ -589,3 +769,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod router_tests;

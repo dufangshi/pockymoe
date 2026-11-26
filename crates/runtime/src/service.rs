@@ -3689,7 +3689,7 @@ impl Supervisor {
             .ok_or_else(|| anyhow!("thread has no provider session"))?;
         let runtime = self.runtime(thread.provider)?;
         if !runtime
-            .negotiated_caps(thread.agent_id.as_deref())
+            .session_negotiated_caps(thread.agent_id.as_deref(), provider_session_id)
             .turns
             .steer
         {
@@ -3893,7 +3893,7 @@ impl Supervisor {
             let runtime = self.runtime(thread.provider)?;
             if fast == Some(true)
                 && !runtime
-                    .negotiated_caps(thread.agent_id.as_deref())
+                    .session_negotiated_caps(thread.agent_id.as_deref(), session)
                     .controls
                     .performance_mode
             {
@@ -4033,7 +4033,7 @@ impl Supervisor {
                 HarnessLoadReason::Fork,
             )
             .await?;
-        let caps = runtime.negotiated_caps(detail.thread.agent_id.as_deref());
+        let caps = runtime.session_negotiated_caps(detail.thread.agent_id.as_deref(), &session);
         if !caps.branching.fork {
             bail!("this harness does not support session/fork");
         }
@@ -4085,7 +4085,7 @@ impl Supervisor {
                 HarnessLoadReason::Fork,
             )
             .await?;
-        let caps = runtime.negotiated_caps(detail.thread.agent_id.as_deref());
+        let caps = runtime.session_negotiated_caps(detail.thread.agent_id.as_deref(), &session);
         if !caps.branching.fork {
             bail!("this harness does not support session/fork");
         }
@@ -4600,7 +4600,22 @@ impl Supervisor {
         agent_id: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<Vec<ModelOptionDto>> {
-        let mut models = self.runtime(provider)?.list_models(agent_id, cwd).await?;
+        self.list_models_for_session(provider, agent_id, None, cwd)
+            .await
+    }
+
+    pub async fn list_models_for_session(
+        &self,
+        provider: Provider,
+        agent_id: Option<&str>,
+        session_id: Option<&str>,
+        cwd: Option<&str>,
+    ) -> Result<Vec<ModelOptionDto>> {
+        let runtime = self.runtime(provider)?;
+        let mut models = match session_id {
+            Some(session_id) => runtime.session_models(agent_id, session_id, cwd).await?,
+            None => runtime.list_models(agent_id, cwd).await?,
+        };
         // Relay-owned LiteLLM metadata supplies stable names and per-model
         // effort choices when a harness only exposes opaque model ids.
         self.enrich_model_options(&mut models);

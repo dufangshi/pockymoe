@@ -2695,9 +2695,10 @@ async fn thread_models(
     let thread = state.get_thread(&id).map_err(map_err)?;
     let workspace = state.get_workspace(&thread.workspace_id).map_err(map_err)?;
     let mut models = state
-        .list_models(
+        .list_models_for_session(
             thread.provider,
             thread.agent_id.as_deref(),
+            thread.provider_session_id.as_deref(),
             Some(&workspace.abs_path),
         )
         .await

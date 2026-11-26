@@ -5,6 +5,10 @@ to Codex's `codex app-server` JSON-RPC protocol. Both paths use Codex's own roll
 store and keep the same `codex::` session identifiers. Release the loaded harness
 before changing protocols for an existing conversation; the next load uses the
 new selection. A setting change never moves an active session between processes.
+Loaded threads also keep their backend's model list and capabilities. The
+Supervisor caches the selection for all its routers and refreshes it after a
+successful settings API update; manual file edits take effect after a restart.
+Unowned sessions with unrecognized prefixes use ACP, including on a bound provider.
 
 In Settings → Resources, choose ACP or Native for each harness.
 
