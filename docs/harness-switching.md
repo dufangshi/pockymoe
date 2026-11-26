@@ -55,6 +55,8 @@ The provider defaults to `acp`. HTTP endpoints are owner-only:
 - `GET` / `PUT /api/harness-handoff/settings`, with `{tokenCap}` on PUT,
   changes the device's history cap (1,024–64,000).
 
+Switching an imported thread adopts its durable journal for subsequent turns, so
+its new harness does not require connecting to the old imported session first.
 Harness session positions and turn identity survive Supervisor restarts. If a
 saved native session has been removed outside Pockymoe, its harness may refuse
 to resume it. External effects from earlier turns are never undone by switching.

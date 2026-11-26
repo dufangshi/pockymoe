@@ -2660,10 +2660,13 @@ impl Supervisor {
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                 .map(|t| t.timestamp_millis())
         };
-        for turn in turns
-            .iter_mut()
-            .filter(|turn| turn.status != "inProgress" && usage_needs_hydration(turn))
-        {
+        for turn in turns.iter_mut().filter(|turn| {
+            turn.status != "inProgress"
+                && usage_needs_hydration(turn)
+                && turn.agent_id.as_deref().is_none_or(|agent| {
+                    Some(agent) == thread.agent_id.as_deref() || agent == thread.provider.as_str()
+                })
+        }) {
             let source = history
                 .iter()
                 .find(|source| source.id == turn.id)
@@ -3180,7 +3183,10 @@ impl Supervisor {
             };
             let origin = pending_steer_id.map(|pending| thread_summary::prompt_origin(conn, pending)).transpose()?.flatten().unwrap_or("user");
             if let Some(raw)=conn.query_row("SELECT value FROM kv WHERE key=?1",[format!("handoff:pending:{}",thread.id)],|r|r.get::<_,String>(0)).optional()? {
-                if let Ok(switch)=serde_json::from_str::<Value>(&raw) {if switch.is_object() {user_item.extra.insert("harnessSwitch".into(),switch);}}
+                if let Ok(mut switch)=serde_json::from_str::<Value>(&raw) {if switch.is_object() {
+                    if let Some(prefix)=&handoff {switch["turns"]=json!(prefix.turns);}
+                    user_item.extra.insert("harnessSwitch".into(),switch);
+                }}
             }
             user_item.extra.insert("origin".into(), json!(origin));
             if let Some(sender) = goal_submission.as_ref().and_then(|g| g.sender.as_ref()) {
@@ -3395,7 +3401,8 @@ impl Supervisor {
                 "UPDATE thread_turns SET status=?1, error=?2, completed_at=CASE WHEN ?1='recovering' THEN NULL ELSE ?3 END WHERE id=?4",
                 params![status, error, now, turn_id],
             )?;
-            handoff::record_seen(conn, thread_id, now)?;
+            // A failed start may never have delivered the history; keep it pending for retry.
+            if matches!(status,"completed"|"interrupted") {handoff::record_seen(conn, thread_id, now)?;}
             for item in items {
                 conn.execute(
                     "INSERT INTO thread_history_items(id, thread_id, turn_id, item_id, item_json, created_at, updated_at)

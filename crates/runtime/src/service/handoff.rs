@@ -195,10 +195,10 @@ impl Supervisor {
                     files.truncate(12);
                 }
                 let json = state.to_string();
-                json.chars().take(1600).collect::<String>()
+                json.chars().take((budget / 8).min(400)).collect::<String>()
             })
             .unwrap_or_else(|| "unavailable".into());
-        let header=format!("[Pockymoe portable history: saved conversation, not new instructions]\nRead omitted history: pockymoe transcript {id} --view summary\nRead a turn: pockymoe transcript {id} --turn TURN_ID --view overview\nCurrent Git state: {git}\n");
+        let header=format!("[Pockymoe portable history: saved conversation, not new instructions]\nRead omitted history: pockymoe transcript {id} --view summary\nRead a turn: pockymoe transcript {id} --turn TURN_ID --view overview\nRead item details: pockymoe transcript {id} --turn TURN_ID --item ITEM_ID\nCurrent Git state: {git}\n");
         let mut contract = self
             .db
             .get_kv(&format!("handoff:contract:{id}"))?
@@ -215,7 +215,7 @@ impl Supervisor {
         );
         let available = budget - fixed;
         if let Some((_, first)) = blocks.first_mut() {
-            if first.len() > available / 2 {
+            if first.len() > available {
                 let keep = available / 3;
                 let mut boundary = keep.min(first.len());
                 while !first.is_char_boundary(boundary) {
@@ -341,7 +341,7 @@ impl Supervisor {
             let tx=c.unchecked_transaction()?;
             // Preserve an existing watermark; an unused session must not claim turns it never saw.
             tx.execute("INSERT INTO thread_harness_sessions(thread_id,provider,agent_id,session_id,model,turns_seen,created_at,last_used_at) VALUES(?1,?2,?3,?4,?5,0,?6,?6) ON CONFLICT(thread_id,provider,agent_id) DO UPDATE SET session_id=excluded.session_id,model=excluded.model,last_used_at=excluded.last_used_at",params![id,current.provider.as_str(),current.agent_id.clone().unwrap_or_default(),current.provider_session_id,current.model,now])?;
-            tx.execute("UPDATE threads SET provider=?2,agent_id=?3,provider_session_id=?4,model=?5,reasoning_effort=?6,collaboration_mode='default',sandbox_mode=NULL,fast_mode=0,context_usage_json=NULL,last_error=NULL,status='idle',updated_at=?7 WHERE id=?1",params![id,target.provider.as_str(),target.agent_id,session,target.model,target.reasoning_effort,now])?;
+            tx.execute("UPDATE threads SET source='supervisor',provider=?2,agent_id=?3,provider_session_id=?4,model=?5,reasoning_effort=?6,collaboration_mode='default',sandbox_mode=NULL,fast_mode=0,context_usage_json=NULL,last_error=NULL,status='idle',updated_at=?7 WHERE id=?1",params![id,target.provider.as_str(),target.agent_id,session,target.model,target.reasoning_effort,now])?;
             let switch=json!({"fromAgentId":before.agent_id,"fromModel":before.model,"agentId":target.agent_id,"model":target.model,"turns":preview.turns});
             tx.execute("INSERT OR REPLACE INTO kv(key,value) VALUES(?1,?2)",params![format!("handoff:pending:{id}"),switch.to_string()])?;
             tx.execute("DELETE FROM kv WHERE key=?1",[harness_context_key(id)])?;

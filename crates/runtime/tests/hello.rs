@@ -623,6 +623,17 @@ async fn harness_handoff_round_trip_preserves_sessions_and_only_sends_delta() {
         .unwrap();
     send(&state, &thread.id, "first codex request emerald").await;
     let codex_session = state.get_thread(&thread.id).unwrap().provider_session_id;
+    state
+        .db
+        .with(|c| {
+            c.execute(
+                "UPDATE threads SET source='local_codex_import' WHERE id=?1",
+                [&thread.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
     let target = |provider, agent: &str| HarnessSwitchInput {
         provider,
         agent_id: agent.into(),
@@ -657,6 +668,7 @@ async fn harness_handoff_round_trip_preserves_sessions_and_only_sends_delta() {
         .switch_thread_harness(&thread.id, target(Provider::Claude, "claude"))
         .await
         .unwrap();
+    assert_eq!(state.get_thread(&thread.id).unwrap().source, "supervisor");
     send(&state, &thread.id, "claude delta sapphire").await;
     let preview = state
         .preview_harness_switch(&thread.id, &target(Provider::Codex, "codex"))
