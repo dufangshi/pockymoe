@@ -14,6 +14,7 @@ import {
   type DshConsoleTarget,
   type DshPanelResult,
 } from './DshHarnessPanel';
+import { HarnessSwitchFields } from './HarnessSwitchFields';
 import { FormDialog } from './FormDialog';
 
 export interface HarnessSettingsFieldsProps {
@@ -42,10 +43,14 @@ export interface HarnessSettingsFieldsProps {
 export function HarnessSettingsDialog({
   onClose,
   composerFocusOwner,
+  switchDeviceId,
+  onForked,
   ...fields
 }: HarnessSettingsFieldsProps & {
   onClose: () => void;
   composerFocusOwner?: string;
+  switchDeviceId?: string;
+  onForked?: (thread: ThreadDto) => void;
 }) {
   // Radix may mount portal children after the wrapper's layout effects.
   // Mark the surface from the ref callback before dialog autofocus runs.
@@ -66,6 +71,7 @@ export function HarnessSettingsDialog({
         data-composer-focus-owner={composerFocusOwner}
       >
         <HarnessSettingsFields {...fields} />
+        {!fields.readOnly && !fields.harnessReadOnly && <HarnessSwitchFields thread={fields.thread} {...(switchDeviceId ? {deviceId:switchDeviceId} : {})} onSwitched={fork=>{onClose();if(fork)onForked?.(fork);}} />}
       </div>
     </FormDialog>
   );

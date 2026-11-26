@@ -4243,6 +4243,8 @@ export function ThreadDetailPage() {
       )}
       dialogs={<>{dialogs}{settingsDialogVisible && dialogDetail && <HarnessSettingsDialog
         key={`${dialogDevice}:${dialogDetail.thread.id}`} thread={dialogDetail.thread}
+        switchDeviceId={dialogDevice}
+        onForked={thread=>openThread(thread.id)}
         models={dialogUseReference ? referenceController.models : modelOptions}
         busy={dialogUseReference ? referenceController.busy : settingsBusy}
         readOnly={dialogUseReference ? !referenceController.canControl : !relayThreadCanControl}
