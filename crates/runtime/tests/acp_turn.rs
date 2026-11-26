@@ -288,6 +288,44 @@ async fn restored_session_applies_advertised_effort_and_recovers_after_settings_
     }
 }
 
+#[tokio::test]
+async fn plan_mode_uses_the_collaboration_option_and_follows_its_exit() {
+    let dir = tempdir().unwrap();
+    let (runtime, session) =
+        start_runtime_with_args(dir.path(), &which_python(), "--collaboration").await;
+    let bus = EventBus::new();
+    let mut events = bus.subscribe();
+    let mut input = turn_input(&session, "approve-plan", "plan-turn");
+    input.collaboration_mode = Some("plan".into());
+    input.approval_mode = Some("guarded".into());
+    input.sandbox_mode = Some("workspace-write".into());
+    runtime
+        .start_turn(input, bus, CancellationToken::new())
+        .await
+        .unwrap();
+    let set = std::fs::read_to_string(dir.path().join("collaboration.jsonl")).unwrap();
+    assert_eq!(set.lines().collect::<Vec<_>>(), ["\"plan\""], "{set}");
+    let mut left = None;
+    while let Ok(event) = events.try_recv() {
+        if event.event_type == "thread.collaboration.updated" {
+            left = Some(event.payload);
+        }
+    }
+    let left = left.expect("leaving Plan Mode updates the thread");
+    assert_eq!(left["collaborationMode"], "default");
+    assert_eq!(left["turnId"], "plan-turn");
+    // The next turn neither re-enters Plan Mode nor sets the option again.
+    let mut next = turn_input(&session, "after-plan", "next-turn");
+    next.approval_mode = Some("guarded".into());
+    next.sandbox_mode = Some("workspace-write".into());
+    runtime
+        .start_turn(next, EventBus::new(), CancellationToken::new())
+        .await
+        .unwrap();
+    let set = std::fs::read_to_string(dir.path().join("collaboration.jsonl")).unwrap();
+    assert_eq!(set.lines().count(), 1, "{set}");
+}
+
 async fn start_runtime(dir: &std::path::Path, python: &str) -> (AcpRuntime, String) {
     start_runtime_with_args(dir, python, "").await
 }

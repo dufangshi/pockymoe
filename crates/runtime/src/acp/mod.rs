@@ -38,7 +38,9 @@ pub use catalog::{
     augment_path, builtin_agents, classify_availability, command_available, parse_command_models,
 };
 pub use dependencies::cleanup_installations as cleanup_adapter_installations;
+pub(crate) use modes::{has_collaboration_option, resolve_collaboration_config_value};
 pub use modes::{parse_available_modes, ProductSessionPolicy};
+pub(crate) use modes::{permission_questions, select_permission_option, PermissionChoice};
 pub use runtime::AcpRuntime;
 
 mod usage;

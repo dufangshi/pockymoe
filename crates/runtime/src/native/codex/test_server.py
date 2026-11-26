@@ -10,7 +10,7 @@ for line in sys.stdin:
     if not m:
         if v.get('id')==900:
             if approval=='permissions':
-                assert v['result']=={'permissions':{'network':{'enabled':True}},'scope':'turn'}
+                assert v['result']['permissions']=={'network':{'enabled':True}} and v['result']['scope']=='turn' and v['result']['strictAutoReview'] is False
             else: assert v['result']['decision']=='accept'
             done()
         continue
@@ -20,14 +20,45 @@ for line in sys.stdin:
     if m=='thread/turns/list': result={'data':[{'id':'old-turn'}], 'nextCursor':None}
     if m=='thread/revert': assert p['beforeTurnId']=='old-turn'
     if m=='turn/start': result={'turn':{'id':'native-turn'}}
+    if m=='review/start':
+        assert p['target']=={'type':'baseBranch','branch':'main'} and p['delivery']=='inline', p
+        result={'turn':{'id':'native-turn'},'reviewThreadId':'shared'}
+    if m=='mcpServerStatus/list':
+        result={'data':[{'name':'docs','runtimeStatus':'connected','authStatus':'unsupported','tools':{'search':{}}}],'nextCursor':None}
     send({'id':v['id'],'result':result})
     if m=='turn/start':
         text=p['input'][0]['text']
         if text=='crash': sys.exit(0)
+        if text=='make a plan':
+            assert p['collaborationMode']['mode']=='plan', p
+            send({'method':'item/completed','params':{'threadId':'shared','item':{'id':'plan-1','type':'plan','text':'1. Add tests'}}})
+            send({'method':'turn/completed','params':{'threadId':'shared','turn':{'id':'native-turn','status':'completed'}}})
+            continue
+        if text=='Implement the approved plan.':
+            assert p['collaborationMode']['mode']=='default', p
+            send({'method':'item/agentMessage/delta','params':{'threadId':'shared','itemId':'impl','delta':'Implemented'}})
+            send({'method':'turn/completed','params':{'threadId':'shared','turn':{'id':'native-turn','status':'completed'}}})
+            continue
         if text=='approval':send({'id':900,'method':'item/commandExecution/requestApproval','params':{'threadId':'shared','command':'echo hello','reason':'test'}})
         elif text=='approval-permissions':
             approval='permissions'
             send({'id':900,'method':'item/permissions/requestApproval','params':{'threadId':'shared','reason':'Need network','permissions':{'network':{'enabled':True}}}})
+        elif text=='notices':
+            send({'method':'warning','params':{'threadId':'shared','message':'Model metadata for x not found.'}})
+            send({'method':'remoteControl/status/changed','params':{'status':'disabled'}})
+            done()
+        elif text=='settled':
+            # Codex settles its own callback (e.g. superseded); the card must go.
+            import time
+            send({'id':901,'method':'item/commandExecution/requestApproval','params':{'threadId':'shared','itemId':'c','command':'ls'}})
+            time.sleep(0.3)
+            send({'method':'serverRequest/resolved','params':{'threadId':'shared','requestId':901}})
+            # Settled before its request is read, and one left open at the end.
+            send({'method':'serverRequest/resolved','params':{'threadId':'shared','requestId':902}})
+            send({'id':902,'method':'item/commandExecution/requestApproval','params':{'threadId':'shared','itemId':'d','command':'pwd'}})
+            send({'id':903,'method':'item/fileChange/requestApproval','params':{'threadId':'shared','itemId':'e'}})
+            time.sleep(0.3)
+            done()
         elif text=='limits':
             # Sparse rolling update: a per-model alias limit is ignored, then
             # the account's own codex limit reports only its weekly window.
@@ -42,6 +73,11 @@ for line in sys.stdin:
         send({'method':'thread/tokenUsage/updated','params':{'threadId':'shared','tokenUsage':{'total':{'totalTokens':10},'last':{'totalTokens':5},'modelContextWindow':100}}})
         send({'method':'turn/completed','params':{'threadId':'shared','turn':{'id':'compact-turn','status':'completed'}}})
 
+    if m=='review/start':
+        send({'method':'item/completed','params':{'threadId':'shared','item':{'id':'rv','type':'exitedReviewMode','review':'No issues found.'}}})
+        send({'method':'turn/completed','params':{'threadId':'shared','turn':{'id':'native-turn','status':'completed'}}})
+    if m=='turn/settings/update':
+        assert p['turnId']=='native-turn' and p['model']=='live-model' and 'effort' not in p, p
     if m=='turn/steer': done()
     if m=='turn/interrupt':
         assert p['turnId']=='native-turn'

@@ -54,7 +54,40 @@ review as the reviewer's answer. Sleep, function-output, hook-prompt and
 review-start bookkeeping items stay hidden. Blocking or stopping hooks, model
 reroutes, configuration warnings and deprecation notices appear as notices.
 Explicit compaction holds the session until Codex reports it finished, like
-ACP's hidden `/compact` turn.
+ACP's hidden `/compact` turn. Command output streams into the row while the
+command runs, including what the agent types into an interactive command.
+
+Approval cards offer the decisions codex-acp offers: allow once, allow for the
+session, allow commands with the same prefix from now on, allow or block a
+network host, decline and continue, or decline and stop the turn; permission
+requests can be granted for the turn, for the turn with strict review, or for
+the session. Guarded escalations always ask the user (the approval reviewer is
+the user, never Codex's own reviewer). A card closes when Codex settles the
+request itself or the turn ends. `/review`, `/review-branch <branch>` and `/review-commit <sha>` start
+Codex's review mode; `/mcp`, `/skills` and `/status` answer from the
+app-server without a model call. A Plan Mode turn that produces a plan asks
+"Implement this plan?"; yes leaves Plan Mode and runs the implementation in the
+same turn, as on ACP.
+
+Beyond ACP, native Codex changes the effort, fast tier or (when Codex accepts
+it) model of a running turn from its next model request
+(`controls.liveModelSwitch`; the app-server starts with Codex's
+`step_model_switching` feature; ACP rejects such a change), shows retrying
+connections, Codex warnings and MCP servers that failed to start as notices, reports plan
+allowance live, and rewinds in place. The full method-by-method coverage
+(every app-server method, server request and notification, with the ACP
+behaviour and the test that proves it) is kept with the audit evidence; its
+summary: 37 handled as before, 18 fixed or added in the 2026-11-26 audit, one
+minor gap (MCP tool progress text is not shown), and 225 not applicable to a
+thread runtime (account sign-in, Codex app organisation, plugins, voice,
+filesystem and process APIs Pockymoe provides itself).
+
+On ACP, Codex keeps the same product guarantees: guarded selects codex-acp's
+`workspace-write` mode (the user reviews escalations; its `agent` mode is Codex's
+Auto review), Plan Mode sets codex-acp's `collaboration_mode` option, and when
+codex-acp leaves Plan Mode after an approved plan the thread follows it. The
+Codex bridge refuses codex-acp's ephemeral title threads, so ACP spends no model
+requests the transcript does not show (Pockymoe keeps its own titles).
 
 Client-defined dynamic tools, external token refresh and attestation callbacks
 are unsupported and receive a protocol error. MCP elicitation currently
@@ -156,11 +189,20 @@ evidence kept with the release notes. Status as of 2026-11-26:
 | Turn lifecycle events identical to ACP (`thread.turn.started` / `completed`) | pass | pass |
 | Token usage, context, cost and plan allowance identical to ACP for the same prompts; allowance live during a turn | pass (scripted upstream, real CLI) | not compared side by side |
 | Plan and performance modes reach the model | pass (Codex Plan Mode instructions, fast service tier) | pass (plan) |
-| Extended items render as on ACP (MCP, web search, images, review, hooks, notices) | pass in mapping tests; no real MCP, image or review run | not applicable |
-| AskUserQuestion, explicit compaction, Write diffs in a real lab | compaction waits for completion (scripted) | pass |
+| Every app-server method, server request and notification classified against codex-acp, with a test for each mapped one (2026-11-26 audit) | pass: 281 entries; one minor gap (MCP tool progress text) | see the Claude audit |
+| Same scripted prompts side by side with a real model: tools, edit, image, sub-agent, interrupt, `/status`, `/mcp`, `/review`, compaction, restart, escalation approval, Plan Mode | pass: same outcome on every step; every remaining difference explained (native shows sub-agent rows; ACP's Guardian auto-review, missing Plan Mode and title requests were fixed after the audit) | see the Claude audit |
+| Extended items render as on ACP (MCP, web search, images, review, hooks, notices) | pass in mapping tests; review mode in the real lab; no real MCP server or image-model run | not applicable |
+| AskUserQuestion, explicit compaction, Write diffs in a real lab | compaction in the real lab | pass |
 | SDK callback hooks and SDK-hosted MCP | not applicable | partial: Write preview hook; no SDK MCP |
 | Background work outside a prompt | not run | not qualified |
 | A full release matrix (macOS, Windows/WSL, mobile hosts) | not run | not run |
+
+Recommendation after the Codex audit: native Codex now matches or exceeds ACP on
+every row run on Linux (live turn settings, sub-agent rows, warnings as notices).
+The ACP behaviours the audit found against the product's settings (guarded
+escalations approved by Codex's own reviewer, Plan Mode turns without Codex's
+Plan Mode, hidden title requests) are fixed on ACP too. Make native the Codex
+default once the release matrix passes; until then ACP stays the default.
 
 A failing or unrun row keeps ACP the default. Re-run the isolated rows whenever
 the environment image's harness versions change: both runtimes pin the versions

@@ -30,6 +30,8 @@ if os.environ.get("POCKYMOE_APP_SERVER_BRIDGE"):
 fast_enabled = False
 steering_prompt_id = None
 reasoning_effort = "medium"
+# codex-acp offers Plan as a separate collaboration option.
+collaboration = "default"
 write_lock = threading.Lock()
 startup_config = open("fixture-config.txt").read() if os.path.exists("fixture-config.txt") else "unset"
 
@@ -39,6 +41,9 @@ mcp_servers = []
 def config_options():
     if "--no-fast" in sys.argv:
         return []
+    if "--collaboration" in sys.argv:
+        return [{"id": "collaboration_mode", "category": "collaboration_mode", "type": "select", "currentValue": collaboration,
+                 "options": [{"value": v, "name": v} for v in ["default", "plan"]]}]
     return [
         {"id": "reasoning_effort", "category": "thought_level", "type": "select",
          "currentValue": reasoning_effort, "options": [{"value": v, "name": v} for v in ["medium", "high"]]},
@@ -66,7 +71,7 @@ def prompt_text(params):
 
 
 def handle(msg):
-    global fast_enabled, steering_prompt_id, reasoning_effort
+    global fast_enabled, steering_prompt_id, reasoning_effort, collaboration
     method = msg.get("method")
     req_id = msg.get("id")
     params = msg.get("params") or {}
@@ -116,6 +121,19 @@ def handle(msg):
         cancel_delay = {"wait-for-cancel-ack": 2.4, "wait-for-fast-cancel-ack": 0.05, "wait-for-stalled-cancel": None}[prompt_text(params)]
         cancellable_prompt = req_id
         send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fake-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"waiting for cancellation"}}}})
+        return
+    if method == "session/set_config_option" and params.get("configId") == "collaboration_mode":
+        collaboration = params["value"]
+        with open("collaboration.jsonl", "a") as log:
+            log.write(json.dumps(collaboration) + "\n")
+        send({"jsonrpc": "2.0", "id": req_id, "result": {"configOptions": config_options()}})
+        return
+    if method == "session/prompt" and prompt_text(params) == "approve-plan":
+        # codex-acp leaves Plan Mode after "Implement this plan?" and announces it.
+        collaboration = "default"
+        send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fake-session","update":{"sessionUpdate":"config_option_update","configOptions":config_options()}}})
+        send({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fake-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"implemented"}}}})
+        send({"jsonrpc":"2.0","id":req_id,"result":{"stopReason":"end_turn"}})
         return
     if method == "session/set_config_option":
         if params.get("configId") == "reasoning_effort" and params.get("value") in ("medium", "high"):

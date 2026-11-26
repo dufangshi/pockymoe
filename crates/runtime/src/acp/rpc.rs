@@ -640,14 +640,21 @@ async fn dispatch(
         }
         return Ok(());
     }
-    // Direct app-server notifications share this bounded transport.
+    // Direct app-server notifications share this bounded transport: the ones
+    // native Codex maps (see native/codex/mapping.rs), not the whole firehose.
     if method == "session/update"
         || method.starts_with('_')
         || method.starts_with("thread/")
         || method.starts_with("turn/")
         || method.starts_with("item/")
         || method.starts_with("account/")
-        || method == "error"
+        || method.starts_with("hook/")
+        || method.starts_with("serverRequest/")
+        || method.starts_with("mcpServer/startupStatus/")
+        || matches!(
+            method,
+            "error" | "warning" | "configWarning" | "deprecationNotice" | "model/rerouted"
+        )
     {
         let mut params = msg.get("params").cloned().unwrap_or(json!({}));
         let Some(object) = params.as_object_mut() else {
@@ -856,6 +863,39 @@ mod tests {
             );
             assert_eq!(read_message(&mut reader).await.unwrap(), None);
         }
+    }
+
+    #[tokio::test]
+    async fn app_server_notifications_native_codex_maps_reach_it_and_others_do_not() {
+        let state = Arc::new(Mutex::new(RpcState::default()));
+        let (updates, mut received) = mpsc::channel(32);
+        let (requests, _) = mpsc::channel(4);
+        let methods = [
+            "warning",
+            "configWarning",
+            "deprecationNotice",
+            "model/rerouted",
+            "hook/completed",
+            "serverRequest/resolved",
+            "mcpServer/startupStatus/updated",
+            "remoteControl/status/changed",
+            "fs/changed",
+        ];
+        for method in methods {
+            dispatch(
+                json!({"method":method,"params":{"threadId":"t"}}),
+                &state,
+                &updates,
+                &requests,
+            )
+            .await
+            .unwrap();
+        }
+        let mut forwarded = vec![];
+        while let Ok(update) = received.try_recv() {
+            forwarded.push(update["_remoteMethod"].as_str().unwrap().to_owned());
+        }
+        assert_eq!(forwarded, methods[..7]);
     }
 
     #[tokio::test]

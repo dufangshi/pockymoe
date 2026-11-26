@@ -1,5 +1,8 @@
 //! Direct Codex app-server runtime. The shared JSON-RPC process owns stdio and cleanup.
+mod approvals;
+mod commands;
 mod mapping;
+mod plan_review;
 mod wire;
 use crate::{
     acp::{rpc::AcpProcess, ProductSessionPolicy, TurnMapper},
@@ -31,6 +34,11 @@ struct Session {
     goal_active: std::sync::atomic::AtomicBool,
     context_reader: Option<Arc<std::sync::Mutex<crate::context_inspection::CodexTraceReader>>>,
 }
+struct PlanReview {
+    thread: String,
+    dto: ThreadActionRequestDto,
+    reply: tokio::sync::oneshot::Sender<bool>,
+}
 struct Pending {
     process: Arc<AcpProcess>,
     rpc_id: i64,
@@ -39,6 +47,7 @@ struct Pending {
     dto: ThreadActionRequestDto,
     params: Value,
     bus: EventBus,
+    decisions: Vec<approvals::Decision>,
 }
 pub struct CodexRuntime {
     provider: Provider,
@@ -47,6 +56,8 @@ pub struct CodexRuntime {
     upstreams: PathBuf,
     sessions: RwLock<HashMap<String, Arc<Session>>>,
     pending: Mutex<HashMap<String, Pending>>,
+    /// "Implement this plan?" after a Plan Mode turn, answered like an approval.
+    plan_reviews: Mutex<HashMap<String, PlanReview>>,
     events: broadcast::Sender<SessionLifecycle>,
     inspection: RwLock<Option<Arc<crate::context_inspection::InspectionState>>>,
 }
@@ -60,6 +71,7 @@ impl CodexRuntime {
             upstreams,
             sessions: RwLock::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
+            plan_reviews: Mutex::new(HashMap::new()),
             events,
             inspection: RwLock::new(None),
         }
@@ -123,8 +135,15 @@ impl CodexRuntime {
                 root.to_string_lossy().into_owned(),
             ));
         }
-        let (process, updates, requests) =
-            AcpProcess::spawn(&format!("{command} app-server"), cwd, &env).await?;
+        // Live turn settings (`turn/settings/update`) are behind a Codex feature
+        // that is read when a thread starts; the environment image's older Codex
+        // does not have it, so isolated turns take changes from the next turn.
+        let launch = if isolated {
+            format!("{command} app-server")
+        } else {
+            format!("{command} app-server -c features.step_model_switching=true -c suppress_unstable_features_warning=true")
+        };
+        let (process, updates, requests) = AcpProcess::spawn(&launch, cwd, &env).await?;
         let process = Arc::new(process);
         let initialized = process.request("initialize",json!({"clientInfo":{"name":"pockymoe","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await
             .and_then(|init| {
@@ -280,7 +299,7 @@ impl AgentRuntime for CodexRuntime {
             availability: if available { "ready" } else { "base_missing" }.into(),
             negotiated: Some(json!({"protocol":"codex-app-server","experimental":true})),
             effective_capabilities: available.then_some(caps.clone()),
-            toolbox_items: toolbox_from_capabilities(&caps),
+            toolbox_items: native_toolbox(&caps),
         })
     }
     fn negotiated_caps(&self, _agent: Option<&str>) -> AgentProviderCapabilitiesDto {
@@ -293,6 +312,7 @@ impl AgentRuntime for CodexRuntime {
         caps.branching.hard_rollback = true;
         caps.controls.performance_mode = true;
         caps.controls.goals = true;
+        caps.controls.live_model_switch = true;
         crate::acp::runtime::isolated_capabilities::restrict(
             &mut caps,
             crate::execution::current().is_some(),
@@ -312,7 +332,7 @@ impl AgentRuntime for CodexRuntime {
         caps
     }
     fn toolbox(&self, agent: Option<&str>) -> Vec<ToolboxItemDto> {
-        toolbox_from_capabilities(&self.negotiated_caps(agent))
+        native_toolbox(&self.negotiated_caps(agent))
     }
     async fn list_models(
         &self,
@@ -404,6 +424,17 @@ impl AgentRuntime for CodexRuntime {
         .await?;
         let settings = session.settings.read().unwrap().clone();
         let policy = policy(&settings);
+        let command = (!input.hidden && input.images.is_empty())
+            .then(|| commands::parse(&input.prompt))
+            .flatten();
+        if let Some(local) = command
+            .as_ref()
+            .filter(|c| !matches!(c, commands::Command::Review(_)))
+        {
+            return self
+                .local_command(&session, &input, &bus, local, &settings, &policy)
+                .await;
+        }
         let include_context = !input.context_delivered
             && !input.hidden
             && !session.process.cli_env.is_empty()
@@ -423,7 +454,7 @@ impl AgentRuntime for CodexRuntime {
         )?;
         let content:Vec<Value>=blocks.into_iter().map(|v|match v["type"].as_str(){Some("image")=>json!({"type":"image","url":format!("data:{};base64,{}",v["mimeType"].as_str().unwrap_or("image/png"),v["data"].as_str().unwrap_or(""))}),Some("text")=>json!({"type":"text","text":v["text"]}),_=>json!({"type":"text","text":format!("{}",v["uri"].as_str().unwrap_or(""))})}).collect();
         let mut params = json!({"threadId":native_raw(&input.provider_session_id),"input":content,"model":settings.model,"effort":settings.effort,"approvalPolicy":policy["approvalPolicy"],"sandboxPolicy":policy["sandboxPolicy"]});
-        if let Some(mode) = settings.collaboration_mode {
+        if let Some(mode) = &settings.collaboration_mode {
             params["collaborationMode"] = json!({"mode":mode,"settings":{"model":settings.model,"reasoning_effort":settings.effort,"developer_instructions":null}});
         }
         // The rollout reader also accounts for requests made by Codex subagents,
@@ -435,6 +466,7 @@ impl AgentRuntime for CodexRuntime {
             .then(|| crate::acp::CodexUsageReader::new(native_raw(&input.provider_session_id)));
         let mut usage_tick = tokio::time::interval(Duration::from_millis(250));
         let mut announcer = crate::subscription::Announcer::default();
+        let mut settled = std::collections::HashSet::<i64>::new();
         let inspection = self
             .inspection
             .read()
@@ -442,9 +474,17 @@ impl AgentRuntime for CodexRuntime {
             .clone()
             .filter(|_| !input.hidden);
         crate::native::turn_events::started(&bus, &input);
+        // `/review…` runs Codex's review mode inline on this thread.
+        let (method, params) = match &command {
+            Some(commands::Command::Review(target)) => (
+                "review/start",
+                json!({"threadId":native_raw(&input.provider_session_id),"target":target,"delivery":"inline"}),
+            ),
+            _ => ("turn/start", params),
+        };
         let started = session
             .process
-            .request("turn/start", params)
+            .request(method, params)
             .await
             .and_then(|response| {
                 response["turn"]["id"]
@@ -452,7 +492,7 @@ impl AgentRuntime for CodexRuntime {
                     .map(str::to_owned)
                     .context("Codex turn id missing")
             });
-        let turn = match started {
+        let mut turn = match started {
             Ok(turn) => turn,
             Err(error) => {
                 let failed: Result<()> = Err(error);
@@ -473,7 +513,8 @@ impl AgentRuntime for CodexRuntime {
                     bus.clone(),
                 )
             });
-        if include_context {
+        // A review does not carry the prompt, so the context still needs delivering.
+        if include_context && !matches!(command, Some(commands::Command::Review(_))) {
             session
                 .context_delivered
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -483,6 +524,11 @@ impl AgentRuntime for CodexRuntime {
         let mut mapper = TurnMapper::new(&input.turn_id);
         let mut interrupted = false;
         let mut interrupt_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        // Plan Mode follow-through (codex-acp): the plan this turn produced.
+        let in_plan = settings.collaboration_mode.as_deref() == Some("plan")
+            && !matches!(command, Some(commands::Command::Review(_)));
+        let mut plan: Option<(String, String)> = None;
+        let mut reviewed = false;
         let result=async {loop {tokio::select! {
             _=usage_tick.tick(), if usage_reader.is_some() => {
                 if let Some(reader)=usage_reader.as_mut() {for usage in reader.poll() {
@@ -502,23 +548,56 @@ impl AgentRuntime for CodexRuntime {
                     session.process.respond_error(rpc_id,"Unsupported native Codex callback").await?;
                     continue;
                 }
+                if settled.remove(&rpc_id) { continue; }
                 let id=format!("native-codex:{}:{rpc_id}",session.process.id);
-                let description=if method=="item/permissions/requestApproval" {Some(format!("{}\n{}",params["reason"].as_str().unwrap_or(""),serde_json::to_string_pretty(&params["permissions"])?))} else {params["reason"].as_str().map(str::to_owned)};
-                let dto=ThreadActionRequestDto{id:id.clone(),kind:if method.contains("requestUserInput") || method.contains("elicitation") {"requestUserInput"}else{"permissionRequest"}.into(),title:params["command"].as_str().unwrap_or(&method).into(),description,turn_id:Some(input.turn_id.clone()),item_id:params["itemId"].as_str().map(str::to_owned),created_at:now_rfc3339(),questions:if method.contains("requestUserInput") || method.contains("elicitation") {crate::acp::elicitation::questions(&params,method.contains("requestUserInput"))?} else {vec![]}};
-                self.pending.lock().await.insert(id,Pending{process:session.process.clone(),rpc_id,method,thread:input.thread_id.clone(),dto:dto.clone(),params,bus:bus.clone()});event(&bus,&input,"thread.request.created",json!({"request":dto}));
+                let asks=method.contains("requestUserInput") || method.contains("elicitation");
+                let decisions=approvals::decisions(&method,&params);
+                let title=approval_title(&method,&params);
+                let questions=if asks {crate::acp::elicitation::questions(&params,method.contains("requestUserInput"))?} else {approvals::questions(&title,&decisions)};
+                let dto=ThreadActionRequestDto{id:id.clone(),kind:if asks {"requestUserInput"}else{"permissionRequest"}.into(),title,description:approval_description(&method,&params)?,turn_id:Some(input.turn_id.clone()),item_id:params["itemId"].as_str().map(str::to_owned),created_at:now_rfc3339(),questions};
+                self.pending.lock().await.insert(id,Pending{process:session.process.clone(),rpc_id,method,thread:input.thread_id.clone(),dto:dto.clone(),params,bus:bus.clone(),decisions});event(&bus,&input,"thread.request.created",json!({"request":dto}));
             },
             update=updates.recv()=>{let Some(update)=update else {return Err(ExecutionUncertain("app-server notification stream closed".into()).into());};
                 let update=json!({"method":update["_remoteMethod"],"params":update});
                 let params=&update["params"];
+                // Codex settled a callback itself (turn ended, request superseded):
+                // the approval card must not wait for an answer nobody reads.
+                if update["method"]=="serverRequest/resolved" {
+                    let rpc=params["requestId"].as_i64().or_else(|| params["requestId"].as_str().and_then(|v| v.parse().ok()));
+                    let mut pending=self.pending.lock().await;
+                    let found:Vec<_>=pending.iter().filter(|(_,p)| Some(p.rpc_id)==rpc && p.process.id==session.process.id).map(|(id,_)|id.clone()).collect();
+                    // The request travels on the other channel and may not be
+                    // shown yet: remember it so it is never shown.
+                    if found.is_empty() { if let Some(rpc)=rpc { settled.insert(rpc); } }
+                    for id in found { if let Some(p)=pending.remove(&id) { p.bus.emit(ThreadEventEnvelope{event_type:ThreadEventType::ThreadRequestResolved,thread_id:p.thread,timestamp:now_rfc3339(),payload:json!({"requestId":id,"turnId":input.turn_id})}); } }
+                    continue;
+                }
                 // Account-wide, not thread-scoped: the push the ACP adapter drops.
                 if update["method"]=="account/rateLimits/updated" {
                     if let Some(limits)=crate::subscription::codex_rate_update(&params["rateLimits"]) {announcer.announce(&bus,&input.thread_id,"codex",limits,input.hidden);}
                     continue;
                 }
                 if params["threadId"].as_str().is_some_and(|id|id!=native_raw(&input.provider_session_id)){continue;}
+                if update["method"]=="item/completed" && params["item"]["type"]=="plan" {
+                    plan = Some((params["item"]["id"].as_str().unwrap_or("plan").to_owned(), params["item"]["text"].as_str().unwrap_or("").to_owned()));
+                }
                 if update["method"]=="turn/completed" && params["turn"]["id"]==turn {
                     if params["turn"]["status"]=="failed" {bail!("Codex turn failed: {}",params["turn"]["error"]);}
-                    interrupted |= params["turn"]["status"]=="interrupted";break;
+                    interrupted |= params["turn"]["status"]=="interrupted";
+                    if in_plan && !interrupted && !reviewed && !input.hidden {
+                        if let Some((item, text)) = plan.take().filter(|(_, t)| !t.trim().is_empty()) {
+                            reviewed = true;
+                            match self.review_plan(&input, &bus, &mut mapper, &item, &text, &cancel).await {
+                                Some(true) => {
+                                    turn = self.implement_plan(&session, &input, &bus).await?;
+                                    continue;
+                                }
+                                Some(false) => {}
+                                None => interrupted = true,
+                            }
+                        }
+                    }
+                    break;
                 }
                 for mut mapped in mapping::apply(&mut mapper,&update) {
                     if let Some(goal)=&mapped.goal {
@@ -568,10 +647,25 @@ impl AgentRuntime for CodexRuntime {
         }
         *session.active.write().unwrap() = None;
         session.loaded.write().unwrap().last_activity_at = chrono::Utc::now();
-        self.pending
-            .lock()
-            .await
-            .retain(|_, p| p.process.id != session.process.id);
+        // Requests still open when the turn ends can no longer be answered:
+        // tell viewers, as ACP does when its permission wait ends.
+        let mut pending = self.pending.lock().await;
+        let open: Vec<_> = pending
+            .iter()
+            .filter(|(_, p)| p.process.id == session.process.id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in open {
+            if let Some(p) = pending.remove(&id) {
+                p.bus.emit(ThreadEventEnvelope {
+                    event_type: ThreadEventType::ThreadRequestResolved,
+                    thread_id: p.thread,
+                    timestamp: now_rfc3339(),
+                    payload: json!({"requestId":id,"turnId":input.turn_id}),
+                });
+            }
+        }
+        drop(pending);
         let items = mapper.finish(interrupted || result.is_err());
         crate::native::turn_events::finished(&bus, &input, &result, interrupted, Some(&items));
         result?;
@@ -605,6 +699,11 @@ impl AgentRuntime for CodexRuntime {
     }
     async fn apply_session_settings(&self, id: &str, settings: SessionSettings) -> Result<()> {
         let s = self.session(id)?;
+        let (model_changed, effort_changed, tier_changed) = (
+            settings.model.is_some(),
+            settings.effort.is_some(),
+            settings.performance_mode.is_some(),
+        );
         let merged = {
             let mut current = s.settings.write().unwrap();
             macro_rules! merge {($($key:ident),*)=>{$(if settings.$key.is_some(){current.$key=settings.$key;})*}}
@@ -619,10 +718,42 @@ impl AgentRuntime for CodexRuntime {
             current.clone()
         };
         let policy = policy(&merged);
-        s.process.request("thread/settings/update",json!({"threadId":native_raw(id),"model":merged.model,"effort":merged.effort,"sandboxPolicy":policy["sandboxPolicy"],"approvalPolicy":policy["approvalPolicy"],"serviceTier":if merged.performance_mode==Some(true){json!("fast")}else{Value::Null}})).await?;
+        let tier = if merged.performance_mode == Some(true) {
+            json!("fast")
+        } else {
+            Value::Null
+        };
+        s.process.request("thread/settings/update",json!({"threadId":native_raw(id),"model":merged.model,"effort":merged.effort,"sandboxPolicy":policy["sandboxPolicy"],"approvalPolicy":policy["approvalPolicy"],"serviceTier":tier})).await?;
+        // A running turn takes a new model, effort or tier from its next model
+        // request (`turn/settings/update`); ACP only applies it next turn.
+        let live = s.active.read().unwrap().clone();
+        if let Some(turn) = live {
+            let mut change = json!({"threadId":native_raw(id),"turnId":turn});
+            if model_changed {
+                change["model"] = json!(merged.model);
+            }
+            if effort_changed {
+                change["effort"] = json!(merged.effort);
+            }
+            if tier_changed {
+                change["serviceTier"] = tier;
+            }
+            if change.as_object().is_some_and(|c| c.len() > 2) {
+                // Codex validates the switch (feature enabled at launch, model
+                // metadata, policy). If it refuses, the change still applies
+                // from the next turn, as on ACP, instead of failing.
+                if let Err(error) = s.process.request("turn/settings/update", change).await {
+                    tracing::info!(%error, "Codex kept the running turn's settings; they apply from the next turn");
+                }
+            }
+        }
         Ok(())
     }
     async fn respond_permission(&self, id: &str, allow: bool, answer: Option<&str>) -> Result<()> {
+        if let Some(review) = self.plan_reviews.lock().await.remove(id) {
+            let _ = review.reply.send(plan_review::approved(allow, answer));
+            return Ok(());
+        }
         let mut pending = self.pending.lock().await;
         let p = pending.get(id).context("Native Codex request not found")?;
         let response = if p.method.contains("requestUserInput") || p.method.contains("elicitation")
@@ -633,15 +764,8 @@ impl AgentRuntime for CodexRuntime {
                 allow,
                 answer,
             )?
-        } else if p.method == "item/permissions/requestApproval" {
-            json!({"permissions":if allow{p.params["permissions"].clone()}else{json!({})},"scope":"turn"})
-        } else if matches!(
-            p.method.as_str(),
-            "execCommandApproval" | "applyPatchApproval"
-        ) {
-            json!({"decision":if allow{"approved"}else{"denied"}})
         } else {
-            json!({"decision":if allow{"accept"}else{"decline"}})
+            approvals::response(&p.method, &p.params, &p.decisions, allow, answer)
         };
         p.process.respond(p.rpc_id, response).await?;
         let p = pending
@@ -658,14 +782,25 @@ impl AgentRuntime for CodexRuntime {
     }
 
     async fn pending_requests(&self, thread: &str) -> Vec<ThreadActionRequestDto> {
-        self.pending
+        let mut list: Vec<_> = self
+            .pending
             .lock()
             .await
             .values()
             .filter(|p| p.thread == thread)
             .map(|p| p.dto.clone())
-            .collect()
+            .collect();
+        list.extend(
+            self.plan_reviews
+                .lock()
+                .await
+                .values()
+                .filter(|r| r.thread == thread)
+                .map(|r| r.dto.clone()),
+        );
+        list
     }
+
     async fn compact_session(&self, id: &str, thread: &str, bus: EventBus) -> Result<()> {
         // Like ACP's hidden `/compact` turn: hold the session until Codex has
         // finished, so no prompt starts against a half-compacted thread and
@@ -968,6 +1103,223 @@ fn goal(value: &Value) -> Option<GoalState> {
 
 #[cfg(test)]
 mod tests;
+
+fn native_toolbox(caps: &AgentProviderCapabilitiesDto) -> Vec<ToolboxItemDto> {
+    let mut items = toolbox_from_capabilities(caps);
+    for item in commands::toolbox() {
+        if !items.iter().any(|i| i.command == item.command) {
+            items.push(item);
+        }
+    }
+    items
+}
+
+impl CodexRuntime {
+    /// Asks "Implement this plan?"; `None` when the turn was cancelled meanwhile.
+    async fn review_plan(
+        &self,
+        input: &StartTurnInput,
+        bus: &EventBus,
+        mapper: &mut TurnMapper,
+        item: &str,
+        plan: &str,
+        cancel: &CancellationToken,
+    ) -> Option<bool> {
+        let show = |mapper: &mut TurnMapper, decided| {
+            let update = mapper.apply(&plan_review::row(item, plan, decided));
+            crate::acp::emit_mapped(bus, &input.thread_id, &input.turn_id, update, input.hidden);
+        };
+        show(mapper, None);
+        let id = format!("native-codex:plan:{}", uuid::Uuid::new_v4());
+        let dto = plan_review::request(&id, &input.turn_id, item, plan);
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.plan_reviews.lock().await.insert(
+            id.clone(),
+            PlanReview {
+                thread: input.thread_id.clone(),
+                dto: dto.clone(),
+                reply,
+            },
+        );
+        event(bus, input, "thread.request.created", json!({"request":dto}));
+        let decided = tokio::select! {
+            answer = answer => Some(answer.unwrap_or(false)),
+            _ = cancel.cancelled() => None,
+            _ = tokio::time::sleep(Duration::from_secs(30 * 60)) => Some(false),
+        };
+        self.plan_reviews.lock().await.remove(&id);
+        event(
+            bus,
+            input,
+            "thread.request.resolved",
+            json!({"requestId":id}),
+        );
+        show(mapper, Some(decided.unwrap_or(false)));
+        decided
+    }
+
+    /// Leaves Plan Mode (persisted through `thread.collaboration.updated`) and
+    /// starts the implementation turn; returns its native turn id.
+    async fn implement_plan(
+        &self,
+        session: &Arc<Session>,
+        input: &StartTurnInput,
+        bus: &EventBus,
+    ) -> Result<String> {
+        self.apply_session_settings(
+            &input.provider_session_id,
+            SessionSettings {
+                collaboration_mode: Some("default".into()),
+                ..Default::default()
+            },
+        )
+        .await?;
+        event(
+            bus,
+            input,
+            "thread.collaboration.updated",
+            json!({"collaborationMode":"default"}),
+        );
+        let settings = session.settings.read().unwrap().clone();
+        let policy = policy(&settings);
+        let response = session
+            .process
+            .request(
+                "turn/start",
+                json!({"threadId":native_raw(&input.provider_session_id),"input":[{"type":"text","text":plan_review::PROMPT}],
+                    "model":settings.model,"effort":settings.effort,"approvalPolicy":policy["approvalPolicy"],"sandboxPolicy":policy["sandboxPolicy"],
+                    "collaborationMode":{"mode":"default","settings":{"model":settings.model,"reasoning_effort":settings.effort,"developer_instructions":null}}}),
+            )
+            .await?;
+        let turn = response["turn"]["id"]
+            .as_str()
+            .context("Codex turn id missing")?
+            .to_owned();
+        *session.active.write().unwrap() = Some(turn.clone());
+        Ok(turn)
+    }
+
+    /// `/mcp`, `/skills`, `/status`: answered from app-server state as one
+    /// agent message in a normal (recorded) turn, without a model call.
+    async fn local_command(
+        &self,
+        session: &Arc<Session>,
+        input: &StartTurnInput,
+        bus: &EventBus,
+        command: &commands::Command,
+        settings: &SessionSettings,
+        policy: &Value,
+    ) -> Result<Vec<ThreadHistoryItemDto>> {
+        crate::native::turn_events::started(bus, input);
+        let result: Result<String> = async {
+            Ok(match command {
+                commands::Command::Mcp => {
+                    let mut pages = vec![];
+                    let mut cursor = Value::Null;
+                    for _ in 0..20 {
+                        let page = session
+                            .process
+                            .request(
+                                "mcpServerStatus/list",
+                                json!({"cursor":cursor,"detail":"toolsAndAuthOnly"}),
+                            )
+                            .await?;
+                        cursor = page["nextCursor"].clone();
+                        pages.push(page);
+                        if cursor.is_null() {
+                            break;
+                        }
+                    }
+                    commands::render_mcp(&pages)
+                }
+                commands::Command::Skills => commands::render_skills(
+                    &session
+                        .process
+                        .request("skills/list", json!({"cwds":[session.cwd]}))
+                        .await?,
+                ),
+                commands::Command::Status => {
+                    let limits = session
+                        .process
+                        .request("account/rateLimits/read", json!({}))
+                        .await
+                        .ok()
+                        .and_then(|data| crate::subscription::parse_codex(&data));
+                    commands::render_status(settings, policy, &session.cwd, limits.as_ref())
+                }
+                commands::Command::Review(_) => unreachable!("review runs as a Codex turn"),
+            })
+        }
+        .await;
+        let mut mapper = TurnMapper::new(&input.turn_id);
+        if let Ok(text) = &result {
+            let update = mapper.apply(&json!({"sessionUpdate":"agent_message_chunk","messageId":format!("{}:command",input.turn_id),"content":{"type":"text","text":text}}));
+            crate::acp::emit_mapped(bus, &input.thread_id, &input.turn_id, update, input.hidden);
+        }
+        let items = mapper.finish(result.is_err());
+        crate::native::turn_events::finished(bus, input, &result, false, Some(&items));
+        result?;
+        Ok(items)
+    }
+}
+
+fn approval_title(method: &str, params: &Value) -> String {
+    match method {
+        // The row's own title: a single parsed action's command, else the
+        // command without its `bash -lc` wrapper (codex-acp's title).
+        "item/commandExecution/requestApproval" | "execCommandApproval" => params["commandActions"]
+            .as_array()
+            .filter(|a| a.len() == 1)
+            .and_then(|a| a[0]["command"].as_str())
+            .map(str::to_owned)
+            .or_else(|| params["command"].as_str().map(mapping::strip_shell_prefix))
+            .or_else(|| {
+                params["command"].as_array().map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+            })
+            .unwrap_or_else(|| "Run command".into()),
+        "item/fileChange/requestApproval" | "applyPatchApproval" => "Edit files".into(),
+        "item/permissions/requestApproval" => "Additional permissions".into(),
+        "item/tool/requestUserInput" => "Question".into(),
+        "mcpServer/elicitation/request" => params["serverName"]
+            .as_str()
+            .map(|server| format!("{server} asks"))
+            .unwrap_or_else(|| "MCP server request".into()),
+        other => other.into(),
+    }
+}
+
+/// What the approval card explains: Codex's reason, where a command runs, the
+/// network host or extra permissions it needs, and the root a patch writes.
+fn approval_description(method: &str, params: &Value) -> Result<Option<String>> {
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(reason) = params["reason"].as_str().filter(|r| !r.is_empty()) {
+        lines.push(reason.into());
+    }
+    if let Some(cwd) = params["cwd"].as_str() {
+        lines.push(format!("in {cwd}"));
+    }
+    if let Some(host) = params
+        .pointer("/networkApprovalContext/host")
+        .and_then(Value::as_str)
+    {
+        lines.push(format!("network: {host}"));
+    }
+    if let Some(root) = params["grantRoot"].as_str() {
+        lines.push(format!("write access under {root}"));
+    }
+    for key in ["permissions", "additionalPermissions"] {
+        if !params[key].is_null() && method != "mcpServer/elicitation/request" {
+            lines.push(serde_json::to_string_pretty(&params[key])?);
+        }
+    }
+    Ok((!lines.is_empty()).then(|| lines.join("\n")))
+}
 
 const COMPACTION_DEADLINE: Duration = Duration::from_secs(15 * 60);
 
