@@ -60,6 +60,15 @@ fn git_options(
     timeout: Duration,
     env: &[(&str, &str)],
 ) -> Result<GitOutput> {
+    git_options_input(root, args, timeout, env, None)
+}
+fn git_options_input(
+    root: &Path,
+    args: &[&str],
+    timeout: Duration,
+    env: &[(&str, &str)],
+    input: Option<std::fs::File>,
+) -> Result<GitOutput> {
     if let Some(value) = crate::execution::file_request(
         "git",
         root,
@@ -86,7 +95,7 @@ fn git_options(
         .env("GIT_ASKPASS", "")
         .env("SSH_ASKPASS", "")
         .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
-        .stdin(Stdio::null())
+        .stdin(input.map_or_else(Stdio::null, Stdio::from))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // Only the direct spawn path uses this; a host guardian owns its own group.

@@ -596,7 +596,7 @@ impl Supervisor {
                     SUM(json_extract(token_usage_json,'$.generationSpeed.outputTimeMs')),
                     SUM(CASE WHEN json_extract(token_usage_json,'$.generationSpeed.outputTimeMs') > 0
                         THEN json_extract(token_usage_json,'$.total.outputTokens') END)
-                 FROM thread_turns WHERE thread_id=?1 AND history_copy_of IS NULL",
+                 FROM all_turn_accounting WHERE thread_id=?1 AND history_copy_of IS NULL",
                 [thread_id],
                 |row| {
                     let count = |index: usize| row.get::<_, Option<f64>>(index).map(|v| v.unwrap_or(0.0).max(0.0).round() as u64);

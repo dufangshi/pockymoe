@@ -88,6 +88,10 @@ Restores refuse an active thread or another running/loaded thread using the copy
 `POST .../rewind` accepts `{turnId, restoreFiles, dropQueued?}`. It removes the
 selected user turn and later journal turns, returning the prompt and attachment
 paths to the composer. Queued prompts require explicit `dropQueued: true`.
+Rewound turns retain spent usage in device and automation accounting. Automation
+receipts, activity notes and fork lineage survive; conversation search drops the
+removed turns. Restore writes only changed paths, preserving other file mtimes.
+Checkpoint file/line totals are stored at capture for inexpensive listing.
 History uses native rollback when supported, then a session fork; an unsupported
 backend returns `unsupported_rewind`. With files, the start checkpoint is restored
 and `undoId` is returned. External effects such as pushes, messages and delegates

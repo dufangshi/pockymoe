@@ -41,18 +41,6 @@ impl Supervisor {
             }
             Ok(json!({"text":text,"attachments":attachments}))
         })?;
-        let restored =
-            if input["restoreFiles"] == true {
-                Some(self.checkpoint_restore_inner(
-                id,
-                &json!({"turnId":turn,"phase":"start","workingCopyId":input["workingCopyId"]}),
-                false,
-                true,
-            )
-            .await?)
-            } else {
-                None
-            };
         let runtime = self.runtime(thread.provider)?;
 
         let session = thread
@@ -89,23 +77,51 @@ impl Supervisor {
                 .map_err(|e| anyhow!("unsupported_rewind: {e}"))?;
             ("fork", Some(fork.session.provider_session_id))
         };
-        self.db.with(|c|{
+        if replacement.is_some() {
+            runtime
+                .release_loaded(&session, crate::actor::ReleaseScope::Process, None)
+                .await?;
+        }
+        let restored =
+            if input["restoreFiles"] == true {
+                Some(self.checkpoint_restore_inner(
+                id,
+                &json!({"turnId":turn,"phase":"start","workingCopyId":input["workingCopyId"]}),
+                false,
+                true,
+            )
+            .await?)
+            } else {
+                None
+            };
+        let saved=self.db.with(|c|{
             let tx=c.unchecked_transaction()?;
             let ordinal:i64=tx.query_row("SELECT ordinal FROM thread_turns WHERE id=?1 AND thread_id=?2",params![turn,id],|r|r.get(0))?;
-            // Delete dependent journal rows in the same transaction. Tables without
-            // turn_id (aggregate caches) are invalidated by their owning triggers.
-            let tables:Vec<String>={let mut s=tx.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%fts%'")?;let rows=s.query_map([],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;rows};
-            for table in tables {
-                if table=="thread_turns" || table=="turn_checkpoints" {continue;}
-                let quoted=table.replace('"',"\"\"");
-                let has:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name='turn_id')",[&table],|r|r.get(0))?;
-                if has {tx.execute(&format!("DELETE FROM \"{quoted}\" WHERE turn_id IN (SELECT id FROM thread_turns WHERE thread_id=?1 AND ordinal>=?2)"),params![id,ordinal])?;}
+            // Rewind owns conversation rows only. Automation receipts, activity
+            // notes, fork lineage and accounting remain as evidence of real work.
+            tx.execute("INSERT OR IGNORE INTO rewound_turn_accounting SELECT id,thread_id,status,started_at,completed_at,model,token_usage_json,pricing_model_key,pricing_tier_key,origin,history_copy_of FROM thread_turns WHERE thread_id=?1 AND ordinal>=?2",params![id,ordinal])?;
+            for table in ["thread_history_items","thread_turn_metadata","search_documents"] {
+                let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",[table],|r|r.get(0))?;
+                if exists {tx.execute(&format!("DELETE FROM {table} WHERE thread_id=?1 AND turn_id IN (SELECT id FROM thread_turns WHERE thread_id=?1 AND ordinal>=?2)"),params![id,ordinal])?;}
             }
+            // search_documents_delete maintains its external-content FTS index.
             tx.execute("DELETE FROM thread_turns WHERE thread_id=?1 AND ordinal>=?2",params![id,ordinal])?;
             tx.execute("DELETE FROM thread_pending_steers WHERE thread_id=?1",[id])?;
             tx.execute("UPDATE threads SET provider_session_id=COALESCE(?2,provider_session_id),status='idle',last_error=NULL,updated_at=?3 WHERE id=?1",params![id,replacement,now_rfc3339()])?;
             tx.commit()?;Ok(())
-        })?;
+        });
+        if let Err(error) = saved {
+            if let Some(undo) = restored.as_ref().and_then(|v| v["undoId"].as_str()) {
+                let parts: Vec<_> = undo.split(':').collect();
+                if parts.len() == 3 {
+                    self.checkpoint_restore_inner(id,&json!({"turnId":parts[0],"workingCopyId":parts[1],"phase":format!("undo-{}",parts[2])}),false,true).await.context(format!("rewind failed ({error}); could not undo file restore"))?;
+                }
+            }
+            return Err(error);
+        }
+        if replacement.is_some() {
+            self.announce_fork_load(&self.get_thread(id)?).await;
+        }
         self.git_changed(id, "historyRewound");
         Ok(
             json!({"removedTurns":count,"prompt":prompt,"history":history,"undoId":restored.as_ref().and_then(|v|v["undoId"].as_str())}),

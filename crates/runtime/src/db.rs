@@ -317,6 +317,11 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
         name: "turn_checkpoints",
         apply: crate::worktrees::checkpoints::migrate,
     },
+    Migration {
+        version: 27,
+        name: "checkpoint_statistics_and_rewound_accounting",
+        apply: crate::worktrees::checkpoints::migrate_review,
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them

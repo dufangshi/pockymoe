@@ -3280,7 +3280,8 @@ impl Supervisor {
         };
         let context_delivered = self.harness_context_delivered(&thread.id, &session_id);
         let bus = self.bus.for_turn(&thread.id, &turn_id);
-        self.capture_turn_checkpoints(&thread.id, &turn_id, "start");
+        self.capture_turn_checkpoints_async(&thread.id, &turn_id, "start")
+            .await;
         let result = runtime
             .start_turn(
                 StartTurnInput {
@@ -3303,7 +3304,8 @@ impl Supervisor {
                 cancel.clone(),
             )
             .await;
-        self.capture_turn_checkpoints(&thread.id, &turn_id, "end");
+        self.capture_turn_checkpoints_async(&thread.id, &turn_id, "end")
+            .await;
         bus.close_turn();
         let mut live = self.live.lock().await;
         let completed_at = now_rfc3339();

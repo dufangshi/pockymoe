@@ -51,3 +51,49 @@ impl crate::threads::Client {
         self.request(input).await
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    #[test]
+    fn checkpoint_help_contract_parses_restore_and_undo() {
+        let cli = crate::Cli::try_parse_from([
+            "pockymoe",
+            "checkpoint",
+            "--thread",
+            "self",
+            "restore",
+            "turn-1",
+            "--phase",
+            "end",
+            "--preview",
+        ])
+        .unwrap();
+        let crate::Commands::Checkpoint(args) = cli.command else {
+            panic!("checkpoint expected")
+        };
+        assert!(
+            matches!(args.command,CheckpointCommand::Restore{phase,preview:true,..} if phase=="end")
+        );
+        assert!(crate::Cli::try_parse_from([
+            "pockymoe",
+            "checkpoint",
+            "restore",
+            "turn-1",
+            "--phase",
+            "other"
+        ])
+        .is_err());
+        assert!(crate::Cli::try_parse_from([
+            "pockymoe",
+            "thread",
+            "rewind",
+            "self",
+            "--turn-id",
+            "turn-2",
+            "--restore-files",
+            "--drop-queued"
+        ])
+        .is_ok());
+    }
+}

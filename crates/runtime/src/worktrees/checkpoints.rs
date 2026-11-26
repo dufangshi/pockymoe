@@ -11,6 +11,27 @@ pub(crate) fn migrate(c: &Connection) -> Result<()> {
     )?;
     Ok(())
 }
+pub(crate) fn migrate_review(c: &Connection) -> Result<()> {
+    for column in ["files", "additions", "deletions"] {
+        let exists: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('turn_checkpoints') WHERE name=?1)",
+            [column],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            c.execute(
+                &format!("ALTER TABLE turn_checkpoints ADD COLUMN {column} INTEGER"),
+                [],
+            )?;
+        }
+    }
+    c.execute_batch("CREATE TABLE IF NOT EXISTS rewound_turn_accounting AS SELECT id,thread_id,status,started_at,completed_at,model,token_usage_json,pricing_model_key,pricing_tier_key,origin,history_copy_of FROM thread_turns WHERE 0;
+    CREATE UNIQUE INDEX IF NOT EXISTS rewound_accounting_id ON rewound_turn_accounting(id);
+    CREATE INDEX IF NOT EXISTS rewound_accounting_date ON rewound_turn_accounting(julianday(started_at));
+    CREATE VIEW IF NOT EXISTS all_turn_accounting AS SELECT id,thread_id,status,started_at,completed_at,model,token_usage_json,pricing_model_key,pricing_tier_key,origin,history_copy_of FROM thread_turns UNION ALL SELECT * FROM rewound_turn_accounting;
+    CREATE TRIGGER IF NOT EXISTS rewound_accounting_thread_delete AFTER DELETE ON threads BEGIN DELETE FROM rewound_turn_accounting WHERE thread_id=OLD.id; END;")?;
+    Ok(())
+}
 fn indexed(root: &Path, index: &Path, args: &[&str]) -> Result<String> {
     indexed_until(root, index, args, Instant::now() + Duration::from_secs(5))
 }
@@ -48,7 +69,12 @@ pub(crate) fn snapshot(root: &Path, reference: &str) -> Result<Value> {
     let original = git_text(root, &["rev-parse", "--git-path", "index"])?;
     let original = root.join(original);
     if original.exists() {
+        let modified = original.metadata()?.modified()?;
         std::fs::copy(original, &index)?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&index)?
+            .set_times(std::fs::FileTimes::new().set_modified(modified))?;
     } else {
         run(&["read-tree", "--empty"])?;
     }
@@ -89,8 +115,18 @@ pub(crate) fn restore(root: &Path, oid: &str) -> Result<()> {
     }
     let temp = tempfile::tempdir()?;
     let index = temp.path().join("index");
-    // Compute deletions against a snapshot of the actual working tree, including untracked.
-    indexed(root, &index, &["read-tree", "--empty"])?;
+    // Preserve Git's stat cache; hashing every tracked file defeats restore budgets.
+    let original = root.join(git_text(root, &["rev-parse", "--git-path", "index"])?);
+    if original.exists() {
+        let modified = original.metadata()?.modified()?;
+        std::fs::copy(original, &index)?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&index)?
+            .set_times(std::fs::FileTimes::new().set_modified(modified))?;
+    } else {
+        indexed(root, &index, &["read-tree", "--empty"])?;
+    }
     indexed(root, &index, &["add", "-A", "--", "."])?;
     let current = indexed(root, &index, &["write-tree"])?;
     let deleted = git(
@@ -107,6 +143,23 @@ pub(crate) fn restore(root: &Path, oid: &str) -> Result<()> {
         ],
     )?;
     ensure!(!deleted.truncated, "restore deletion list exceeds limit");
+    let changed = git(
+        root,
+        &[
+            "diff",
+            "--no-renames",
+            "--name-only",
+            "-z",
+            "--diff-filter=ACMT",
+            &current,
+            oid,
+            "--",
+        ],
+    )?;
+    ensure!(
+        !changed.truncated,
+        "restore changed path list exceeds limit"
+    );
     indexed(root, &index, &["read-tree", oid])?;
     for path in deleted.bytes.split(|b| *b == 0).filter(|p| !p.is_empty()) {
         let path = std::str::from_utf8(path)?;
@@ -133,7 +186,24 @@ pub(crate) fn restore(root: &Path, oid: &str) -> Result<()> {
             }
         }
     }
-    indexed(root, &index, &["checkout-index", "--all", "--force"])?;
+    // A NUL-delimited stdin stream handles arbitrary names without ARG_MAX
+    // limits and materializes all changed paths in one Git invocation.
+    if !changed.bytes.is_empty() {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut paths = tempfile::tempfile()?;
+        paths.write_all(&changed.bytes)?;
+        paths.seek(SeekFrom::Start(0))?;
+        git_options_input(
+            root,
+            &["checkout-index", "--force", "--stdin", "-z"],
+            Duration::from_secs(5),
+            &[(
+                "GIT_INDEX_FILE",
+                index.to_str().context("invalid index path")?,
+            )],
+            Some(paths),
+        )?;
+    }
     Ok(())
 }
 // T3 attribution rule: dirty changes at either boundary and locally authored
@@ -237,6 +307,13 @@ impl Supervisor {
             };
             self.db.with(|c|{c.execute("INSERT OR IGNORE INTO turn_checkpoints(thread_id,turn_id,copy_id,phase,commit_oid,head_oid,branch,status,error,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![thread,turn,id,phase,value["commit"].as_str(),value["head"].as_str(),value["branch"].as_str(),if error.is_some(){"unavailable"}else{"available"},error,now_rfc3339()])?;Ok(())})?;
         }
+        if phase == "end" {
+            for entry in copies {
+                if let Some(id) = entry["id"].as_str() {
+                    let _ = self.checkpoint_diff(thread, Some(id), turn, None, false);
+                }
+            }
+        }
         self.prune_checkpoints(thread, false)?;
         self.git_changed(thread, "checkpointsChanged");
         Ok(())
@@ -246,7 +323,7 @@ impl Supervisor {
             matches!(phase, "start" | "end") || phase.starts_with("undo-"),
             "invalid checkpoint phase"
         );
-        self.db.with(|c|Ok(c.query_row("SELECT commit_oid FROM turn_checkpoints WHERE thread_id=?1 AND turn_id=?2 AND copy_id=?3 AND phase=?4 AND status='available'",params![thread,turn,id,phase],|r|r.get(0)).optional()?.context("checkpoint unavailable")?))
+        self.db.with(|c|c.query_row("SELECT commit_oid FROM turn_checkpoints WHERE thread_id=?1 AND turn_id=?2 AND copy_id=?3 AND phase=?4 AND status='available'",params![thread,turn,id,phase],|r|r.get(0)).optional()?.context("checkpoint unavailable"))
     }
     pub fn checkpoints_list(&self, thread: &str) -> Result<Value> {
         self.get_thread(thread)?;
@@ -257,10 +334,14 @@ impl Supervisor {
         for (i, turn) in turns.iter_mut().enumerate() {
             turn["turnIndex"] = json!(i + 1);
             let id = turn["turnId"].as_str().unwrap();
-            let copies=self.db.with(|c|{let mut s=c.prepare("SELECT copy_id,status,error FROM turn_checkpoints WHERE thread_id=?1 AND turn_id=?2 AND phase='start'")?;let rows=s.query_map(params![thread,id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok(rows)})?;
+            let copies=self.db.with(|c|{let mut s=c.prepare("SELECT copy_id,status,error,files,additions,deletions FROM turn_checkpoints WHERE thread_id=?1 AND turn_id=?2 AND phase='start'")?;let rows=s.query_map(params![thread,id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<u64>>(3)?,r.get::<_,Option<u64>>(4)?,r.get::<_,Option<u64>>(5)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok(rows)})?;
             let mut values = Vec::new();
-            for (copy, status, reason) in copies {
-                let diff = self.checkpoint_diff(thread, Some(&copy), id, None, false);
+            for (copy, status, reason, files, additions, deletions) in copies {
+                let diff: Result<Value> = if files.is_some() {
+                    Ok(json!({"files":files,"additions":additions,"deletions":deletions}))
+                } else {
+                    Err(anyhow::anyhow!("Turn statistics unavailable"))
+                };
                 let mut value = json!({"workingCopyId":copy,"available":status=="available"&&diff.is_ok(),"reason":reason.or_else(||diff.as_ref().err().map(ToString::to_string)),"files":0,"additions":0,"deletions":0});
                 if let Ok(diff) = diff {
                     for key in ["files", "additions", "deletions"] {
@@ -328,6 +409,9 @@ impl Supervisor {
             deletions += f.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
             files += 1;
         }
+        if path.is_none() && !ignore {
+            self.db.with(|c|{c.execute("UPDATE turn_checkpoints SET files=?4,additions=?5,deletions=?6 WHERE thread_id=?1 AND turn_id=?2 AND copy_id=?3 AND phase='start'",params![thread,turn,copy.id,files,additions,deletions])?;Ok(())})?;
+        }
         Ok(
             json!({"workingCopyId":copy.id,"area":"turn","turnId":turn,"patch":String::from_utf8_lossy(&out.bytes),"truncated":out.truncated,"files":files,"additions":additions,"deletions":deletions}),
         )
@@ -355,6 +439,13 @@ impl Supervisor {
         );
         let copy = self.selected_copy(thread, input["workingCopyId"].as_str())?;
         let others=self.db.with(|c|{let mut s=c.prepare("SELECT DISTINCT t.id FROM threads t LEFT JOIN thread_working_copies w ON w.thread_id=t.id WHERE t.id!=?1 AND (t.worktree_path=?2 OR w.copy_id=?3 OR (t.worktree_path IS NULL AND t.workspace_id=?4))")?;let rows=s.query_map(params![thread,copy.path,copy.id,t.workspace_id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok(rows)})?;
+        let mut claim_ids = others.clone();
+        if !claimed {
+            claim_ids.push(thread.into());
+        }
+        let _claim = self
+            .try_claim(&claim_ids)
+            .context("conflict: a thread using this working copy is busy")?;
         for other in others {
             let t = self.get_thread(&other)?;
             let loaded = if let Some(session) = &t.provider_session_id {
@@ -371,14 +462,6 @@ impl Supervisor {
                 "conflict: working copy is used by thread {other}"
             );
         }
-        let _claim = if claimed {
-            None
-        } else {
-            Some(
-                self.try_claim(&[thread.into()])
-                    .context("conflict: thread is busy")?,
-            )
-        };
         let _guard = MUTATION.lock().unwrap_or_else(|e| e.into_inner());
         let turn = input["turnId"].as_str().context("turnId required")?;
         let phase = input["phase"].as_str().unwrap_or("start");
@@ -452,7 +535,18 @@ impl Supervisor {
                 );
             }
             self.db.with(|c|{c.execute("INSERT INTO turn_checkpoints(thread_id,turn_id,copy_id,phase,commit_oid,status,created_at) VALUES(?1,?2,?3,?4,?5,'available',?6)",params![thread,turn,copy.id,format!("undo-{undo}"),before["commit"].as_str(),now_rfc3339()])?;Ok(())})?;
-            restore(root, &oid)?;
+            if let Err(error) = restore(root, &oid) {
+                restore(
+                    root,
+                    before["commit"]
+                        .as_str()
+                        .context("safety checkpoint missing")?,
+                )
+                .context(format!(
+                    "restore failed ({error}); safety restore also failed"
+                ))?;
+                return Err(error);
+            }
             self.git_changed(thread, "gitChanged");
             Ok(json!({"restored":true,"undoId":format!("{turn}:{}:{undo}",copy.id)}))
         })();
@@ -501,4 +595,108 @@ impl Supervisor {
         }
         Ok(())
     }
+}
+impl Supervisor {
+    pub(crate) async fn capture_turn_checkpoints_async(
+        &self,
+        thread: &str,
+        turn: &str,
+        phase: &str,
+    ) {
+        if let Err(error) = self
+            .capture_checkpoints_async_inner(thread, turn, phase)
+            .await
+        {
+            tracing::warn!(%error,thread,turn,"checkpoint unavailable");
+        }
+    }
+    async fn capture_checkpoints_async_inner(
+        &self,
+        thread: &str,
+        turn: &str,
+        phase: &str,
+    ) -> Result<()> {
+        let t = self.get_thread(thread)?;
+        let mut paths=self.db.with(|c|{let mut s=c.prepare("SELECT w.root FROM working_copies w JOIN thread_working_copies t ON t.copy_id=w.id WHERE t.thread_id=?1")?;let rows=s.query_map([thread],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok(rows)})?;
+        if let Some(cwd) = self.session_cwd(&t) {
+            paths.push(cwd);
+        }
+        paths.sort();
+        paths.dedup();
+        let saved=self.db.with(|c|{let mut s=c.prepare("SELECT copy_id,phase,commit_oid FROM turn_checkpoints WHERE thread_id=?1 AND turn_id=?2")?;let rows=s.query_map(params![thread,turn],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok(rows)})?;
+        let owner = thread.to_owned();
+        let turn_id = turn.to_owned();
+        let phase_name = phase.to_owned();
+        let captured = crate::execution::spawn_blocking(move || -> Result<Vec<_>> {
+            let mut captured = Vec::new();
+            for path in paths {
+                let Ok(copy) = probe(Path::new(&path)) else {
+                    continue;
+                };
+                if saved
+                    .iter()
+                    .any(|(id, phase, _)| id == &copy.id && phase == &phase_name)
+                {
+                    continue;
+                }
+                let reference = format!(
+                    "refs/pockymoe/checkpoints/{owner}/{turn_id}/{}/{phase_name}",
+                    copy.id
+                );
+                let value = snapshot(Path::new(&copy.path), &reference);
+                let counts = if phase_name == "end" {
+                    saved
+                        .iter()
+                        .find(|(id, phase, _)| id == &copy.id && phase == "start")
+                        .and_then(|(_, _, oid)| oid.as_ref())
+                        .and_then(|start| {
+                            value
+                                .as_ref()
+                                .ok()
+                                .and_then(|v| v["commit"].as_str())
+                                .and_then(|end| {
+                                    checkpoint_counts(Path::new(&copy.path), start, end).ok()
+                                })
+                        })
+                } else {
+                    None
+                };
+                captured.push((copy, value, counts));
+            }
+            Ok(captured)
+        })
+        .await??;
+        for (copy, result, counts) in captured {
+            let copy = self.remember_copy_unlocked(thread, copy, "configured", false)?;
+            let (value, error) = match result {
+                Ok(v) => (v, None),
+                Err(e) => (Value::Null, Some(e.to_string())),
+            };
+            self.db.with(|c|{c.execute("INSERT OR IGNORE INTO turn_checkpoints(thread_id,turn_id,copy_id,phase,commit_oid,head_oid,branch,status,error,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![thread,turn,copy.id,phase,value["commit"].as_str(),value["head"].as_str(),value["branch"].as_str(),if error.is_some(){"unavailable"}else{"available"},error,now_rfc3339()])?;
+                if let Some((files,additions,deletions))=counts {c.execute("UPDATE turn_checkpoints SET files=?4,additions=?5,deletions=?6 WHERE thread_id=?1 AND turn_id=?2 AND copy_id=?3 AND phase='start'",params![thread,turn,copy.id,files,additions,deletions])?;}Ok(())})?;
+        }
+        // Retention usually has no Git work; defer cleanup to its own bounded job.
+        self.prune_checkpoints(thread, false)?;
+        self.git_changed(thread, "checkpointsChanged");
+        Ok(())
+    }
+}
+fn checkpoint_counts(root: &Path, start: &str, end: &str) -> Result<(u64, u64, u64)> {
+    let authored = authored_paths(root, start, end)?;
+    if authored.as_ref().is_some_and(|p| p.is_empty()) {
+        return Ok((0, 0, 0));
+    }
+    let mut args = vec!["diff", "--numstat", start, end, "--"];
+    if let Some(paths) = &authored {
+        args.extend(paths.iter().map(String::as_str));
+    }
+    let stats = git_text(root, &args)?;
+    let (mut files, mut additions, mut deletions) = (0, 0, 0);
+    for row in stats.lines() {
+        let mut f = row.split('\t');
+        additions += f.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        deletions += f.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        files += 1;
+    }
+    Ok((files, additions, deletions))
 }
