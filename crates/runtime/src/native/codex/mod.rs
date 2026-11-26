@@ -135,8 +135,15 @@ impl CodexRuntime {
                 root.to_string_lossy().into_owned(),
             ));
         }
-        let (process, updates, requests) =
-            AcpProcess::spawn(&format!("{command} app-server"), cwd, &env).await?;
+        // Live turn settings (`turn/settings/update`) are behind a Codex feature
+        // that is read when a thread starts; the environment image's older Codex
+        // does not have it, so isolated turns take changes from the next turn.
+        let launch = if isolated {
+            format!("{command} app-server")
+        } else {
+            format!("{command} app-server -c features.step_model_switching=true -c suppress_unstable_features_warning=true")
+        };
+        let (process, updates, requests) = AcpProcess::spawn(&launch, cwd, &env).await?;
         let process = Arc::new(process);
         let initialized = process.request("initialize",json!({"clientInfo":{"name":"pockymoe","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await
             .and_then(|init| {
@@ -732,7 +739,12 @@ impl AgentRuntime for CodexRuntime {
                 change["serviceTier"] = tier;
             }
             if change.as_object().is_some_and(|c| c.len() > 2) {
-                s.process.request("turn/settings/update", change).await?;
+                // Codex validates the switch (feature enabled at launch, model
+                // metadata, policy). If it refuses, the change still applies
+                // from the next turn, as on ACP, instead of failing.
+                if let Err(error) = s.process.request("turn/settings/update", change).await {
+                    tracing::info!(%error, "Codex kept the running turn's settings; they apply from the next turn");
+                }
             }
         }
         Ok(())
@@ -1253,9 +1265,14 @@ impl CodexRuntime {
 
 fn approval_title(method: &str, params: &Value) -> String {
     match method {
-        "item/commandExecution/requestApproval" | "execCommandApproval" => params["command"]
-            .as_str()
+        // The row's own title: a single parsed action's command, else the
+        // command without its `bash -lc` wrapper (codex-acp's title).
+        "item/commandExecution/requestApproval" | "execCommandApproval" => params["commandActions"]
+            .as_array()
+            .filter(|a| a.len() == 1)
+            .and_then(|a| a[0]["command"].as_str())
             .map(str::to_owned)
+            .or_else(|| params["command"].as_str().map(mapping::strip_shell_prefix))
             .or_else(|| {
                 params["command"].as_array().map(|parts| {
                     parts

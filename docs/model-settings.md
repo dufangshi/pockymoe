@@ -105,7 +105,12 @@ the live session at once. When it takes effect depends on the harness, reported 
 
 - **Claude** (`liveModelSwitch: true`): the running query takes the new model or
   effort from its next model call, inside the current turn.
-- **Others** (Codex and the rest): the harness keeps the choice for the next turn.
+- **Codex on the native protocol** (`liveModelSwitch: true`): the running turn
+  takes a new effort or fast tier from its next model request; a new model too
+  when Codex accepts the switch (it refuses models it has no metadata for, or
+  that change the turn's safety policy). A refused change, and any change in
+  an isolated environment, applies from the next turn.
+- **Others** (Codex through ACP and the rest): the harness keeps the choice for the next turn.
 
 While a turn runs, the model menu and Settings say which applies.
 

@@ -172,7 +172,9 @@ pub fn apply(mapper: &mut TurnMapper, event: &Value) -> Vec<MappedUpdate> {
                         ("execute", item["command"].as_str().unwrap_or("Command"))
                     }
                     "fileChange" => ("edit", "Edit files"),
-                    "collabAgentToolCall" | "subAgentActivity" => ("agent", "Subagent"),
+                    "collabAgentToolCall" | "subAgentActivity" => {
+                        ("agent", item["tool"].as_str().unwrap_or("Subagent"))
+                    }
                     _ => ("other", kind),
                 };
                 // A command row references its terminal, as codex-acp's does, so
@@ -257,6 +259,117 @@ fn web_search_title(item: &Value) -> String {
     }
 }
 
+/// codex-acp's command reporter: a single read/list/search action is a file
+/// read or search row titled by what it does; anything else is a terminal
+/// command titled without its `bash -lc` wrapper.
+fn command_report(item: &Value, completed: bool) -> Value {
+    let actions = item["commandActions"].as_array().filter(|a| a.len() == 1);
+    let action = actions.and_then(|a| a.first());
+    // codex-acp reports a single parsed action's own command (already unwrapped).
+    let command = action
+        .and_then(|a| a["command"].as_str())
+        .or(item["command"].as_str())
+        .unwrap_or("");
+    let output = item["aggregatedOutput"].as_str().unwrap_or("");
+    let mut report = match action.and_then(|a| a["type"].as_str()) {
+        Some("read") => {
+            let path = action.and_then(|a| a["path"].as_str()).unwrap_or("");
+            json!({"kind":"read","title":format!("Read file '{path}'"),"locations":[{"path":path}]})
+        }
+        Some("listFiles") => match action.and_then(|a| a["path"].as_str()) {
+            Some(path) => json!({"kind":"read","title":format!("List files in '{path}'")}),
+            None => json!({"kind":"read","title":"List files"}),
+        },
+        Some("search") => {
+            let query = action.and_then(|a| a["query"].as_str());
+            let path = action.and_then(|a| a["path"].as_str());
+            let title = match (query, path) {
+                (Some(q), Some(p)) => format!("Search for '{q}' in {p}"),
+                (Some(q), None) => format!("Search for '{q}'"),
+                (None, Some(p)) => format!("Search in '{p}'"),
+                (None, None) => "Search".into(),
+            };
+            json!({"kind":"search","title":title})
+        }
+        _ => {
+            let mut terminal = json!({"kind":"execute","title":strip_shell_prefix(command),
+                "rawInput":{"command":command,"cwd":item["cwd"]},
+                "content":[{"type":"terminal","terminalId":item["id"]}]});
+            if completed {
+                terminal["rawOutput"] = json!({"formatted_output":item["aggregatedOutput"],"exit_code":item["exitCode"]});
+            }
+            terminal
+        }
+    };
+    if report["kind"] != "execute"
+        && completed
+        && !output.is_empty()
+        && report["title"]
+            .as_str()
+            .is_some_and(|t| !t.starts_with("Read file"))
+    {
+        report["rawOutput"] = json!(output);
+    }
+    match item["source"].as_str() {
+        Some("unifiedExecStartup") => report["name"] = json!("exec_command"),
+        Some("unifiedExecInteraction") => report["name"] = json!("write_stdin"),
+        _ => {}
+    }
+    report
+}
+
+/// `bash -lc 'cmd'` → `cmd`, as codex-acp's `stripShellPrefix`.
+pub(super) fn strip_shell_prefix(command: &str) -> String {
+    let mut rest = command;
+    let program_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let program = &rest[..program_end];
+    let base = program.rsplit('/').next().unwrap_or(program);
+    if !matches!(base, "bash" | "zsh" | "sh")
+        || (program.contains('/') && !program.starts_with('/'))
+    {
+        return command.into();
+    }
+    rest = rest[program_end..].trim_start();
+    if let Some(flags) = rest.strip_prefix('-') {
+        let end = flags.find(char::is_whitespace).unwrap_or(flags.len());
+        if flags[..end].chars().all(|c| c == 'l' || c == 'c') && end > 0 {
+            rest = flags[end..].trim_start();
+        } else {
+            return command.into();
+        }
+    }
+    if rest.starts_with('-') || rest.is_empty() {
+        return command.into();
+    }
+    if rest.len() >= 2
+        && rest.starts_with('\'')
+        && rest.ends_with('\'')
+        && !rest[1..rest.len() - 1].contains('\'')
+    {
+        return rest[1..rest.len() - 1].into();
+    }
+    if rest.len() >= 2 && rest.starts_with('"') && rest.ends_with('"') {
+        let inner = &rest[1..rest.len() - 1];
+        let mut out = String::new();
+        let mut chars = inner.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                match chars.peek() {
+                    Some('$' | '`' | '"' | '\\') => out.push(chars.next().unwrap()),
+                    Some('\n') => {
+                        chars.next();
+                    }
+                    _ => out.push(c),
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        return out;
+    }
+    rest.into()
+}
+
 fn status(item: &Value, completed: bool) -> &'static str {
     if item["status"] == "failed" || item["success"] == false {
         "failed"
@@ -278,6 +391,7 @@ fn reported_tool(item: &Value, completed: bool) -> Option<Value> {
         "tool_call"
     };
     let report = match item["type"].as_str()? {
+        "commandExecution" => command_report(item, completed),
         "mcpToolCall" => {
             let mut report = json!({"kind":"execute","title":format!("mcp.{}.{}",item["server"].as_str().unwrap_or("server"),item["tool"].as_str().unwrap_or("tool")),
                 "rawInput":{"server":item["server"],"tool":item["tool"],"arguments":item["arguments"]}});
@@ -564,6 +678,44 @@ mod tests {
         assert_eq!(reasoning, ["First", "Second"]);
         // A retry is a notice, not a failed row; only a final error fails.
         assert!(!items.iter().any(|i| i.status.as_deref() == Some("failed")));
+    }
+
+    #[test]
+    fn commands_are_titled_and_classified_like_codex_acp() {
+        assert_eq!(strip_shell_prefix("/bin/bash -lc 'sleep 30'"), "sleep 30");
+        assert_eq!(
+            strip_shell_prefix("bash -lc \"echo \\\"hi\\\"\""),
+            "echo \"hi\""
+        );
+        assert_eq!(strip_shell_prefix("/bin/bash -lc ls"), "ls");
+        assert_eq!(strip_shell_prefix("python3 -c 'x'"), "python3 -c 'x'");
+        assert_eq!(strip_shell_prefix("bash -x script"), "bash -x script");
+        let row = |item: Value| {
+            let mut m = TurnMapper::new("t");
+            apply(
+                &mut m,
+                &json!({"method":"item/completed","params":{"item":item}}),
+            );
+            m.finish(false).remove(0)
+        };
+        let list = row(
+            json!({"id":"a","type":"commandExecution","command":"/bin/bash -lc ls","commandActions":[{"type":"listFiles","command":"ls","path":null}],"aggregatedOutput":"a\nb\n","exitCode":0,"status":"completed"}),
+        );
+        assert_eq!(
+            (list.kind.as_str(), list.text.as_str()),
+            ("fileRead", "List files")
+        );
+        let read = row(
+            json!({"id":"b","type":"commandExecution","command":"cat app.py","commandActions":[{"type":"read","command":"cat app.py","name":"app.py","path":"/w/app.py"}],"aggregatedOutput":"x","exitCode":0,"status":"completed"}),
+        );
+        assert_eq!(read.kind, "fileRead");
+        let run = row(
+            json!({"id":"c","type":"commandExecution","command":"/bin/bash -lc 'sleep 30'","commandActions":[{"type":"unknown","command":"sleep 30"}],"aggregatedOutput":"","exitCode":0,"status":"completed","source":"unifiedExecStartup"}),
+        );
+        assert_eq!(
+            (run.kind.as_str(), run.text.as_str()),
+            ("commandExecution", "sleep 30")
+        );
     }
 
     #[test]

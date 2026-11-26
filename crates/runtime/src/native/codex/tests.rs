@@ -488,3 +488,21 @@ async fn plan_mode_asks_to_implement_and_continues_in_the_same_turn() {
         r.release_session(&id).await.unwrap();
     }
 }
+
+#[test]
+fn approval_titles_match_the_command_row() {
+    let wrapped = json!({"command":"/bin/bash -lc 'touch ~/x'"});
+    assert_eq!(
+        super::approval_title("item/commandExecution/requestApproval", &wrapped),
+        "touch ~/x"
+    );
+    let parsed = json!({"command":"/bin/bash -lc 'cat a'","commandActions":[{"type":"read","command":"cat a","path":"a"}]});
+    assert_eq!(
+        super::approval_title("item/commandExecution/requestApproval", &parsed),
+        "cat a"
+    );
+    assert_eq!(
+        super::approval_title("item/fileChange/requestApproval", &json!({})),
+        "Edit files"
+    );
+}
