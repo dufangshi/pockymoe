@@ -52,6 +52,32 @@ mod tests {
     }
 
     #[test]
+    fn thread_create_detach_parses_and_refuses_a_name_or_another_device() {
+        let cli = Cli::try_parse_from(["pockymoe", "thread", "create", "--detach", "--text", "go"])
+            .unwrap();
+        let Commands::Thread {
+            command: threads::ThreadCommand::Create { detach, .. },
+        } = cli.command
+        else {
+            panic!("expected create")
+        };
+        assert!(detach);
+        let cli = Cli::try_parse_from(["pockymoe", "thread", "create"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Thread {
+                command: threads::ThreadCommand::Create { detach: false, .. }
+            }
+        ));
+        for extra in [["--name", "helper"], ["--device", "Mac"]] {
+            let args = [
+                "pockymoe", "thread", "create", "--detach", extra[0], extra[1],
+            ];
+            assert!(Cli::try_parse_from(args).is_err(), "{extra:?}");
+        }
+    }
+
+    #[test]
     fn coordination_commands_parse_ask_mail_wakes_and_intended_retries() {
         let cli = Cli::try_parse_from([
             "pockymoe",

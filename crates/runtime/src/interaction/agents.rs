@@ -23,6 +23,9 @@ pub struct AgentOptions {
     /// `Some(branch)` asks for an isolated git worktree; `Some(None)` names the
     /// branch after the agent.
     pub worktree: Option<Option<String>>,
+    /// `thread create --detach`: the creating thread, recorded as
+    /// `createdByThreadId`. The new thread has no parent and is its own root.
+    pub detached_from: Option<String>,
 }
 
 pub struct RoleTemplate {

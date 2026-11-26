@@ -1711,9 +1711,11 @@ impl Supervisor {
         input: CreateThreadInput,
         options: crate::interaction::AgentOptions,
     ) -> Result<ThreadDto> {
+        // A host integration registers a detached thread through its creator too.
         let origin = input
             .parent_thread_id
             .as_ref()
+            .or(options.detached_from.as_ref())
             .map(|id| crate::host_hooks::ThreadOrigin::Delegate {
                 caller_thread_id: id.clone(),
             })
@@ -1812,6 +1814,13 @@ impl Supervisor {
         // Refuse over-cap or misnamed delegates before a harness session or a
         // worktree exists, so a refusal leaves nothing behind.
         let lineage = self.resolve_lineage(input.parent_thread_id.as_deref())?;
+        if let Some(creator) = &options.detached_from {
+            ensure!(
+                lineage.parent.is_none(),
+                "a detached thread has no parent thread"
+            );
+            self.ensure_detach_allowed(creator)?;
+        }
         if let Some(name) = &options.name {
             self.ensure_agent_name_free(lineage.root.as_deref(), name)?;
         }
@@ -1941,8 +1950,9 @@ impl Supervisor {
             tx.execute(
                 "INSERT INTO threads(id, workspace_id, provider, agent_id, provider_session_id, source, title, model,
                     reasoning_effort, collaboration_mode, approval_mode, sandbox_mode, status, created_at, updated_at,
-                    parent_thread_id, root_thread_id, lineage_depth, agent_name, agent_role, worktree_path)
-                 VALUES (?1,?2,?3,?4,?5,'supervisor',?6,?7,?8,'default',?9,?10,'idle',?11,?11,?12,?13,?14,?15,?16,?17)",
+                    parent_thread_id, root_thread_id, lineage_depth, agent_name, agent_role, worktree_path,
+                    created_by_thread_id)
+                 VALUES (?1,?2,?3,?4,?5,'supervisor',?6,?7,?8,'default',?9,?10,'idle',?11,?11,?12,?13,?14,?15,?16,?17,?18)",
                 params![
                     id,
                     input.workspace_id,
@@ -1961,6 +1971,7 @@ impl Supervisor {
                     options.name,
                     options.role.as_ref().map(|r| &r.name),
                     worktree.as_ref().map(|w| w.path.to_string_lossy().into_owned()).or(inherited_cwd),
+                    options.detached_from,
                 ],
             )?;
             if let Some(role) = &options.role {
@@ -4836,6 +4847,11 @@ pub const MAX_LINEAGE_DEPTH: i64 = 3;
 /// delegate, not in a scheduler holding half-started harness sessions open.
 pub const MAX_OPEN_AGENT_THREADS: i64 = 20;
 
+/// Detached threads (`thread create --detach`) one lineage may create per hour,
+/// counted over every thread in the creator's lineage. A detached thread is its
+/// own root, outside the caps above, so this is what bounds a looping agent.
+pub const MAX_DETACHED_PER_HOUR: i64 = 10;
+
 pub(crate) struct Lineage {
     pub parent: Option<String>,
     pub root: Option<String>,
@@ -4886,6 +4902,53 @@ impl Supervisor {
             parent: Some(parent.to_string()),
             depth,
         })
+    }
+
+    /// Whether `creator` may start a detached thread (`thread create --detach`).
+    /// A detached thread escapes its creator's depth and open-thread caps, so it
+    /// has a budget of its own, and it cannot be used to leave an isolated
+    /// environment or to chain detached lineages without bound.
+    pub(crate) fn ensure_detach_allowed(&self, creator: &str) -> Result<()> {
+        let thread = self.get_thread(creator)?;
+        ensure!(
+            self.execution_context(creator)?.is_none(),
+            "forbidden: a thread in an isolated environment cannot create a detached thread; \
+             create a child thread instead, which shares its environment"
+        );
+        let root = thread.root_thread_id.clone().unwrap_or(thread.id.clone());
+        let (root_detached, recent): (bool, i64) = self.db.with(|conn| {
+            let root_detached = conn
+                .query_row(
+                    "SELECT created_by_thread_id IS NOT NULL FROM threads WHERE id=?1",
+                    [&root],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or(false);
+            let since = (chrono::Utc::now() - chrono::Duration::hours(1))
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            let recent = conn.query_row(
+                "SELECT COUNT(*) FROM threads
+                 WHERE created_by_thread_id IN (SELECT id FROM threads WHERE id=?1 OR root_thread_id=?1)
+                   AND created_at >= ?2",
+                params![root, since],
+                |row| row.get(0),
+            )?;
+            Ok((root_detached, recent))
+        })?;
+        ensure!(
+            !root_detached,
+            "forbidden: this lineage was itself started with --detach and cannot detach \
+             again; create a child thread instead"
+        );
+        ensure!(
+            recent < MAX_DETACHED_PER_HOUR,
+            "conflict: this lineage created {recent} detached threads in the last hour, which \
+             is the limit of {MAX_DETACHED_PER_HOUR}. Do not retry now: creating another will \
+             fail the same way. Reuse a detached thread you already started (send it more \
+             work), or create a child thread instead."
+        );
+        Ok(())
     }
 
     /// A one-line notice when peer mail is waiting, or None. Returns None unless the
@@ -4998,6 +5061,7 @@ fn thread_from_row(row: &rusqlite::Row<'_>) -> ThreadDto {
         agent_role: row.get(27).unwrap_or(None),
         worktree_path: row.get(28).unwrap_or(None),
         closed_at: row.get(29).unwrap_or(None),
+        created_by_thread_id: row.get(30).unwrap_or(None),
     }
 }
 
@@ -5141,5 +5205,5 @@ const THREAD_SELECT: &str = "SELECT t.id, t.workspace_id, t.provider, t.agent_id
                         t.summary_text, t.last_error, t.created_at, t.updated_at, t.last_turn_started_at, t.last_turn_completed_at,
                         t.is_pinned, t.context_usage_json, t.parent_thread_id, t.root_thread_id, t.lineage_depth,
                         (SELECT COUNT(*) FROM threads d WHERE d.root_thread_id = t.id),
-                        t.agent_name, t.agent_role, t.worktree_path, t.closed_at
+                        t.agent_name, t.agent_role, t.worktree_path, t.closed_at, t.created_by_thread_id
                  FROM threads t";

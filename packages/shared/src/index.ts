@@ -1045,6 +1045,8 @@ export interface ThreadDto {
   worktreePath?: string | null;
   /** Set once the delegate was closed; it then holds no slot and no name. */
   closedAt?: string | null;
+  /** Thread that started this one with `thread create --detach`; audit only, not a parent. */
+  createdByThreadId?: string | null;
 }
 
 /** A thread's turns (all time), the time they ran in all and since `since`, and its latest prompt. */

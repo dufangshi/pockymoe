@@ -312,6 +312,27 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    Migration {
+        version: 26,
+        name: "detached_thread_creator",
+        apply: |conn| {
+            // The thread that asked for a detached thread. Audit only: it is not a
+            // parent and grants no control. NULL for every existing row.
+            if !table_columns(conn, "threads")?.contains("created_by_thread_id") {
+                conn.execute(
+                    "ALTER TABLE threads ADD COLUMN created_by_thread_id TEXT",
+                    [],
+                )?;
+            }
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS threads_created_by_idx
+                 ON threads(created_by_thread_id, created_at)
+                 WHERE created_by_thread_id IS NOT NULL",
+                [],
+            )?;
+            Ok(())
+        },
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them
