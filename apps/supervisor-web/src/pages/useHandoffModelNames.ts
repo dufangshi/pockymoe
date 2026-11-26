@@ -3,9 +3,9 @@ import type { ModelOptionDto, ThreadTurnDto } from '@pockymoe/shared';
 import { deviceRequest } from '../lib/api';
 
 /** Read each historical harness's catalog on the thread's device, just as the model picker does. */
-export function useHandoffModelNames(turns: ThreadTurnDto[] | undefined, deviceId?: string | null) {
+export function useHandoffModelNames(turns: ThreadTurnDto[] | undefined, deviceId?: string | null, switches: import('@pockymoe/shared').ThreadHistoryItemDto[] = []) {
   const harnesses = new Map<string, string>();
-  for (const turn of turns ?? []) {
+  for (const turn of [...(turns ?? []), {provider:'acp',items:switches}]) {
     for (const item of turn.items) {
       if (!item.harnessSwitch) continue;
       for (const agent of [item.harnessSwitch.fromAgentId, item.harnessSwitch.agentId]) {

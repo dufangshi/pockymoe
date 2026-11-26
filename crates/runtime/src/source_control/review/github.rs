@@ -10,6 +10,15 @@ fn enc(s: &str) -> String {
 
 const SUMMARY_FIELDS: &str = "number title url isDraft state createdAt updatedAt headRefName baseRefName headRefOid additions deletions changedFiles author{login avatarUrl} reviewDecision totalCommentsCount labels(first:10){nodes{name color}} reviewRequests(first:20){nodes{requestedReviewer{__typename ... on User{login} ... on Team{slug name}}}} commits(last:1){nodes{commit{statusCheckRollup{state}}}}";
 
+/// GitHub stacks exist on github.com; Enterprise servers may not know the fields.
+pub(super) fn stack_fields(repo: &Repository) -> &'static str {
+    if repo.host == "github.com" {
+        " stack{number size} stackEntry{position}"
+    } else {
+        ""
+    }
+}
+
 pub(super) fn state(value: &Value) -> String {
     match value.as_str().unwrap_or("") {
         "MERGED" => "merged",
@@ -58,6 +67,12 @@ fn requested(node: &Value) -> Option<(String, bool)> {
 
 pub(super) fn summary(repo: &Repository, n: &Value) -> PullSummary {
     PullSummary {
+        stack: n["stack"]["number"].as_u64().map(|number| StackRef {
+            id: number.to_string(),
+            position: n["stackEntry"]["position"].as_u64().unwrap_or(0),
+            size: n["stack"]["size"].as_u64().unwrap_or(0),
+            native: true,
+        }),
         url: str_of(&n["url"]),
         number: n["number"].as_u64().unwrap_or(0),
         title: str_of(&n["title"]),
@@ -109,7 +124,7 @@ pub(super) async fn list(
         "merged" => json!(["MERGED"]),
         _ => json!(["OPEN", "CLOSED", "MERGED"]),
     };
-    let query = format!("query($owner:String!,$name:String!,$states:[PullRequestState!],$first:Int!){{repository(owner:$owner,name:$name){{pullRequests(states:$states,first:$first,orderBy:{{field:UPDATED_AT,direction:DESC}}){{nodes{{{SUMMARY_FIELDS}}}}}}}}}");
+    let query = format!("query($owner:String!,$name:String!,$states:[PullRequestState!],$first:Int!){{repository(owner:$owner,name:$name){{pullRequests(states:$states,first:$first,orderBy:{{field:UPDATED_AT,direction:DESC}}){{nodes{{{SUMMARY_FIELDS}{}}}}}}}}}", stack_fields(repo));
     let data = graphql(
         host,
         &query,
@@ -370,7 +385,10 @@ pub(super) fn map_detail(repo: &Repository, data: &Value) -> Result<PullDetail> 
 }
 
 pub(super) async fn detail(host: &dyn Host, repo: &Repository, number: u64) -> Result<PullDetail> {
-    let query = DETAIL.replace("SUMMARY", SUMMARY_FIELDS);
+    let query = DETAIL.replace(
+        "SUMMARY",
+        &format!("{SUMMARY_FIELDS}{}", stack_fields(repo)),
+    );
     let data = graphql(
         host,
         &query,

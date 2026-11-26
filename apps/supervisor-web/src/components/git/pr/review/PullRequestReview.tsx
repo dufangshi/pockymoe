@@ -8,6 +8,7 @@ import { threadHref } from '../../../../lib/relayRoutes';
 import { seedThreadDraft } from '../../../../pages/useThreadDrafts';
 import { reviewAction, type DetailResponse, type Draft, type GuideState, type PullFile, type ReviewEvent } from './reviewApi';
 import { ConversationTab } from './ConversationTab';
+import { StackBar } from './StackBar';
 import { CodeTab } from './CodeTab';
 import { ChecksTab, CommitsTab, GuideTab } from './OtherTabs';
 import { checkCounts } from './listModel';
@@ -35,12 +36,14 @@ export interface PullRequestReviewProps {
   onBack?: (() => void) | undefined;
   /** Called after a write that changes the list row (state, merge, review). */
   onChanged?: (() => void) | undefined;
+  /** Open another PR in place (a stack layer). */
+  onOpenPull?: ((url: string) => void) | undefined;
 }
 
 /** One pull request under review: the header with the actions the host allows,
     a notice when the head moved, then Conversation, Code, Commits, Checks and
     Guide. Every review and merge carries the head the reader loaded. */
-export function PullRequestReview({ url, deviceId, tab: controlledTab, onTab, onBack, onChanged }: PullRequestReviewProps) {
+export function PullRequestReview({ url, deviceId, tab: controlledTab, onTab, onBack, onChanged, onOpenPull }: PullRequestReviewProps) {
   useI18n();
   const navigate = useNavigate();
   const [data, setData] = useState<DetailResponse | null>(null);
@@ -183,6 +186,9 @@ export function PullRequestReview({ url, deviceId, tab: controlledTab, onTab, on
       </div>
     </header>
     {moved && <div className="pr-banner" role="status"><span>{rt('newCommits', { sha: shownHead.slice(0, 7) })}</span><button type="button" onClick={() => { void loadNew(); }}>{rt('loadNew')}</button></div>}
+    {data.stack && <StackBar stack={data.stack} detail={detail} busy={busy} canRebase={!!data.workspace?.id}
+      onOpen={layer => { if (onOpenPull) onOpenPull(layer.url); else window.open(layer.url, '_blank', 'noreferrer'); }}
+      onAct={async (action, input) => { const result = await act(action, input, { files: true }); if (result) setNotice(rt('stackDone')); return result; }} />}
     {(actionError || notice) && <div className="pr-banner" data-tone={actionError ? 'error' : undefined}>{actionError ? <><span>{rt('failed')}</span><ErrorMark message={actionError} /></> : <span>{notice}</span>}</div>}
     <div className="pr-tabs" role="tablist" aria-label={rt('page')}>
       {TABS.filter(item => item !== 'guide' || data.workspace || guide.guide).map(item => { const Icon = TAB_ICON[item]; return <button key={item} type="button" role="tab" aria-selected={tab === item} aria-label={rt(TAB_LABEL[item])} title={rt(TAB_LABEL[item])} onClick={() => setTab(item)}>

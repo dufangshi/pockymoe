@@ -177,6 +177,17 @@ async fn request(stream: &mut BufReader<TcpStream>, method: &str, params: Value)
     Ok(response["result"].clone())
 }
 
+/// codex-acp names new sessions with a hidden side turn on its own small model
+/// (an ephemeral thread). Pockymoe keeps its own titles, so that request would
+/// be model spend the owner never sees: refuse it. codex-acp treats a failed
+/// title as no title.
+fn refused_side_request(message: &Value) -> Option<Value> {
+    (message["method"] == "thread/start" && message["params"]["ephemeral"] == true).then(|| {
+        json!({"jsonrpc":"2.0","id":message["id"],"error":{"code":-32001,
+            "message":"Pockymoe keeps its own thread titles; ephemeral side threads are not started"}})
+    })
+}
+
 /// Hidden CLI entry point used as codex-acp's CODEX_PATH executable.
 pub async fn run() -> Result<()> {
     let config: Value = serde_json::from_str(&std::env::var("POCKYMOE_APP_SERVER_BRIDGE")?)?;
@@ -216,6 +227,11 @@ pub async fn run() -> Result<()> {
             line = acp_in.next_line() => {
                 let Some(line) = line? else { break; };
                 let mut message: Value = serde_json::from_str(&line)?;
+                if let Some(refusal) = refused_side_request(&message) {
+                    acp_out.write_all(format!("{refusal}\n").as_bytes()).await?;
+                    acp_out.flush().await?;
+                    continue;
+                }
                 permissions.request(&mut message);
                 if message["method"] == "model/list" && message["params"]["cursor"].is_null() {
                     // Use only the connection applied to this harness, never an
@@ -285,4 +301,27 @@ fn allowed_control(message: &Value) -> bool {
             }) && params.get("threadId").is_some_and(Value::is_string)
                 && params.contains_key("sandboxPolicy")
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn title_side_threads_are_refused_and_everything_else_passes() {
+        let side = json!({"id":9,"method":"thread/start","params":{"cwd":"/w","ephemeral":true}});
+        let refusal = refused_side_request(&side).unwrap();
+        assert_eq!(refusal["id"], 9);
+        assert!(refusal["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("titles"));
+        for normal in [
+            json!({"id":1,"method":"thread/start","params":{"cwd":"/w"}}),
+            json!({"id":2,"method":"thread/start","params":{"cwd":"/w","ephemeral":false}}),
+            json!({"id":3,"method":"turn/start","params":{"threadId":"t"}}),
+        ] {
+            assert!(refused_side_request(&normal).is_none(), "{normal}");
+        }
+    }
 }

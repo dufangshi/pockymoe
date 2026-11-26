@@ -166,6 +166,7 @@ impl Supervisor {
                 let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",[table],|r|r.get(0))?;
                 if exists {tx.execute(&format!("DELETE FROM {table} WHERE thread_id=?1 AND turn_id IN (SELECT id FROM thread_turns WHERE thread_id=?1 AND ordinal>=?2)"),params![id,ordinal])?;}
             }
+            tx.execute("DELETE FROM thread_history_items WHERE thread_id=?1 AND turn_id='' AND json_extract(item_json,'$.afterTurnId') IN (SELECT id FROM thread_turns WHERE thread_id=?1 AND ordinal>=?2)",params![id,ordinal])?;
             // search_documents_delete maintains its external-content FTS index.
             tx.execute("DELETE FROM thread_turns WHERE thread_id=?1 AND ordinal>=?2",params![id,ordinal])?;
             tx.execute("DELETE FROM thread_pending_steers WHERE thread_id=?1",[id])?;

@@ -1,16 +1,38 @@
 # Switching a thread's harness
 
-Open the model picker, choose **Switch harness**, select a harness and model,
-and preview the history before confirming. A running thread offers **Stop and
-switch**. Clear an active or paused goal first. Plan, sandbox, fast mode and
-reasoning effort reset; the approval mode stays in effect. Harnesses unavailable
-in an isolated execution environment are refused.
+Changing a thread's agent is picking a model of another agent in the composer's
+model picker ([Model and reasoning effort](model-settings.md)); there is no
+separate step. Choose the agent on the picker's rail, or search, and its models
+are listed. A short note above the foot says what moves with it: "Hands over N
+turns · ≈T tokens", or "Resumes its session · N new turns" when the agent was used
+in this thread before, with **Preview** for the exact text, and one line on what
+resets. Picking a model of an idle thread switches it at once; the picker closes
+and the timeline shows a divider at the next prompt. While a turn runs, a pick
+is marked and **Stop and switch** interrupts the turn, waits for it to settle and
+switches. A refused switch (an active or paused goal must be cleared first)
+keeps the picker open with the reason on its mark.
+
+Plan, sandbox, fast mode and reasoning effort reset; the approval mode stays in
+effect. The new model's default effort applies. Harnesses unavailable in an
+isolated execution environment are refused. The rail lists only agents ready on
+the device and is shown only to the thread's owner; a split pane offers the same
+picker for its own thread and device.
+
+To keep the original thread, fork instead: the composer's fork panel (`/fork`)
+has a **Fork into** row of agents. Forking into another agent copies the history
+through the latest or a chosen turn into a new thread on that agent's default
+model, with the portable history below. The Harness settings window holds only
+the harness's own settings.
 
 Each harness retains its own native session. Returning to a harness resumes its
 saved session and transfers only journal turns after its last use. The thread's
 identity and public conversation stay together; turns keep the provider, agent
-and model that produced them. A compact divider shows the agents and catalog model names at each change. Its info
-control shows the full names and settings reset note on hover, focus or tap.
+and model that produced them. Each switch is saved immediately as a standalone
+transcript entry, including repeated idle switches and switches before the first
+prompt. Entries survive reload and export and do not count as model turns or change
+handoff deltas. A compact divider shows the agents and catalog model names at each
+change. Its info control shows the full names and settings reset note on hover,
+focus or tap.
 
 ## Portable history
 
@@ -58,6 +80,11 @@ The provider defaults to `acp`. HTTP endpoints are owner-only:
 
 Switching an imported thread adopts its durable journal for subsequent turns, so
 its new harness does not require connecting to the old imported session first.
+Thread detail responses include `harnessSwitches`, an ordered list of standalone
+`harnessSwitch` history items. Each item has a stable ID, `createdAt`,
+`harnessSwitch` metadata and an `afterTurnId` anchor (`null` before the first
+prompt). Existing switch markers on old user messages remain supported.
+
 Harness session positions and turn identity survive Supervisor restarts. If a
 saved native session has been removed outside Pockymoe, its harness may refuse
 to resume it. External effects from earlier turns are never undone by switching.

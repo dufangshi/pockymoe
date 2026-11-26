@@ -98,7 +98,13 @@ fn load(s: &Supervisor) -> Result<Settings> {
     if !path.exists() {
         return Ok(Settings::default());
     }
-    Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+    let mut value: Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    // Hosts of a kind this version no longer supports (Bitbucket and Azure
+    // DevOps were removed) are dropped on read; the next save forgets them.
+    if let Some(hosts) = value["hosts"].as_object_mut() {
+        hosts.retain(|_, host| serde_json::from_value::<HostKind>(host["kind"].clone()).is_ok());
+    }
+    Ok(serde_json::from_value(value)?)
 }
 fn save(s: &Supervisor, value: &Settings) -> Result<()> {
     crate::upstreams::private_write(&settings_path(s), &serde_json::to_vec(value)?)
@@ -237,9 +243,11 @@ impl Supervisor {
             let rows = q
                 .query_map([thread], |r| r.get::<_, String>(0))?
                 .collect::<std::result::Result<Vec<_>, _>>()?;
-            rows.into_iter()
-                .map(|r| Ok(serde_json::from_str(&r)?))
-                .collect()
+            // Links to hosts no longer supported stay stored but are not listed.
+            Ok(rows
+                .into_iter()
+                .filter_map(|r| serde_json::from_str(&r).ok())
+                .collect())
         })
     }
     pub fn source_link(&self, thread: &str, url: &str, unlink: bool) -> Result<Value> {
@@ -340,6 +348,20 @@ impl Supervisor {
             let detail = host.request(&detail.method, &detail.path, None).await?;
             input["headSha"] = json!(hosts::head_oid(repo.kind, &detail));
         }
+        // A PR on top of another: its base is that PR's head branch.
+        let stack_on = input["stackOn"]
+            .as_u64()
+            .filter(|_| action == "create" && !issue);
+        if let Some(below) = stack_on {
+            let op = host.operation("show", false, Some(below), &json!({}))?;
+            let shown = host.request(&op.method, &op.path, None).await?;
+            let head = shown["head"]["ref"]
+                .as_str()
+                .or(shown["source_branch"].as_str())
+                .filter(|b| !b.is_empty())
+                .context("The PR to stack on has no head branch")?;
+            input["base"] = json!(head);
+        }
         if action == "create" && !issue && input["head"].as_str().is_none_or(str::is_empty) {
             input["head"] = json!(hosts::git(&root, &["symbolic-ref", "--short", "HEAD"])?.trim());
         }
@@ -349,20 +371,6 @@ impl Supervisor {
         {
             let op = host.operation("show", false, number, &json!({}))?;
             input["title"] = host.request(&op.method, &op.path, None).await?["title"].clone();
-        }
-        if action == "files" && repo.kind == HostKind::Azure {
-            let op = host.operation("iterations", false, number, &json!({}))?;
-            let iterations = host.request(&op.method, &op.path, None).await?;
-            input["iterationId"] = iterations["value"]
-                .as_array()
-                .and_then(|a| a.last())
-                .context("PR iterations unavailable")?["id"]
-                .clone();
-        }
-        if action == "autoMerge" && repo.kind == HostKind::Azure {
-            let identity = host.request("GET", &host.identity_path(), None).await?;
-            input["actorId"] = identity["authenticatedUser"]["id"].clone();
-            ensure!(input["actorId"].is_string(), "Azure identity unavailable");
         }
         let operation = host.operation(action, issue, number, &input)?;
         if action == "merge" || action == "autoMerge" {
@@ -385,17 +393,26 @@ impl Supervisor {
         let result = host
             .request(&operation.method, &operation.path, operation.body)
             .await?;
+        let mut joined = Value::Null;
+        if let (Some(below), Some(created)) = (
+            stack_on,
+            result["number"].as_u64().or(result["iid"].as_u64()),
+        ) {
+            if repo.kind == HostKind::Github && repo.host == "github.com" {
+                // The PR exists either way; a refused stack join is reported, not fatal.
+                joined =
+                    match review::stack::join_native(host.as_ref(), &repo, below, created).await {
+                        Ok(stack) => json!({"stack":stack["number"]}),
+                        Err(error) => json!({"error":error.to_string()}),
+                    };
+            }
+        }
         if action == "create" {
             if let Some(url) = hosts::item_url(repo.kind, &result) {
                 self.source_link(thread, url, false)?;
-            } else if repo.kind == HostKind::Azure && !issue {
-                let number = result["pullRequestId"]
-                    .as_u64()
-                    .context("Created PR ID missing")?;
-                self.source_link(thread, &repo.pull_request_url(number), false)?;
             }
         }
-        Ok(json!({"repository":repo,"data":result}))
+        Ok(json!({"repository":repo,"data":result,"stack":joined}))
     }
     /// Fetch a PR's head (forks included) into `target` in the checkout at `root`.
     pub(crate) async fn fetch_pull_request_ref(
@@ -415,40 +432,9 @@ impl Supervisor {
         } else {
             format!("https://{}/{}/{}.git", repo.host, repo.owner, repo.name)
         };
-        let mut remote = remote;
         let reference = match repo.kind {
             HostKind::Github | HostKind::Forgejo => format!("refs/pull/{number}/head"),
             HostKind::Gitlab => format!("refs/merge-requests/{number}/head"),
-            HostKind::Bitbucket | HostKind::Azure => {
-                let host = self.source_host(repo)?;
-                let op = host.operation("show", false, Some(number), &json!({}))?;
-                let detail = host.request(&op.method, &op.path, None).await?;
-                if repo.kind == HostKind::Bitbucket {
-                    if let Some(clone) = detail["source"]["repository"]["links"]["clone"]
-                        .as_array()
-                        .and_then(|a| a.iter().find(|v| v["name"] == "https"))
-                        .and_then(|v| v["href"].as_str())
-                    {
-                        Repository::parse(clone)?;
-                        remote = clone.into();
-                    }
-                    format!(
-                        "refs/heads/{}",
-                        detail["source"]["branch"]["name"]
-                            .as_str()
-                            .context("PR source branch missing")?
-                    )
-                } else {
-                    if let Some(clone) = detail["forkSource"]["repository"]["remoteUrl"].as_str() {
-                        Repository::parse(clone)?;
-                        remote = clone.into();
-                    }
-                    detail["sourceRefName"]
-                        .as_str()
-                        .context("PR source branch missing")?
-                        .into()
-                }
-            }
         };
         ensure!(
             reference.starts_with("refs/") && !reference.contains([':', '\n', '\r']),
@@ -624,7 +610,9 @@ impl Supervisor {
                     "source-worktree:{}",
                     copy["id"].as_str().unwrap_or("")
                 ))? {
-                    let item: ItemLink = serde_json::from_str(&raw)?;
+                    let Ok(item) = serde_json::from_str::<ItemLink>(&raw) else {
+                        continue;
+                    };
                     let host = self.source_host(&item.repository)?;
                     let op = host.operation("show", false, Some(item.number), &json!({}))?;
                     if let Ok(detail) = host.request(&op.method, &op.path, None).await {
@@ -733,7 +721,6 @@ impl Supervisor {
                 "projects",
                 json!({"name":name,"visibility":if input["private"]==false{"public"}else{"private"}}),
             ),
-            _ => bail!("Publishing is unavailable for this host"),
         };
         let result = host.request("POST", path, Some(body)).await?;
         let remote = result["ssh_url"]

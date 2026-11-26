@@ -9,8 +9,6 @@ pub enum HostKind {
     Github,
     Gitlab,
     Forgejo,
-    Bitbucket,
-    Azure,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -81,22 +79,18 @@ impl Repository {
             parts.len() >= 2 && parts.iter().all(|p| !p.is_empty() && *p != ".."),
             "Remote must name an owner and repository"
         );
-        if host == "ssh.dev.azure.com" && parts.first() == Some(&"v3") && parts.len() == 4 {
-            return Ok(Self {
-                host: "dev.azure.com".into(),
-                owner: format!("{}/{}/_git", parts[1], parts[2]),
-                name: parts[3].into(),
-                kind: HostKind::Azure,
-            });
-        }
+        // Bitbucket and Azure DevOps are not supported; never guess another kind for them.
+        ensure!(
+            !(host == "bitbucket.org"
+                || host == "dev.azure.com"
+                || host == "ssh.dev.azure.com"
+                || host.ends_with(".visualstudio.com")),
+            "Bitbucket and Azure DevOps are not supported"
+        );
         let kind = if host == "github.com" {
             HostKind::Github
         } else if host.contains("gitlab") {
             HostKind::Gitlab
-        } else if host == "bitbucket.org" {
-            HostKind::Bitbucket
-        } else if host == "dev.azure.com" || host.ends_with(".visualstudio.com") {
-            HostKind::Azure
         } else {
             known_hosts()
                 .into_iter()
@@ -115,8 +109,6 @@ impl Repository {
         let marker = match self.kind {
             HostKind::Gitlab => "-/merge_requests",
             HostKind::Forgejo => "pulls",
-            HostKind::Bitbucket => "pull-requests",
-            HostKind::Azure => "pullrequest",
             HostKind::Github => "pull",
         };
         let scheme = if self.host.starts_with("127.0.0.1:") || self.host.starts_with("localhost:") {
@@ -190,8 +182,6 @@ pub fn head_oid(kind: HostKind, v: &Value) -> String {
     match kind {
         HostKind::Github | HostKind::Forgejo => v["head"]["sha"].as_str(),
         HostKind::Gitlab => v["sha"].as_str(),
-        HostKind::Bitbucket => v["source"]["commit"]["hash"].as_str(),
-        HostKind::Azure => v["lastMergeSourceCommit"]["commitId"].as_str(),
     }
     .unwrap_or("")
     .into()
@@ -200,8 +190,6 @@ pub fn item_url(kind: HostKind, v: &Value) -> Option<&str> {
     match kind {
         HostKind::Github | HostKind::Forgejo => v["html_url"].as_str(),
         HostKind::Gitlab => v["web_url"].as_str(),
-        HostKind::Bitbucket => v["links"]["html"]["href"].as_str(),
-        HostKind::Azure => None,
     }
 }
 
@@ -216,15 +204,6 @@ fn op(method: &str, path: String, body: Option<Value>) -> Result<Operation> {
         path,
         body,
     })
-}
-fn update_fields(input: &Value) -> Value {
-    let mut fields = json!({});
-    for (key, target) in [("title", "title"), ("body", "description")] {
-        if let Some(value) = input.get(key) {
-            fields[target] = value.clone();
-        }
-    }
-    fields
 }
 #[async_trait]
 pub trait Host: Send + Sync {
@@ -253,8 +232,6 @@ pub fn adapter(repo: Repository, token: String) -> Result<Box<dyn Host>> {
             HostKind::Github => "GH_ENTERPRISE_TOKEN",
             HostKind::Gitlab => "GITLAB_TOKEN",
             HostKind::Forgejo => "GITEA_TOKEN",
-            HostKind::Bitbucket => "BITBUCKET_ACCESS_TOKEN",
-            HostKind::Azure => "AZURE_DEVOPS_EXT_PAT",
         };
         std::env::var(key).unwrap_or_default()
     } else {
@@ -265,14 +242,7 @@ pub fn adapter(repo: Repository, token: String) -> Result<Box<dyn Host>> {
 #[async_trait]
 impl Host for Adapter {
     fn identity_path(&self) -> String {
-        if self.repo.kind == HostKind::Azure {
-            format!(
-                "{}/_apis/connectionData",
-                self.repo.owner.split('/').next().unwrap_or("")
-            )
-        } else {
-            "user".into()
-        }
+        "user".into()
     }
 
     fn operation(
@@ -523,108 +493,6 @@ impl Host for Adapter {
                     _ => bail!("Operation unavailable for GitLab"),
                 }
             }
-            HostKind::Bitbucket => {
-                ensure!(!issue, "Bitbucket issues are unavailable");
-                let root = format!(
-                    "repositories/{}/{}/pullrequests",
-                    enc(&r.owner),
-                    enc(&r.name)
-                );
-                let item = format!("{root}/{n}");
-                match action {
-                    "list" => op("GET", format!("{root}?state=OPEN&pagelen=100"), None),
-                    "show" | "reviews" => op("GET", item, None),
-                    "ready" => op("PUT", item, Some(json!({"draft":false}))),
-                    "comments" | "commits" => op("GET", format!("{item}/{action}"), None),
-                    "checks" => op("GET", format!("{item}/statuses"), None),
-                    "files" => op("GET", format!("{item}/diffstat"), None),
-                    "create" => op(
-                        "POST",
-                        root,
-                        Some(
-                            json!({"title":title,"description":body,"draft":draft,"source":{"branch":{"name":head}},"destination":{"branch":{"name":base}}}),
-                        ),
-                    ),
-                    "update" => op("PUT", item, Some(update_fields(input))),
-                    "comment" => op(
-                        "POST",
-                        format!("{item}/comments"),
-                        Some(json!({"content":{"raw":body}})),
-                    ),
-                    // Bitbucket's merge API has no atomic expected-head condition.
-                    "merge" => {
-                        bail!("Bitbucket does not provide an atomic head guard; merge on the host")
-                    }
-                    _ => bail!("Operation unavailable for Bitbucket"),
-                }
-            }
-            HostKind::Azure => {
-                ensure!(!issue, "Azure issues are unavailable");
-                let owner = r.owner.trim_end_matches("/_git");
-                let root = format!(
-                    "{owner}/_apis/git/repositories/{}/pullrequests",
-                    enc(&r.name)
-                );
-                let item = format!("{root}/{n}");
-                let api = "api-version=7.1";
-                match action {
-                    "list" => op(
-                        "GET",
-                        format!("{root}?searchCriteria.status=active&{api}"),
-                        None,
-                    ),
-                    "show" | "reviews" => op("GET", format!("{item}?{api}"), None),
-                    "iterations" => op("GET", format!("{item}/iterations?{api}"), None),
-                    "files" => op(
-                        "GET",
-                        format!(
-                            "{item}/iterations/{}/changes?{api}",
-                            input["iterationId"]
-                                .as_u64()
-                                .context("Iteration required")?
-                        ),
-                        None,
-                    ),
-                    "autoMerge" => op(
-                        "PATCH",
-                        format!("{item}?{api}"),
-                        Some(
-                            json!({"autoCompleteSetBy":{"id":input["actorId"]},"completionOptions":{"mergeStrategy":if method=="rebase"{"rebase"}else if method=="squash"{"squash"}else{"noFastForward"}}}),
-                        ),
-                    ),
-                    "checks" => op("GET", format!("{item}/statuses?{api}"), None),
-                    "comments" => op("GET", format!("{item}/threads?{api}"), None),
-                    "commits" => op("GET", format!("{item}/commits?{api}"), None),
-                    "create" => op(
-                        "POST",
-                        format!("{root}?{api}"),
-                        Some(
-                            json!({"title":title,"description":body,"sourceRefName":format!("refs/heads/{head}"),"targetRefName":format!("refs/heads/{base}"),"isDraft":draft}),
-                        ),
-                    ),
-                    "comment" => op(
-                        "POST",
-                        format!("{item}/threads?{api}"),
-                        Some(
-                            json!({"comments":[{"parentCommentId":0,"content":body,"commentType":1}],"status":1}),
-                        ),
-                    ),
-                    "update" => op("PATCH", format!("{item}?{api}"), Some(update_fields(input))),
-                    "ready" => op(
-                        "PATCH",
-                        format!("{item}?{api}"),
-                        Some(json!({"isDraft":false})),
-                    ),
-                    "merge" => op(
-                        "PATCH",
-                        format!("{item}?{api}"),
-                        Some(
-                            json!({"status":"completed","lastMergeSourceCommit":{"commitId":input["expectedHead"]},"completionOptions":{"mergeStrategy":if method=="rebase"{"rebase"}else if method=="squash"{"squash"}else{"noFastForward"}}}),
-                        ),
-                    ),
-                    _ => bail!("Operation unavailable for Azure DevOps"),
-                }
-            }
         }
     }
     async fn request(&self, method: &str, path: &str, body: Option<Value>) -> Result<Value> {
@@ -683,33 +551,6 @@ impl Adapter {
             )
             .await;
         }
-        if self.token.is_empty() && self.repo.kind == HostKind::Azure {
-            let mut args = vec![
-                "rest".into(),
-                "--method".into(),
-                method.into(),
-                "--url".into(),
-                format!("https://{}/{path}", self.repo.host),
-                "--resource".into(),
-                "499b84ac-1321-427f-aa17-267ca6975798".into(),
-            ];
-            let mut file = None;
-            if let Some(body) = body {
-                use std::io::Write;
-                let mut temp = tempfile::NamedTempFile::new()?;
-                temp.write_all(&serde_json::to_vec(&body)?)?;
-                args.extend([
-                    "--body".into(),
-                    format!("@{}", temp.path().display()),
-                    "--headers".into(),
-                    "Content-Type=application/json".into(),
-                ]);
-                file = Some(temp);
-            }
-            let output = command("az", &args, Path::new("/"), None).await?;
-            drop(file);
-            return Ok(output);
-        }
         ensure!(
             !self.token.is_empty(),
             "Sign in to the source-control host in Settings"
@@ -731,8 +572,6 @@ impl Adapter {
             HostKind::Gitlab if path == "graphql" => format!("{scheme}://{}/api", self.repo.host),
             HostKind::Gitlab => format!("{scheme}://{}/api/v4", self.repo.host),
             HostKind::Forgejo => format!("{scheme}://{}/api/v1", self.repo.host),
-            HostKind::Bitbucket => "https://api.bitbucket.org/2.0".into(),
-            HostKind::Azure => format!("https://{}", self.repo.host),
         };
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(60))
@@ -742,9 +581,6 @@ impl Adapter {
             .request(method.parse()?, format!("{base}/{path}"))
             .header("User-Agent", "Pockymoe")
             .bearer_auth(&self.token);
-        if self.repo.kind == HostKind::Azure {
-            req = req.basic_auth("", Some(&self.token));
-        }
         if self.repo.kind == HostKind::Gitlab {
             req = req.header("PRIVATE-TOKEN", &self.token);
         }
@@ -903,11 +739,6 @@ mod tests {
                 HostKind::Forgejo,
                 "owner",
             ),
-            (
-                "https://bitbucket.org/team/repo",
-                HostKind::Bitbucket,
-                "team",
-            ),
         ] {
             let r = Repository::parse(url).unwrap();
             assert_eq!(r.kind, kind);
@@ -922,17 +753,23 @@ mod tests {
             "https://secret@github.com/a/b/pull/1",
             "http://github.com/a/b/pull/1",
             "https://github.com/a/b/pull/0",
+            "https://bitbucket.org/team/repo/pull-requests/1",
+            "https://dev.azure.com/org/project/_git/repo/pullrequest/1",
         ] {
             assert!(parse_link(url).is_err(), "{url}");
         }
+        // Unsupported hosts are refused, never guessed as another kind.
+        for remote in [
+            "https://bitbucket.org/team/repo",
+            "git@ssh.dev.azure.com:v3/org/project/repo",
+            "https://dev.azure.com/org/project/_git/repo",
+            "https://org.visualstudio.com/project/_git/repo",
+        ] {
+            assert!(Repository::parse(remote).is_err(), "{remote}");
+        }
     }
     #[test]
-    fn azure_ssh_and_host_specific_drafts_and_guards() {
-        let ssh = Repository::parse("git@ssh.dev.azure.com:v3/org/project/repo").unwrap();
-        assert_eq!(
-            ssh,
-            Repository::parse("https://dev.azure.com/org/project/_git/repo").unwrap()
-        );
+    fn forgejo_drafts_and_guards() {
         let host = adapter(
             Repository {
                 host: "forgejo.example.com".into(),
@@ -961,14 +798,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(auto.body.unwrap()["head_commit_id"], "reviewed");
-        let host = adapter(ssh, String::new()).unwrap();
-        let merge = host
-            .operation("merge", false, Some(1), &json!({"expectedHead":"reviewed"}))
-            .unwrap();
-        assert_eq!(
-            merge.body.unwrap()["lastMergeSourceCommit"]["commitId"],
-            "reviewed"
-        );
     }
     #[test]
     fn operations_guard_merges_and_preserve_host_fields() {
@@ -979,16 +808,6 @@ mod tests {
             (HostKind::Github, json!({"head":{"sha":"a"}}), "a"),
             (HostKind::Gitlab, json!({"sha":"b"}), "b"),
             (HostKind::Forgejo, json!({"head":{"sha":"c"}}), "c"),
-            (
-                HostKind::Bitbucket,
-                json!({"source":{"commit":{"hash":"d"}}}),
-                "d",
-            ),
-            (
-                HostKind::Azure,
-                json!({"lastMergeSourceCommit":{"commitId":"e"}}),
-                "e",
-            ),
         ] {
             assert_eq!(head_oid(kind, &json), oid);
         }
@@ -1021,30 +840,6 @@ mod tests {
                 "abc"
             );
             assert!(host.operation("merge", false, None, &json!({})).is_err());
-        }
-        for kind in [HostKind::Bitbucket, HostKind::Azure] {
-            let host = adapter(
-                Repository {
-                    host: "example.com".into(),
-                    owner: "o".into(),
-                    name: "r".into(),
-                    kind,
-                },
-                String::new(),
-            )
-            .unwrap();
-            let update = host
-                .operation(
-                    "update",
-                    false,
-                    Some(1),
-                    &json!({"body":"Keep the existing title"}),
-                )
-                .unwrap()
-                .body
-                .unwrap();
-            assert!(update.get("title").is_none());
-            assert_eq!(update["description"], "Keep the existing title");
         }
     }
 }

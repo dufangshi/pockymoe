@@ -3,12 +3,13 @@
 Settings → Source control manages device-local Git host sign-in and writing
 instructions. Rescan checks workspace remotes, GitHub/GitLab CLI accounts and configured hosts. GitHub
 uses `gh api` or `GH_TOKEN` (`GH_ENTERPRISE_TOKEN` for Enterprise); GitLab uses
-`glab api` or `GITLAB_TOKEN`. Forgejo/Gitea, Bitbucket and Azure DevOps accept saved
-tokens (`GITEA_TOKEN`, `BITBUCKET_ACCESS_TOKEN`, `AZURE_DEVOPS_EXT_PAT` also work).
+`glab api` or `GITLAB_TOKEN`. Forgejo/Gitea accepts a saved token (`GITEA_TOKEN`
+also works). These three are the supported hosts: Bitbucket and Azure DevOps
+remotes and links are refused, and settings saved for them by older versions are
+ignored.
 Self-hosted services are configured by hostname and host kind. HTTPS is required
 except for loopback Forgejo fixtures. Saved tokens use the upstream key store's
-private atomic file writer; API responses contain only `hasToken`, never tokens.
-Azure can also use an existing `az` sign-in through `az rest`. Host API
+private atomic file writer; API responses contain only `hasToken`, never tokens. Host API
 authentication and Git SSH/HTTPS transport credentials are separate.
 
 Thread tools → Linked PRs and issues shows the thread's links and watch status.
@@ -16,9 +17,8 @@ The Git panel's PR view lists linked PRs and issues, accepts manual links, brows
 host items and creates PRs or issues. PR creation pushes the current branch if it
 has no upstream. Detail actions read checks, comments, reviews, commits and files;
 update title/body, comment, ready-for-review, auto-merge and guarded merge depend
-on the host. A merge requires the head SHA the caller reviewed. GitHub, GitLab,
-Forgejo and Azure receive the expected SHA in the host write itself. Bitbucket
-merge is refused because its endpoint lacks an atomic head guard.
+on the host. A merge requires the head SHA the caller reviewed. GitHub, GitLab
+and Forgejo receive the expected SHA in the host write itself.
 
 GitHub and GitLab support issue list/search/show/create/comment. Forgejo supports
 basic issues. Unsupported operations return an error instead of guessing a host
@@ -30,7 +30,7 @@ own thread; shares and remote peers cannot access the owner's host sign-in.
 `pockymoe pr --help`, `pockymoe issue --help` and `pockymoe guide pr` describe the
 agent interface. Use `--item-url URL` to address an already linked item in another
 repository. `pockymoe pr work-on NUMBER` fetches the host PR ref (including
-fork heads on GitHub/GitLab/Forgejo and source branches on Bitbucket/Azure), creates a managed worktree and opens an idle
+fork heads on GitHub/GitLab/Forgejo), creates a managed worktree and opens an idle
 thread there. It does not change the caller's shell or harness directory.
 
 ## Watching a PR
@@ -43,7 +43,7 @@ comment-only wakes. Changes include failed checks, required checks passing, new
 comments/reviews from others, conflicts and merge-queue removal. GitHub reads
 required checks, inline review comments and the merge queue through GraphQL.
 GitLab and Forgejo use their REST summaries; older Enterprise servers fall back to REST.
-Bitbucket and Azure watch are currently unavailable. REST summaries do not provide
+REST summaries do not provide
 the same required-check and merge-queue detail as GitHub GraphQL.
 One watch is active per thread. Starting another replaces the previous watch.
 
@@ -76,7 +76,7 @@ review in its Git dock; the dock's PR view also has a Review button per linked P
 - **Head guard.** The page pins the head it loaded. A poll (every minute and when
   the page shows again) notices new commits and offers "Load new commits". Submit
   and merge carry that head and are refused when the host has moved on (GitHub,
-  Forgejo, Azure and GitLab approval also guard in the write itself).
+  Forgejo and GitLab approval also guard in the write itself).
 - **Viewed files.** A ticked file folds away. GitHub keeps the state itself
   (`markFileAsViewed`; its dismissed state shows as Changed). Other hosts keep it
   in `pull_request_viewed` with the file's blob id (else a digest of its diff): a
@@ -90,7 +90,7 @@ review in its Git dock; the dock's PR view also has a Review button per linked P
   the result before merging. Rebase merges keep the original commits, so credits
   stay there. Auto-merge, ready for review, convert to draft, close, reopen and
   request reviewers follow the host; GitHub also opens revert PRs.
-- **Diffs after a push.** Forgejo, Bitbucket and Azure refresh a PR's diff some
+- **Diffs after a push.** Forgejo refreshes a PR's diff some
   time after a push. With a local checkout the Code tab and the guide fetch the
   head branch (from the fork for fork PRs) into `refs/pockymoe/review/…`, check it
   is the head the host reports, and diff locally; the refs are removed afterwards.
@@ -114,6 +114,55 @@ Settings → Source control → Pull request review holds the writer, model and 
 guide instructions, with an override per workspace. A guide needs a workspace with
 the repository on this device.
 
+### Stacks
+
+A stack is a chain of PRs where each one's base branch is the head branch of the
+one below. GitHub keeps stacks itself (github.com): lists read GraphQL
+`stack`/`stackEntry`, a PR reads `GET /repos/{o}/{r}/stacks?pull_request=N`, and
+the stack keeps its merged layers. Elsewhere, and for GitHub PRs outside a host
+stack, the stack is inferred from the open PRs of the repository: a PR whose
+base is another open PR's head sits on it (two open PRs from the same branch
+name give no parent). Once lower layers merge, the stack finds its real base
+through merged PRs whose head is that branch (merged after the layer above was
+opened) and shows them as merged layers.
+
+List rows carry a layers chip with the position ("2/3"); the review shows the
+stack from the base up under the PR's header, every layer one tap away (on a
+phone the open layer keeps its title and is centred; the others show their number).
+
+- **Merge stack** merges the PR and every open layer below it. On a GitHub stack
+  this is one `PUT …/pulls/N/merge-async` with the target's head: GitHub merges the
+  layers together, through the merge queue when the base requires one and under
+  its branch rules; the Supervisor waits up to two minutes and reports merged,
+  enqueued or pending. Inferred stacks merge bottom to top: each layer is
+  retargeted to the stack's base, then merged with its own head guard (waiting out
+  a host that is still checking mergeability). After a squash or rebase merge the
+  layers above are restacked (below) so the next layer holds only its own
+  commits; that needs a workspace with the repository, and merge commits do not.
+  Every open layer in the range must still be at the head the reviewer loaded
+  (`expectedHeads`), or nothing is merged. Stack merges keep agent credits.
+- **Rebase stack** replays every open layer onto the stack's base, bottom to top,
+  in a temporary shared clone of the local repository (the user's checkout and
+  index are never touched). Each branch is checked against the head the reviewer
+  loaded and pushed with `--force-with-lease` on it, using the device's Git
+  credentials; a conflict stops at that layer and says how many were pushed.
+  Layers whose base merged are retargeted. History is rewritten and checks start
+  again, which the confirmation says.
+- **Creating a stacked PR**: the thread PR form's "Stack on PR" or
+  `pockymoe pr create --head BRANCH --stack-on N` uses PR N's head branch as the
+  base. On GitHub the new PR also joins N's stack (`POST …/stacks/{n}/add`) or
+  starts one with N (`POST …/stacks`); a refused join is reported, the PR stays.
+
+| Host | Detect | Merge stack | Rebase stack | Create |
+| --- | --- | --- | --- | --- |
+| GitHub (github.com) | host stacks; inferred for other PRs | host stack in one call (merge queue, branch rules); inferred bottom to top | yes | base + join the host stack |
+| GitHub Enterprise | inferred (no stack fields) | bottom to top | yes | base |
+| GitLab | inferred (MR dependencies are a Premium feature and not used) | bottom to top, `target_branch` retarget, `sha` guard | yes | base |
+| Forgejo / Gitea | inferred | bottom to top, `base` retarget, `head_commit_id` guard | yes | base |
+
+Agents: `pockymoe pr review stack N`, `review merge-stack N --expected-heads 12:SHA,13:SHA
+[--method squash]`, `review rebase-stack N --expected-heads …`, `pr create --stack-on N`.
+
 ### Hosts
 
 | Host | Review | Line / file comments | Reply / resolve | Viewed | Rerun | Other |
@@ -121,8 +170,6 @@ the repository on this device.
 | GitHub | Comment, Approve, Request changes (one GraphQL review) | both, ranges | both | on GitHub | failed jobs of a run | revert PR, auto-merge |
 | GitLab | Comment, Approve (`sha` guard), Request changes | both (range noted in the text) | both | device | pipeline retry | auto-merge |
 | Forgejo / Gitea | Comment, Approve, Request changes (needs a summary) | lines; file comments go into the review text; ranges noted | reply as a one-comment review on the line; no resolve API | device | — | auto-merge |
-| Bitbucket | Comment, Approve, Request changes | both | both | device | — | no merge (no atomic head guard), cannot reopen |
-| Azure DevOps | Comment, Approve and Request changes as votes | both | both | device | — | files without patches unless the repository is local |
 
 ### Agents
 
@@ -141,7 +188,8 @@ Owner-only, like every `/api/source-control/` route:
   (`paths`, `viewed`, `revisions`), `reviewers` (`add`, `remove`), `state`
   (`close|reopen|draft|ready`), `merge` / `autoMerge` (`method`, `expectedHead`,
   `removeAgentCredits`), `mergeMessage`, `rerun` (`token`), `revert`, `guide`,
-  `guideShow`, `link` (`threadId`), `workOn` (`workspaceId`).
+  `guideShow`, `link` (`threadId`), `workOn` (`workspaceId`), `stack`,
+  `mergeStack` (`method`, `expectedHeads: [{number, headSha}]`), `rebaseStack` (`expectedHeads`).
 - `GET/PUT /api/source-control/pull-request-views`
 - Settings: `review` in `/api/source-control/settings` (`removeAgentCredits`,
   `guideSource`, `guideModel`, `guideInstructions`, `guideWorkspaceInstructions`).

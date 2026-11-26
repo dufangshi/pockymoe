@@ -1482,15 +1482,48 @@ impl AcpRuntime {
         } else {
             None
         };
-        if let Some(mode_id) = claude_mode.or_else(|| resolve_mode(&live.available_modes, &policy))
+        // Plan is a separate setting for some harnesses (codex-acp): the
+        // permission mode then follows the sandbox alone, and Plan Mode is set
+        // through that harness's collaboration option.
+        let separate_collaboration = super::has_collaboration_option(&live.config_options);
+        let collaboration =
+            super::resolve_collaboration_config_value(&live.config_options, &policy);
+        let mode_policy = if separate_collaboration {
+            ProductSessionPolicy {
+                collaboration_mode: None,
+                ..policy.clone()
+            }
+        } else {
+            policy.clone()
+        };
+        if let Some(mode_id) =
+            claude_mode.or_else(|| resolve_mode(&live.available_modes, &mode_policy))
         {
             if live.current_mode_id.as_deref() != Some(mode_id.as_str()) {
                 Self::apply_setting_op(process, live, SessionSettingOp::SetMode { mode_id })
                     .await?;
             }
+            if let Some((config_id, value)) = collaboration {
+                Self::apply_setting_op(
+                    process,
+                    live,
+                    SessionSettingOp::SetConfig { config_id, value },
+                )
+                .await?;
+            }
             return Ok(());
         }
-        if let Some((config_id, value)) = resolve_mode_config_value(&live.config_options, &policy) {
+        if let Some((config_id, value)) = collaboration {
+            Self::apply_setting_op(
+                process,
+                live,
+                SessionSettingOp::SetConfig { config_id, value },
+            )
+            .await?;
+        }
+        if let Some((config_id, value)) =
+            resolve_mode_config_value(&live.config_options, &mode_policy)
+        {
             Self::apply_setting_op(
                 process,
                 live,
@@ -3123,6 +3156,27 @@ impl AgentRuntime for AcpRuntime {
                                 if reported && claude_step_context { self.spawn_context_summary(&input.provider_session_id, &input.thread_id, &bus, Some(context_busy.clone())); }
                                 for notice in reader.take_task_notices() {
                                     emit_mapped(&bus, &input.thread_id, &input.turn_id, mapper.native_task_notification(&notice), input.hidden);
+                                }
+                            }
+                            // codex-acp leaves Plan Mode after an approved plan review and
+                            // says so in a config update; keep the thread's setting with it,
+                            // or the next turn would re-enter Plan Mode.
+                            if update["update"]["sessionUpdate"] == "config_option_update"
+                                && !super::modes::collaboration_is_plan(&update["update"]["configOptions"])
+                                && super::has_collaboration_option(&update["update"]["configOptions"])
+                            {
+                                let left_plan = self.inner.sessions.lock().await
+                                    .get_mut(&input.provider_session_id)
+                                    .filter(|live| live.collaboration_mode.as_deref() == Some("plan"))
+                                    .map(|live| { live.collaboration_mode = Some("default".into()); live.config_options = update["update"]["configOptions"].clone(); })
+                                    .is_some();
+                                if left_plan {
+                                    bus.emit(ThreadEventEnvelope {
+                                        event_type: pockymoe_protocol::ThreadEventType::ThreadCollaborationUpdated,
+                                        thread_id: input.thread_id.clone(),
+                                        timestamp: now_rfc3339(),
+                                        payload: json!({"turnId": input.turn_id, "collaborationMode": "default"}),
+                                    });
                                 }
                             }
                             if let Some(usage) = adapter.billing_usage(&update).and_then(|usage| adapter_usage.apply(usage)) {

@@ -80,6 +80,7 @@ string_enum! {
         FileRead => "fileRead",
         FileChange => "fileChange",
         Hook => "hook",
+        HarnessSwitch => "harnessSwitch",
         AgentToolCall => "agentToolCall",
         SkillToolCall => "skillToolCall",
         ToolCall => "toolCall",

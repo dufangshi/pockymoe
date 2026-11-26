@@ -18,7 +18,7 @@ import { resolveThreadContextUsage } from '../pages/threadDetailModel';
 export function WorkbenchReferencePane({
   controller,
   onOpenThread,
-  draft, onDraftChange, sendShortcut, onOpenWorkspaceFile, onOpenHarness,
+  draft, onDraftChange, sendShortcut, onOpenWorkspaceFile, onOpenHarness, modelPicker,
 }: {
   controller: ReturnType<typeof useWorkbenchReference>;
   onOpenThread: (id: string) => void;
@@ -26,12 +26,14 @@ export function WorkbenchReferencePane({
   onDraftChange: ThreadComposerProps['onDraftChange'];
   sendShortcut: ThreadComposerProps['sendShortcut'];
   onOpenHarness?: (composerFocusOwner?: string) => void;
+  /** The pane's own model picker source: facts and, for its owner, switching agents. */
+  modelPicker?: ThreadComposerProps['modelPicker'];
   onOpenWorkspaceFile?: (input: {path: string; line?: number}) => void;
 }) {
   useI18n();
   const { detail, error, loadEarlier, loadingEarlier, retry } = controller;
   const threadId = detail?.thread.id;
-  const describeHandoffModel = useHandoffModelNames(detail?.turns, controller.deviceId);
+  const describeHandoffModel = useHandoffModelNames(detail?.turns, controller.deviceId, detail?.harnessSwitches);
   // The pane's own device, and no settings link: it may be another device than the page's.
   const contextInspector = useMemo<ThreadContextInspector | null>(() => threadId && controller.canControl ? {
     load: options => fetchThreadContext(threadId, options, controller.deviceId),
@@ -130,6 +132,7 @@ export function WorkbenchReferencePane({
               canInterrupt: Boolean(controller.canControl && detail.thread.activeTurnId),
               ...(controller.canControl ? {
                 ...(onOpenHarness ? { onOpenHarness } : {}),
+                ...(modelPicker ? { modelPicker } : {}),
                 onInterrupt: async () => { await controller.interrupt(); },
                 onUpdateSettings: async input => { await controller.updateSettings(input); },
               } : {}),
