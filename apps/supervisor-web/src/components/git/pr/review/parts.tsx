@@ -86,7 +86,9 @@ export function MenuButton({ label, icon, items, className = '', text }: { label
 }
 
 /** Host Markdown (GitHub-flavoured); raw HTML stays text, links open beside. */
-export function Body({ text, empty }: { text: string; empty?: string }) {
+export function Body({ text: raw, empty }: { text: string; empty?: string }) {
+  // Template comments (<!-- … -->) are hidden on the host's page too.
+  const text = raw.replace(/<!--[\s\S]*?-->/g, '');
   if (!text.trim()) return empty ? <p className="pr-dim">{empty}</p> : null;
   return <div className="pr-body"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a> }}>{text}</ReactMarkdown></div>;
 }

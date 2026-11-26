@@ -25,7 +25,10 @@ beforeEach(() => { setLocale('en'); calls.length = 0; head = 'head-7'; current =
 const renderReview = (tab?: 'code') => render(<MemoryRouter><PullRequestReview url="https://github.com/fixture/parser/pull/7" tab={tab} /></MemoryRouter>);
 
 it('submits the drafts as a review of the head that was loaded', async () => {
+  current = detail({ body: '<!-- template note -->\nBody text' });
   renderReview();
+  expect(await screen.findByText('Body text')).toBeTruthy();
+  expect(screen.queryByText(/template note/)).toBeNull();
   await screen.findByRole('heading', { name: /Stream tokens/ });
   fireEvent.click(screen.getByRole('button', { name: /^Review/ }));
   const dialog = await screen.findByRole('dialog');

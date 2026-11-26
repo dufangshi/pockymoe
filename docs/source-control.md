@@ -114,6 +114,56 @@ Settings → Source control → Pull request review holds the writer, model and 
 guide instructions, with an override per workspace. A guide needs a workspace with
 the repository on this device.
 
+### Stacks
+
+A stack is a chain of PRs where each one's base branch is the head branch of the
+one below. GitHub keeps stacks itself (github.com): lists read GraphQL
+`stack`/`stackEntry`, a PR reads `GET /repos/{o}/{r}/stacks?pull_request=N`, and
+the stack keeps its merged layers. Elsewhere, and for GitHub PRs outside a host
+stack, the stack is inferred from the open PRs of the repository: a PR whose
+base is another open PR's head sits on it (two open PRs from the same branch
+name give no parent). Once lower layers merge, the stack finds its real base
+through merged PRs whose head is that branch (merged after the layer above was
+opened) and shows them as merged layers.
+
+List rows carry a layers chip with the position ("2/3"); the review shows the
+stack from the base up under the PR's header, every layer one tap away (on a
+phone the open layer keeps its title and is centred; the others show their number).
+
+- **Merge stack** merges the PR and every open layer below it. On a GitHub stack
+  this is one `PUT …/pulls/N/merge-async` with the target's head: GitHub merges the
+  layers together, through the merge queue when the base requires one and under
+  its branch rules; the Supervisor waits up to two minutes and reports merged,
+  enqueued or pending. Inferred stacks merge bottom to top: each layer is
+  retargeted to the stack's base, then merged with its own head guard (waiting out
+  a host that is still checking mergeability). After a squash or rebase merge the
+  layers above are restacked (below) so the next layer holds only its own
+  commits; that needs a workspace with the repository, and merge commits do not.
+  Every open layer in the range must still be at the head the reviewer loaded
+  (`expectedHeads`), or nothing is merged. Stack merges keep agent credits.
+- **Rebase stack** replays every open layer onto the stack's base, bottom to top,
+  in a temporary shared clone of the local repository (the user's checkout and
+  index are never touched). Each branch is checked against the head the reviewer
+  loaded and pushed with `--force-with-lease` on it, using the device's Git
+  credentials; a conflict stops at that layer and says how many were pushed.
+  Layers whose base merged are retargeted. History is rewritten and checks start
+  again, which the confirmation says.
+- **Creating a stacked PR**: the thread PR form's "Stack on PR" or
+  `pockymoe pr create --head BRANCH --stack-on N` uses PR N's head branch as the
+  base. On GitHub the new PR also joins N's stack (`POST …/stacks/{n}/add`) or
+  starts one with N (`POST …/stacks`); a refused join is reported, the PR stays.
+
+| Host | Detect | Merge stack | Rebase stack | Create |
+| --- | --- | --- | --- | --- |
+| GitHub (github.com) | host stacks; inferred for other PRs | host stack in one call (merge queue, branch rules); inferred bottom to top | yes | base + join the host stack |
+| GitHub Enterprise | inferred (no stack fields) | bottom to top | yes | base |
+| GitLab | inferred (MR dependencies are a Premium feature and not used) | bottom to top, `target_branch` retarget, `sha` guard | yes | base |
+| Forgejo / Gitea | inferred | bottom to top, `base` retarget, `head_commit_id` guard | yes | base |
+| Bitbucket, Azure DevOps | no stacks | — | — | — |
+
+Agents: `pockymoe pr review stack N`, `review merge-stack N --expected-heads 12:SHA,13:SHA
+[--method squash]`, `review rebase-stack N --expected-heads …`, `pr create --stack-on N`.
+
 ### Hosts
 
 | Host | Review | Line / file comments | Reply / resolve | Viewed | Rerun | Other |
@@ -141,7 +191,8 @@ Owner-only, like every `/api/source-control/` route:
   (`paths`, `viewed`, `revisions`), `reviewers` (`add`, `remove`), `state`
   (`close|reopen|draft|ready`), `merge` / `autoMerge` (`method`, `expectedHead`,
   `removeAgentCredits`), `mergeMessage`, `rerun` (`token`), `revert`, `guide`,
-  `guideShow`, `link` (`threadId`), `workOn` (`workspaceId`).
+  `guideShow`, `link` (`threadId`), `workOn` (`workspaceId`), `stack`,
+  `mergeStack` (`method`, `expectedHeads: [{number, headSha}]`), `rebaseStack` (`expectedHeads`).
 - `GET/PUT /api/source-control/pull-request-views`
 - Settings: `review` in `/api/source-control/settings` (`removeAgentCredits`,
   `guideSource`, `guideModel`, `guideInstructions`, `guideWorkspaceInstructions`).
