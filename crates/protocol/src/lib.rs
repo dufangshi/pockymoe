@@ -262,6 +262,30 @@ pub struct ThreadActivityDto {
     pub price_partial: bool,
 }
 
+/// Agents that run natively by default and through their ACP adapter when the
+/// thread was created under the ACP agent.
+pub const NATIVE_AGENTS: [&str; 2] = ["codex", "claude"];
+const ACP_AGENT_PREFIX: &str = "acp:";
+
+/// Split an agent key (`codex`, `acp:codex`, `opencode`) into the agent id and,
+/// for an agent with a native runtime, its protocol (`native` or `acp`).
+pub fn split_agent_key(key: &str) -> (&str, Option<&'static str>) {
+    match key.strip_prefix(ACP_AGENT_PREFIX) {
+        Some(agent) if NATIVE_AGENTS.contains(&agent) => (agent, Some("acp")),
+        _ if NATIVE_AGENTS.contains(&key) => (key, Some("native")),
+        _ => (key, None),
+    }
+}
+
+/// The agent key a runtime routes on: `acp:codex` for an ACP Codex thread.
+pub fn agent_key(agent_id: &str, harness_protocol: Option<&str>) -> String {
+    if harness_protocol == Some("acp") && NATIVE_AGENTS.contains(&agent_id) {
+        format!("{ACP_AGENT_PREFIX}{agent_id}")
+    } else {
+        agent_id.to_string()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadDto {
@@ -270,6 +294,10 @@ pub struct ThreadDto {
     pub provider: Provider,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    /// `native` or `acp` for an agent with a native runtime (Codex, Claude):
+    /// pinned when the thread is created. Absent for ACP-only agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_protocol: Option<String>,
     pub provider_session_id: Option<String>,
     pub source: String,
     pub title: String,
@@ -326,6 +354,20 @@ pub struct ThreadDto {
     pub created_by_thread_id: Option<String>,
 }
 
+impl ThreadDto {
+    /// The agent key its runtime routes on (`acp:codex` for an ACP Codex thread).
+    pub fn agent_key(&self) -> Option<String> {
+        self.agent_id
+            .as_deref()
+            .or(match self.provider {
+                Provider::Codex => Some("codex"),
+                Provider::Claude => Some("claude"),
+                _ => None,
+            })
+            .map(|agent| agent_key(agent, self.harness_protocol.as_deref()))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadHistoryItemDto {
@@ -353,6 +395,10 @@ pub struct ThreadHistoryItemDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadTurnDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<Provider>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
@@ -524,6 +570,8 @@ pub struct ThreadGoalDto {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadDetailDto {
+    #[serde(default)]
+    pub harness_switches: Vec<ThreadHistoryItemDto>,
     pub thread: ThreadDto,
     pub workspace: WorkspaceDto,
     pub workspace_path_status: String,
@@ -995,5 +1043,21 @@ pub fn truncate_title(value: &str) -> String {
         normalized
     } else {
         normalized.chars().take(15).collect()
+    }
+}
+
+#[cfg(test)]
+mod agent_key_tests {
+    use super::*;
+
+    #[test]
+    fn agent_keys_round_trip_and_leave_acp_only_agents_alone() {
+        assert_eq!(split_agent_key("codex"), ("codex", Some("native")));
+        assert_eq!(split_agent_key("acp:claude"), ("claude", Some("acp")));
+        assert_eq!(split_agent_key("opencode"), ("opencode", None));
+        assert_eq!(split_agent_key("acp:opencode"), ("acp:opencode", None));
+        assert_eq!(agent_key("codex", Some("acp")), "acp:codex");
+        assert_eq!(agent_key("codex", Some("native")), "codex");
+        assert_eq!(agent_key("opencode", Some("acp")), "opencode");
     }
 }

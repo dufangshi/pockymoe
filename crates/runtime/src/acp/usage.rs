@@ -185,7 +185,7 @@ impl SessionTail {
 /// any depth. A sub-agent's requests never reach the parent session's counter,
 /// so a turn that delegates (the `ultra` effort does by itself) was reported
 /// with the parent's share only.
-pub(super) struct CodexUsageReader {
+pub(crate) struct CodexUsageReader {
     home: PathBuf,
     start_time: String,
     /// The parent first, then sub-agents in the order they were started.
@@ -195,10 +195,13 @@ pub(super) struct CodexUsageReader {
     last: Option<Tokens>,
     context_window: Option<Value>,
     latest: Option<Value>,
+    /// The newest account allowance Codex recorded during this turn.
+    rate_limits: Option<Value>,
+    rate_limits_reported: Option<Value>,
 }
 
 impl CodexUsageReader {
-    pub(super) fn new(session_id: &str) -> Self {
+    pub(crate) fn new(session_id: &str) -> Self {
         Self::at(
             LocalSessionHomes::from_env().codex_home,
             session_id,
@@ -221,6 +224,8 @@ impl CodexUsageReader {
             last: None,
             context_window: None,
             latest: None,
+            rate_limits: None,
+            rate_limits_reported: None,
         };
         // Snapshot the existing cumulative total before session/prompt starts.
         reader.locate(0);
@@ -237,11 +242,22 @@ impl CodexUsageReader {
         reader
     }
 
-    pub(super) fn poll(&mut self) -> Vec<Value> {
+    pub(crate) fn poll(&mut self) -> Vec<Value> {
         self.read()
     }
 
-    pub(super) fn poll_final(&mut self) -> Vec<Value> {
+    /// The account allowance (Codex `token_count.rate_limits`) once per change.
+    pub(crate) fn take_rate_limits(&mut self) -> Option<Value> {
+        let latest = self.rate_limits.clone()?;
+        let windows = Some(latest["windows"].clone());
+        if self.rate_limits_reported == windows {
+            return None;
+        }
+        self.rate_limits_reported = windows;
+        Some(latest)
+    }
+
+    pub(crate) fn poll_final(&mut self) -> Vec<Value> {
         // A short first turn, or a sub-agent that just started, can finish
         // before the periodic missing-file retry.
         for session in &mut self.sessions {
@@ -344,6 +360,15 @@ impl CodexUsageReader {
             if payload["type"] != "token_count" {
                 continue;
             }
+            // Codex writes a count (sometimes without token info) when only its
+            // rate limits changed; this turn's newest one feeds the badge.
+            if !before_turn {
+                if let Some(limits) =
+                    crate::subscription::codex_rollout_rate_limits(&payload["rate_limits"])
+                {
+                    self.rate_limits = Some(limits);
+                }
+            }
             let info = &payload["info"];
             let Some(total) = info.get("total_token_usage").and_then(Tokens::parse) else {
                 continue;
@@ -421,6 +446,42 @@ mod tests {
             value["inputTokens"].as_u64().unwrap(),
             value["outputTokens"].as_u64().unwrap(),
         )
+    }
+
+    #[test]
+    fn the_turn_reports_its_newest_account_allowance_once_per_change() {
+        let home = Home(tempfile::tempdir().unwrap());
+        let limits = |at: &str, used: f64| {
+            json!({"timestamp":at,"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex","primary":{"used_percent":used,"window_minutes":300,"resets_at":4102444800i64},"secondary":null}}}).to_string()
+        };
+        home.append(PARENT, &[limits("2026-11-17T04:00:00.000Z", 5.0)]);
+        let mut reader = CodexUsageReader::at(
+            home.0.path().to_path_buf(),
+            &format!("codex::{PARENT}"),
+            "2026-11-17T05:00:00.000Z".into(),
+        );
+        reader.poll_final();
+        assert!(reader.take_rate_limits().is_none(), "older than the turn");
+        home.append(
+            PARENT,
+            &[
+                limits("2026-11-17T05:00:01.000Z", 7.0),
+                count("2026-11-17T05:00:02.000Z", (100, 10), (100, 10)),
+            ],
+        );
+        assert_eq!(reader.poll().len(), 1, "billing still counts the request");
+        let reported = reader.take_rate_limits().unwrap();
+        assert_eq!(reported["windows"][0]["usedPercent"], 7.0);
+        assert!(reader.take_rate_limits().is_none());
+        home.append(PARENT, &[limits("2026-11-17T05:00:03.000Z", 7.0)]);
+        reader.poll();
+        assert!(reader.take_rate_limits().is_none(), "unchanged");
+        home.append(PARENT, &[limits("2026-11-17T05:00:04.000Z", 9.0)]);
+        reader.poll();
+        assert_eq!(
+            reader.take_rate_limits().unwrap()["windows"][0]["usedPercent"],
+            9.0
+        );
     }
 
     #[test]

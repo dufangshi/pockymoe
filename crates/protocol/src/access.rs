@@ -162,12 +162,36 @@ fn workspace_threads_allowed(access: &EffectiveAccess, method: &str) -> bool {
 }
 
 pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool {
+    if access.kind == "mcp" {
+        return path.split('?').next() == Some("/mcp")
+            && matches!(method, "GET" | "POST" | "DELETE");
+    }
     if access.kind == "owner" {
         return true;
     }
     let pathname = path.split('?').next().unwrap_or(path);
+    // Host APIs spend the owner's sign-in, including private repository reads.
+    if pathname.starts_with("/api/source-control/")
+        || pathname.contains("/source-control/")
+        || pathname.ends_with("/pull-requests")
+    {
+        return false;
+    }
     // No share or grant ever reaches a terminal, read or control.
     if terminal_route(pathname) {
+        return false;
+    }
+    // Portable history and harness credentials stay owner-only, including previews.
+    // A new thread in its own worktree creates a branch and a checkout on the
+    // device: the owner's, never a share's.
+    if pathname == "/api/threads/start-worktree" {
+        return false;
+    }
+    if pathname.ends_with("/harness/switch")
+        || pathname.ends_with("/harness/preview")
+        || pathname.ends_with("/harness/fork")
+        || pathname == "/api/harness-handoff/settings"
+    {
         return false;
     }
     if shared_runtime_metadata_allowed(method, pathname) {
@@ -213,9 +237,16 @@ pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool
         if pathname == format!("/api/threads/{thread_id}/working-context")
             || pathname
                 .strip_prefix(&format!("/api/threads/{thread_id}/git/"))
-                .is_some_and(|action| matches!(action, "status" | "diff" | "commits"))
+                .is_some_and(|action| matches!(action, "status" | "diff" | "commits" | "branches"))
         {
             return method == "GET" && linked_files_allowed(access);
+        }
+        if pathname.starts_with(&format!("/api/threads/{thread_id}/git/"))
+            || pathname == format!("/api/threads/{thread_id}/checkpoints")
+            || pathname.starts_with(&format!("/api/threads/{thread_id}/checkpoints/"))
+            || pathname == format!("/api/threads/{thread_id}/rewind")
+        {
+            return false;
         }
         if pathname
             .strip_prefix(&format!("/api/threads/{thread_id}/linked-files/"))
@@ -358,7 +389,8 @@ pub fn shared_thread_path_allowed(
                 | "/assets/image"
                 | "/goal"
                 | "/skills"
-                | "/mcp-servers"
+                // "/mcp-servers" is owner only: it lists the owner's MCP
+                // servers and account connectors by name.
                 | "/hooks"
                 | "/models"
                 | "/group"
@@ -697,6 +729,58 @@ mod tests {
     }
 
     #[test]
+    fn worktree_thread_creation_is_owner_only() {
+        let mut device = shared("device", "control", "write");
+        device.can_create_threads = true;
+        assert!(access_allows(&device, "POST", "/api/threads/start"));
+        let mut workspace = workspace_grant("control", "write");
+        workspace.can_create_threads = true;
+        for access in [
+            device,
+            workspace,
+            shared("thread", "control", "write"),
+            shared("peer", "control", "write"),
+        ] {
+            for method in ["GET", "POST", "PUT", "DELETE"] {
+                assert!(
+                    !access_allows(&access, method, "/api/threads/start-worktree"),
+                    "{} {method}",
+                    access.scope
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn harness_handoff_is_owner_only() {
+        for method in ["GET", "PUT"] {
+            assert!(access_allows(
+                &owner_access(),
+                method,
+                "/api/harness-handoff/settings"
+            ));
+            for scope in ["thread", "workspace", "device"] {
+                assert!(!access_allows(
+                    &shared(scope, "control", "write"),
+                    method,
+                    "/api/harness-handoff/settings"
+                ));
+            }
+        }
+        for suffix in ["switch", "preview", "fork"] {
+            let path = format!("/api/threads/root/harness/{suffix}");
+            assert!(access_allows(&owner_access(), "POST", &path));
+            for scope in ["thread", "workspace", "device"] {
+                assert!(!access_allows(
+                    &shared(scope, "control", "write"),
+                    "POST",
+                    &path
+                ));
+            }
+        }
+    }
+
+    #[test]
     fn workspace_grants_reach_the_conversations_in_their_workspace() {
         let grant = workspace_grant("read", "none");
         let here = ["ws".to_string()];
@@ -830,6 +914,21 @@ mod tests {
             "GET",
             list
         ));
+    }
+
+    #[test]
+    fn shares_never_list_the_owners_mcp_servers() {
+        for access in [
+            shared("thread", "read", "none"),
+            shared("thread", "control", "none"),
+        ] {
+            assert!(!access_allows(
+                &access,
+                "GET",
+                "/api/threads/root/mcp-servers"
+            ));
+            assert!(access_allows(&access, "GET", "/api/threads/root/skills"));
+        }
     }
 
     #[test]
@@ -1046,6 +1145,54 @@ mod tests {
             "GET",
             "/api/threads/root/git/arbitrary"
         ));
+    }
+    #[test]
+    fn git_writes_checkpoints_and_rewind_are_owner_only() {
+        for action in [
+            "stage",
+            "unstage",
+            "discard",
+            "commit",
+            "commitMessage",
+            "branchCreate",
+            "checkout",
+            "fetch",
+            "pull",
+            "push",
+            "stashPush",
+            "stashPop",
+            "textSettings",
+        ] {
+            let path = format!("/api/threads/root/git/{action}");
+            assert!(access_allows(&owner_access(), "POST", &path));
+            for scope in ["device", "thread", "workspace"] {
+                assert!(!access_allows(
+                    &shared(scope, "control", "write"),
+                    "POST",
+                    &path
+                ));
+            }
+        }
+        for path in [
+            "/api/threads/root/checkpoints",
+            "/api/threads/root/checkpoints/preview",
+            "/api/threads/root/checkpoints/restore",
+            "/api/threads/root/checkpoints/undo",
+            "/api/threads/root/rewind",
+            "/api/threads/root/git/textSettings",
+            "/api/threads/root/git/stashes",
+        ] {
+            for method in ["GET", "POST"] {
+                assert!(access_allows(&owner_access(), method, path));
+                for scope in ["device", "thread", "workspace"] {
+                    assert!(!access_allows(
+                        &shared(scope, "control", "write"),
+                        method,
+                        path
+                    ));
+                }
+            }
+        }
     }
     #[test]
     fn grantee_registration_exception_is_encrypted_post_to_one_exact_endpoint() {
@@ -1404,5 +1551,66 @@ mod tests {
         assert!(!grant_matches_in(&device, None, Some("ws"), &[], &[]));
         assert!(!grant_matches_in(&device, Some("t"), None, &[], &[]));
         assert!(!grant_matches_in(&device, None, None, &[], &[]));
+    }
+}
+
+#[cfg(test)]
+mod source_control_access_tests {
+    use super::*;
+    #[test]
+    fn source_control_endpoints_are_owner_only_for_every_verb() {
+        for path in [
+            "/api/source-control/settings",
+            "/api/source-control/scan",
+            "/api/source-control/clone",
+            "/api/source-control/jobs/fixture",
+            "/api/threads/root/pull-requests",
+            "/api/threads/root/source-control/show",
+            "/api/threads/root/source-control/merge",
+            "/api/threads/root/source-control/watch",
+            "/api/threads/root/source-control/link",
+            "/api/threads/root/source-control/unlink",
+            "/api/threads/root/source-control/list",
+            "/api/threads/root/source-control/create",
+            "/api/threads/root/source-control/update",
+            "/api/threads/root/source-control/comment",
+            "/api/threads/root/source-control/checks",
+            "/api/threads/root/source-control/reviews",
+            "/api/threads/root/source-control/comments",
+            "/api/threads/root/source-control/files",
+            "/api/threads/root/source-control/commits",
+            "/api/threads/root/source-control/ready",
+            "/api/threads/root/source-control/autoMerge",
+            "/api/threads/root/source-control/unwatch",
+            "/api/threads/root/source-control/watchStatus",
+            "/api/threads/root/source-control/workOn",
+            "/api/threads/root/source-control/generate",
+            "/api/threads/root/source-control/publish",
+            "/api/threads/root/source-control/cleanup",
+            "/api/threads/root/source-control/removeWorktree",
+            "/api/threads/root/source-control/review",
+            "/api/source-control/pull-requests",
+            "/api/source-control/pull-requests?state=all",
+            "/api/source-control/pull-requests/detail",
+            "/api/source-control/pull-requests/files",
+            "/api/source-control/pull-requests/draftSave",
+            "/api/source-control/pull-requests/submit",
+            "/api/source-control/pull-requests/viewed",
+            "/api/source-control/pull-requests/merge",
+            "/api/source-control/pull-requests/guide",
+            "/api/source-control/pull-requests/workOn",
+            "/api/source-control/pull-request-views",
+        ] {
+            for method in ["GET", "POST", "PUT", "DELETE"] {
+                assert!(access_allows(&owner_access(), method, path));
+                for scope in ["device", "workspace", "thread"] {
+                    let mut share = owner_access();
+                    share.kind = "share";
+                    share.scope = scope.into();
+                    share.thread_id = Some("root".into());
+                    assert!(!access_allows(&share, method, path), "{method} {path}");
+                }
+            }
+        }
     }
 }

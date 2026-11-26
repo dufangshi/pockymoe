@@ -14,6 +14,27 @@ type CacheEntry = {
 // Account usage belongs to a device/harness, not a turn or a thread. Reuse it
 // when switching between parent and child threads (including older runtimes).
 const cache = new Map<string, CacheEntry>();
+// Mounted viewers of one device/harness account, woken by a harness report.
+const listeners = new Map<string, Set<() => void>>();
+const LIVE_REFRESH_GAP = 5_000;
+
+function accountKey(deviceId: string | null, provider?: AgentBackendIdDto | string | null, agentId?: string | null) {
+  // Match the Supervisor adapter key, including Claude reached through generic ACP.
+  return JSON.stringify([deviceId ?? 'local', agentId ?? (provider === 'acp' ? 'codex' : provider) ?? null]);
+}
+
+/**
+ * A running harness reported fresher allowance (`runtime.subscription.updated`).
+ * The event carries no account data; mounted viewers re-read the owner-only
+ * route now instead of at the next five-minute poll. Bursts collapse to one read.
+ */
+export function refreshSubscriptionUsage(deviceId: string | null, provider: string) {
+  const key = accountKey(deviceId, provider === 'acp' ? 'codex' : provider);
+  const entry = cache.get(key);
+  if (!entry) return;
+  if (!entry.inFlight) entry.refreshAt = Math.min(entry.refreshAt, Date.now() + LIVE_REFRESH_GAP);
+  for (const wake of listeners.get(key) ?? []) wake();
+}
 
 function lastKnown(usage: AgentSubscriptionUsageDto | null) {
   if (!usage || !Number.isFinite(Date.parse(usage.observedAt)) ||
@@ -71,9 +92,7 @@ export function useSubscriptionUsage({
   provider?: AgentBackendIdDto | undefined;
   agentId?: string | null | undefined;
 }) {
-  // Match the Supervisor adapter key, including Claude reached through generic ACP.
-  const accountAdapter = agentId ?? (provider === 'acp' ? 'codex' : provider);
-  const key = JSON.stringify([deviceId ?? 'local', accountAdapter ?? null]);
+  const key = accountKey(deviceId, provider, agentId);
   const [usage, setUsage] = useScopedState<AgentSubscriptionUsageDto | null>(key, null);
   useEffect(() => {
     if (!provider) return;
@@ -100,8 +119,20 @@ export function useSubscriptionUsage({
       const expiry = entry.usage?.stale ? Date.parse(entry.usage.observedAt) + MAX_STALE_AGE : Infinity;
       timer = setTimeout(() => { void poll(); }, Math.max(1, Math.min(entry.refreshAt, expiry) - Date.now()));
     };
+    const wake = () => {
+      if (cancelled || resume) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => { void poll(); }, Math.max(1, entry.refreshAt - Date.now()));
+    };
+    const woken = listeners.get(key) ?? new Set();
+    woken.add(wake);
+    listeners.set(key, woken);
     void poll();
-    return () => { cancelled = true; clearTimeout(timer); if (resume) document.removeEventListener('visibilitychange', resume); };
+    return () => {
+      cancelled = true; clearTimeout(timer); woken.delete(wake);
+      if (!woken.size) listeners.delete(key);
+      if (resume) document.removeEventListener('visibilitychange', resume);
+    };
   }, [key, threadId, provider, agentId, setUsage]);
   return usage;
 }

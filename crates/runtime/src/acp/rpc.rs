@@ -71,7 +71,7 @@ pub struct AcpProcess {
     pub(crate) host_guard: Option<crate::execution::host_process::HostProcessContext>,
     pub(crate) execution: Option<crate::execution::ExecutionContext>,
     pub(crate) context_inspection: bool,
-    context_trace_root: Option<std::path::PathBuf>,
+    pub(crate) context_trace_root: Option<std::path::PathBuf>,
     pub(crate) cli_env: Vec<(String, String)>,
     pub(crate) id: String,
     pub(crate) started_at: String,
@@ -640,7 +640,22 @@ async fn dispatch(
         }
         return Ok(());
     }
-    if method == "session/update" || method.starts_with('_') {
+    // Direct app-server notifications share this bounded transport: the ones
+    // native Codex maps (see native/codex/mapping.rs), not the whole firehose.
+    if method == "session/update"
+        || method.starts_with('_')
+        || method.starts_with("thread/")
+        || method.starts_with("turn/")
+        || method.starts_with("item/")
+        || method.starts_with("account/")
+        || method.starts_with("hook/")
+        || method.starts_with("serverRequest/")
+        || method.starts_with("mcpServer/startupStatus/")
+        || matches!(
+            method,
+            "error" | "warning" | "configWarning" | "deprecationNotice" | "model/rerouted"
+        )
+    {
         let mut params = msg.get("params").cloned().unwrap_or(json!({}));
         let Some(object) = params.as_object_mut() else {
             return Ok(());
@@ -848,6 +863,39 @@ mod tests {
             );
             assert_eq!(read_message(&mut reader).await.unwrap(), None);
         }
+    }
+
+    #[tokio::test]
+    async fn app_server_notifications_native_codex_maps_reach_it_and_others_do_not() {
+        let state = Arc::new(Mutex::new(RpcState::default()));
+        let (updates, mut received) = mpsc::channel(32);
+        let (requests, _) = mpsc::channel(4);
+        let methods = [
+            "warning",
+            "configWarning",
+            "deprecationNotice",
+            "model/rerouted",
+            "hook/completed",
+            "serverRequest/resolved",
+            "mcpServer/startupStatus/updated",
+            "remoteControl/status/changed",
+            "fs/changed",
+        ];
+        for method in methods {
+            dispatch(
+                json!({"method":method,"params":{"threadId":"t"}}),
+                &state,
+                &updates,
+                &requests,
+            )
+            .await
+            .unwrap();
+        }
+        let mut forwarded = vec![];
+        while let Ok(update) = received.try_recv() {
+            forwarded.push(update["_remoteMethod"].as_str().unwrap().to_owned());
+        }
+        assert_eq!(forwarded, methods[..7]);
     }
 
     #[tokio::test]
@@ -1209,7 +1257,7 @@ mod tests {
 
 // Include explicit command overrides as well as inherited variable names. This
 // also makes tests deterministic without mutating the process environment.
-fn clear_native_oauth_environment(cmd: &mut tokio::process::Command, harness: &str) {
+pub(crate) fn clear_native_oauth_environment(cmd: &mut tokio::process::Command, harness: &str) {
     let names = std::env::vars_os()
         .map(|(key, _)| key)
         .chain(cmd.as_std().get_envs().map(|(key, _)| key.to_owned()))

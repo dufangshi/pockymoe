@@ -80,6 +80,7 @@ string_enum! {
         FileRead => "fileRead",
         FileChange => "fileChange",
         Hook => "hook",
+        HarnessSwitch => "harnessSwitch",
         AgentToolCall => "agentToolCall",
         SkillToolCall => "skillToolCall",
         ToolCall => "toolCall",
@@ -132,6 +133,7 @@ string_enum! {
         ThreadCollaborationUpdated => "thread.collaboration.updated",
         ThreadContextDelivered => "thread.context.delivered",
         RuntimeUsageUpdated => "runtime.usage.updated",
+        RuntimeSubscriptionUpdated => "runtime.subscription.updated",
         DevicePortsChanged => "device.ports.changed",
     }
 }

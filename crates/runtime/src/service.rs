@@ -6,13 +6,19 @@ mod claude_reply_phases;
 mod context;
 mod environment_requests;
 mod generation;
+mod handoff;
+mod thread_worktree;
+pub use thread_worktree::NewThreadWorktree;
 mod harness_release;
+pub use handoff::{HandoffPreview, HarnessSwitchInput};
 mod inbox_reminder;
 pub(crate) mod peer_work;
 mod reliability;
+mod rewind;
 mod search;
 mod session_resume;
 mod storage;
+pub mod text_generation;
 pub(crate) mod thread_summary;
 mod turn_selection;
 mod update;
@@ -528,6 +534,9 @@ impl Supervisor {
         if let Err(error) = supervisor.reconcile_stale_turns(None, false) {
             tracing::warn!(%error, "failed to reconcile stale turns at startup");
         }
+        if let Err(error) = supervisor.capture_recovery_checkpoints() {
+            tracing::warn!(%error,"checkpoint recovery unavailable");
+        }
         if let Err(error) = supervisor.recover_automation_commands() {
             tracing::warn!(%error, "automation command recovery failed");
         }
@@ -627,6 +636,20 @@ impl Supervisor {
                     }
                     saved
                 }
+                // The harness's own allowance report updates the shared account
+                // cache; viewers only learn that it changed (owner-only route).
+                "runtime.subscription.updated" => {
+                    if let (Some(provider), Some(usage)) = (
+                        event.payload["provider"].as_str().map(str::to_owned),
+                        event
+                            .payload
+                            .as_object_mut()
+                            .and_then(|p| p.remove("usage")),
+                    ) {
+                        supervisor.subscription_usage.observe(&provider, &usage);
+                    }
+                    Ok(())
+                }
                 "thread.context.delivered" => match event.payload["providerSessionId"].as_str() {
                     Some(session) => supervisor
                         .db
@@ -711,6 +734,17 @@ impl Supervisor {
                     };
                     let item = serde_json::from_value::<ThreadHistoryItemDto>(item)?;
                     supervisor.upsert_history_item(&event.thread_id, turn_id, &item)?;
+                    if event.event_type == "thread.item.completed" {
+                        // Link only confirmed creation-command output. This is
+                        // best effort and never delays or fails harness output.
+                        let detail = item.detail_text.as_deref().unwrap_or("");
+                        let (command, output) = detail
+                            .split_once("\n\nResult:\n")
+                            .or_else(|| detail.split_once("\n\nOutput:\n"))
+                            .unwrap_or((&item.text, detail));
+                        let command = format!("{}\n{command}", item.text);
+                        let _ = supervisor.source_auto_link(&event.thread_id, &command, output);
+                    }
                     if let Some(evidence) =
                         item.extra.get("workingLocations").and_then(Value::as_array)
                     {
@@ -1833,6 +1867,23 @@ impl Supervisor {
             self.ensure_agent_name_free(lineage.root.as_deref(), name)?;
         }
         let provider = input.provider.unwrap_or_else(|| self.default_provider());
+        // `acp:codex` picks Codex's ACP adapter; plain `codex` (and no agent,
+        // which means Codex) runs natively. The choice is pinned on the thread.
+        let (agent_id, harness_protocol) = match input.agent_id.as_deref() {
+            Some(key) => {
+                let (agent, protocol) = pockymoe_protocol::split_agent_key(key.trim());
+                (Some(agent.to_string()), protocol)
+            }
+            None if provider == Provider::Acp => (Some("codex".to_string()), Some("native")),
+            None => (
+                None,
+                matches!(provider, Provider::Codex | Provider::Claude).then_some("native"),
+            ),
+        };
+        let runtime_agent = agent_id
+            .as_deref()
+            .map(|agent| pockymoe_protocol::agent_key(agent, harness_protocol));
+        let input = CreateThreadInput { agent_id, ..input };
         let _maintenance = self
             .maintenance_gate
             .try_read()
@@ -1857,11 +1908,16 @@ impl Supervisor {
         }
         let worktree = match &options.worktree {
             Some(branch) => {
-                let slug = options.name.clone().unwrap_or_else(|| id[..8].to_string());
-                Some(crate::interaction::create_worktree(
+                let slug = options
+                    .worktree_name
+                    .clone()
+                    .or_else(|| options.name.clone())
+                    .unwrap_or_else(|| id[..8].to_string());
+                Some(crate::interaction::create_worktree_from(
                     Path::new(&workspace.abs_path),
                     &slug,
                     branch.as_deref(),
+                    options.worktree_base.as_deref(),
                 )?)
             }
             None => None,
@@ -1925,7 +1981,7 @@ impl Supervisor {
                     HarnessLoadReason::Create,
                     runtime.start_session(StartSessionInput {
                         cwd,
-                        agent_id: input.agent_id.clone(),
+                        agent_id: runtime_agent.clone(),
                         model: input.model.clone(),
                         reasoning_effort: input.reasoning_effort.clone(),
                         approval_mode: approval_mode.into(),
@@ -1958,9 +2014,9 @@ impl Supervisor {
             tx.execute(
                 "INSERT INTO threads(id, workspace_id, provider, agent_id, provider_session_id, source, title, model,
                     reasoning_effort, collaboration_mode, approval_mode, sandbox_mode, status, created_at, updated_at,
-                    parent_thread_id, root_thread_id, lineage_depth, agent_name, agent_role, worktree_path,
+                    parent_thread_id, root_thread_id, lineage_depth, agent_name, agent_role, worktree_path, harness_protocol,
                     created_by_thread_id)
-                 VALUES (?1,?2,?3,?4,?5,'supervisor',?6,?7,?8,'default',?9,?10,'idle',?11,?11,?12,?13,?14,?15,?16,?17,?18)",
+                 VALUES (?1,?2,?3,?4,?5,'supervisor',?6,?7,?8,'default',?9,?10,'idle',?11,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
                 params![
                     id,
                     input.workspace_id,
@@ -1979,6 +2035,7 @@ impl Supervisor {
                     options.name,
                     options.role.as_ref().map(|r| &r.name),
                     worktree.as_ref().map(|w| w.path.to_string_lossy().into_owned()).or(inherited_cwd),
+                    harness_protocol,
                     options.detached_from,
                 ],
             )?;
@@ -2113,9 +2170,14 @@ impl Supervisor {
         }
         let selected_provider = input.provider.unwrap_or_else(|| self.default_provider());
         let enabled: Vec<Provider> = self.runtimes.keys().copied().collect();
+        let (requested_agent, requested_protocol) = input
+            .agent_id
+            .as_deref()
+            .map(pockymoe_protocol::split_agent_key)
+            .map_or((None, None), |(agent, protocol)| (Some(agent), protocol));
         let (provider, agent_id) = bind_import_target(
             selected_provider,
-            input.agent_id.as_deref(),
+            requested_agent,
             parsed.agent_id.as_deref(),
             &enabled,
         );
@@ -2159,8 +2221,9 @@ impl Supervisor {
         self.db.with(|conn| {
             conn.execute(
                 "INSERT INTO threads(id, workspace_id, provider, agent_id, provider_session_id, source, title, model,
-                    reasoning_effort, collaboration_mode, approval_mode, status, summary_text, created_at, updated_at, is_connected)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,'default','yolo','idle',?9,?10,?10,0)",
+                    reasoning_effort, collaboration_mode, approval_mode, status, summary_text, created_at, updated_at, is_connected,
+                    harness_protocol)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,'default','yolo','idle',?9,?10,?10,0,?11)",
                 params![
                     thread_id,
                     workspace.id,
@@ -2171,7 +2234,8 @@ impl Supervisor {
                     title,
                     model,
                     summary,
-                    now
+                    now,
+                    requested_protocol.filter(|_| pockymoe_protocol::NATIVE_AGENTS.contains(&agent_id.as_str()))
                 ],
             )?;
             Ok(())
@@ -2516,6 +2580,7 @@ impl Supervisor {
             vec![]
         };
         Ok(ThreadDetailDto {
+            harness_switches: self.load_harness_switches(id)?,
             thread,
             workspace_path_status: if Path::new(&workspace.abs_path).exists() {
                 "present"
@@ -2625,6 +2690,7 @@ impl Supervisor {
         };
         let thread = self.get_thread(id)?;
         Ok(ThreadDetailDto {
+            harness_switches: self.load_harness_switches(id)?,
             thread,
             workspace,
             workspace_path_status: if present { "present" } else { "missing" }.into(),
@@ -2677,10 +2743,13 @@ impl Supervisor {
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                 .map(|t| t.timestamp_millis())
         };
-        for turn in turns
-            .iter_mut()
-            .filter(|turn| turn.status != "inProgress" && usage_needs_hydration(turn))
-        {
+        for turn in turns.iter_mut().filter(|turn| {
+            turn.status != "inProgress"
+                && usage_needs_hydration(turn)
+                && turn.agent_id.as_deref().is_none_or(|agent| {
+                    Some(agent) == thread.agent_id.as_deref() || agent == thread.provider.as_str()
+                })
+        }) {
             let source = history
                 .iter()
                 .find(|source| source.id == turn.id)
@@ -3077,10 +3146,7 @@ impl Supervisor {
         if current.status == "recovering" {
             bail!("conflict: Reconnect to confirm backend state before starting another turn");
         }
-        let thread = ThreadDto {
-            provider_session_id: current.provider_session_id,
-            ..thread
-        };
+        let thread = current;
         let provider = thread.provider;
         let _maintenance = self
             .maintenance_gate
@@ -3126,6 +3192,7 @@ impl Supervisor {
                 .stage_goal(&session_id, submission.goal.clone())
                 .await?;
         }
+        let handoff = self.pending_handoff(&thread, &prompt)?;
         let turn_id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
         let turn_model = model.clone().or_else(|| thread.model.clone());
@@ -3198,6 +3265,12 @@ impl Supervisor {
                 extra: Default::default(),
             };
             let origin = pending_steer_id.map(|pending| thread_summary::prompt_origin(conn, pending)).transpose()?.flatten().unwrap_or("user");
+            if let Some(raw)=conn.query_row("SELECT value FROM kv WHERE key=?1",[format!("handoff:pending:{}",thread.id)],|r|r.get::<_,String>(0)).optional()? {
+                if let Ok(mut switch)=serde_json::from_str::<Value>(&raw) {if switch.is_object() && switch["recorded"] != true {
+                    if let Some(prefix)=&handoff {switch["turns"]=json!(prefix.turns);}
+                    user_item.extra.insert("harnessSwitch".into(),switch);
+                }}
+            }
             user_item.extra.insert("origin".into(), json!(origin));
             if let Some(sender) = goal_submission.as_ref().and_then(|g| g.sender.as_ref()) {
                 user_item.extra.insert("sender".into(), serde_json::to_value(sender)?);
@@ -3292,8 +3365,15 @@ impl Supervisor {
             Some(notice) => format!("{notice}\n\n{prompt}"),
             None => prompt,
         };
+        let prompt = if let Some(handoff) = handoff {
+            format!("{}\n\n{}", handoff.text, prompt)
+        } else {
+            prompt
+        };
         let context_delivered = self.harness_context_delivered(&thread.id, &session_id);
         let bus = self.bus.for_turn(&thread.id, &turn_id);
+        self.capture_turn_checkpoints_async(&thread.id, &turn_id, "start")
+            .await;
         let result = runtime
             .start_turn(
                 StartTurnInput {
@@ -3316,6 +3396,12 @@ impl Supervisor {
                 cancel.clone(),
             )
             .await;
+        // The runtime has settled. A detach/stop while checkpoint I/O finishes
+        // must not turn its completed result into an interruption (and change
+        // durable notification outcomes that observers already saw).
+        let interrupted = cancel.is_cancelled();
+        self.capture_turn_checkpoints_async(&thread.id, &turn_id, "end")
+            .await;
         bus.close_turn();
         let mut live = self.live.lock().await;
         let completed_at = now_rfc3339();
@@ -3326,7 +3412,6 @@ impl Supervisor {
             .is_some_and(|err| err.is::<crate::actor::ExecutionUncertain>());
         match result {
             Ok(items) => {
-                let interrupted = cancel.is_cancelled();
                 let status = if interrupted {
                     "interrupted"
                 } else {
@@ -3346,14 +3431,14 @@ impl Supervisor {
                 self.persist_turn_result(
                     &thread.id,
                     &turn_id,
-                    if cancel.is_cancelled() {
+                    if interrupted {
                         "interrupted"
                     } else if uncertain {
                         "recovering"
                     } else {
                         "failed"
                     },
-                    if cancel.is_cancelled() {
+                    if interrupted {
                         None
                     } else {
                         Some(error.as_str())
@@ -3365,7 +3450,7 @@ impl Supervisor {
         }
         live.remove(&thread.id);
         drop(live);
-        let thread_status = if cancel.is_cancelled() {
+        let thread_status = if interrupted {
             "interrupted"
         } else if uncertain {
             "recovering"
@@ -3406,6 +3491,8 @@ impl Supervisor {
                 "UPDATE thread_turns SET status=?1, error=?2, completed_at=CASE WHEN ?1='recovering' THEN NULL ELSE ?3 END WHERE id=?4",
                 params![status, error, now, turn_id],
             )?;
+            // A failed start may never have delivered the history; keep it pending for retry.
+            if matches!(status,"completed"|"interrupted") {handoff::record_seen(conn, thread_id, now)?;}
             for item in items {
                 conn.execute(
                     "INSERT INTO thread_history_items(id, thread_id, turn_id, item_id, item_json, created_at, updated_at)
@@ -3708,7 +3795,7 @@ impl Supervisor {
             .ok_or_else(|| anyhow!("thread has no provider session"))?;
         let runtime = self.runtime(thread.provider)?;
         if !runtime
-            .negotiated_caps(thread.agent_id.as_deref())
+            .session_negotiated_caps(thread.agent_id.as_deref(), provider_session_id)
             .turns
             .steer
         {
@@ -3868,6 +3955,7 @@ impl Supervisor {
         Ok(())
     }
     pub(crate) fn delete_thread_record(&self, id: &str) -> Result<()> {
+        self.prune_checkpoints(id, true)?;
         self.db.with(|conn| {
             conn.execute(
                 "DELETE FROM kv WHERE substr(key,1,length(?1))=?1",
@@ -3882,6 +3970,12 @@ impl Supervisor {
                 "DELETE FROM thread_pending_steers WHERE thread_id=?1",
                 params![id],
             )?;
+            for kind in ["contract", "role", "pending"] {
+                conn.execute(
+                    "DELETE FROM kv WHERE key=?1",
+                    [format!("handoff:{kind}:{id}")],
+                )?;
+            }
             conn.execute("DELETE FROM threads WHERE id=?1", params![id])?;
             Ok(())
         })?;
@@ -3912,7 +4006,7 @@ impl Supervisor {
             let runtime = self.runtime(thread.provider)?;
             if fast == Some(true)
                 && !runtime
-                    .negotiated_caps(thread.agent_id.as_deref())
+                    .session_negotiated_caps(thread.agent_id.as_deref(), session)
                     .controls
                     .performance_mode
             {
@@ -4052,7 +4146,7 @@ impl Supervisor {
                 HarnessLoadReason::Fork,
             )
             .await?;
-        let caps = runtime.negotiated_caps(detail.thread.agent_id.as_deref());
+        let caps = runtime.session_negotiated_caps(detail.thread.agent_id.as_deref(), &session);
         if !caps.branching.fork {
             bail!("this harness does not support session/fork");
         }
@@ -4104,7 +4198,7 @@ impl Supervisor {
                 HarnessLoadReason::Fork,
             )
             .await?;
-        let caps = runtime.negotiated_caps(detail.thread.agent_id.as_deref());
+        let caps = runtime.session_negotiated_caps(detail.thread.agent_id.as_deref(), &session);
         if !caps.branching.fork {
             bail!("this harness does not support session/fork");
         }
@@ -4166,8 +4260,9 @@ impl Supervisor {
         self.db.with(|conn| {
             conn.execute(
                 "INSERT INTO threads(id, workspace_id, provider, agent_id, provider_session_id, source, title, model,
-                    reasoning_effort, collaboration_mode, approval_mode, status, created_at, updated_at, sandbox_mode, fast_mode)
-                 VALUES (?1,?2,?3,?4,?5,'supervisor',?6,?7,?8,?11,?9,'idle',?10,?10,?12,?13)",
+                    reasoning_effort, collaboration_mode, approval_mode, status, created_at, updated_at, sandbox_mode, fast_mode,
+                    harness_protocol)
+                 VALUES (?1,?2,?3,?4,?5,'supervisor',?6,?7,?8,?11,?9,'idle',?10,?10,?12,?13,?14)",
                 params![
                     new_id,
                     detail.thread.workspace_id,
@@ -4181,11 +4276,14 @@ impl Supervisor {
                     now,
                     detail.thread.collaboration_mode,
                     detail.thread.sandbox_mode,
-                    detail.thread.fast_mode
+                    detail.thread.fast_mode,
+                    detail.thread.harness_protocol
                 ],
             )?;
+            let mut copied_turns = HashMap::new();
             for (ordinal, turn) in detail.turns.iter().take(turn_count).enumerate() {
                 let new_turn_id = Uuid::new_v4().to_string();
+                copied_turns.insert(turn.id.clone(), new_turn_id.clone());
                 let display_prompt = turn
                     .items
                     .iter()
@@ -4216,6 +4314,7 @@ impl Supervisor {
                         turn.id
                     ],
                 )?;
+                conn.execute("UPDATE thread_turns SET provider=?2,agent_id=?3 WHERE id=?1",params![new_turn_id,turn.provider.map(Provider::as_str),turn.agent_id])?;
                 upsert_legacy_turn_metadata(
                     conn,
                     &new_id,
@@ -4243,6 +4342,7 @@ impl Supervisor {
                     )?;
                 }
             }
+            handoff::copy_switch_entries(conn, detail, &new_id, &copied_turns, selected_turn_id.as_deref())?;
             Ok(())
         })?;
         Ok((
@@ -4619,7 +4719,22 @@ impl Supervisor {
         agent_id: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<Vec<ModelOptionDto>> {
-        let mut models = self.runtime(provider)?.list_models(agent_id, cwd).await?;
+        self.list_models_for_session(provider, agent_id, None, cwd)
+            .await
+    }
+
+    pub async fn list_models_for_session(
+        &self,
+        provider: Provider,
+        agent_id: Option<&str>,
+        session_id: Option<&str>,
+        cwd: Option<&str>,
+    ) -> Result<Vec<ModelOptionDto>> {
+        let runtime = self.runtime(provider)?;
+        let mut models = match session_id {
+            Some(session_id) => runtime.session_models(agent_id, session_id, cwd).await?,
+            None => runtime.list_models(agent_id, cwd).await?,
+        };
         // Relay-owned LiteLLM metadata supplies stable names and per-model
         // effort choices when a harness only exposes opaque model ids.
         self.enrich_model_options(&mut models);
@@ -4664,7 +4779,7 @@ impl Supervisor {
         let thread = self.get_thread(id)?;
         let runtime = self.runtime(thread.provider)?;
         let Some(session) = thread.provider_session_id.as_deref() else {
-            return runtime.capabilities(thread.agent_id.as_deref()).await;
+            return runtime.capabilities(thread.agent_key().as_deref()).await;
         };
         if !load {
             return runtime
@@ -4707,6 +4822,36 @@ impl Supervisor {
         runtime.harness_action(&session, action).await
     }
 
+    /// The thread harness's live MCP servers (owner only; see access.rs).
+    /// Loads the session for viewing when it is not loaded, like the harness
+    /// panel; a harness that cannot report gives an empty list.
+    pub async fn thread_mcp_servers(&self, id: &str) -> Result<serde_json::Value> {
+        let thread = self.get_thread(id)?;
+        let runtime = self.runtime(thread.provider)?;
+        if !runtime
+            .negotiated_caps(thread.agent_key().as_deref())
+            .management
+            .mcp_status
+        {
+            return Ok(serde_json::json!({ "servers": [] }));
+        }
+        let _harness = self.hold_harness(id).await;
+        let session = self.ensure_thread_session(&thread).await?;
+        let cwd = self.session_cwd(&thread);
+        let session = self
+            .resume_thread_session(
+                &thread,
+                session.as_str(),
+                cwd.as_deref(),
+                HarnessLoadReason::View,
+            )
+            .await?;
+        Ok(runtime
+            .mcp_servers(&session)
+            .await?
+            .unwrap_or_else(|| serde_json::json!({ "servers": [] })))
+    }
+
     pub async fn install(
         &self,
         provider: Provider,
@@ -4734,6 +4879,10 @@ fn turn_meta_row(row: &rusqlite::Row<'_>, catalog: &Value) -> rusqlite::Result<T
         )
     });
     Ok(ThreadTurnDto {
+        provider: row
+            .get::<_, Option<String>>(11)?
+            .and_then(|p| serde_json::from_value(json!(p)).ok()),
+        agent_id: row.get(12)?,
         origin: Some(row.get(10)?),
         id: row.get(0)?,
         started_at: row.get(6)?,
@@ -4755,7 +4904,7 @@ fn turn_meta_row(row: &rusqlite::Row<'_>, catalog: &Value) -> rusqlite::Result<T
 }
 
 /// Turn metadata columns read by [`turn_meta_row`].
-const TURN_META_COLUMNS: &str = "id, status, error, model, reasoning_effort, token_usage_json, started_at, completed_at, pricing_model_key, pricing_tier_key, origin";
+const TURN_META_COLUMNS: &str = "id, status, error, model, reasoning_effort, token_usage_json, started_at, completed_at, pricing_model_key, pricing_tier_key, origin, provider, agent_id";
 
 fn normalize_imported_turns(turns: &mut [ThreadTurnDto]) {
     for turn in turns {
@@ -5027,7 +5176,7 @@ fn thread_from_row(row: &rusqlite::Row<'_>) -> ThreadDto {
         "acp" => Provider::Acp,
         _ => Provider::Codex,
     };
-    ThreadDto {
+    let mut thread = ThreadDto {
         id: row.get(0).unwrap_or_default(),
         workspace_id: row.get(1).unwrap_or_default(),
         provider,
@@ -5070,7 +5219,25 @@ fn thread_from_row(row: &rusqlite::Row<'_>) -> ThreadDto {
         worktree_path: row.get(28).unwrap_or(None),
         closed_at: row.get(29).unwrap_or(None),
         created_by_thread_id: row.get(30).unwrap_or(None),
-    }
+        harness_protocol: None,
+    };
+    thread.harness_protocol = harness_protocol(&thread, row.get(31).unwrap_or(None));
+    thread
+}
+
+/// A Codex or Claude thread's protocol; one created before threads recorded
+/// it (NULL) runs natively, the default.
+fn harness_protocol(thread: &ThreadDto, stored: Option<String>) -> Option<String> {
+    let agent = thread.agent_id.as_deref().or(match thread.provider {
+        Provider::Codex => Some("codex"),
+        Provider::Claude => Some("claude"),
+        _ => None,
+    })?;
+    pockymoe_protocol::NATIVE_AGENTS.contains(&agent).then(|| {
+        stored
+            .filter(|p| p == "acp")
+            .unwrap_or_else(|| "native".into())
+    })
 }
 
 // Native Codex stores image blocks separately while Pockymoe keeps PHOTO
@@ -5144,6 +5311,53 @@ pub fn bootstrap_runtimes(config: &RuntimeConfig) -> Vec<SharedRuntime> {
             )),
         }
     }
+    out = out
+        .into_iter()
+        .map(|acp| {
+            let provider = acp.provider();
+            let bound = match provider {
+                Provider::Codex => Some("codex".into()),
+                Provider::Claude => Some("claude".into()),
+                Provider::Opencode => Some("opencode".into()),
+                Provider::Acp => None,
+            };
+            let router = crate::native::ProtocolRouter::new(
+                acp.clone(),
+                bound,
+                Some(config.database_url.clone().into()),
+            );
+            let router = if matches!(provider, Provider::Acp | Provider::Codex) {
+                router.with_backend(
+                    "codex",
+                    Arc::new(crate::native::codex::CodexRuntime::new(
+                        provider,
+                        acp.clone(),
+                        crate::upstreams::directory(&config.database_url),
+                    )),
+                )
+            } else {
+                router
+            };
+            let router = if matches!(provider, Provider::Acp | Provider::Claude) {
+                router.with_backend(
+                    "claude",
+                    Arc::new(crate::native::claude::ClaudeRuntime::new(
+                        acp,
+                        crate::acp::builtin_agents(None)
+                            .into_iter()
+                            .find(|a| a.id == "claude")
+                            .map(|a| a.base_command)
+                            .unwrap_or_else(|| "claude".into()),
+                        Some(crate::upstreams::directory(&config.database_url)),
+                    )),
+                )
+            } else {
+                router
+            };
+            Arc::new(router) as SharedRuntime
+        })
+        .collect();
+
     out
 }
 
@@ -5213,5 +5427,5 @@ const THREAD_SELECT: &str = "SELECT t.id, t.workspace_id, t.provider, t.agent_id
                         t.summary_text, t.last_error, t.created_at, t.updated_at, t.last_turn_started_at, t.last_turn_completed_at,
                         t.is_pinned, t.context_usage_json, t.parent_thread_id, t.root_thread_id, t.lineage_depth,
                         (SELECT COUNT(*) FROM threads d WHERE d.root_thread_id = t.id),
-                        t.agent_name, t.agent_role, t.worktree_path, t.closed_at, t.created_by_thread_id
+                        t.agent_name, t.agent_role, t.worktree_path, t.closed_at, t.created_by_thread_id, t.harness_protocol
                  FROM threads t";

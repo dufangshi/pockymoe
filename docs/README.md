@@ -40,12 +40,15 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 
 - [Guided tour](guided-tour.md): chapters, and the in-page sample device every account tours on
 - [Thread interaction CLI](thread-interaction.md) and [cross-device peers](cross-device-peer.zh.md)
+- [Source control hosts, pull requests and issues](source-control.md)
+- [Git](git.md): turn checkpoints, restore, rewind, diffs and Git writes
 - [Worktree management](worktrees.md): thread working copies, actual cwd and controlled execution
 - [Agent isolation](agent-isolation.md): keep agents outside a device or workspace out of it
 - [Dokploy execution environments](environments.md): same-storage mounts, lifecycle, limits and worker isolation
 - [Thread event and item schema](thread-event-schema.md)
 - [Thread text summary API](thread-summary.md): compact chronological public prose and context filters
 - [Built-in feature plugins](builtin-plugins.md), [installed plugins](external-plugins.md) and [content quality](content-quality.md)
+- [Outside agents over MCP](mcp-outside-agents.md): stdio, HTTP OAuth, grants and call records
 - [Device MCP servers](mcp-servers.md)
 - [Automations and hooks](unified-hooks.md) and [watch summaries](watch-statistics.md)
 - [Conversation search](global-search.md)
@@ -62,6 +65,8 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 
 **Harnesses**
 
+- [Switching harnesses](harness-switching.md): portable history, saved sessions, CLI and API
+- [Native harness protocols](native-harnesses.md): ACP and direct harness connections
 - [Harness lifecycle](harness-lifecycle.md): when harness processes load and are released, limits, memory
 - [Context inspection](context-inspection.md): optional Codex and Claude context categories, precision and APIs
 - [Model and reasoning effort](model-settings.md): effort levels per model, changes during a turn, the models a turn shows

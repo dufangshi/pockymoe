@@ -40,5 +40,5 @@ it('allows infinite animations only in the explicit request/loading list', () =>
 
 it('keeps request animation classes in the reviewed request-only files', () => {
   const uses = files('apps/supervisor-web/src').filter(file => /\.tsx$/.test(file) && /request-(?:spin|pulse)/.test(readFileSync(path.join(root, file), 'utf8'))).map(file => file.replace('apps/supervisor-web/src/', '')).sort();
-  expect(uses.sort()).toEqual(["components/ConnectionModelField.tsx", "components/DokploySettings.tsx", "components/PluginsSettings.tsx", "components/ThreadAutomationsControl.tsx", "components/environments/ThreadIsolationPanel.tsx", "components/git/ThreadGitPanel.tsx", "pages/RelayAccountPage.tsx", "pages/RelayHomePage.tsx", "pages/WorkspacesPage.tsx"]);
+  expect(uses.sort()).toEqual(["components/ConnectionModelField.tsx", "components/DokploySettings.tsx", "components/PluginsSettings.tsx", "components/ThreadAutomationsControl.tsx", "components/environments/ThreadIsolationPanel.tsx", "components/git/ThreadGitPanel.tsx", "components/git/pr/review/PullRequestList.tsx", "components/git/pr/review/PullRequestReview.tsx", "pages/RelayAccountPage.tsx", "pages/RelayHomePage.tsx", "pages/WorkspacesPage.tsx"]);
 });

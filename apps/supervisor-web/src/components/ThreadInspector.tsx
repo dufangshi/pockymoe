@@ -1,4 +1,6 @@
+import { PullRequestsPanel } from './git/pr/PullRequestsPanel';
 import { useCallback, useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Box, GitBranch } from 'lucide-react';
 import type { WorkbenchInspector, WorkbenchToolPanel } from '@pockymoe/thread-ui';
 import { StatusMark } from '@pockymoe/thread-ui';
@@ -24,18 +26,24 @@ const readView = (): InspectorView | null => {
  * the dock (opening one closes the other) and on a phone the dock is a full
  * view that Back closes (docs/ui-principles.md §4).
  */
-export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, isolationAvailable, filesOpen, closeFiles }: {
+export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, isolationAvailable, filesOpen, closeFiles, onReviewQuote, onAskAgent }: {
   thread: Pick<ThreadDto, 'id' | 'title' | 'status' | 'agentId' | 'provider' | 'providerSessionId' | 'updatedAt' | 'parentThreadId'> | null | undefined;
   deviceId: string | null | undefined;
+  onAskAgent?: ((prompt: string) => void) | undefined;
+  onReviewQuote?: ((quote: import('@pockymoe/thread-ui').PromptQuote) => boolean) | undefined;
   canManage: boolean;
   gitAvailable: boolean;
   isolationAvailable: boolean;
   filesOpen: boolean;
   /** False when closing Files was refused (unsaved documents in another workspace). */
   closeFiles(): boolean | void;
-}): { toolPanels: WorkbenchToolPanel[]; inspector: WorkbenchInspector | null } {
+}): { toolPanels: WorkbenchToolPanel[]; inspector: WorkbenchInspector | null; openTurn(id: string): void } {
   useI18n();
-  const [view, setViewState] = useState<InspectorView | null>(readView);
+  const [turnId, setTurnId] = useState<string>();
+  // `?pr=URL` (from the Pull requests page's "Open beside thread") opens the
+  // Git dock on that PR's review once; the URL keeps no other dock state.
+  const pullRequest = new URLSearchParams(useLocation().search).get('pr') ?? undefined;
+  const [view, setViewState] = useState<InspectorView | null>(() => pullRequest ? 'git' : readView());
   const setView = useCallback((next: InspectorView | null) => {
     setViewState(next);
     try { if (next) localStorage.setItem(STORAGE_KEY, next); else localStorage.removeItem(STORAGE_KEY); } catch { /* Optional preference. */ }
@@ -43,6 +51,7 @@ export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, 
   // Files and the inspectors share the dock: Files opening closes an inspector,
   // and forgets it, so a reload does not bring back the view Files replaced.
   useEffect(() => { if (filesOpen) setView(null); }, [filesOpen, setView]);
+  useEffect(() => { if (pullRequest) setViewState('git'); }, [pullRequest]);
   const shown = view === 'git' && gitAvailable ? 'git' : view === 'isolation' && isolationAvailable ? 'isolation' : null;
   const attention = useIsolationAttention(isolationAvailable ? thread?.id : undefined, thread?.status, deviceId, shown === 'isolation');
   const toggle = (next: InspectorView) => {
@@ -67,11 +76,11 @@ export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, 
     // Keyed by device and thread: switching threads never shows the previous
     // thread's diff, request or decision target.
     content: shown === 'git'
-      ? <ThreadGitPanel key={`git:${scope}`} threadId={thread.id} deviceId={deviceId} refreshKey={thread.updatedAt} />
+      ? <ThreadGitPanel key={`git:${scope}:${turnId ?? ''}:${pullRequest ?? ''}`} initialTurnId={turnId} initialPullRequest={pullRequest} canWrite={canManage} running={thread.status === 'running' || thread.status === 'recovering'} onReviewQuote={onReviewQuote} onAskAgent={onAskAgent} threadId={thread.id} deviceId={deviceId} refreshKey={thread.updatedAt} renderPullRequests={canManage ? props => <PullRequestsPanel {...props} deviceId={deviceId} /> : undefined} />
       : <ThreadIsolationPanel key={`isolation:${scope}`} thread={thread} deviceId={deviceId} canManage={canManage} />,
     onClose: () => setView(null),
   } : null;
-  return { toolPanels, inspector };
+  return { toolPanels, inspector, openTurn: (id: string) => { if (filesOpen && closeFiles() === false) return; setTurnId(id); setView('git'); } };
 }
 
 /** The isolation entry's icon. A request that needs a look carries the thread

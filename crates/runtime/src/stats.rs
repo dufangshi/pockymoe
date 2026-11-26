@@ -149,7 +149,7 @@ fn summarize_origin(
     };
     let sql=format!("SELECT tt.status,tt.started_at,tt.completed_at,tt.model,tt.token_usage_json,
         tt.pricing_model_key,tt.pricing_tier_key,t.id,t.title,t.workspace_id,w.label,tt.origin
-        FROM thread_turns tt JOIN threads t ON t.id=tt.thread_id LEFT JOIN workspaces w ON w.id=t.workspace_id
+        FROM all_turn_accounting tt JOIN threads t ON t.id=tt.thread_id LEFT JOIN workspaces w ON w.id=t.workspace_id
         WHERE tt.history_copy_of IS NULL AND (?3='all' OR tt.origin=?3) AND {bounds}");
     let mut stmt = c.prepare_cached(&sql)?;
     let mut query = stmt.query(params![lower, now.to_rfc3339(), origin])?;
@@ -275,9 +275,9 @@ fn summarize_origin(
             .then_with(|| a.0.cmp(&b.0))
     });
     let active:u64=c.query_row("SELECT count(*) FROM threads WHERE status IN ('running','recovering') AND closed_at IS NULL",[],|r|r.get(0))?;
-    let running:u64=c.query_row("SELECT count(*) FROM thread_turns tt JOIN threads t ON t.id=tt.thread_id WHERE tt.history_copy_of IS NULL AND tt.status IN ('inProgress','recovering') AND t.status IN ('running','recovering')",[],|r|r.get(0))?;
+    let running:u64=c.query_row("SELECT count(*) FROM all_turn_accounting tt JOIN threads t ON t.id=tt.thread_id WHERE tt.history_copy_of IS NULL AND tt.status IN ('inProgress','recovering') AND t.status IN ('running','recovering')",[],|r|r.get(0))?;
     let (mut excluded_undated, mut excluded_copies) = (0u64, 0u64);
-    let mut coverage_stmt=c.prepare_cached("SELECT tt.started_at,tt.history_copy_of FROM thread_turns tt JOIN threads t ON t.id=tt.thread_id WHERE ?1='all' OR tt.origin=?1")?;
+    let mut coverage_stmt=c.prepare_cached("SELECT tt.started_at,tt.history_copy_of FROM all_turn_accounting tt JOIN threads t ON t.id=tt.thread_id WHERE ?1='all' OR tt.origin=?1")?;
     let mut coverage_rows = coverage_stmt.query([origin])?;
     while let Some(row) = coverage_rows.next()? {
         let copied: Option<String> = row.get(1)?;

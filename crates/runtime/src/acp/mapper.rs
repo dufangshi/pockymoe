@@ -637,24 +637,49 @@ impl TurnMapper {
                 }
             }
             "plan" => {
-                if let Some(mut item) = plan_item(&self.turn_id, body) {
-                    let existing_sequence = self.plans.first().and_then(|current| current.sequence);
-                    if existing_sequence.is_none() {
-                        self.close_text_segments();
-                    }
-                    if let Some(created_at) = self
-                        .plans
-                        .first()
-                        .and_then(|current| current.created_at.clone())
-                        .or(created_at)
-                    {
-                        item.created_at = Some(created_at);
-                    }
-                    item.sequence = existing_sequence.or_else(|| Some(self.next_sequence()));
-                    self.plans = vec![item.clone()];
+                if let Some(item) = plan_item(&self.turn_id, body) {
+                    let item = self.place_plan(item, created_at);
                     mapped.items.push(item);
                     mapped.plan = plan_steps(body);
                 }
+            }
+            // ACP plan operations, sent because Pockymoe advertises `plan`:
+            // claude-agent-acp's checklists (`items`) and an approved plan-mode
+            // plan (`markdown`). A subagent's own checklist (`plan:<tool>`) does
+            // not replace the conversation's.
+            "plan_update" => {
+                let plan = &body["plan"];
+                let id = plan["planId"].as_str().unwrap_or("plan");
+                match plan["type"].as_str() {
+                    Some("items") if id == "plan" => {
+                        let entries = serde_json::json!({"entries": plan["entries"]});
+                        if let Some(item) = plan_item(&self.turn_id, &entries) {
+                            let item = self.place_plan(item, created_at);
+                            mapped.items.push(item);
+                            mapped.plan = Some(plan_steps(&entries).unwrap_or_default());
+                        }
+                    }
+                    Some("markdown") => {
+                        let text = plan["content"].as_str().unwrap_or("").trim();
+                        if !text.is_empty() {
+                            let mut item = item(
+                                format!("{}:plan:{id}", self.turn_id),
+                                ThreadItemKind::Plan,
+                                text.to_owned(),
+                                "completed",
+                                &self.turn_id,
+                            );
+                            item.extra.insert("planId".into(), serde_json::json!(id));
+                            mapped.items.push(self.place_plan(item, created_at));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            "plan_removed" if body["planId"].as_str().unwrap_or("plan") == "plan" => {
+                let id = format!("{}:plan", self.turn_id);
+                self.plans.retain(|plan| plan.id != id);
+                mapped.plan = Some(Vec::new());
             }
             "compaction_update" | "compaction_summary_chunk" => {
                 if let Some(mut item) = compaction_item(&self.turn_id, body) {
@@ -691,6 +716,31 @@ impl TurnMapper {
             _ => {}
         }
         mapped
+    }
+
+    /// Keep one row per plan id, at the place it first appeared.
+    fn place_plan(
+        &mut self,
+        mut item: ThreadHistoryItemDto,
+        created_at: Option<String>,
+    ) -> ThreadHistoryItemDto {
+        let existing = self.plans.iter().position(|plan| plan.id == item.id);
+        match existing {
+            Some(index) => {
+                item.sequence = self.plans[index].sequence;
+                item.created_at = self.plans[index].created_at.clone();
+                self.plans[index] = item.clone();
+            }
+            None => {
+                self.close_text_segments();
+                if let Some(created_at) = created_at {
+                    item.created_at = Some(created_at);
+                }
+                item.sequence = Some(self.next_sequence());
+                self.plans.push(item.clone());
+            }
+        }
+        item
     }
 
     fn next_sequence(&mut self) -> i64 {
@@ -756,7 +806,7 @@ impl TurnMapper {
         items
     }
 
-    pub(super) fn completed_tool_ids(&self) -> Vec<String> {
+    pub(crate) fn completed_tool_ids(&self) -> Vec<String> {
         self.tools
             .iter()
             .filter(|tool| tool.status.as_deref() == Some("completed"))
@@ -975,6 +1025,20 @@ fn apply_file_changes(mapped: &mut ThreadHistoryItemDto, body: &Value) {
             continue;
         }
         let path = entry["path"].as_str().unwrap_or("unknown");
+        // The native app-server provides a unified patch instead of old/new text.
+        if let Some(patch) = entry["diff"].as_str() {
+            added += patch
+                .lines()
+                .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+                .count();
+            removed += patch
+                .lines()
+                .filter(|line| line.starts_with('-') && !line.starts_with("---"))
+                .count();
+            patches.push(patch.to_owned());
+            paths.push(path);
+            continue;
+        }
         let old = entry["oldText"].as_str().unwrap_or("");
         let new = entry["newText"].as_str().unwrap_or("");
         let diff = similar::TextDiff::from_lines(old, new);
@@ -1187,6 +1251,21 @@ fn content_block_text(block: &Value) -> Option<String> {
 }
 
 fn readable_output(output: &Value) -> String {
+    // claude-agent-acp's rawOutput is Claude's tool_result content: a string
+    // or content blocks. Show the text, not its JSON encoding.
+    if let Some(text) = output.as_str() {
+        return text.to_owned();
+    }
+    if let Some(blocks) = output.as_array() {
+        let texts: Vec<_> = blocks
+            .iter()
+            .filter(|b| b["type"] == "text")
+            .filter_map(|b| b["text"].as_str())
+            .collect();
+        if !texts.is_empty() && texts.len() == blocks.len() {
+            return texts.join("\n");
+        }
+    }
     for pointer in [
         "/formatted_output",
         "/aggregatedOutput",
@@ -1677,6 +1756,61 @@ mod background_wait_tests {
         assert_eq!(
             mapper.finish(true)[0].status.as_deref(),
             Some("interrupted")
+        );
+    }
+
+    #[test]
+    fn claude_string_and_block_outputs_render_as_text() {
+        let mut mapper = TurnMapper::new("turn");
+        mapper.apply(&json!({"sessionUpdate":"tool_call","toolCallId":"b","kind":"execute","title":"ls","rawInput":{"command":"ls"}}));
+        let done = mapper.apply(&json!({"sessionUpdate":"tool_call_update","toolCallId":"b","status":"completed","rawOutput":"a\nb"}));
+        assert!(done.items[0]
+            .detail_text
+            .as_deref()
+            .unwrap()
+            .ends_with("Output:\na\nb"));
+        mapper.apply(&json!({"sessionUpdate":"tool_call","toolCallId":"c","kind":"execute","title":"ls","rawInput":{"command":"ls"}}));
+        let done = mapper.apply(&json!({"sessionUpdate":"tool_call_update","toolCallId":"c","status":"completed","rawOutput":[{"type":"text","text":"x"}]}));
+        assert!(done.items[0]
+            .detail_text
+            .as_deref()
+            .unwrap()
+            .ends_with("Output:\nx"));
+    }
+
+    #[test]
+    fn acp_plan_operations_become_plan_cards() {
+        let mut mapper = TurnMapper::new("turn");
+        // As claude-agent-acp 0.106.0 sent it in a real plan-mode run.
+        let markdown = mapper.apply(&json!({"sessionUpdate":"plan_update","plan":{"type":"markdown","planId":"plan-mode","content":"# Plan: add README.md\n\n1. Write it"}}));
+        assert_eq!(markdown.items[0].kind, ThreadItemKind::Plan);
+        assert!(markdown.items[0].text.starts_with("# Plan: add README.md"));
+        assert!(markdown.plan.is_none());
+        let items = json!({"sessionUpdate":"plan_update","plan":{"type":"items","planId":"plan","entries":[
+            {"content":"Write","status":"in_progress","priority":"medium"},{"content":"Test","status":"pending","priority":"medium"}]}});
+        let checklist = mapper.apply(&items);
+        assert_eq!(
+            checklist.plan.as_ref().unwrap()[0],
+            ("Write".into(), "in_progress".into())
+        );
+        // A subagent's checklist does not replace the conversation's.
+        let mut child = items.clone();
+        child["plan"]["planId"] = json!("plan:tool-1");
+        assert!(mapper.apply(&child).items.is_empty());
+        let updated = mapper.apply(
+            &json!({"sessionUpdate":"plan_update","plan":{"type":"items","planId":"plan","entries":[
+            {"content":"Write","status":"completed","priority":"medium"}]}}),
+        );
+        assert_eq!(updated.items[0].sequence, checklist.items[0].sequence);
+        let removed = mapper.apply(&json!({"sessionUpdate":"plan_removed","planId":"plan"}));
+        assert_eq!(removed.plan, Some(vec![]));
+        let items = mapper.finish(false);
+        assert_eq!(
+            items
+                .iter()
+                .filter(|i| i.kind == ThreadItemKind::Plan)
+                .count(),
+            1
         );
     }
 }

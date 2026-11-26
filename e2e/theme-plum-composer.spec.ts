@@ -114,7 +114,7 @@ test('plum menus open by pointer and keyboard and keep their items', async ({ pa
   const model = composer.getByTestId('composer-model-label');
   await model.click();
   await expect(model).toHaveAttribute('aria-expanded', 'true');
-  await expect(page.locator('.composer-reasoning')).toHaveAttribute('data-effort', 'medium');
+  await expect(page.locator('.model-picker-effort-chip[aria-checked="true"]')).toHaveText('medium');
   await expect(page.getByRole('menuitemradio', { checked: true })).toBeVisible();
   await dismiss(page);
 
@@ -268,7 +268,7 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`${preset} model 
   await expect(menu.getByRole('menuitemradio')).toHaveCount(6);
   await expect(menu.locator('.composer-context-summary')).toHaveCount(0);
   await expect(composer.getByTestId('composer-context-meter')).toBeVisible();
-  await expect(menu.getByRole('slider')).toBeVisible();
+  await expect(menu.getByRole('radiogroup', { name: 'Effort' })).toBeVisible();
   await expect(menu).toHaveCSS('opacity', '1');
   const background = await menu.evaluate(element => getComputedStyle(element).backgroundColor);
   expect(background).not.toMatch(/(?:\/|,)\s*0\.\d+\s*\)$/);
@@ -279,20 +279,27 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`${preset} model 
       lastBottom: last.bottom,
       rowHeights: [...element.querySelectorAll('[role=menuitemradio]')].map(button => button.getBoundingClientRect().height) };
   });
-  expect(geometry.height, JSON.stringify(geometry)).toBeLessThanOrEqual(340);
-  expect(geometry.top).toBeGreaterThanOrEqual(8);
-  expect(geometry.left).toBeGreaterThanOrEqual(8);
-  expect(geometry.right).toBeLessThanOrEqual(page.viewportSize()!.width - 8);
   expect(geometry.lastBottom).toBeLessThanOrEqual(geometry.bottom);
-  expect(Math.max(...geometry.rowHeights)).toBeLessThanOrEqual(32);
+  if (info.project.name === 'mobile-chromium') {
+    // Phones get a bottom sheet with finger-sized rows (docs/ui-principles.md §4, §10).
+    expect(Math.min(...geometry.rowHeights)).toBeGreaterThanOrEqual(44);
+    expect(geometry.bottom).toBeLessThanOrEqual(page.viewportSize()!.height + 1);
+  } else {
+    // Six models, the search, the labelled Context / price header and the effort chips.
+    expect(geometry.height, JSON.stringify(geometry)).toBeLessThanOrEqual(360);
+    expect(geometry.top).toBeGreaterThanOrEqual(8);
+    expect(geometry.left).toBeGreaterThanOrEqual(8);
+    expect(geometry.right).toBeLessThanOrEqual(page.viewportSize()!.width - 8);
+    expect(Math.max(...geometry.rowHeights)).toBeLessThanOrEqual(32);
+  }
   await page.screenshot({ path: info.outputPath(`model-menu-${preset}.png`), scale: 'css' });
-  await menu.getByRole('slider').focus();
+  await menu.getByRole('radio', { checked: true }).focus();
   await page.keyboard.press('Home');
   await expect(composer.getByTestId('composer-model-label')).toContainText('low');
   await page.keyboard.press('Escape');
   await expect(menu).toBeHidden();
   await composer.getByTestId('composer-model-label').click();
-  await expect(menu.locator('.composer-reasoning')).toHaveAttribute('data-effort', 'low');
+  await expect(menu.getByRole('radio', { checked: true })).toHaveText('low');
   await page.keyboard.press('Escape');
   await composer.getByTestId('composer-context-meter').click();
   await expect(menu).toBeHidden();

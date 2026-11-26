@@ -65,7 +65,7 @@ pub(crate) fn legacy_background_reply_phases(
     Ok(())
 }
 
-pub(super) struct ClaudeUsageReader {
+pub(crate) struct ClaudeUsageReader {
     home: PathBuf,
     session: String,
     path: Option<PathBuf>,
@@ -182,6 +182,11 @@ impl ClaudeUsageReader {
         }
         self.poll_children(&mut reports);
         reports
+    }
+
+    /// The session's JSONL was found: its reports are the billing record.
+    pub fn found(&self) -> bool {
+        self.path.is_some()
     }
 
     pub fn poll_final(&mut self) -> Vec<Value> {

@@ -23,6 +23,11 @@ pub struct AgentOptions {
     /// `Some(branch)` asks for an isolated git worktree; `Some(None)` names the
     /// branch after the agent.
     pub worktree: Option<Option<String>>,
+    /// The worktree's directory and default branch name (`REPO.worktrees/NAME`,
+    /// `agent/NAME`); defaults to `name`, else the thread id's first characters.
+    pub worktree_name: Option<String>,
+    /// The revision a new worktree branch starts from; defaults to `HEAD`.
+    pub worktree_base: Option<String>,
     /// `thread create --detach`: the creating thread, recorded as
     /// `createdByThreadId`. The new thread has no parent and is its own root.
     pub detached_from: Option<String>,
@@ -173,6 +178,12 @@ pub(crate) fn take_role(state: &Supervisor, thread: &str) -> Option<String> {
             let text: Option<String> = c
                 .query_row("SELECT value FROM kv WHERE key=?1", [&key], |r| r.get(0))
                 .optional()?;
+            if let Some(saved) = &text {
+                c.execute(
+                    "INSERT OR REPLACE INTO kv(key,value) VALUES(?1,?2)",
+                    params![format!("handoff:role:{thread}"), saved],
+                )?;
+            }
             c.execute("DELETE FROM kv WHERE key=?1", [&key])?;
             Ok(text)
         })
@@ -194,6 +205,17 @@ fn git(dir: &Path, args: &[&str]) -> Result<String> {
 /// A sibling `REPO.worktrees/SLUG` checkout of the workspace's HEAD. Sibling, not
 /// nested, so the main checkout's own tooling never walks into it.
 pub fn create_worktree(workspace: &Path, slug: &str, branch: Option<&str>) -> Result<Worktree> {
+    create_worktree_from(workspace, slug, branch, None)
+}
+
+/// As `create_worktree`, with a new branch starting at `base` (default `HEAD`).
+/// An existing branch is checked out as is, so a base does not apply to it.
+pub fn create_worktree_from(
+    workspace: &Path,
+    slug: &str,
+    branch: Option<&str>,
+    base: Option<&str>,
+) -> Result<Worktree> {
     let top = PathBuf::from(
         git(workspace, &["rev-parse", "--show-toplevel"])
             .map_err(|_| anyhow!("--worktree requires the workspace to be a git repository"))?,
@@ -239,11 +261,31 @@ pub fn create_worktree(workspace: &Path, slug: &str, branch: Option<&str>) -> Re
             candidate
         }
     };
+    ensure!(
+        !branch.starts_with('-') && git(&top, &["check-ref-format", "--branch", &branch]).is_ok(),
+        "invalid branch name: {branch}"
+    );
     let target = path.to_string_lossy().into_owned();
     if exists(&branch) {
+        ensure!(
+            base.is_none(),
+            "branch {branch} already exists; leave the base empty to check it out as is"
+        );
         git(&top, &["worktree", "add", &target, &branch])?;
     } else {
-        git(&top, &["worktree", "add", "-b", &branch, &target, "HEAD"])?;
+        let base = base.unwrap_or("HEAD");
+        let commit = git(
+            &top,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                &format!("{base}^{{commit}}"),
+            ],
+        )
+        .map_err(|_| anyhow!("base {base} is not a commit in this repository"))?;
+        git(&top, &["worktree", "add", "-b", &branch, &target, &commit])?;
     }
     Ok(Worktree { path, branch })
 }

@@ -1,6 +1,8 @@
+import { useHandoffModelNames } from '../pages/useHandoffModelNames';
 import { TurnNotification } from './TurnNotification';
 import { useMemo } from 'react';
 import { GraphChatThreadChatPanel, ThreadLoadingIndicator, createWorkspacePathResolver, type ThreadComposerProps, type ThreadContextInspector } from '@pockymoe/thread-ui';
+import { composerAgentLabel } from '../pages/threadAgentLabel';
 import { translate as t, useI18n } from '@pockymoe/thread-ui/i18n';
 import {
   buildThreadImageAssetUrl,
@@ -17,7 +19,7 @@ import { resolveThreadContextUsage } from '../pages/threadDetailModel';
 export function WorkbenchReferencePane({
   controller,
   onOpenThread,
-  draft, onDraftChange, sendShortcut, onOpenWorkspaceFile, onOpenHarness,
+  draft, onDraftChange, sendShortcut, onOpenWorkspaceFile, onOpenHarness, modelPicker,
 }: {
   controller: ReturnType<typeof useWorkbenchReference>;
   onOpenThread: (id: string) => void;
@@ -25,11 +27,14 @@ export function WorkbenchReferencePane({
   onDraftChange: ThreadComposerProps['onDraftChange'];
   sendShortcut: ThreadComposerProps['sendShortcut'];
   onOpenHarness?: (composerFocusOwner?: string) => void;
+  /** The pane's own model picker source: facts and, for its owner, switching agents. */
+  modelPicker?: ThreadComposerProps['modelPicker'];
   onOpenWorkspaceFile?: (input: {path: string; line?: number}) => void;
 }) {
   useI18n();
   const { detail, error, loadEarlier, loadingEarlier, retry } = controller;
   const threadId = detail?.thread.id;
+  const describeHandoffModel = useHandoffModelNames(detail?.turns, controller.deviceId, detail?.harnessSwitches);
   // The pane's own device, and no settings link: it may be another device than the page's.
   const contextInspector = useMemo<ThreadContextInspector | null>(() => threadId && controller.canControl ? {
     load: options => fetchThreadContext(threadId, options, controller.deviceId),
@@ -86,6 +91,7 @@ export function WorkbenchReferencePane({
             timelineAdapter={adapter}
             transcriptItemCount={detail.turns.reduce((total, turn) => total + turn.items.length, 0)}
             timelineProps={{
+              describeHandoffModel,
               renderTurnNotification: turnId => <TurnNotification key={`${controller.deviceId}:${threadId}:${turnId}`} deviceId={controller.deviceId === 'local' ? null : controller.deviceId} threadId={threadId!} turnId={turnId} />,
               liveItems: detail.liveItems ?? null,
               respondingRequestId: controller.respondingRequestId,
@@ -104,7 +110,7 @@ export function WorkbenchReferencePane({
               error: null,
               shellAvailable: false,
               model: detail.thread.model,
-              agentLabel: detail.thread.agentId ?? detail.thread.provider,
+              agentLabel: composerAgentLabel(detail.thread) ?? detail.thread.provider,
               reasoningEffort: detail.thread.reasoningEffort,
               collaborationMode: detail.thread.collaborationMode,
               fastMode: detail.thread.fastMode ?? false,
@@ -127,6 +133,7 @@ export function WorkbenchReferencePane({
               canInterrupt: Boolean(controller.canControl && detail.thread.activeTurnId),
               ...(controller.canControl ? {
                 ...(onOpenHarness ? { onOpenHarness } : {}),
+                ...(modelPicker ? { modelPicker } : {}),
                 onInterrupt: async () => { await controller.interrupt(); },
                 onUpdateSettings: async input => { await controller.updateSettings(input); },
               } : {}),

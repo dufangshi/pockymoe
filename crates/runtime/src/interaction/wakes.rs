@@ -657,12 +657,17 @@ impl Supervisor {
             // A running turn that takes steers hears the report now, e.g. Claude
             // waiting on a native subagent; otherwise it is the caller's next turn.
             let steer_turn = self.get_thread(&caller).ok().and_then(|thread| {
-                let steer = self.runtime(thread.provider).is_ok_and(|runtime| {
-                    runtime
-                        .negotiated_caps(thread.agent_id.as_deref())
-                        .turns
-                        .steer
-                });
+                let steer = thread
+                    .provider_session_id
+                    .as_deref()
+                    .is_some_and(|session| {
+                        self.runtime(thread.provider).is_ok_and(|runtime| {
+                            runtime
+                                .session_negotiated_caps(thread.agent_id.as_deref(), session)
+                                .turns
+                                .steer
+                        })
+                    });
                 thread
                     .active_turn_id
                     .filter(|_| steer && thread.status == "running")

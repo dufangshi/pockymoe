@@ -2,6 +2,8 @@ import { getLocale } from '@pockymoe/thread-ui/i18n';
 
 // Web-owned feature copy follows the shared locale without changing its pinned bundle.
 const messages = {
+  outsideAgents: ['外部智能体', 'Outside agents'],
+  outsideAgentsDescription: ['连接、授权与调用记录', 'Connections, grants and calls'],
   title: ['隔离环境', 'Isolated environments'],
   description: ['此设备的 Dokploy 连接、资源预算与线程环境。', 'Dokploy connections, resource budget and thread environments on this device.'],
   connections: ['Dokploy 连接', 'Dokploy connections'],

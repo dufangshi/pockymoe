@@ -727,6 +727,28 @@ fn operation(input: Value) -> Result<Value> {
             );
             crate::file_documents::commit_document_io(root, &input, |_, _| Ok(()))
         }
+        "gitHunk" => {
+            crate::worktrees::actions::apply_hunk(
+                root,
+                input["action"].as_str().context("action required")?,
+                input["patch"].as_str().context("patch required")?,
+            )?;
+            Ok(Value::Null)
+        }
+        "gitCheckpointTree" => Ok(Value::String(crate::worktrees::checkpoints::working_tree(
+            root,
+        )?)),
+        "gitCheckpoint" => crate::worktrees::checkpoints::snapshot(
+            root,
+            input["reference"].as_str().context("reference required")?,
+        ),
+        "gitCheckpointRestore" => {
+            crate::worktrees::checkpoints::restore(
+                root,
+                input["oid"].as_str().context("oid required")?,
+            )?;
+            Ok(json!({"restored":true}))
+        }
         "git" => {
             let args: Vec<String> = serde_json::from_value(input["args"].clone())?;
             let mut git = std::process::Command::new("git");
@@ -738,15 +760,43 @@ fn operation(input: Value) -> Result<Value> {
                     "core.pager=cat",
                     "-c",
                     "core.hooksPath=/dev/null",
-                    "--literal-pathspecs",
                 ])
+                .args(if args.first().map(String::as_str) == Some("stash") {
+                    Vec::<&str>::new()
+                } else {
+                    vec!["--literal-pathspecs"]
+                })
                 .args(args)
                 .env_clear()
                 .env("PATH", "/usr/local/bin:/usr/bin:/bin")
                 .env("HOME", "/pockymoe/state")
                 .env("GIT_TERMINAL_PROMPT", "0");
-            // Same 15-second bound as host Git, covering exit and output.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            git.env("GIT_ASKPASS", "")
+                .env("SSH_ASKPASS", "")
+                .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+            if let Some(env) = input["env"].as_array() {
+                for pair in env {
+                    if let (Some(key), Some(value)) = (pair[0].as_str(), pair[1].as_str()) {
+                        anyhow::ensure!(
+                            [
+                                "GIT_INDEX_FILE",
+                                "GIT_AUTHOR_NAME",
+                                "GIT_AUTHOR_EMAIL",
+                                "GIT_COMMITTER_NAME",
+                                "GIT_COMMITTER_EMAIL"
+                            ]
+                            .contains(&key),
+                            "unsupported Git environment"
+                        );
+                        git.env(key, value);
+                    }
+                }
+            }
+            // The caller selects a bounded deadline for local or network commands.
+            let deadline = std::time::Instant::now()
+                + std::time::Duration::from_secs(
+                    input["timeoutSecs"].as_u64().unwrap_or(15).clamp(1, 120),
+                );
             let (status, stdout, truncated) =
                 crate::child_process::run_bounded(&mut git, 512 * 1024, deadline)?;
             ensure!(!truncated, "Git output exceeds limit");

@@ -1689,6 +1689,37 @@ export function createThread(input: CreateThreadWithEnvironmentInput) {
   });
 }
 
+/** A new thread's own worktree (`POST /api/threads/start-worktree`, docs/worktrees.md). */
+export interface ThreadWorktreeOptions {
+  /** Directory and default branch name; the device derives it from the title when left out. */
+  name?: string;
+  /** An existing branch is checked out as is; a new one is created from `base`. */
+  branch?: string;
+  /** Where a new branch starts (default HEAD). */
+  base?: string;
+  /** The same id returns the first outcome instead of a second worktree. */
+  clientRequestId?: string;
+}
+/** `.pockymoe/worktree.json`'s outcome; null when the repository has none. */
+export interface ThreadWorktreeSetupDto {
+  completed: boolean;
+  output?: string[];
+  error?: string;
+}
+export interface StartedWorktreeThreadDto {
+  thread: ThreadDto;
+  worktree: { path: string; branch: string | null };
+  setup: ThreadWorktreeSetupDto | null;
+  /** False when a retried request id returned the first outcome. */
+  created: boolean;
+}
+export function createThreadInWorktree(input: CreateThreadInput, worktree: ThreadWorktreeOptions) {
+  return request<StartedWorktreeThreadDto>('api/threads/start-worktree', {
+    method: 'POST',
+    body: JSON.stringify({ ...input, worktree }),
+  });
+}
+
 export function importThread(
   input: ImportThreadInput | ImportThreadInput['sessionId'],
 ) {

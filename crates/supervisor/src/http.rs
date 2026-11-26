@@ -66,10 +66,15 @@ pub fn router(state: AppState) -> Router {
 }
 pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::Hub>>) -> Router {
     state.start_interaction_worker();
+    crate::mcp::start(&state);
+    state.start_source_control_worker();
     crate::environments::start(state.clone());
     crate::peer_send::start_outbox_worker(&state);
     let router = Router::new()
+        .merge(crate::source_control::routes())
+        .merge(crate::source_control_review::routes())
         .merge(crate::environments::routes())
+        .merge(crate::mcp::routes(&state))
         .merge(crate::treer::routes())
         .merge(crate::notifications::routes())
         .route(
@@ -390,6 +395,10 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
         .route("/api/thread-activity", get(thread_activity))
         .route("/api/stats/summary", get(stats_summary))
         .route("/api/threads/start", post(start_thread))
+        .route(
+            "/api/threads/start-worktree",
+            post(crate::worktrees::start_in_worktree),
+        )
         .route("/api/threads/import", post(import_thread))
         .route("/api/threads/import-candidates", get(import_candidates))
         .route(
@@ -429,9 +438,18 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
             "/api/threads/{id}/working-context",
             get(crate::worktrees::context),
         )
+        .route("/api/threads/{id}/rewind", post(crate::worktrees::rewind))
+        .route(
+            "/api/threads/{id}/checkpoints",
+            get(crate::worktrees::checkpoints),
+        )
+        .route(
+            "/api/threads/{id}/checkpoints/{action}",
+            post(crate::worktrees::checkpoint_action),
+        )
         .route(
             "/api/threads/{id}/git/{action}",
-            get(crate::worktrees::read_git),
+            get(crate::worktrees::read_git).post(crate::worktrees::write_git),
         )
         .route("/api/threads/{id}/summary", get(thread_summary))
         .route("/api/search", get(device_search))
@@ -465,7 +483,20 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
         )
         .route("/api/threads/{id}/fork-turns", get(thread_fork_turns))
         .route("/api/threads/{id}/capabilities", get(thread_capabilities))
+        .route(
+            "/api/harness-handoff/settings",
+            get(handoff_settings).put(update_handoff_settings),
+        )
+        .route("/api/threads/{id}/harness/fork", post(thread_harness_fork))
         .route("/api/threads/{id}/harness", post(thread_harness_action))
+        .route(
+            "/api/threads/{id}/harness/switch",
+            post(thread_harness_switch),
+        )
+        .route(
+            "/api/threads/{id}/harness/preview",
+            post(thread_harness_preview),
+        )
         .route("/api/threads/{id}/fork", post(thread_fork))
         .route("/api/threads/{id}/compact", post(thread_compact))
         .route(
@@ -821,6 +852,8 @@ pub(crate) fn map_err(e: anyhow::Error) -> ApiErr {
             pockymoe_runtime::host_mode::FEATURE_DISABLED_CODE,
             message,
         )
+    } else if e.is::<pockymoe_runtime::worktrees::CheckpointBusy>() {
+        err(StatusCode::CONFLICT, "checkpoint_busy", message)
     } else if message.contains("database disk image is malformed")
         || message.contains("SQLITE_CORRUPT")
     {
@@ -2671,9 +2704,10 @@ async fn thread_models(
     let thread = state.get_thread(&id).map_err(map_err)?;
     let workspace = state.get_workspace(&thread.workspace_id).map_err(map_err)?;
     let mut models = state
-        .list_models(
+        .list_models_for_session(
             thread.provider,
-            thread.agent_id.as_deref(),
+            thread.agent_key().as_deref(),
+            thread.provider_session_id.as_deref(),
             Some(&workspace.abs_path),
         )
         .await
@@ -2838,8 +2872,11 @@ async fn thread_skills() -> Json<Value> {
     Json(json!({ "cwd": ".", "skills": [], "errors": [] }))
 }
 
-async fn thread_mcp() -> Json<Value> {
-    Json(json!({ "servers": [] }))
+async fn thread_mcp(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<Value>, ApiErr> {
+    Ok(Json(state.thread_mcp_servers(&id).await.map_err(map_err)?))
 }
 
 async fn thread_hooks() -> Json<Value> {
@@ -3792,4 +3829,69 @@ mod fixture_tests {
             );
         }
     }
+}
+
+async fn thread_harness_switch(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(input): Json<pockymoe_runtime::service::HarnessSwitchInput>,
+) -> Result<Json<Value>, ApiErr> {
+    Ok(Json(
+        serde_json::to_value(
+            state
+                .switch_thread_harness(&id, input)
+                .await
+                .map_err(map_err)?,
+        )
+        .unwrap(),
+    ))
+}
+async fn thread_harness_preview(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiErr> {
+    let target: pockymoe_runtime::service::HarnessSwitchInput =
+        serde_json::from_value(input.get("target").unwrap_or(&input).clone())
+            .map_err(|e| err(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))?;
+    let preview = if input.get("target").is_some() {
+        state.preview_harness_fork(&id, &target, input["turnId"].as_str())
+    } else {
+        state.preview_harness_switch(&id, &target)
+    }
+    .map_err(map_err)?;
+    Ok(Json(serde_json::to_value(preview).unwrap()))
+}
+
+async fn handoff_settings(State(state): State<AppState>) -> Result<Json<Value>, ApiErr> {
+    Ok(Json(
+        json!({"tokenCap":state.handoff_token_cap().map_err(map_err)?}),
+    ))
+}
+async fn update_handoff_settings(
+    State(state): State<AppState>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiErr> {
+    let cap = input["tokenCap"].as_u64().ok_or_else(|| {
+        err(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "tokenCap is required",
+        )
+    })?;
+    state.set_handoff_token_cap(cap as usize).map_err(map_err)?;
+    handoff_settings(State(state)).await
+}
+async fn thread_harness_fork(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiErr> {
+    let target = serde_json::from_value(input["target"].clone())
+        .map_err(|e| err(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))?;
+    let thread = state
+        .fork_thread_to_harness(&id, input["turnId"].as_str(), target)
+        .await
+        .map_err(map_err)?;
+    Ok(Json(serde_json::to_value(thread).unwrap()))
 }

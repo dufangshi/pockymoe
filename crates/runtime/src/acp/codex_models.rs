@@ -8,7 +8,7 @@ use super::adapter::HarnessProjection;
 // Older Codex catalogs can omit a configured model that thread/start still accepts.
 // Repair the catalog before ACP validates settings, using the same owned connection.
 #[derive(Default)]
-pub(super) struct ModelCatalogBridge {
+pub(crate) struct ModelCatalogBridge {
     pending: HashMap<String, String>,
     current_model: Option<String>,
     catalog: Vec<Value>,
@@ -156,7 +156,7 @@ fn has_efforts(model: &Value) -> bool {
         .is_some_and(|values| !values.is_empty())
 }
 
-pub(super) fn project_session(response: &Value) -> Option<HarnessProjection> {
+pub(crate) fn project_session(response: &Value) -> Option<HarnessProjection> {
     let model_state = response.get("models")?;
     let available = model_state["availableModels"].as_array()?;
     let mut models = super::runtime::models_from_config_options(&response["configOptions"]);

@@ -51,64 +51,7 @@ The database upgrade preserves the original ownership of delegate worktrees
 created by older Supervisors; selecting or adopting a checkout later does not
 grant that ownership.
 
-## Git panel
-
-The Git entry on the workbench rail (on a phone, the top bar or the dock's More
-sheet) docks a read-only Git inspector at the right of the conversation, which
-stays usable beside it; Files and the isolation inspector share that dock. It
-follows the open thread and shows that thread's title.
-
-One line says where the view is: the working copy (a switch listing each copy's
-branch, directory and whether it is the primary one, when there are several;
-otherwise the branch), the short HEAD ID with a copy of the full ID, a
-**Details** toggle and refresh. Details shows the copy's absolute path, whether
-it is the primary copy and how it was found (a configured checkout is not
-labelled), the path and time of a recent operation elsewhere, and that
-selecting a copy changes this view only. When the latest tool location is in
-another working copy, one line names that copy and the time, with **View**
-(`View that copy`) to switch to it; while that copy is shown the line says the
-latest operation was here.
-
-Below it one row picks the view: **Unstaged** (including untracked) and
-**Staged** with their file counts, **Compare** (from a revision's merge base;
-a base field and Compare button appear) and **Commits**. The file list starts
-with the file count and the lines added and removed. Each row
-is one line: change letter, name, directory (shortened from its start) and the
-file's counts (`+3`, not `+3 −0`), or "Binary". A clean tree, an empty index or
-a comparison without differences says so in one line. In the default dock
-width the list (at most 40% of the area, scrolling on its own when longer) sits
-above the scope's combined diff in one scroll, so a short list leaves the rest
-to the diff. Selecting a file, in the list or by its heading in the combined
-diff, shows that file alone, with Back, the path, previous and next file and
-Copy patch; Back returns to its row. A dock dragged wider (720px or more) shows
-the list beside the diff, which starts with all files; All diffs returns to
-them there.
-
-The diff is split per file with added and removed lines colored (tint plus an
-edge bar). Git's header lines become words in the file's heading and a note: a
-new or deleted file, a binary file (whose contents are not shown as text), an
-empty file and a rename (`Renamed from …`). Untracked files appear in the
-whole-scope diff as new files within the same output limit, each under its own
-name. Commits are paginated (the pager shows only when there is more than one
-page); each row shows the subject, short ID, author and date. Selecting a commit
-shows what it changed against its first parent, headed by its short ID (with a
-copy of the full ID) and subject, with Back to the commit list. PR status and
-Git writes are not included.
-It refreshes when opened, on thread updates and on request; it does not poll.
-
-The endpoints are `GET /api/threads/{id}/working-context` and
-`GET /api/threads/{id}/git/{status|diff|commits}`. `diff` takes `area`
-(`worktree`, `index`, `branch` with `base`, or `commit` with `base` set to the
-commit). Git reads accept a
-`workingCopyId`; leaving it out selects the configured checkout. They require
-the existing linked-file permission, so a conversation or workspace share does
-not gain access to associated external worktrees. Older Supervisors show the
-feature as unavailable until updated.
-
-Each Git command, on the host or in an environment worker, has fifteen seconds
-in total, including the closing of its output pipes, and keeps at most 512 KiB of
-output. A command whose descendant keeps a pipe open after Git exits fails at
-that deadline; the command is stopped rather than awaited.
+Git inspection, checkpoints and writes are described in [Git](git.md).
 
 ## Location observations
 
@@ -140,3 +83,38 @@ workspace share to include it.
 
 `thread create --worktree` remains available for a new delegate. It creates the
 checkout before the new session starts; see [thread interaction](thread-interaction.md).
+
+## New thread in its own worktree
+
+The new-thread form has a **New worktree** switch for the device owner (not for
+shares, host-integrated forms or isolated environments). On, it shows where the
+checkout goes and two optional fields: **Branch** (default `agent/NAME`; an
+existing branch is checked out as is) and **Base** (where a new branch starts,
+default `HEAD`). The thread's session starts in the new checkout. When the
+repository's [worktree setup](source-control.md#worktree-setup) fails, the thread
+and checkout stay; the form says so, with the output on its mark, and offers
+**Open thread**.
+
+The same layout and branch rules as `thread create --worktree` apply:
+`../REPO.worktrees/NAME`, where NAME is the given name, else the title as a
+lowercase slug when it makes a valid name (`[a-z][a-z0-9_-]{0,31}`), else the
+thread id's first eight characters.
+
+```text
+POST /api/threads/start-worktree
+{ "workspaceId": "…", "provider": "acp", "agentId": "codex", "model": "…",
+  "reasoningEffort": "high", "approvalMode": "yolo", "title": "Fix login",
+  "worktree": { "name": "fix-login", "branch": "feature/login",
+                "base": "main", "clientRequestId": "uuid" } }
+→ { "thread": ThreadDto, "worktree": { "path": "…", "branch": "feature/login" },
+    "setup": null | { "completed": true, "output": […] }
+                  | { "completed": false, "error": "…", "output": […] },
+    "created": true }
+```
+
+Every `worktree` field is optional. Retrying with the same `clientRequestId` and
+the same input returns the first outcome with `"created": false`; the same id with
+different input is a conflict. A request that created nothing (an invalid name,
+branch or base, a base given for an existing branch, a workspace that is not a Git
+repository) frees its id for a corrected retry. The route is owner-only: every
+share is refused (`crates/protocol/src/access.rs`).

@@ -47,7 +47,7 @@ const CLASSIC: ThemeEntry = {
     version: '',
     author: 'Pockymoe',
     modes: ['light', 'dark'],
-    swatches: ['#e2e7e2', '#0f1317', '#008b53', '#a2afb9'],
+    swatches: ['#e2e7e2', '#0f1317', '#008650', '#a2afb9'],
     chrome: { light: '#f3f6f7', dark: '#171713' },
     styles: [],
     fonts: [],

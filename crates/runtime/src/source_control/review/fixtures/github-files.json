@@ -1,0 +1,26 @@
+[
+ {
+  "sha": "5f548f2a1665b13e253743dee945fd6450778719",
+  "filename": "internal/authflow/revoke.go",
+  "status": "added",
+  "additions": 75,
+  "deletions": 0,
+  "changes": 75,
+  "blob_url": "https://github.com/cli/cli/blob/fe9ea5c35b64183e94ba4cdfd2cb679cc42b2a19/internal%2Fauthflow%2Frevoke.go",
+  "raw_url": "https://github.com/cli/cli/raw/fe9ea5c35b64183e94ba4cdfd2cb679cc42b2a19/internal%2Fauthflow%2Frevoke.go",
+  "contents_url": "https://api.github.com/repos/cli/cli/contents/internal%2Fauthflow%2Frevoke.go?ref=fe9ea5c35b64183e94ba4cdfd2cb679cc42b2a19",
+  "patch": "@@ -0,0 +1,75 @@\n+package authflow\n+\n+import (\n+\t\"bytes\"\n+\t\"context\"\n+\t\"encoding/base64\"\n+\t\"encoding/json\"\n+\t\"errors\"\n+\t\"fmt\"\n+\t\"net\"\n+\t\"net/http\"\n+\t\"strings\"\n+\t\"time\"\n+\n+\t\"github.com/cli/cli/v2/api\"\n+\t\"github.com/cli/cli/v2/internal/safeurl\"\n+)\n+\n+// ErrTokenNotFound reports a 404 from targeted token revocation.\n+var ErrTokenNotFound = errors.New(\"HTTP 404 (Not Found)\")\n+"
+ },
+ {
+  "sha": "3b26b0c772d88488226fbd7310eaee6b28980b45",
+  "filename": "internal/authflow/revoke_test.go",
+  "status": "added",
+  "additions": 140,
+  "deletions": 0,
+  "changes": 140,
+  "blob_url": "https://github.com/cli/cli/blob/fe9ea5c35b64183e94ba4cdfd2cb679cc42b2a19/internal%2Fauthflow%2Frevoke_test.go",
+  "raw_url": "https://github.com/cli/cli/raw/fe9ea5c35b64183e94ba4cdfd2cb679cc42b2a19/internal%2Fauthflow%2Frevoke_test.go",
+  "contents_url": "https://api.github.com/repos/cli/cli/contents/internal%2Fauthflow%2Frevoke_test.go?ref=fe9ea5c35b64183e94ba4cdfd2cb679cc42b2a19",
+  "patch": "@@ -0,0 +1,140 @@\n+package authflow\n+\n+import (\n+\t\"context\"\n+\t\"errors\"\n+\t\"fmt\"\n+\t\"io\"\n+\t\"net/http\"\n+\t\"net/url\"\n+\t\"strings\"\n+\t\"testing\"\n+\t\"time\"\n+\n+\t\"github.com/cli/cli/v2/internal/config\"\n+\t\"github.com/cli/cli/v2/pkg/httpmock\"\n+\t\"github.com/stretchr/testify/require\"\n+)\n+\n+type revokeResponseBody struct {\n+\tio.Reader\n+\tclosed bool\n+}\n+\n+func (b *revokeResponseBody) Close() error {"
+ }
+]

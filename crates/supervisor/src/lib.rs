@@ -16,14 +16,18 @@ mod isolation;
 #[cfg(test)]
 mod isolation_tests;
 mod linked_files;
+mod local_hosts;
 #[cfg(test)]
 mod local_passcode_tests;
 mod management;
+mod mcp;
 mod message_sender;
 mod model_proxy;
 mod notifications;
 mod owner_trust;
 mod preview_cli;
+mod source_control;
+mod source_control_review;
 mod worktrees;
 // Device-to-device messaging and files (docs/cross-device-peer.zh.md).
 mod peer_api;

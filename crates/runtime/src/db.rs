@@ -333,6 +333,54 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    Migration {
+        version: 27,
+        name: "turn_checkpoints",
+        apply: crate::worktrees::checkpoints::migrate,
+    },
+    Migration {
+        version: 28,
+        name: "checkpoint_statistics_and_rewound_accounting",
+        apply: crate::worktrees::checkpoints::migrate_review,
+    },
+    Migration {
+        version: 29,
+        name: "harness_handoff",
+        apply: |conn| {
+            for column in ["provider", "agent_id"] {
+                if !table_columns(conn, "thread_turns")?.contains(column) {
+                    conn.execute(
+                        &format!("ALTER TABLE thread_turns ADD COLUMN {column} TEXT"),
+                        [],
+                    )?;
+                }
+            }
+            conn.execute_batch(include_str!("service/handoff.sql"))?;
+            Ok(())
+        },
+    },
+    Migration {
+        version: 30,
+        name: "thread_source_links",
+        apply: crate::source_control::migrate,
+    },
+    Migration {
+        version: 31,
+        name: "pull_request_review",
+        apply: crate::source_control::review::store::migrate,
+    },
+    Migration {
+        version: 32,
+        name: "thread_harness_protocol",
+        // NULL on threads created before the column: Codex and Claude threads
+        // then run natively at their next load (docs/native-harnesses.md).
+        apply: |conn| {
+            if !table_columns(conn, "threads")?.contains("harness_protocol") {
+                conn.execute_batch("ALTER TABLE threads ADD COLUMN harness_protocol TEXT;")?;
+            }
+            Ok(())
+        },
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them

@@ -72,6 +72,16 @@ this computer run:
 pockymoe passcode off
 ```
 
+Without a passcode, Pockymoe answers only its IP addresses, `localhost` and
+this computer's name (also with `.local` or `.lan`), so a web page elsewhere
+cannot reach it through a DNS trick. To open it by another name, such as a
+Tailscale name, add the name to `POCKYMOE_ALLOWED_HOSTS` in
+`~/.remote-codex/local-supervisor.json` and rerun setup or restart Pockymoe:
+
+```json
+"POCKYMOE_ALLOWED_HOSTS": "laptop, *.example.ts.net"
+```
+
 The passcode keeps others on the same network from walking in. On a home network
 the connection is plain HTTP; to use Pockymoe from outside your network, use a
 [relay](../README.md#quick-start), which also encrypts everything end to end.

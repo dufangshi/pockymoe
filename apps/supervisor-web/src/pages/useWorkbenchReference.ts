@@ -42,6 +42,7 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
   const isCurrent = () => requestOwner.current === owner;
   const detailRef = useRef(detail);
   detailRef.current = detail;
+  const agentId = detail?.thread.agentId;
   const refreshRef = useRef<(streaming?: boolean) => void>(() => {});
   const [revision, setRevision] = useState(0);
   const relay = device !== 'local' && relayModeActive();
@@ -72,7 +73,8 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
       if (model.status === 'fulfilled') setModels(model.value);
     });
     return () => { alive = false; };
-  }, [threadId, device, relay, owner, revision, setAccess, setAccessReady, setCapabilities, setModels, setError]);
+    // Moving the thread to another agent changes its models and capabilities.
+  }, [threadId, device, relay, owner, revision, agentId, setAccess, setAccessReady, setCapabilities, setModels, setError]);
   useEffect(() => {
     if (!threadId) return;
     let alive = true;

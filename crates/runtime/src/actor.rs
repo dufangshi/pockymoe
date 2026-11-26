@@ -488,6 +488,15 @@ pub trait AgentRuntime: Send + Sync {
         agent_id: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<Vec<ModelOptionDto>>;
+    /// Keep a loaded thread's model catalog on the backend that owns it.
+    async fn session_models(
+        &self,
+        agent_id: Option<&str>,
+        _session_id: &str,
+        cwd: Option<&str>,
+    ) -> Result<Vec<ModelOptionDto>> {
+        self.list_models(agent_id, cwd).await
+    }
     async fn list_agents(&self) -> Result<Vec<ModelOptionDto>>;
     async fn capabilities(&self, agent_id: Option<&str>) -> Result<AgentCapabilitySnapshotDto>;
     async fn session_capabilities(
@@ -499,6 +508,13 @@ pub trait AgentRuntime: Send + Sync {
     }
     fn negotiated_caps(&self, _agent_id: Option<&str>) -> AgentProviderCapabilitiesDto {
         AgentProviderCapabilitiesDto::conversational()
+    }
+    fn session_negotiated_caps(
+        &self,
+        agent_id: Option<&str>,
+        _session_id: &str,
+    ) -> AgentProviderCapabilitiesDto {
+        self.negotiated_caps(agent_id)
     }
     async fn start_session(&self, input: StartSessionInput) -> Result<StartSessionResult>;
     async fn resume_session(
@@ -555,6 +571,9 @@ pub trait AgentRuntime: Send + Sync {
     ) -> Result<()> {
         anyhow::bail!("compact is not supported by this harness");
     }
+    async fn rewind_session(&self, _session_id: &str, _turns: u32) -> Result<()> {
+        anyhow::bail!("unsupported_rewind")
+    }
     async fn fork_session(&self, _session_id: &str) -> Result<StartSessionResult> {
         anyhow::bail!("fork is not supported by this harness");
     }
@@ -600,6 +619,11 @@ pub trait AgentRuntime: Send + Sync {
     ) -> Result<serde_json::Value> {
         Ok(serde_json::Value::Null)
     }
+    /// The session's MCP servers as the harness reports them right now
+    /// (`ThreadMcpServersDto`), or None when the harness cannot say.
+    async fn mcp_servers(&self, _session_id: &str) -> Result<Option<serde_json::Value>> {
+        Ok(None)
+    }
     /// A typed harness-panel action. Adapters accept only their own action
     /// kinds; this is never a raw passthrough to the harness.
     async fn harness_action(
@@ -639,6 +663,9 @@ pub trait AgentRuntime: Send + Sync {
     fn session_loaded(&self, _session_id: &str) -> bool {
         false
     }
+    /// Route an unloaded session by this agent key (`acp:codex`) from now on;
+    /// a router uses it after a thread changed protocol.
+    fn set_session_route(&self, _session_id: &str, _agent_key: &str) {}
     async fn session_instance_id(&self, _session_id: &str) -> Option<String> {
         None
     }

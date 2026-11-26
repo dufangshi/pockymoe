@@ -27,6 +27,7 @@ pub struct ExportTurnOption {
 }
 
 pub struct SelectedTurns {
+    pub harness_switches: Vec<ThreadHistoryItemDto>,
     pub thread: ThreadDto,
     pub workspace: WorkspaceDto,
     /// In thread order, with full items, prepared like `?view=full`.
@@ -52,6 +53,7 @@ impl Supervisor {
             normalize_imported_turns(&mut turns);
         }
         Ok(SelectedTurns {
+            harness_switches: self.load_harness_switches(id)?,
             thread,
             workspace,
             turns: numbers
@@ -86,7 +88,7 @@ impl Supervisor {
             let mut rows = stmt
                 .query_map(params![thread_id, ids, limit], |row| {
                     Ok((
-                        u32::try_from(row.get::<_, i64>(11)?).unwrap_or(u32::MAX),
+                        u32::try_from(row.get::<_, i64>("number")?).unwrap_or(u32::MAX),
                         turn_meta_row(row, &catalog)?,
                     ))
                 })?

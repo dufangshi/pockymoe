@@ -85,6 +85,10 @@ impl CacheEntry {
 #[derive(Default)]
 pub struct SubscriptionUsage {
     cache: Mutex<HashMap<String, CacheEntry>>,
+    /// Allowance reported by a running harness itself (Codex app-server
+    /// `account/rateLimits/updated`, rollout `token_count.rate_limits`). It is
+    /// newer than the periodic account read while a turn runs.
+    observed: std::sync::Mutex<HashMap<String, (Instant, Value)>>,
 }
 
 impl SubscriptionUsage {
@@ -106,6 +110,63 @@ impl SubscriptionUsage {
         .await
     }
 
+    /// Merges a harness-reported update (sparse: absent windows are unchanged)
+    /// into the newest known report. Returns whether anything changed.
+    pub fn observe(&self, provider: &str, update: &Value) -> bool {
+        let now = Instant::now();
+        let previous = self.latest(provider, now);
+        let Some(merged) = merge_windows(previous.as_ref(), update) else {
+            return false;
+        };
+        let changed = previous.as_ref().map(|p| &p["windows"]) != Some(&merged["windows"]);
+        self.observed
+            .lock()
+            .unwrap()
+            .insert(provider.into(), (now, merged));
+        changed
+    }
+
+    fn latest(&self, provider: &str, now: Instant) -> Option<Value> {
+        let observed = self.observed.lock().unwrap().get(provider).cloned();
+        let cached = self
+            .cache
+            .try_lock()
+            .ok()
+            .and_then(|cache| cache.get(provider).and_then(|e| e.success.clone()));
+        [observed, cached]
+            .into_iter()
+            .flatten()
+            .filter(|(at, _)| now.duration_since(*at) < MAX_STALE_AGE)
+            .max_by_key(|(at, _)| *at)
+            .map(|(_, value)| value)
+    }
+
+    /// A fresh harness observation wins over an older account read, including
+    /// a definitive "unavailable" from the device's own login: the harness
+    /// reports the account it actually runs on.
+    fn prefer_observed(
+        &self,
+        provider: &str,
+        entry: &CacheEntry,
+        report: SubscriptionUsageReport,
+        now: Instant,
+    ) -> SubscriptionUsageReport {
+        let observed = self.observed.lock().unwrap().get(provider).cloned();
+        let Some((at, value)) = observed.filter(|(at, _)| now.duration_since(*at) < MAX_STALE_AGE)
+        else {
+            return report;
+        };
+        if entry.success.as_ref().is_some_and(|(read, _)| *read >= at) {
+            return report;
+        }
+        let mut value = value;
+        value["stale"] = json!(false);
+        SubscriptionUsageReport {
+            usage: Some(value),
+            unavailable: false,
+        }
+    }
+
     async fn read_with(
         &self,
         provider: &str,
@@ -117,10 +178,11 @@ impl SubscriptionUsage {
         let now = Instant::now();
         if let Some(entry) = cache.get(provider) {
             if now < entry.refresh_at {
-                return SubscriptionUsageReport {
+                let report = SubscriptionUsageReport {
                     usage: entry.value(now),
                     unavailable: entry.unavailable,
                 };
+                return self.prefer_observed(provider, entry, report, now);
             }
         }
         let result = tokio::time::timeout(Duration::from_secs(12), fetch)
@@ -131,11 +193,123 @@ impl SubscriptionUsage {
             .entry(provider.into())
             .or_insert_with(|| CacheEntry::new(now));
         let usage = entry.update(result, now);
-        SubscriptionUsageReport {
+        let report = SubscriptionUsageReport {
             usage,
             unavailable: entry.unavailable,
+        };
+        self.prefer_observed(provider, entry, report, now)
+    }
+}
+
+fn merge_windows(previous: Option<&Value>, update: &Value) -> Option<Value> {
+    let fresh = update["windows"].as_array().filter(|w| !w.is_empty())?;
+    let mut windows = fresh.clone();
+    let now = Utc::now();
+    for old in previous
+        .and_then(|p| p["windows"].as_array())
+        .into_iter()
+        .flatten()
+    {
+        let kept = !windows.iter().any(|w| w["id"] == old["id"])
+            && old["resetsAt"]
+                .as_str()
+                .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+                .is_some_and(|t| t > now);
+        if kept {
+            windows.push(old.clone());
         }
     }
+    windows.sort_by_key(|w| w["durationMinutes"].as_i64().unwrap_or(i64::MAX));
+    let mut merged = update.clone();
+    merged["windows"] = json!(windows);
+    Some(merged)
+}
+
+/// A Codex `RateLimitSnapshot` from app-server `account/rateLimits/updated`.
+/// Only the account's own `codex` limit feeds the badge; per-model aliases do not.
+pub(crate) fn codex_rate_update(snapshot: &Value) -> Option<Value> {
+    if !snapshot["limitId"].is_null() && snapshot["limitId"] != "codex" {
+        return None;
+    }
+    parse_codex(&json!({ "rateLimits": snapshot }))
+}
+
+/// The same snapshot as Codex records it in a rollout's `token_count` event.
+pub(crate) fn codex_rollout_rate_limits(rate_limits: &Value) -> Option<Value> {
+    let window = |w: &Value| {
+        (!w.is_null()).then(|| {
+            json!({"usedPercent": w["used_percent"], "windowDurationMins": w["window_minutes"], "resetsAt": w["resets_at"]})
+        })
+    };
+    codex_rate_update(&json!({
+        "limitId": rate_limits["limit_id"],
+        "primary": window(&rate_limits["primary"]),
+        "secondary": window(&rate_limits["secondary"]),
+    }))
+}
+
+/// A Claude Code SDK `rate_limit_event` (`rate_limit_info`), the allowance the
+/// running CLI just received from the API. Its utilization is a fraction; the
+/// OAuth usage read reports percent. Only the 5h and 7d windows feed the badge.
+pub(crate) fn claude_rate_update(info: &Value) -> Option<Value> {
+    let windows: Vec<Value> = [("five_hour", 300), ("seven_day", 10080)]
+        .into_iter()
+        .filter_map(|(id, minutes)| {
+            let (used, resets) = match info["unifiedWindows"].get(id) {
+                Some(w) => (&w["utilization"], &w["resetsAt"]),
+                None if info["rateLimitType"] == id => (&info["utilization"], &info["resetsAt"]),
+                None => return None,
+            };
+            let percent = json!(used.as_f64()? * 100.0);
+            window(id, minutes, &percent, resets)
+        })
+        .collect();
+    report("claude", windows)
+}
+
+/// One turn's announcements: a harness can report the same allowance through
+/// more than one source (app-server push and rollout record).
+#[derive(Default)]
+pub(crate) struct Announcer {
+    last: Option<Value>,
+}
+
+impl Announcer {
+    pub(crate) fn announce(
+        &mut self,
+        bus: &crate::actor::EventBus,
+        thread_id: &str,
+        provider: &str,
+        usage: Value,
+        hidden: bool,
+    ) {
+        let windows = usage["windows"].clone();
+        if self.last.as_ref() == Some(&windows) {
+            return;
+        }
+        self.last = Some(windows);
+        announce(bus, thread_id, provider, usage, hidden);
+    }
+}
+
+/// Tells the owner's viewers that the harness reported fresher allowance. The
+/// event carries no account data: viewers re-read the owner-only usage route.
+pub(crate) fn announce(
+    bus: &crate::actor::EventBus,
+    thread_id: &str,
+    provider: &str,
+    usage: Value,
+    hidden: bool,
+) {
+    if hidden {
+        return;
+    }
+    bus.emit(pockymoe_protocol::ThreadEventEnvelope {
+        event_type: pockymoe_protocol::ThreadEventType::RuntimeSubscriptionUpdated,
+        thread_id: thread_id.into(),
+        timestamp: pockymoe_protocol::now_rfc3339(),
+        payload: json!({ "provider": provider, "usage": usage }),
+    });
 }
 
 fn report(provider: &str, windows: Vec<Value>) -> Option<Value> {
@@ -415,6 +589,33 @@ pub(crate) fn parse_claude(data: &Value) -> Option<Value> {
 }
 
 #[cfg(test)]
+mod claude_rate_tests {
+    use super::*;
+
+    #[test]
+    fn sdk_rate_limit_events_become_allowance_windows() {
+        let soon = Utc::now().timestamp() + 3600;
+        let update = claude_rate_update(
+            &json!({"status":"allowed","rateLimitType":"seven_day","resetsAt":soon,
+            "unifiedWindows":{"seven_day":{"utilization":0.04,"resetsAt":soon,"status":"allowed"},
+                "five_hour":{"utilization":0.5,"resetsAt":soon}}}),
+        )
+        .unwrap();
+        let windows = update["windows"].as_array().unwrap();
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0]["id"], "five_hour");
+        assert_eq!(windows[0]["usedPercent"], 50.0);
+        assert_eq!(windows[1]["usedPercent"], 4.0);
+        let single = claude_rate_update(
+            &json!({"rateLimitType":"five_hour","utilization":0.2,"resetsAt":soon}),
+        )
+        .unwrap();
+        assert_eq!(single["windows"][0]["label"], "5h");
+        assert!(claude_rate_update(&json!({"status":"allowed"})).is_none());
+    }
+}
+
+#[cfg(test)]
 mod cache_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -486,6 +687,86 @@ mod cache_tests {
             .is_none());
         assert_eq!(entry.refresh_at, now + Duration::from_secs(1200));
         assert!(!entry.unavailable);
+    }
+
+    fn windows(report: &Value) -> Vec<(String, f64)> {
+        report["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| {
+                (
+                    w["id"].as_str().unwrap().into(),
+                    w["usedPercent"].as_f64().unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn codex_pushes_and_rollout_records_parse_to_the_account_read_shape() {
+        let future = 4102444800i64;
+        let read = parse_codex(&json!({"rateLimits":{"primary":{"usedPercent":12,"windowDurationMins":300,"resetsAt":future},"secondary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":future}}})).unwrap();
+        let push = codex_rate_update(&json!({"limitId":"codex","primary":{"usedPercent":12,"windowDurationMins":300,"resetsAt":future},"secondary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":future}})).unwrap();
+        let rollout = codex_rollout_rate_limits(&json!({"limit_id":"codex","primary":{"used_percent":12.0,"window_minutes":300,"resets_at":future},"secondary":{"used_percent":40.0,"window_minutes":10080,"resets_at":future},"credits":null,"plan_type":"pro"})).unwrap();
+        for report in [&push, &rollout] {
+            assert_eq!(report["windows"], read["windows"]);
+            assert_eq!(report["authKind"], "subscription");
+        }
+        assert!(codex_rate_update(&json!({"limitId":"codex_bengalfox","primary":{"usedPercent":1,"windowDurationMins":300,"resetsAt":future}})).is_none());
+        // An API-key provider records an empty snapshot: nothing to show.
+        assert!(codex_rollout_rate_limits(
+            &json!({"limit_id":"codex","primary":null,"secondary":null})
+        )
+        .is_none());
+        assert!(codex_rollout_rate_limits(&Value::Null).is_none());
+    }
+
+    #[tokio::test]
+    async fn harness_observations_merge_sparsely_and_win_over_older_account_reads() {
+        let future = 4102444800i64;
+        let cache = SubscriptionUsage::default();
+        let five = |used: i64| {
+            codex_rate_update(
+                &json!({"primary":{"usedPercent":used,"windowDurationMins":300,"resetsAt":future}}),
+            )
+            .unwrap()
+        };
+        let week = |used: i64| {
+            codex_rate_update(&json!({"secondary":{"usedPercent":used,"windowDurationMins":10080,"resetsAt":future}})).unwrap()
+        };
+        // The device's own login is an API key: the account read is unavailable.
+        let report = cache
+            .read_with("codex", async { RefreshResult::Unavailable })
+            .await;
+        assert!(report.unavailable && report.usage.is_none());
+        assert!(cache.observe("codex", &five(10)));
+        assert!(cache.observe("codex", &week(30)));
+        assert!(!cache.observe("codex", &week(30)));
+        let report = cache.read_with("codex", async { unreachable!() }).await;
+        assert!(!report.unavailable);
+        assert_eq!(
+            windows(report.usage.as_ref().unwrap()),
+            vec![("primary".into(), 10.0), ("secondary".into(), 30.0)]
+        );
+        assert_eq!(report.usage.unwrap()["stale"], false);
+        assert!(!cache.observe("claude", &json!({"windows":[]})));
+        // A later account read replaces an older observation.
+        let fresh = SubscriptionUsage::default();
+        fresh.observe("codex", &five(10));
+        let read = fresh
+            .read_with("codex", async { RefreshResult::Available(five(55)) })
+            .await;
+        assert_eq!(
+            windows(read.usage.as_ref().unwrap()),
+            vec![("primary".into(), 55.0)]
+        );
+        fresh.observe("codex", &week(20));
+        let merged = fresh.read_with("codex", async { unreachable!() }).await;
+        assert_eq!(
+            windows(merged.usage.as_ref().unwrap()),
+            vec![("primary".into(), 55.0), ("secondary".into(), 20.0)]
+        );
     }
 
     #[tokio::test]

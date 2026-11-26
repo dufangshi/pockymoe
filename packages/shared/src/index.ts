@@ -13,6 +13,7 @@ export type {
 } from './agent-providers';
 
 export type ApiErrorCode =
+  | 'checkpoint_busy'
   | 'fileAlreadyExists'
   | 'permissionDenied'
   | 'reauthentication_required'
@@ -651,6 +652,9 @@ export type AcpAgentAvailabilityDto =
   | 'adapter_missing'
   | 'server_unavailable';
 
+/** How a Codex or Claude thread talks to its harness: the native protocol or the ACP adapter. */
+export type HarnessProtocolDto = 'native' | 'acp';
+
 export interface AcpAgentOptionMetadataDto {
   transport: 'native' | 'adapter' | 'custom';
   availability: AcpAgentAvailabilityDto;
@@ -667,6 +671,11 @@ export interface AcpAgentOptionMetadataDto {
   connectionStatus?: 'unavailable' | 'verified' | 'sign_in_required' | 'failed' | 'unverified';
   busy: boolean;
   statusMessage: string;
+  /** `native` for the native Codex/Claude entries, `acp` for every ACP agent;
+      absent on runtimes from before native became the default. */
+  harnessProtocol?: HarnessProtocolDto;
+  /** The agent an ACP variant runs (`codex` for `acp:codex`). */
+  baseAgentId?: string;
 }
 
 export interface VersionDto {
@@ -1013,6 +1022,9 @@ export interface ThreadDto {
   workspaceId: string;
   provider: AgentBackendIdDto;
   agentId?: string | null;
+  /** `native` or `acp` for an agent with a native runtime (Codex, Claude), pinned at
+      creation; absent for ACP-only agents and on older runtimes. */
+  harnessProtocol?: HarnessProtocolDto;
   providerSessionId: string | null;
   source: ThreadSourceDto;
   title: string;
@@ -1093,6 +1105,7 @@ export interface ThreadPeerWorkDto {
 }
 
 export type ThreadItemKindDto =
+  | 'harnessSwitch'
   | 'userMessage'
   | 'agentMessage'
   | 'artifact'
@@ -1121,6 +1134,8 @@ export interface MessageSenderDto {
 }
 
 export interface ThreadHistoryItemDto {
+  afterTurnId?: string | null;
+  harnessSwitch?: { fromAgentId?: string; fromModel?: string; fromHarnessProtocol?: HarnessProtocolDto; agentId?: string; model?: string; harnessProtocol?: HarnessProtocolDto; turns: number };
   /** Set when storage cleanup removed this command's output or this edit's diff. */
   outputPrunedAt?: string | null;
   outputPrunedBytes?: number | null;
@@ -1383,6 +1398,8 @@ export interface ThreadTurnPriceEstimateDto {
 export type TurnStatusDto = 'completed' | 'interrupted' | 'failed' | 'inProgress' | 'recovering';
 
 export interface ThreadTurnDto {
+  provider?: string | null;
+  agentId?: string | null;
   id: string;
   startedAt: string | null;
   completedAt?: string | null;
@@ -1485,12 +1502,23 @@ export interface AgentMcpToolDto {
   description: string | null;
 }
 
+/** A server's live state, when the harness reports it (native Claude). */
+export type AgentMcpServerStatusDto =
+  | 'connected'
+  | 'failed'
+  | 'needsAuth'
+  | 'pending'
+  | 'disabled';
+
 export interface AgentMcpServerDto {
   name: string;
   authStatus: AgentMcpAuthStatusDto;
+  status?: AgentMcpServerStatusDto;
+  error?: string | null;
   tools: AgentMcpToolDto[];
-  resourceCount: number;
-  resourceTemplateCount: number;
+  /** Null when the harness does not count them. */
+  resourceCount: number | null;
+  resourceTemplateCount: number | null;
 }
 
 export interface ThreadMcpServersDto {
@@ -1685,6 +1713,7 @@ export interface ThreadLiveItemsDto {
 }
 
 export interface ThreadDetailDto {
+  harnessSwitches?: ThreadHistoryItemDto[];
   thread: ThreadDto;
   workspace: WorkspaceDto;
   workspacePathStatus: 'present' | 'missing';
@@ -1991,6 +2020,7 @@ export interface ThreadEventPayloadMap {
   'thread.collaboration.updated': { turnId: string; collaborationMode: CollaborationModeDto };
   'thread.context.delivered': { providerSessionId: string };
   'runtime.usage.updated': { turnId: string; usage: unknown };
+  'runtime.subscription.updated': { provider: string }; // a harness reported fresher allowance; re-read subscription usage
   'device.ports.changed': { reason: string };
   'thread.updated': {
     pendingSteers?: ThreadDetailDto['pendingSteers'];

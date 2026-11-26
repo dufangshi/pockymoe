@@ -1,6 +1,7 @@
 pub mod acp;
 pub mod actor;
 mod child_process;
+pub mod native;
 pub use child_process::supervisor_secret_env;
 pub mod config;
 pub mod context_inspection;
@@ -40,8 +41,8 @@ pub use config::RuntimeConfig;
 pub use db::Database;
 pub use restart::{RestartStrategy, HOST_MANAGED_RESTART_EXIT_CODE};
 pub use service::{
-    bootstrap_runtimes, prompt_attachment_file_name, PromptAttachmentDir, Supervisor,
-    UploadedPromptAttachment,
+    bootstrap_runtimes, prompt_attachment_file_name, NewThreadWorktree, PromptAttachmentDir,
+    Supervisor, UploadedPromptAttachment,
 };
 
 use anyhow::Result;
@@ -70,6 +71,7 @@ mod pricing;
 mod relay_notifications;
 pub mod subscription;
 
+pub mod source_control;
 pub mod stats;
 
 mod usage_accounting;

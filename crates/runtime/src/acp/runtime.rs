@@ -70,10 +70,10 @@ mod model_probe_tests;
 mod effort_tests;
 
 #[path = "isolated_claude.rs"]
-mod isolated_claude;
+pub(crate) mod isolated_claude;
 
 #[path = "isolated_capabilities.rs"]
-mod isolated_capabilities;
+pub(crate) mod isolated_capabilities;
 
 /// How often a turn polls native transcripts (usage, background tasks and
 /// completed queued commands). Every loop wake re-arms the turn's 250 ms
@@ -219,7 +219,7 @@ fn process_session_id(live: &LiveSession) -> String {
     }
 }
 
-fn resume_session_identity(
+pub(crate) fn resume_session_identity(
     session: &str,
     default_agent: &str,
     environment: Option<(&str, u64)>,
@@ -1488,15 +1488,48 @@ impl AcpRuntime {
         } else {
             None
         };
-        if let Some(mode_id) = claude_mode.or_else(|| resolve_mode(&live.available_modes, &policy))
+        // Plan is a separate setting for some harnesses (codex-acp): the
+        // permission mode then follows the sandbox alone, and Plan Mode is set
+        // through that harness's collaboration option.
+        let separate_collaboration = super::has_collaboration_option(&live.config_options);
+        let collaboration =
+            super::resolve_collaboration_config_value(&live.config_options, &policy);
+        let mode_policy = if separate_collaboration {
+            ProductSessionPolicy {
+                collaboration_mode: None,
+                ..policy.clone()
+            }
+        } else {
+            policy.clone()
+        };
+        if let Some(mode_id) =
+            claude_mode.or_else(|| resolve_mode(&live.available_modes, &mode_policy))
         {
             if live.current_mode_id.as_deref() != Some(mode_id.as_str()) {
                 Self::apply_setting_op(process, live, SessionSettingOp::SetMode { mode_id })
                     .await?;
             }
+            if let Some((config_id, value)) = collaboration {
+                Self::apply_setting_op(
+                    process,
+                    live,
+                    SessionSettingOp::SetConfig { config_id, value },
+                )
+                .await?;
+            }
             return Ok(());
         }
-        if let Some((config_id, value)) = resolve_mode_config_value(&live.config_options, &policy) {
+        if let Some((config_id, value)) = collaboration {
+            Self::apply_setting_op(
+                process,
+                live,
+                SessionSettingOp::SetConfig { config_id, value },
+            )
+            .await?;
+        }
+        if let Some((config_id, value)) =
+            resolve_mode_config_value(&live.config_options, &mode_policy)
+        {
             Self::apply_setting_op(
                 process,
                 live,
@@ -2710,7 +2743,7 @@ impl AgentRuntime for AcpRuntime {
             && !process.cli_env.is_empty()
             && dsh_goal_command.is_none();
         let prompt = if include_context {
-            format!("[remoteCodex: this conversation is a Pockymoe thread; `pockymoe thread self` shows its identity. Manage Git worktrees through `pockymoe worktree`, not direct git worktree add/remove/move/prune; read `pockymoe worktree --help` and `pockymoe guide worktrees`. Use returned paths as explicit tool cwd; creating a worktree does not change your current directory. Before you create or message threads, or show the user a local web app, read `pockymoe skill` (short: rules and an index); every command's `--help` has its flags and rules. To call a model API (OpenAI Chat Completions or Responses, Anthropic Messages) through the upstream connections the owner saved in Pockymoe, get a base URL and API key from `pockymoe model list` or `pockymoe model env` (`pockymoe guide models`); do not ask the user for a key. Never put credentials in prompts or output.]\n\n{prompt}")
+            super::prompt::with_thread_context(&prompt)
         } else {
             prompt
         };
@@ -2952,6 +2985,7 @@ impl AgentRuntime for AcpRuntime {
                                     super::context::native_usage(context_reader.as_ref(),&usage,inspection.as_ref(),&input.provider_session_id,&input.thread_id,&bus);
                                     emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden);
                                 }
+                                if let Some(limits) = reader.take_rate_limits() { crate::subscription::announce(&bus, &input.thread_id, "codex", limits, input.hidden); }
                             }
                             if let Some(reader) = claude_usage_reader.as_mut() {
                                 for usage in reader.poll_final() { emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden); }
@@ -3012,6 +3046,7 @@ impl AgentRuntime for AcpRuntime {
                             super::context::native_usage(context_reader.as_ref(),&usage,inspection.as_ref(),&input.provider_session_id,&input.thread_id,&bus);
                             emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden);
                         }
+                        if let Some(limits) = reader.take_rate_limits() { crate::subscription::announce(&bus, &input.thread_id, "codex", limits, input.hidden); }
                     }
                     if let Some(reader) = claude_usage_reader.as_mut() {
                         let mut reported = false;
@@ -3140,6 +3175,27 @@ impl AgentRuntime for AcpRuntime {
                                 if reported && claude_step_context { self.spawn_context_summary(&input.provider_session_id, &input.thread_id, &bus, Some(context_busy.clone())); }
                                 for notice in reader.take_task_notices() {
                                     emit_mapped(&bus, &input.thread_id, &input.turn_id, mapper.native_task_notification(&notice), input.hidden);
+                                }
+                            }
+                            // codex-acp leaves Plan Mode after an approved plan review and
+                            // says so in a config update; keep the thread's setting with it,
+                            // or the next turn would re-enter Plan Mode.
+                            if update["update"]["sessionUpdate"] == "config_option_update"
+                                && !super::modes::collaboration_is_plan(&update["update"]["configOptions"])
+                                && super::has_collaboration_option(&update["update"]["configOptions"])
+                            {
+                                let left_plan = self.inner.sessions.lock().await
+                                    .get_mut(&input.provider_session_id)
+                                    .filter(|live| live.collaboration_mode.as_deref() == Some("plan"))
+                                    .map(|live| { live.collaboration_mode = Some("default".into()); live.config_options = update["update"]["configOptions"].clone(); })
+                                    .is_some();
+                                if left_plan {
+                                    bus.emit(ThreadEventEnvelope {
+                                        event_type: pockymoe_protocol::ThreadEventType::ThreadCollaborationUpdated,
+                                        thread_id: input.thread_id.clone(),
+                                        timestamp: now_rfc3339(),
+                                        payload: json!({"turnId": input.turn_id, "collaborationMode": "default"}),
+                                    });
                                 }
                             }
                             if let Some(usage) = adapter.billing_usage(&update).and_then(|usage| adapter_usage.apply(usage)) {
@@ -3567,6 +3623,29 @@ impl AgentRuntime for AcpRuntime {
             .session)
     }
 
+    async fn rewind_session(&self, session_id: &str, turns: u32) -> Result<()> {
+        let _lifecycle = self.inner.lifecycle.lock().await;
+        let (operation, bridge, raw) = {
+            let sessions = self.inner.sessions.lock().await;
+            let live = sessions
+                .get(session_id)
+                .context("ACP session is not running")?;
+            ensure!(
+                live.active.is_none(),
+                "conflict: session has an active turn"
+            );
+            (
+                live.operation.clone(),
+                live.codex_bridge.clone(),
+                live.session_id.clone(),
+            )
+        };
+        let _operation = operation
+            .try_lock()
+            .map_err(|_| anyhow!("conflict: session is busy"))?;
+        let bridge = bridge.context("unsupported_rewind")?;
+        bridge.rewind(&raw, turns).await
+    }
     async fn fork_session_at(&self, session_id: &str, point: &ForkPoint) -> Result<ForkResult> {
         let rollback_count = point.rollback_count;
         let _lifecycle = self.inner.lifecycle.lock().await;
@@ -5381,7 +5460,13 @@ fn merge_active_subagents(
     agents
 }
 
-fn emit_mapped(bus: &EventBus, thread_id: &str, turn_id: &str, mapped: MappedUpdate, hidden: bool) {
+pub(crate) fn emit_mapped(
+    bus: &EventBus,
+    thread_id: &str,
+    turn_id: &str,
+    mapped: MappedUpdate,
+    hidden: bool,
+) {
     if hidden {
         return;
     }

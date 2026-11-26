@@ -1082,7 +1082,7 @@ impl Supervisor {
                 HarnessLoadReason::Create,
                 runtime.start_session(crate::actor::StartSessionInput {
                     cwd,
-                    agent_id: thread.agent_id.clone(),
+                    agent_id: thread.agent_key(),
                     model: thread.model.clone().unwrap_or_else(|| "default".into()),
                     reasoning_effort: thread.reasoning_effort.clone(),
                     approval_mode: thread.approval_mode.clone(),
@@ -1147,7 +1147,7 @@ impl Supervisor {
         Ok(forgotten)
     }
 
-    fn forget_released(&self, released: &[LoadedSession]) {
+    pub(super) fn forget_released(&self, released: &[LoadedSession]) {
         if let Err(error) = self.forget_unsaved_sessions(
             released
                 .iter()
@@ -1374,6 +1374,7 @@ impl Supervisor {
                 workspace_id: thread.workspace_id.clone(),
                 provider: thread.provider.as_str().into(),
                 agent_id: thread.agent_id.clone(),
+                harness_protocol: thread.harness_protocol.clone(),
                 load_reason: member.session.load_reason,
                 loaded_at: rfc3339(member.session.loaded_at),
                 last_activity_at: rfc3339(member.idle_since()),

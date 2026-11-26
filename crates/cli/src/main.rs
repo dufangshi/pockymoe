@@ -1,10 +1,13 @@
 mod allocator;
 mod attach;
 mod automations;
+mod checkpoints;
 mod environments;
 mod legacy_env;
+mod mcp;
 mod models;
 mod plugins;
+mod source_control;
 mod threads;
 mod worktrees;
 use anyhow::Result;
@@ -559,6 +562,12 @@ enum Commands {
     },
     /// Manage a thread's Git worktrees and inspect its actual working directory.
     Worktree(worktrees::WorktreeArgs),
+    /// Pull requests using the owner’s host sign-in.
+    Pr(source_control::SourceControlArgs),
+    /// Browse, create, comment on and link issues.
+    Issue(source_control::SourceControlArgs),
+    /// Inspect and restore turn snapshots; restores require an idle checkout.
+    Checkpoint(checkpoints::CheckpointArgs),
     /// Create, contact, and inspect local threads or same-owner device peers.
     #[command(
         after_long_help = r#"Rules for delivery and collaboration: pockymoe skill
@@ -859,6 +868,14 @@ async fn run() -> Result<()> {
             )?
         ),
         Commands::Model { command } => threads::Client::new(cli.connection)?.model(command).await?,
+        Commands::Mcp {
+            command:
+                plugins::McpCommand::Serve {
+                    device,
+                    access,
+                    workspaces,
+                },
+        } => mcp::serve(cli.connection, device, access, workspaces).await?,
         Commands::Mcp { command } => println!(
             "{}",
             serde_json::to_string_pretty(
@@ -923,6 +940,24 @@ async fn run() -> Result<()> {
                 Err(_) => pockymoe_protocol::THREAD_INTERACTION_SKILL.to_owned(),
             };
             println!("{text}");
+        }
+        Commands::Pr(args) => {
+            let value = threads::Client::new(cli.connection)?
+                .source_control(args, false)
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
+        Commands::Issue(args) => {
+            let value = threads::Client::new(cli.connection)?
+                .source_control(args, true)
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
+        Commands::Checkpoint(args) => {
+            let value = threads::Client::new(cli.connection)?
+                .checkpoint(args)
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
         }
         Commands::Worktree(args) => {
             let value = threads::Client::new(cli.connection)?.worktree(args).await?;

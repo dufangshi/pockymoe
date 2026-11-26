@@ -52,7 +52,9 @@ impl Supervisor {
             let predicate = if use_fts { "AND search_documents_fts MATCH ?5" } else { "AND ?5 IS NOT NULL" };
             let sql = format!(
                 "SELECT d.thread_id, t.title, t.workspace_id, w.label, w.abs_path,
-                        d.turn_id, d.item_id, d.kind, d.text, d.created_at
+                        d.turn_id, d.item_id, d.kind, d.text, d.created_at,
+                        (SELECT provider FROM thread_turns WHERE id=d.turn_id),
+                        (SELECT agent_id FROM thread_turns WHERE id=d.turn_id)
                  FROM search_documents d {candidates}
                  JOIN threads t ON t.id=d.thread_id
                  JOIN workspaces w ON w.id=t.workspace_id
@@ -78,6 +80,8 @@ impl Supervisor {
                 let text: String = row.get(8)?;
                 let Some(excerpt) = search_excerpt(&text, &needle) else { continue };
                 matches.push(json!({
+                    "provider": row.get::<_,Option<String>>(10)?,
+                    "agentId": row.get::<_,Option<String>>(11)?,
                     "threadId": row.get::<_, String>(0)?,
                     "threadTitle": row.get::<_, String>(1)?,
                     "workspaceId": row.get::<_, String>(2)?,

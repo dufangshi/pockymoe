@@ -10,7 +10,8 @@ mod tasks;
 mod transcript;
 mod wakes;
 pub use agents::{
-    clamp_wait, create_worktree, list_roles, load_role, remove_worktree, AgentOptions, RoleTemplate,
+    clamp_wait, create_worktree, create_worktree_from, list_roles, load_role, remove_worktree,
+    AgentOptions, RoleTemplate,
 };
 pub(crate) use agents::{stage_role, take_role, validate_name};
 pub use ask::clamp_ask_wait;
@@ -544,11 +545,11 @@ impl Supervisor {
                     status == "running" && active_turn.is_some(),
                     "conflict: steering requires an active turn"
                 );
+                let runtime = self.runtime(thread.provider)?;
                 ensure!(
-                    self.runtime(thread.provider)?
-                        .negotiated_caps(thread.agent_id.as_deref())
-                        .turns
-                        .steer,
+                    thread.provider_session_id.as_deref().is_some_and(|session| {
+                        runtime.session_negotiated_caps(thread.agent_id.as_deref(), session).turns.steer
+                    }),
                     "conflict: this backend does not support steering"
                 );
             }

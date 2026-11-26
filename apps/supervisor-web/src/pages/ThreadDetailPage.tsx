@@ -1,3 +1,9 @@
+import { useHandoffModelNames } from './useHandoffModelNames';
+import { RestoreNotice } from '../components/git/RestoreNotice';
+import { getLocale } from '@pockymoe/thread-ui/i18n';
+import type { QuoteScope } from '@pockymoe/thread-ui';
+import { fetchCheckpoints, type TurnCheckpoint } from '../lib/gitApi';
+import { RewindDialog } from '../components/git/RewindDialog';
 import { RelayUserMenu } from '../components/RelayUserMenu';
 import { useRetainedRouteActive } from '../desktop/context';
 import { getThreadCaches, rememberThreadDetail } from './threadCaches';
@@ -30,14 +36,17 @@ import { useScopedState } from './useScopedState';
 import { useOptimisticAttachmentPreviews } from './useOptimisticAttachmentPreviews';
 import { ImageFallbackProvider, ImageRecoveryProvider, ImageDiagnosisProvider } from '@pockymoe/thread-ui';
 import { diagnoseChatImage } from '../lib/chatImageDiagnosis';
-import { useSubscriptionUsage } from './useSubscriptionUsage';
+import { refreshSubscriptionUsage, useSubscriptionUsage } from './useSubscriptionUsage';
 import { useThreadTabStatus } from '../lib/useThreadTabStatus';
 import { DeviceEncryptionStatus, useConnectionDownShown } from '../components/DeviceEncryptionStatus';
 import { ThreadPublicLinks } from '../components/ThreadPublicLinks';
 import { useThreadShares, type ThreadShareTarget } from '../components/ThreadShareDialog';
 import { ThreadWatchesControl } from '../components/ThreadWatchesControl';
+import { ThreadSourceLinksControl } from '../components/git/pr/ThreadSourceLinksControl';
 import { useThreadInspector } from '../components/ThreadInspector';
 import { requestThreadPageCatalog } from './threadPageCatalog';
+import { useModelPickerSource } from './useModelPickerSource';
+import { composerAgentLabel } from './threadAgentLabel';
 import { ThreadSubagentsControl } from '../components/ThreadSubagentsControl';
 import { PortMappingsControl } from '../components/PortMappingsControl';
 import { startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
@@ -87,6 +96,7 @@ import {
   type ThreadGraphWorkspaceFeatures,
 } from '@pockymoe/thread-ui';
 import {
+  threadAgentKey,
   threadStatusLabel,
 } from '@pockymoe/thread-ui';
 import { closeFilesPatch, usePlugins } from '@pockymoe/thread-ui';
@@ -101,7 +111,6 @@ import {
   createThreadShell,
   disconnectThread,
   deleteThread,
-  fetchAgentBackendModels,
   fetchThreadCapabilitySnapshot,
   postThreadHarnessAction,
   dshConsoleUrl,
@@ -1004,8 +1013,21 @@ export function ThreadDetailPage() {
     workbenchPresentation.update(patch);
     return true;
   }, [workbenchPresentation.update, toolsUseReference, toolsDevice, toolsDetail?.workspace.id, relayRouteDeviceId, detail?.workspace.id, setFocusedPane]);
+  const gitQuoteScope = useRef<QuoteScope | null>(null);
+  const registerGitQuoteScope = useCallback((scope: QuoteScope | null) => { gitQuoteScope.current = scope; }, []);
+  const [gitCheckpoints, setGitCheckpoints] = useState<TurnCheckpoint[]>([]);
+  const [rewindUndo, setRewindUndo] = useState<{ threadId: string; undoId: string; deviceId?: string | null } | null>(null);
+  const [rewindTurnId, setRewindTurnId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!detail || !relayThreadReadsLinkedFiles) return;
+    const controller = new AbortController();
+    void fetchCheckpoints(detail.thread.id, relayRouteDeviceId, controller.signal).then(value => setGitCheckpoints(value.turns)).catch(() => setGitCheckpoints([]));
+    return () => controller.abort();
+  }, [detail?.thread.id, detail?.thread.updatedAt, relayRouteDeviceId, relayThreadReadsLinkedFiles]);
   // Git and isolation dock at the right of the conversation (ThreadInspector).
   const threadInspector = useThreadInspector({
+    onAskAgent: prompt => setChatDraft(draft => ({ ...draft, prompt: draft.prompt ? `${draft.prompt}\n\n${prompt}` : prompt })),
+    onReviewQuote: quote => gitQuoteScope.current?.insert(quote) ?? false,
     thread: detail?.thread, deviceId: relayRouteDeviceId, canManage: relayThreadIsOwner,
     gitAvailable: !hostScope && relayThreadReadsLinkedFiles, isolationAvailable: !hostScope,
     filesOpen: workbenchPresentation.value.mode === 'files',
@@ -1467,7 +1489,7 @@ export function ThreadDetailPage() {
   const capabilityRefreshRef = useRef(capabilityRefresh);
   capabilityRefreshRef.current = capabilityRefresh;
   const threadConnectionKey = detail?.thread.id === id && detail.thread.isLoaded
-    ? `${id}:${detail.thread.provider}:${detail.thread.agentId ?? ''}:${detail.thread.providerSessionId ?? ''}`
+    ? `${id}:${detail.thread.provider}:${threadAgentKey(detail.thread) ?? ''}:${detail.thread.providerSessionId ?? ''}`
     : null;
   const previousConnectionKeyRef = useRef<{ id: string; key: string | null } | null>(null);
   useEffect(() => {
@@ -1488,7 +1510,9 @@ export function ThreadDetailPage() {
       pageContextRequestIdRef.current = requestId;
       const provider =
         seedThread?.provider ?? detailRef.current?.thread.provider ?? 'codex';
-      const agentId = seedThread?.agentId ?? detailRef.current?.thread.agentId ?? null;
+      // The agent key: an ACP Codex thread reads the ACP adapter's models, not native Codex's.
+      const agentThread = seedThread ?? detailRef.current?.thread;
+      const agentId = agentThread ? threadAgentKey(agentThread) : null;
       const cwd = detailRef.current?.workspace.absPath ?? null;
       const threadId = seedThread?.id ?? detailRef.current?.thread.id;
       setModelOptions([]);
@@ -1930,6 +1954,11 @@ export function ThreadDetailPage() {
     const handleSocketEvent = (event: ThreadEventEnvelope) => {
       referenceEventRef.current(event);
       announceHarnessRuntimeEvent(event);
+      // Account allowance is device-wide: any thread's harness report refreshes it.
+      if (event.type === 'runtime.subscription.updated') {
+        refreshSubscriptionUsage(relayRouteDeviceId, event.payload.provider);
+        return;
+      }
       if (event.threadId !== id) {
         // The current thread reaches the list through its own detail reads.
         if (THREAD_LIST_EVENT_TYPES.has(event.type) && !isPendingSteerUpdate(event)) {
@@ -3763,11 +3792,47 @@ export function ThreadDetailPage() {
     (turnId: string) => <TurnNotification key={`${relayRouteDeviceId}:${id}:${turnId}`} deviceId={relayRouteDeviceId} threadId={id!} turnId={turnId} />,
     [id, relayRouteDeviceId],
   );
+  const describeHandoffModel = useHandoffModelNames(detail?.turns, relayRouteDeviceId, detail?.harnessSwitches);
+  // A thread moved to another agent (the model picker, the CLI or another window):
+  // its models, capabilities and commands follow the new agent.
+  const contextAgentRef = useRef<string | null>(null);
+  useEffect(() => {
+    const thread = detail?.thread;
+    if (!thread) return;
+    const key = `${thread.id}\u0000${thread.provider}\u0000${threadAgentKey(thread) ?? ''}`;
+    const previous = contextAgentRef.current;
+    contextAgentRef.current = key;
+    if (previous && previous !== key && previous.startsWith(`${thread.id}\u0000`)) void loadPageContext({ seedThread: thread });
+  }, [detail?.thread, loadPageContext]);
+  const modelPicker = useModelPickerSource({
+    thread: detail?.thread,
+    deviceId: relayRouteDeviceId,
+    cwd: detail?.workspace.absPath,
+    agentOptions,
+    canSwitch: relayThreadIsOwner,
+    onSwitched: (thread) => {
+      setDetail((current) => (current && current.thread.id === thread.id ? { ...current, thread } : current));
+      setThreads((current) => mergeThreadIntoList(current, thread));
+    },
+    onForked: (thread) => {
+      setThreads((current) => mergeThreadIntoList(current, thread));
+      openThread(thread.id);
+    },
+  });
+  // The split pane's thread may live on another device: its own source.
+  const referenceModelPicker = useModelPickerSource({
+    thread: referenceController.detail?.thread,
+    deviceId: referenceDevice === 'local' ? null : referenceDevice,
+    cwd: referenceController.detail?.workspace.absPath,
+    canSwitch: referenceHarnessOwner,
+    onSwitched: () => referenceController.retry(),
+  });
   const timelineProps = useMemo<Partial<ThreadTimelineProps>>(
     () => ({
       livePlan,
       liveItems,
       renderTurnNotification,
+      describeHandoffModel,
       backendProgress: backendProgress?.threadId === id ? backendProgress : null,
       backgroundAgentCount: detail?.activeSubagents?.filter((agent) => agent.isBackground && agent.status === 'running').length ?? 0,
       respondingRequestId,
@@ -3791,6 +3856,7 @@ export function ThreadDetailPage() {
       optimisticTurn: timelineOptimisticTurn,
     }),
     [
+      describeHandoffModel,
       detail?.answeredRequestNotes,
       detail?.activityNotes,
       detail?.pendingSteers,
@@ -3821,9 +3887,7 @@ export function ThreadDetailPage() {
         settingsBusy,
         error: null,
         model: detail.thread.model,
-        agentLabel:
-          agentOptions.find((entry) => entry.model === detail.thread.agentId)?.displayName ??
-          detail.thread.agentId ?? null,
+        agentLabel: composerAgentLabel(detail.thread, agentOptions),
         reasoningEffort: detail.thread.reasoningEffort,
         fastMode: detail.thread.fastMode ?? false,
         collaborationMode: detail.thread.collaborationMode,
@@ -3834,6 +3898,7 @@ export function ThreadDetailPage() {
         capabilities: hostScope && backendCapabilities ? { ...backendCapabilities, branching: { ...backendCapabilities.branching, fork: false, forkAt: false, resumeAt: false }, management: { ...backendCapabilities.management, hooks: false, hostConfigFiles: false } } : backendCapabilities,
         toolboxItems: hostScope ? [] : backendManagementSchema?.toolboxItems ?? [],
         onOpenHarness: (composerFocusOwner?: string) => setHarnessSettingsTarget({ pane: 'primary', deviceId: relayRouteDeviceId ?? 'local', threadId: id, ...(composerFocusOwner ? {composerFocusOwner} : {}) }),
+        modelPicker,
         hookCommandTemplates:
           backendManagementSchema?.hookCommandTemplates ?? [],
         mcpConfigFormat: backendManagementSchema?.mcpConfigFormat ?? 'none',
@@ -3999,6 +4064,13 @@ export function ThreadDetailPage() {
   const surfaceAdapter = useMemo(
     () => ({
       openThread,
+      onQuoteScope: registerGitQuoteScope,
+      ...(relayThreadIsOwner && !['running', 'recovering'].includes(detail?.thread.status ?? '') ? { editTurn: setRewindTurnId } : {}),
+      renderTurnChanges: (turnId: string) => {
+        const turn = gitCheckpoints.find(value => value.turnId === turnId);
+        const totals = turn?.workingCopies.filter(copy => copy.available).reduce((sum, copy) => ({ files: sum.files + copy.files, additions: sum.additions + copy.additions, deletions: sum.deletions + copy.deletions }), { files: 0, additions: 0, deletions: 0 });
+        return totals?.files ? <button className="thread-git-turn-chip" onClick={() => threadInspector.openTurn(turnId)}>{totals.files} {getLocale() === 'zh-CN' ? '个文件' : totals.files === 1 ? 'file' : 'files'} +{totals.additions} −{totals.deletions}</button> : null;
+      },
       getThreadHref,
       describeThread,
       // Only people who may start threads see the way to (a share's own workspace).
@@ -4024,6 +4096,7 @@ export function ThreadDetailPage() {
       ...(terminalAvailable ? { shell: localShellAdapter } : {}),
     }),
     [
+      registerGitQuoteScope, gitCheckpoints, threadInspector.openTurn, detail?.thread.status,
       canForkAtTurn,
       onForkTurn,
       getCurrentThreadImageAssetUrl,
@@ -4126,7 +4199,7 @@ export function ThreadDetailPage() {
       handleUpdateThreadShare, relayRouteDeviceId, id,
       threadShareState, relayThreadCanShare,
       detail?.workspace.id, detail?.thread.workspaceId, detail?.workspace.label,
-    , i18nLocale],
+      i18nLocale],
   );
 
   return (
@@ -4154,7 +4227,7 @@ export function ThreadDetailPage() {
         onPresentationChange: changePresentation,
         candidates: threads.filter(thread => thread.id !== id).map(thread => ({ id: thread.id, title: thread.title })),
         referenceTitle: referenceController.detail?.thread.title ?? threads.find(thread => thread.id === referenceId)?.title ?? translate('workbench.loadingThreadDetail'),
-        referenceContent: referenceId ? <ThreadPluginScope key={`${referenceDevice}:${referenceId}`} threadId={referenceId} adapter={referencePluginAdapter}><WorkbenchReferencePane key={`${referenceDevice}:${referenceId}`} controller={referenceController} onOpenThread={openReferenceThread} onOpenWorkspaceFile={openReferenceFile} onOpenHarness={composerFocusOwner => setHarnessSettingsTarget({pane:'reference',deviceId:referenceDevice,threadId:referenceId,...(composerFocusOwner ? {composerFocusOwner} : {})})} draft={referenceDraft} onDraftChange={setReferenceDraft} sendShortcut={shellNav?.sendShortcut ?? 'ctrlEnter'} /></ThreadPluginScope> : null,
+        referenceContent: referenceId ? <ThreadPluginScope key={`${referenceDevice}:${referenceId}`} threadId={referenceId} adapter={referencePluginAdapter}><WorkbenchReferencePane key={`${referenceDevice}:${referenceId}`} controller={referenceController} onOpenThread={openReferenceThread} onOpenWorkspaceFile={openReferenceFile} onOpenHarness={composerFocusOwner => setHarnessSettingsTarget({pane:'reference',deviceId:referenceDevice,threadId:referenceId,...(composerFocusOwner ? {composerFocusOwner} : {})})} draft={referenceDraft} onDraftChange={setReferenceDraft} sendShortcut={shellNav?.sendShortcut ?? 'ctrlEnter'} {...(referenceModelPicker ? { modelPicker: referenceModelPicker } : {})} /></ThreadPluginScope> : null,
         collaborationContent: <WorkbenchCollaboration detail={detail} threads={threads} onCompare={onCompareThread} onOpen={openThread} sourceKey={routeKey} visible={workbenchPresentation.value.mode === 'collaboration'} liveItems={liveItems} onNativeResult={target => {
           const source = routeKey;
           void fetchThreadTurnDetail(id, target.turnId, relayRouteDeviceId).then(async turn => {
@@ -4184,7 +4257,7 @@ export function ThreadDetailPage() {
         onCloseTools: closeTerminal,
         inspector: threadInspector.inspector,
         storageFailed: workbenchPresentation.storageFailed,
-      }, subscriptionUsage, statusActions: detail ? <><ThreadSubagentsControl key={`subagents-${detail.thread.id}`} detail={detail} /><UnscopedOnly><ThreadWatchesControl key={`watches-${detail.thread.id}`} thread={detail.thread} /></UnscopedOnly><ThreadPluginsControl key={`plugins-${detail.thread.id}`} readOnly={!relayThreadCanControl} {...(relayThreadIsOwner ? {} : { hiddenPluginIds: [TERMINAL_PLUGIN_ID] })} /><WorkbenchThreadPicker deviceId={relayRouteDeviceId} workspaceId={detail.workspace.id} threadId={detail.thread.id} threads={threads} navigationThreads={[...workbenchNavigation.workspaceThreads, ...workbenchNavigation.threads]} reference={referenceId ? {deviceId: referenceDevice === 'local' ? null : referenceDevice, threadId:referenceId} : null} splitActive={referenceShown} onSelect={selectSplitThread} onRestore={() => changePresentation({mode:'thread'})} onClose={() => changePresentation({mode:'focus'})} onCollaboration={() => changePresentation({mode:'collaboration'})} /></> : null, renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={workbenchNavigation.currentKey} onFavorite={workbenchNavigation.onToggleThreadFavorite} onRenamed={workbenchNavigation.onThreadRenamed} onRemoved={workbenchNavigation.onThreadRemoved} hrefAfterRemoving={workbenchNavigation.hrefAfterRemoving} onNavigate={navigate} />, harnessSessionId: detail?.thread.providerSessionId ?? null, harnessSessionUrl: detail?.thread.providerSessionId && (detail.thread.provider === 'codex' || detail.thread.agentId === 'codex') ? `codex://threads/${encodeURIComponent(detail.thread.providerSessionId)}` : null, activeView: toolsTerminalOpen ? 'shell' : 'chat', terminalEnabled: toolsTerminalAvailable, onViewChange: view => { if (view === 'shell') toggleTerminal(); },
+      }, subscriptionUsage, statusActions: detail ? <><ThreadSubagentsControl key={`subagents-${detail.thread.id}`} detail={detail} /><UnscopedOnly><ThreadWatchesControl key={`watches-${detail.thread.id}`} thread={detail.thread} />{relayThreadIsOwner && <ThreadSourceLinksControl key={`source-links-${relayRouteDeviceId}:${detail.thread.id}`} threadId={detail.thread.id} deviceId={relayRouteDeviceId} refreshKey={detail.thread.updatedAt} />}</UnscopedOnly><ThreadPluginsControl key={`plugins-${detail.thread.id}`} readOnly={!relayThreadCanControl} {...(relayThreadIsOwner ? {} : { hiddenPluginIds: [TERMINAL_PLUGIN_ID] })} /><WorkbenchThreadPicker deviceId={relayRouteDeviceId} workspaceId={detail.workspace.id} threadId={detail.thread.id} threads={threads} navigationThreads={[...workbenchNavigation.workspaceThreads, ...workbenchNavigation.threads]} reference={referenceId ? {deviceId: referenceDevice === 'local' ? null : referenceDevice, threadId:referenceId} : null} splitActive={referenceShown} onSelect={selectSplitThread} onRestore={() => changePresentation({mode:'thread'})} onClose={() => changePresentation({mode:'focus'})} onCollaboration={() => changePresentation({mode:'collaboration'})} /></> : null, renderThreadMenu: (thread, context) => <RecentThreadMenu thread={thread} context={context} currentKey={workbenchNavigation.currentKey} onFavorite={workbenchNavigation.onToggleThreadFavorite} onRenamed={workbenchNavigation.onThreadRenamed} onRemoved={workbenchNavigation.onThreadRemoved} hrefAfterRemoving={workbenchNavigation.hrefAfterRemoving} onNavigate={navigate} />, harnessSessionId: detail?.thread.providerSessionId ?? null, harnessSessionUrl: detail?.thread.providerSessionId && (detail.thread.provider === 'codex' || detail.thread.agentId === 'codex') ? `codex://threads/${encodeURIComponent(detail.thread.providerSessionId)}` : null, activeView: toolsTerminalOpen ? 'shell' : 'chat', terminalEnabled: toolsTerminalAvailable, onViewChange: view => { if (view === 'shell') toggleTerminal(); },
         toolPanels: [...threadInspector.toolPanels, ...(dshPanelAvailable ? [{ id: 'deepseek-harness', label: translate('workbench.deepseekHarness'), icon: <Puzzle data-icon="harness-panel" />, active: dshPanelOpen, onToggle: toggleDshPanel }] : [])], onNavigate: navigate, onPrefetchThread: prefetchThread, onSearch: () => setSearchOpen(true), searchOpen, search: id && detail ? <ConversationSearch key={id} threadId={id} workspaceId={detail.thread.workspaceId}
         deviceLabel={relayRouteDeviceId ?? searchLabels.localDevice}
         allowGlobal={!hostScope && (relayThreadIsOwner || (relayAccess?.scope === 'device' && (relayAccess.threadAccess === 'read' || relayAccess.threadAccess === 'control')))}
@@ -4254,7 +4327,10 @@ export function ThreadDetailPage() {
         <div className="host-muted flex flex-1 items-center justify-center px-6 py-12 text-center">
           {translate("workbench.unableToResolveThisThread")}</div>
       )}
-      dialogs={<>{dialogs}{settingsDialogVisible && dialogDetail && <HarnessSettingsDialog
+      dialogs={<>{dialogs}{rewindUndo && <RestoreNotice {...rewindUndo} onClose={() => setRewindUndo(null)} />}{rewindTurnId && detail && <RewindDialog hasDraft={!!chatDraft.prompt || !!chatDraft.attachments.length} hasQueuedPrompts={!!detail.pendingSteers?.length} threadId={detail.thread.id} turnId={rewindTurnId} deviceId={relayRouteDeviceId} onUndoAvailable={undoId => setRewindUndo({ threadId: detail.thread.id, undoId, deviceId: relayRouteDeviceId })} onClose={() => setRewindTurnId(null)} onRestored={prompt => {
+        setChatDraft({ prompt: prompt.text, attachments: prompt.attachments });
+        void fetchThreadDetail(detail.thread.id, { limit: INITIAL_DETAIL_TURN_PAGE_SIZE }, relayRouteDeviceId).then(setDetail);
+      }} />}{settingsDialogVisible && dialogDetail && <HarnessSettingsDialog
         key={`${dialogDevice}:${dialogDetail.thread.id}`} thread={dialogDetail.thread}
         models={dialogUseReference ? referenceController.models : modelOptions}
         busy={dialogUseReference ? referenceController.busy : settingsBusy}

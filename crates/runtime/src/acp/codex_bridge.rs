@@ -77,6 +77,30 @@ impl CodexBridge {
         }).await.context("Codex permission synchronization timed out")?
     }
 
+    pub async fn rewind(&self, session: &str, count: u32) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(30),async {
+            let mut guard=self.stream.lock().await;
+            let stream=guard.as_mut().context("unsupported_rewind: Codex bridge not connected")?;
+            let mut remaining=count;
+            let mut cursor=Value::Null;
+            let mut visited=HashSet::new();
+            let mut before=None;
+            while remaining>0 {
+                anyhow::ensure!(visited.insert(cursor.to_string()),"Codex rewind cursor repeated");
+                let page=request(stream,"thread/turns/list",json!({"threadId":session,"cursor":cursor,"limit":remaining.min(100),"sortDirection":"desc","itemsView":"summary"})).await?;
+                for turn in page["data"].as_array().context("Codex turn history missing")? {
+                    before=turn["id"].as_str().map(str::to_owned);remaining-=1;if remaining==0{break;}
+                }
+                cursor=page["nextCursor"].clone();if cursor.is_null(){break;}
+            }
+            anyhow::ensure!(remaining==0,"Codex history has fewer turns than requested");
+            if let Some(before)=before {
+                request(stream,"thread/revert",json!({"threadId":session,"beforeTurnId":before})).await?;
+            }
+            Ok(())
+        }).await.context("Codex rewind timed out")?
+    }
+
     pub async fn fork(
         &self,
         source: &str,
@@ -153,6 +177,17 @@ async fn request(stream: &mut BufReader<TcpStream>, method: &str, params: Value)
     Ok(response["result"].clone())
 }
 
+/// codex-acp names new sessions with a hidden side turn on its own small model
+/// (an ephemeral thread). Pockymoe keeps its own titles, so that request would
+/// be model spend the owner never sees: refuse it. codex-acp treats a failed
+/// title as no title.
+fn refused_side_request(message: &Value) -> Option<Value> {
+    (message["method"] == "thread/start" && message["params"]["ephemeral"] == true).then(|| {
+        json!({"jsonrpc":"2.0","id":message["id"],"error":{"code":-32001,
+            "message":"Pockymoe keeps its own thread titles; ephemeral side threads are not started"}})
+    })
+}
+
 /// Hidden CLI entry point used as codex-acp's CODEX_PATH executable.
 pub async fn run() -> Result<()> {
     let config: Value = serde_json::from_str(&std::env::var("POCKYMOE_APP_SERVER_BRIDGE")?)?;
@@ -192,6 +227,11 @@ pub async fn run() -> Result<()> {
             line = acp_in.next_line() => {
                 let Some(line) = line? else { break; };
                 let mut message: Value = serde_json::from_str(&line)?;
+                if let Some(refusal) = refused_side_request(&message) {
+                    acp_out.write_all(format!("{refusal}\n").as_bytes()).await?;
+                    acp_out.flush().await?;
+                    continue;
+                }
                 permissions.request(&mut message);
                 if message["method"] == "model/list" && message["params"]["cursor"].is_null() {
                     // Use only the connection applied to this harness, never an
@@ -238,6 +278,19 @@ pub async fn run() -> Result<()> {
 }
 
 fn allowed_control(message: &Value) -> bool {
+    if let Some(params) = message["params"].as_object() {
+        let keys = match message["method"].as_str() {
+            Some("thread/turns/list") => {
+                Some(&["threadId", "cursor", "limit", "sortDirection", "itemsView"][..])
+            }
+            Some("thread/revert") => Some(&["threadId", "beforeTurnId"][..]),
+            _ => None,
+        };
+        if let Some(keys) = keys {
+            return params.keys().all(|key| keys.contains(&key.as_str()))
+                && params.get("threadId").is_some_and(Value::is_string);
+        }
+    }
     message["method"] == "thread/settings/update"
         && message["params"].as_object().is_some_and(|params| {
             params.keys().all(|key| {
@@ -248,4 +301,27 @@ fn allowed_control(message: &Value) -> bool {
             }) && params.get("threadId").is_some_and(Value::is_string)
                 && params.contains_key("sandboxPolicy")
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn title_side_threads_are_refused_and_everything_else_passes() {
+        let side = json!({"id":9,"method":"thread/start","params":{"cwd":"/w","ephemeral":true}});
+        let refusal = refused_side_request(&side).unwrap();
+        assert_eq!(refusal["id"], 9);
+        assert!(refusal["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("titles"));
+        for normal in [
+            json!({"id":1,"method":"thread/start","params":{"cwd":"/w"}}),
+            json!({"id":2,"method":"thread/start","params":{"cwd":"/w","ephemeral":false}}),
+            json!({"id":3,"method":"turn/start","params":{"threadId":"t"}}),
+        ] {
+            assert!(refused_side_request(&normal).is_none(), "{normal}");
+        }
+    }
 }

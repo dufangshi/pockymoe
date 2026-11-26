@@ -1,4 +1,4 @@
-import { ErrorMark } from '@pockymoe/thread-ui';
+import { ErrorMark, agentDisplayName, threadAgentKey } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from 'react';
 import { ArrowLeftRight, Ban, ChevronDown, ChevronRight, Container, Cpu, Gpu, Info, MemoryStick, Settings, Thermometer, TriangleAlert, Zap } from 'lucide-react';
@@ -507,6 +507,7 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
                             const expanded = threadsOpen.has(thread.threadId);
                             const listId = `${memoryId}-${thread.threadId}`;
                             const shared = thread.sharesProcessWith.length;
+                            const agentKey = threadAgentKey(thread);
                             return (
                               <li key={thread.threadId} data-busy={thread.busy.length ? true : undefined}>
                                 <div className="dm-harness-row">
@@ -518,7 +519,7 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
                                       return next;
                                     })}>
                                     <ChevronRight className="dm-harness-chevron" aria-hidden />
-                                    <span className="dm-harness-kind">{thread.agentId ?? thread.provider}</span>
+                                    <span className="dm-harness-kind">{agentKey ? agentDisplayName(agentKey) : thread.provider}</span>
                                     <span className="dm-harness-title" title={thread.title}>{thread.title}</span>
                                   </button>
                                   <span className="dm-harness-state" title={shared ? translate('devices.harnessShared', { count: shared }) : undefined}>

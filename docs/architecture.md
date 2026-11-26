@@ -7,6 +7,7 @@ Browser / mobile WebView / native macOS app
   -> Supervisor (Axum, this repo)
       -> Runtime trait
            -> ACP stdio + thin harness adapters
+           -> native protocol router -> Codex app-server
            -> deterministic fake runtime (tests)
       -> SQLite journal (threads, turns, history items)
   -> optional Relay (outbound device tunnel)
@@ -24,10 +25,14 @@ Browser / mobile WebView / native macOS app
 
 ## Module layout
 
-Harness differences stay under `crates/runtime/src/acp/` — `catalog.rs` holds the
+ACP harness differences stay under `crates/runtime/src/acp/` — `catalog.rs` holds the
 command catalog, `capabilities.rs` the capability overlays, and per-harness
 adapters (`grok.rs`, `codex_bridge.rs`, `deepseek.rs`) sit alongside them.
-Supervisor code does not special-case Codex vs Grok.
+Supervisor code does not special-case Codex vs Grok. The protocol router under
+`runtime/src/native/` runs Codex and Claude on their direct backends unless the
+thread was created under the ACP agent (agent key `acp:codex`), keeping backend
+affinity for loaded sessions. See
+[native harness protocols](native-harnesses.md).
 
 Large modules follow a `foo.rs` + sibling `foo/` convention: the parent file
 keeps the public surface and the directory holds cohesive internals. Existing

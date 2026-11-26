@@ -107,6 +107,9 @@ pub struct LoadedThreadDto {
     pub workspace_id: String,
     pub provider: String,
     pub agent_id: Option<String>,
+    /// `native` or `acp` for Codex and Claude threads, as on the thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_protocol: Option<String>,
     pub load_reason: HarnessLoadReason,
     pub loaded_at: String,
     pub last_activity_at: String,

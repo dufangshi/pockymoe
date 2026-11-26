@@ -557,3 +557,303 @@ async fn acknowledged_input_survives_restart_before_dispatch() {
         .to_string()
         .contains("already used"));
 }
+
+#[tokio::test]
+async fn harness_handoff_round_trip_preserves_sessions_and_only_sends_delta() {
+    use pockymoe_runtime::service::HarnessSwitchInput;
+    let dir = tempdir().unwrap();
+    let mut config = test_config(dir.path());
+    config.enabled_providers = vec![Provider::Codex, Provider::Claude];
+    let db = Database::open(&config.database_url).unwrap();
+    let state = Arc::new(Supervisor::new(
+        config,
+        db,
+        vec![
+            Arc::new(
+                FakeRuntime::new(Provider::Codex)
+                    .with_slow_turn(std::time::Duration::from_millis(1)),
+            ),
+            Arc::new(
+                FakeRuntime::new(Provider::Claude)
+                    .with_slow_turn(std::time::Duration::from_millis(1)),
+            ),
+        ],
+    ));
+    let path = dir.path().join("project");
+    std::fs::create_dir(&path).unwrap();
+    let ws = state
+        .create_workspace(CreateWorkspaceInput {
+            abs_path: Some(path.to_string_lossy().into()),
+            git_url: None,
+            label: None,
+        })
+        .unwrap();
+    let thread = state
+        .create_thread(CreateThreadInput {
+            workspace_id: ws.id,
+            title: Some("handoff".into()),
+            provider: Some(Provider::Codex),
+            agent_id: Some("codex".into()),
+            model: "fake".into(),
+            reasoning_effort: None,
+            approval_mode: "guarded".into(),
+            parent_thread_id: None,
+        })
+        .await
+        .unwrap();
+    async fn send(state: &Arc<Supervisor>, id: &str, prompt: &str) {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            state.prompt(id, prompt_input(prompt)),
+        )
+        .await
+        .expect("prompt settled")
+        .unwrap();
+    }
+    state
+        .db
+        .set_kv(
+            &format!("cli:contract:{}", thread.id),
+            "delegate-contract-marker",
+        )
+        .unwrap();
+    state
+        .db
+        .set_kv(&format!("cli:role:{}", thread.id), "role-note-marker")
+        .unwrap();
+    send(&state, &thread.id, "first codex request emerald").await;
+    let codex_session = state.get_thread(&thread.id).unwrap().provider_session_id;
+    state
+        .db
+        .with(|c| {
+            c.execute(
+                "UPDATE threads SET source='local_codex_import' WHERE id=?1",
+                [&thread.id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let target = |provider, agent: &str| HarnessSwitchInput {
+        provider,
+        agent_id: agent.into(),
+        model: Some("fake".into()),
+        reasoning_effort: None,
+    };
+    let preview = state
+        .preview_harness_switch(&thread.id, &target(Provider::Claude, "claude"))
+        .unwrap();
+    assert!(preview.text.contains("emerald"));
+    assert!(preview.text.contains("delegate-contract-marker"));
+    assert!(preview.text.contains("role-note-marker"));
+    assert!(state
+        .preview_harness_switch_prompt(
+            &thread.id,
+            &target(Provider::Claude, "claude"),
+            &"x".repeat(96_001)
+        )
+        .is_err());
+    assert!(state.set_handoff_token_cap(1023).is_err());
+    state.set_handoff_token_cap(1024).unwrap();
+    assert!(
+        state
+            .preview_harness_switch(&thread.id, &target(Provider::Claude, "claude"))
+            .unwrap()
+            .bytes
+            <= 1024
+    );
+    state.set_handoff_token_cap(16000).unwrap();
+    assert_eq!(preview.turns, 1);
+    state
+        .switch_thread_harness(&thread.id, target(Provider::Claude, "claude"))
+        .await
+        .unwrap();
+    assert_eq!(state.get_thread(&thread.id).unwrap().source, "supervisor");
+    send(&state, &thread.id, "claude delta sapphire").await;
+    let preview = state
+        .preview_harness_switch(&thread.id, &target(Provider::Codex, "codex"))
+        .unwrap();
+    assert!(preview.resumes_session);
+    assert_eq!(preview.turns, 1);
+    assert!(!preview.text.contains("first codex request emerald"));
+    assert!(preview.text.contains("sapphire"));
+    state
+        .switch_thread_harness(&thread.id, target(Provider::Codex, "codex"))
+        .await
+        .unwrap();
+    assert_eq!(
+        state.get_thread(&thread.id).unwrap().provider_session_id,
+        codex_session
+    );
+    send(&state, &thread.id, "return prompt remains intact").await;
+    let prompts = pockymoe_runtime::fake::model_prompts(&thread.id);
+    assert!(prompts
+        .last()
+        .unwrap()
+        .ends_with("return prompt remains intact"));
+    assert!(prompts.last().unwrap().contains("sapphire"));
+    let detail = state.get_thread_detail(&thread.id, None).await.unwrap();
+    assert_eq!(detail.turns[0].agent_id.as_deref(), Some("codex"));
+    assert_eq!(detail.turns[1].agent_id.as_deref(), Some("claude"));
+    let fork = state
+        .fork_thread_to_harness(
+            &thread.id,
+            Some(&detail.turns[0].id),
+            target(Provider::Claude, "claude"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fork.agent_id.as_deref(), Some("claude"));
+    assert!(state
+        .preview_harness_switch(&fork.id, &target(Provider::Claude, "claude"))
+        .unwrap()
+        .text
+        .contains("emerald"));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        state.start_portable_session(&fork.id, 1),
+    )
+    .await
+    .expect("portable fallback does not reenter its exclusive claim")
+    .unwrap();
+    send(&state, &fork.id, "continue after portable rewind").await;
+    assert!(pockymoe_runtime::fake::model_prompts(&fork.id)
+        .last()
+        .unwrap()
+        .contains("emerald"));
+    // Each idle switch is durable immediately, with no model turn in between.
+    state
+        .switch_thread_harness(&thread.id, target(Provider::Claude, "claude"))
+        .await
+        .unwrap();
+    state
+        .switch_thread_harness(&thread.id, target(Provider::Codex, "codex"))
+        .await
+        .unwrap();
+    let reloaded = state.get_thread_detail(&thread.id, None).await.unwrap();
+    assert_eq!(reloaded.turns.len(), 3);
+    assert_eq!(reloaded.harness_switches.len(), 4);
+    assert_ne!(
+        reloaded.harness_switches[2].id,
+        reloaded.harness_switches[3].id
+    );
+    assert_eq!(
+        reloaded.harness_switches[3].extra["afterTurnId"],
+        reloaded.turns[2].id
+    );
+    assert_eq!(
+        state
+            .preview_harness_switch(&thread.id, &target(Provider::Codex, "codex"))
+            .unwrap()
+            .turns,
+        0
+    );
+    let export = state
+        .get_thread_turns(
+            &thread.id,
+            pockymoe_runtime::service::TurnSelection::Latest(10),
+        )
+        .await
+        .unwrap();
+    assert_eq!(export.harness_switches.len(), 4);
+    send(&state, &thread.id, "after consecutive switches").await;
+    let detail = state.get_thread_detail(&thread.id, None).await.unwrap();
+    assert_eq!(detail.harness_switches.len(), 4);
+    assert!(!detail.turns[3]
+        .items
+        .iter()
+        .any(|item| item.extra.contains_key("harnessSwitch")));
+    let full_fork = state
+        .fork_thread_to_harness(&thread.id, None, target(Provider::Claude, "claude"))
+        .await
+        .unwrap();
+    let fork_detail = state.get_thread_detail(&full_fork.id, None).await.unwrap();
+    assert_eq!(fork_detail.harness_switches.len(), 5);
+    assert_eq!(
+        fork_detail.harness_switches[0].extra["afterTurnId"],
+        fork_detail.turns[0].id
+    );
+    let selected_fork = state
+        .fork_thread_to_harness(
+            &thread.id,
+            Some(&detail.turns[0].id),
+            target(Provider::Claude, "claude"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        state
+            .get_thread_detail(&selected_fork.id, None)
+            .await
+            .unwrap()
+            .harness_switches
+            .len(),
+        1
+    );
+    state
+        .switch_thread_harness(&thread.id, target(Provider::Claude, "claude"))
+        .await
+        .unwrap();
+    state
+        .switch_thread_harness(&thread.id, target(Provider::Codex, "codex"))
+        .await
+        .unwrap();
+    state
+        .rewind_thread(
+            &thread.id,
+            &serde_json::json!({"turnId":detail.turns[3].id}),
+        )
+        .await
+        .unwrap();
+    let rewound = state.get_thread_detail(&thread.id, None).await.unwrap();
+    assert_eq!(rewound.turns.len(), 3);
+    assert_eq!(rewound.harness_switches.len(), 4);
+    let empty = state
+        .create_thread(CreateThreadInput {
+            workspace_id: thread.workspace_id.clone(),
+            title: Some("switch before prompt".into()),
+            provider: Some(Provider::Codex),
+            agent_id: Some("codex".into()),
+            model: "fake".into(),
+            reasoning_effort: None,
+            approval_mode: "guarded".into(),
+            parent_thread_id: None,
+        })
+        .await
+        .unwrap();
+    state
+        .switch_thread_harness(&empty.id, target(Provider::Claude, "claude"))
+        .await
+        .unwrap();
+    state
+        .switch_thread_harness(&empty.id, target(Provider::Codex, "codex"))
+        .await
+        .unwrap();
+    // Open a new database connection and service: entries do not depend on memory or a prompt.
+    drop(state);
+    let config = test_config(dir.path());
+    let reopened = Supervisor::new(
+        config.clone(),
+        Database::open(&config.database_url).unwrap(),
+        vec![
+            Arc::new(FakeRuntime::new(Provider::Codex)),
+            Arc::new(FakeRuntime::new(Provider::Claude)),
+        ],
+    );
+    let detail = reopened.get_thread_detail(&empty.id, None).await.unwrap();
+    assert!(detail.turns.is_empty());
+    assert_eq!(detail.harness_switches.len(), 2);
+    assert!(detail
+        .harness_switches
+        .iter()
+        .all(|entry| entry.extra["afterTurnId"].is_null()));
+    assert_eq!(
+        reopened
+            .get_thread_detail(&thread.id, None)
+            .await
+            .unwrap()
+            .harness_switches
+            .len(),
+        4
+    );
+}

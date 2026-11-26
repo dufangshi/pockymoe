@@ -85,6 +85,13 @@ pub(crate) async fn command(
     Extension(caller): Extension<crate::auth::CliCaller>,
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiErr> {
+    if input["operation"] == "outsideMcp" {
+        return Ok(Json(
+            crate::mcp::local(&state, &input, caller.0.as_deref())
+                .await
+                .map_err(map_err)?,
+        ));
+    }
     let input = crate::treer::messages::prepare_send(&state, caller.0.as_deref(), input)
         .map_err(map_err)?;
     if let Some(reply) = crate::peer_send::intercept(&state, caller.0.as_deref(), &input)
@@ -102,6 +109,9 @@ pub(crate) async fn run(
     input: Value,
     caller: Option<String>,
 ) -> anyhow::Result<Value> {
+    if input["operation"] == "outsideMcp" {
+        return crate::mcp::local(state, &input, caller.as_deref()).await;
+    }
     let selected = caller.as_deref().or_else(|| input["threadId"].as_str());
     let _execution = match selected {
         Some(id) => Some(state.try_hold_execution(id)?),
@@ -152,6 +162,23 @@ async fn run_as(
     let all = input["all"] == true;
     let wait = clamp_wait(input["timeoutSeconds"].as_u64());
     match input.get("operation").and_then(Value::as_str).unwrap_or("") {
+        "harnessSwitch" | "harnessPreview" => {
+            anyhow::ensure!(
+                caller.is_none() && !peer,
+                "forbidden: harness switching requires the owner's machine CLI credential"
+            );
+            reach(id)?;
+            let target = serde_json::from_value(input["target"].clone())?;
+            if input["operation"] == "harnessPreview" {
+                Ok(serde_json::to_value(
+                    state.preview_harness_switch(id, &target)?,
+                )?)
+            } else {
+                Ok(serde_json::to_value(
+                    state.switch_thread_harness(id, target).await?,
+                )?)
+            }
+        }
         "environmentConnections"
         | "environmentRequest"
         | "environmentRequests"
@@ -166,8 +193,31 @@ async fn run_as(
         "automationCreate" | "automationPreview" | "automationList" | "automationShow"
         | "automationRuns" | "automationPause" | "automationResume" | "automationCancel"
         | "commandRun" | "commandShow" => crate::automations::cli(state, &input, requester).await,
-        "worktreeCreate" | "worktreeList" | "worktreeCurrent" | "worktreeShow"
-        | "worktreeAdopt" | "worktreeUse" | "worktreeRemove" => {
+        "sourceControl" => {
+            anyhow::ensure!(
+                !peer,
+                "forbidden: source control requires a local credential"
+            );
+            reach(id)?;
+            if let Some(caller) = caller.as_deref() {
+                anyhow::ensure!(
+                    caller == id && from.is_none_or(|from| from == caller),
+                    "forbidden: source-control operation must use the authenticated thread"
+                );
+            }
+            let action = input["action"]
+                .as_str()
+                .context("source-control action required")?;
+            let mut scoped = input.clone();
+            scoped["agentCaller"] = json!(caller.is_some());
+            if action == "review" {
+                return state.source_review_action(id, &scoped).await;
+            }
+            state.source_control_action(id, action, scoped).await
+        }
+        "checkpointList" | "checkpointDiff" | "checkpointRestore" | "checkpointUndo"
+        | "threadRewind" | "worktreeCreate" | "worktreeList" | "worktreeCurrent"
+        | "worktreeShow" | "worktreeAdopt" | "worktreeUse" | "worktreeRemove" => {
             anyhow::ensure!(
                 !peer,
                 "forbidden: worktree management requires a local credential"
@@ -175,7 +225,11 @@ async fn run_as(
             reach(id)?;
             if let Some(caller) = caller.as_deref() {
                 anyhow::ensure!(
-                    caller == id && from.is_none_or(|from| from == caller),
+                    (matches!(
+                        input["operation"].as_str(),
+                        Some("checkpointList" | "checkpointDiff")
+                    ) || caller == id)
+                        && from.is_none_or(|from| from == caller),
                     "forbidden: worktree operation must use the authenticated thread"
                 );
             }
@@ -247,7 +301,7 @@ async fn run_as(
             threads.retain(|t| state.agent_reaches_workspace(requester, &t.workspace_id));
             let limit = input["limit"].as_u64().unwrap_or(20).clamp(1, 100) as usize;
             Ok(
-                json!({"threads":threads.iter().take(limit).map(|t|json!({"id":t.id,"name":t.agent_name,"title":t.title,"workspaceId":t.workspace_id,"provider":t.provider,"agentId":t.agent_id,"model":t.model,"status":t.status,"updatedAt":t.updated_at,"parentThreadId":t.parent_thread_id,"rootThreadId":t.root_thread_id,"createdByThreadId":t.created_by_thread_id,"agentThreadCount":t.descendant_count,"closedAt":t.closed_at})).collect::<Vec<_>>(),"totalCount":threads.len()}),
+                json!({"threads":threads.iter().take(limit).map(|t|json!({"id":t.id,"name":t.agent_name,"title":t.title,"workspaceId":t.workspace_id,"provider":t.provider,"agentId":t.agent_id,"harnessProtocol":t.harness_protocol,"model":t.model,"status":t.status,"updatedAt":t.updated_at,"parentThreadId":t.parent_thread_id,"rootThreadId":t.root_thread_id,"createdByThreadId":t.created_by_thread_id,"agentThreadCount":t.descendant_count,"closedAt":t.closed_at})).collect::<Vec<_>>(),"totalCount":threads.len()}),
             )
         }
         "show" | "status" => {
@@ -689,10 +743,11 @@ async fn run_as(
                         role,
                         worktree,
                         detached_from,
+                        ..Default::default()
                     },
                 )
                 .await?;
-            let mut receipt = json!({"threadId":t.id,"name":t.agent_name,"role":t.agent_role,"worktreePath":t.worktree_path,"workspaceId":t.workspace_id,"provider":t.provider,"agentId":t.agent_id,"model":t.model,"reasoningEffort":t.reasoning_effort,"status":t.status});
+            let mut receipt = json!({"threadId":t.id,"name":t.agent_name,"role":t.agent_role,"worktreePath":t.worktree_path,"workspaceId":t.workspace_id,"provider":t.provider,"agentId":t.agent_id,"harnessProtocol":t.harness_protocol,"model":t.model,"reasoningEffort":t.reasoning_effort,"status":t.status});
             if let Some(creator) = &t.created_by_thread_id {
                 receipt["detached"] = json!(true);
                 receipt["createdByThreadId"] = json!(creator);

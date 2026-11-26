@@ -1,6 +1,6 @@
 import { useHostScope } from '../../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { Select, ErrorMark, formatReasoningEffortLabel, matchesSendModKey } from '@pockymoe/thread-ui';
+import { Select, ErrorMark, PathChip, agentDisplayName, agentKeyBase, formatReasoningEffortLabel, matchesSendModKey } from '@pockymoe/thread-ui';
 import type { FormEvent, ReactNode } from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { seedThreadDraft } from '../useThreadDrafts';
@@ -22,6 +22,7 @@ import { dshRunModeHint, dshRunModeName, type DshRunMode } from '../../component
 import {
   ApiError,
   createThread,
+  createThreadInWorktree,
   createWorkspaceThread,
   fetchAgentBackendAgents,
   fetchAgentBackends,
@@ -40,6 +41,7 @@ import { currentRelayDeviceIdFromPath, currentRelayScopedPath } from '../../lib/
 import { actOnEnvironment, fetchEnvironments, fetchThreadEnvironment, notifyEnvironmentChanged, type EnvironmentConnectionDto } from '../../lib/environmentApi';
 import { environmentText as environmentLabel } from '../../lib/environmentI18n';
 import { environmentError } from '../../components/environments/model';
+import { worktreeNameFromTitle, worktreePathPreview, worktreeText } from '../../lib/worktreeI18n';
 
 function canStart(backend: AgentBackendDto) {
   return backend.enabled && backend.capabilities.sessions.resume && backend.capabilities.turns.start;
@@ -84,6 +86,24 @@ class RunModeNotApplied extends Error {
 /** Creation succeeded. Retain that thread and retry only its environment startup. */
 class EnvironmentNotStarted extends Error {}
 
+/** Agents (and their ACP variants, `acp:codex`) an isolated environment runs. */
+const isolatedAgentIds = ['codex', 'claude'];
+
+/* Runtimes that list `harnessProtocol` run Codex and Claude natively by default: the
+   form offers them first and the ACP agents (ACP Codex and Claude among them) under
+   one "ACP agent" choice. Older runtimes list every agent flat, as before. */
+const ACP_GROUP = 'acp';
+const isNativeEntry = (entry: ModelOptionDto) => entry.acpAgent?.harnessProtocol === 'native';
+
+/** The worktree thread exists; its repository setup failed. Say why, then open it on request. */
+class WorktreeSetupFailed extends Error {
+  constructor(readonly detail: string) {
+    super(worktreeText('setupFailed'));
+  }
+}
+
+const requestId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
 // The isolation contract supports these ACP agents without probing the Host.
 const isolatedAcpDefaults: ModelOptionDto[] = ['codex', 'claude'].map(id => ({
   id, model: id, displayName: id === 'codex' ? 'OpenAI Codex' : 'Claude Code',
@@ -126,12 +146,14 @@ export function shortPath(path: string, max = 44) {
 export function ThreadCreateForm({
   initialWorkspaceId,
   initialTitle = '',
+  initialPrompt = '',
   onCreated,
   onCancel,
   variant = 'panel',
 }: {
   initialWorkspaceId?: string | null | undefined;
   initialTitle?: string | null | undefined;
+  initialPrompt?: string | null | undefined;
   onCreated: (thread: ThreadDto) => void;
   onCancel?: () => void;
   variant?: 'panel' | 'dialog';
@@ -168,10 +190,17 @@ export function ThreadCreateForm({
   const [environmentLoading, setEnvironmentLoading] = useState(true);
   const [environmentLoadError, setEnvironmentLoadError] = useState<string | null>(null);
   const [environmentLoadAttempt, setEnvironmentLoadAttempt] = useState(0);
+  // A new thread in its own worktree (docs/worktrees.md); the request id makes a
+  // retried submit return the first worktree instead of creating a second.
+  const [worktreeOn, setWorktreeOn] = useState(false);
+  const [worktreeBranch, setWorktreeBranch] = useState('');
+  const [worktreeBase, setWorktreeBase] = useState('');
+  const worktreeRequests = useRef(new Map<string, string>());
+  const [setupFailed, setSetupFailed] = useState(false);
   const [title, setTitle] = useState(() => initialTitle ?? '');
   // The first prompt, optional: written here, the thread is created and sent in
   // one step (quick start); left empty, the thread opens with an empty composer.
-  const [firstPrompt, setFirstPrompt] = useState('');
+  const [firstPrompt, setFirstPrompt] = useState(() => (initialPrompt ?? '').slice(0, 20_000));
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [runtimeBusyProvider, setRuntimeBusyProvider] = useState<AgentBackendIdDto | null>(null);
@@ -183,6 +212,10 @@ export function ThreadCreateForm({
   const [modelsAttempt, setModelsAttempt] = useState(0);
   const [adapterPrompt, setAdapterPrompt] = useState<{ entry: ModelOptionDto; createAfter: boolean } | null>(null);
   const [adapterError, setAdapterError] = useState<string | null>(null);
+  // The device lists Codex and Claude by protocol (native, or ACP under the ACP agent).
+  const [agentsByProtocol, setAgentsByProtocol] = useState(false);
+  // The ACP agent last chosen, restored when the "ACP agent" choice is picked again.
+  const lastAcpAgent = useRef('');
   // Sign in from the picker: the device's owner only (`/api/shells/*`), in the
   // same window as Settings → Harnesses.
   const [signInEntry, setSignInEntry] = useState<ModelOptionDto | null>(null);
@@ -223,10 +256,19 @@ export function ThreadCreateForm({
   const isAcpAgentSelection =
     provider === 'acp' && visibleAgentOptions.some((entry) => entry.selectionKind === 'agent');
   const selectedAgent = visibleAgentOptions.find((entry) => entry.model === agentId) ?? null;
+  const protocolAware = visibleAgentOptions.some((entry) => Boolean(entry.acpAgent?.harnessProtocol));
+  const nativeAgents = protocolAware ? visibleAgentOptions.filter(isNativeEntry) : [];
+  const acpAgents = protocolAware ? visibleAgentOptions.filter((entry) => !isNativeEntry(entry)) : visibleAgentOptions;
+  const agentGroup = selectedAgent && isNativeEntry(selectedAgent) ? selectedAgent.model : ACP_GROUP;
+  // Only the ACP harness to choose from: the agent choice below says everything.
+  const backendChoiceHidden = (protocolAware || agentsByProtocol) && provider === 'acp';
   const backendCanStart = (backend: AgentBackendDto) => isolatedCreation ? backend.enabled : canStart(backend);
   const fieldsLocked = busy || Boolean(created);
+  // Owner threads on the host only: shares, host scopes and isolated environments make no worktrees.
+  const worktreeAvailable = !hostScope && !sharedWorkspaceId && !isolatedCreation;
+  const useWorktree = worktreeAvailable && worktreeOn;
   const environmentSupported = provider === 'codex' || provider === 'claude'
-    || (provider === 'acp' && (!agentId || ['codex', 'claude'].includes(agentId) || selectedAgent?.acpAgent?.transport === 'custom'));
+    || (provider === 'acp' && (!agentId || isolatedAgentIds.includes(agentKeyBase(agentId)) || selectedAgent?.acpAgent?.transport === 'custom'));
   const environmentUnavailable = sharedWorkspaceId ? environmentLabel('readOnly')
     : !environmentSupported ? environmentLabel('unsupportedHarness')
     : environmentConnectionId && !environmentConnections.some(connection => connection.id === environmentConnectionId && connection.configured) ? environmentLabel('setupHint') : null;
@@ -268,12 +310,21 @@ export function ThreadCreateForm({
         const record = await fetchWorkspace(sharedId);
         return [[record], await fetchAgentBackends(), sharedId];
       })
-      .then(([workspaceRecords, backendRecords, sharedId]) => {
+      .then(async ([workspaceRecords, backendRecords, sharedId]): Promise<[WorkspaceDto[], AgentBackendDto[], string | null, boolean]> => {
+        // A runtime whose ACP agent list names protocols runs Codex and Claude
+        // natively inside it; its single-agent backends (OpenAI Codex, Claude
+        // Agent, OpenCode) are the same agents, so the form offers the list only.
+        const acp = backendRecords.find((backend) => backend.provider === 'acp');
+        const agents = acp && canStart(acp) ? await fetchAgentBackendAgents('acp').catch(() => []) : [];
+        return [workspaceRecords, backendRecords, sharedId, agents.some((entry) => Boolean(entry.acpAgent?.harnessProtocol))];
+      })
+      .then(([workspaceRecords, backendRecords, sharedId, protocolAgents]) => {
         if (cancelled) {
           return;
         }
         setSharedWorkspaceId(sharedId);
-        setProvider(chooseProvider(backendRecords, defaultBackend));
+        setAgentsByProtocol(protocolAgents);
+        setProvider(protocolAgents ? 'acp' : chooseProvider(backendRecords, defaultBackend));
         setBackends(backendRecords);
         setWorkspaces(workspaceRecords);
         const requested = initialWorkspaceId ?? null;
@@ -372,7 +423,8 @@ export function ThreadCreateForm({
     setRunModes([]);
     setRunMode('');
     setError(null);
-    if (selectedAgent?.acpAgent?.availability === 'adapter_missing') return;
+    // Nothing to ask yet: the adapter (ACP) or the agent's own CLI (native) is missing.
+    if (selectedAgent?.acpAgent?.availability === 'adapter_missing' || selectedAgent?.acpAgent?.availability === 'base_missing') return;
     fetchAgentBackendModelsFor('acp', { agentId, cwd: selectedWorkspace.absPath, signal: controller.signal })
       .then((records) => {
         if (cancelled) return;
@@ -456,6 +508,7 @@ export function ThreadCreateForm({
     } as const;
     const thread = created ?? await (sharedWorkspaceId && sharedWorkspaceId === workspaceId
       ? createWorkspaceThread(sharedWorkspaceId, input)
+      : useWorktree ? createInWorktree(input)
       : createThread(input));
     if (!alive.current) return;
     if (environmentConnectionId) {
@@ -495,6 +548,35 @@ export function ThreadCreateForm({
       seedThreadDraft(`${currentRelayDeviceIdFromPath() ?? 'local'}:${thread.id}`, firstPrompt, true);
     }
     onCreated(thread);
+  }
+  function chooseAcpAgent(model: string) {
+    lastAcpAgent.current = model;
+    setAgentId(model);
+  }
+  function chooseAgentGroup(group: string) {
+    if (group !== ACP_GROUP) { setAgentId(group); return; }
+    const next = isolatedCreation
+      ? acpAgents.find((entry) => entry.model === lastAcpAgent.current) ?? acpAgents[0]
+      : pickReadyAgent(acpAgents, lastAcpAgent.current);
+    setAgentId(next?.model ?? '');
+  }
+  // Never isolated (useWorktree excludes it), so the input carries no environment.
+  async function createInWorktree(thread: Parameters<typeof createThread>[0]) {
+    const options = {
+      ...(worktreeBranch.trim() ? { branch: worktreeBranch.trim() } : {}),
+      ...(worktreeBase.trim() ? { base: worktreeBase.trim() } : {}),
+    };
+    const key = JSON.stringify([thread, options]);
+    const clientRequestId = worktreeRequests.current.get(key) ?? requestId();
+    worktreeRequests.current.set(key, clientRequestId);
+    const started = await createThreadInWorktree(thread, { ...options, clientRequestId });
+    if (started.setup && !started.setup.completed) {
+      // Keep the thread; the reason (and the setup's output) stay on the form.
+      setCreated(started.thread);
+      setSetupFailed(true);
+      throw new WorktreeSetupFailed([started.setup.error, ...(started.setup.output ?? [])].filter(Boolean).join('\n').slice(0, 4000));
+    }
+    return started.thread;
   }
   function askAdapterInstall(entry: ModelOptionDto, createAfter: boolean) {
     setAdapterError(null);
@@ -549,12 +631,13 @@ export function ThreadCreateForm({
     } catch (caught) {
       setError({
         at: 'create',
-        message: caught instanceof RunModeNotApplied
+        message: caught instanceof WorktreeSetupFailed ? caught.message
+          : caught instanceof RunModeNotApplied
           ? translate("workbench.dshRunModeNotApplied", { value1: errorText(caught.cause, '') })
           : caught instanceof EnvironmentNotStarted ? environmentLabel('createdEnvironmentFailed')
           : isolatedCreation ? environmentError(caught)
           : errorText(caught, translate("workbench.unableToCreateThread")),
-        ...(caught instanceof EnvironmentNotStarted ? { detail: caught.message } : {}),
+        ...(caught instanceof EnvironmentNotStarted ? { detail: caught.message } : caught instanceof WorktreeSetupFailed ? { detail: caught.detail } : {}),
       });
     } finally {
       setBusy(false);
@@ -613,7 +696,7 @@ export function ThreadCreateForm({
           className={`${controlClass} min-h-[4.5rem] resize-y py-2 leading-6`}
         />
       </Field>
-      <fieldset>
+      {!backendChoiceHidden ? <fieldset>
         <legend className="host-form-label text-xs font-medium">{translate("workbench.backend")}</legend>
         {compact ? (
           <Select
@@ -692,7 +775,7 @@ export function ThreadCreateForm({
             {translate("workbench.to")} <code className="font-mono">POCKYMOE_ENABLED_AGENT_PROVIDERS</code>.
           </p>
         ) : null}
-      </fieldset>
+      </fieldset> : null}
 
       <Field id={`${formId}-thread-workspace`} label={translate("workbench.workspace")}>
         <Select
@@ -724,12 +807,36 @@ export function ThreadCreateForm({
       {isAcpAgentSelection ? (
         <fieldset>
           <legend className="host-form-label text-xs font-medium">{translate("workbench.agent")}</legend>
-          <div
+          {protocolAware ? (
+            <div className="mt-2 flex min-w-0 items-center gap-2">
+              <div aria-label={translate("workbench.agent")} className="product-segmented !grid min-w-0 flex-1 grid-cols-3 sm:!flex" role="radiogroup">
+                {[...nativeAgents.map((entry) => ({ value: entry.model, label: entry.displayName })), { value: ACP_GROUP, label: translate("workbench.acpAgentGroup") }].map((choice) => (
+                  <label className="product-segment relative min-w-0 flex-1 truncate" key={choice.value}>
+                    <input
+                      checked={agentGroup === choice.value}
+                      className="sr-only"
+                      disabled={fieldsLocked || installingAgentId !== null}
+                      name={`${formId}-agent-group`}
+                      onChange={() => chooseAgentGroup(choice.value)}
+                      type="radio"
+                      value={choice.value}
+                    />
+                    {choice.label}
+                  </label>
+                ))}
+              </div>
+              {/* A native agent needs only its own CLI; without it, say so here. */}
+              {!isolatedCreation && selectedAgent && isNativeEntry(selectedAgent) && selectedAgent.acpAgent?.availability !== 'ready'
+                ? <ErrorMark kind="unavailable" message={translate("workbench.baseAgentMissing")} detail={selectedAgent.acpAgent?.baseCommand || undefined} />
+                : null}
+            </div>
+          ) : null}
+          {agentGroup === ACP_GROUP ? <div
             className={`mt-2 ${compact ? 'max-h-32' : 'max-h-64'} divide-y divide-[var(--theme-border)] overflow-y-auto overscroll-contain rounded-lg border border-[var(--theme-border)] bg-[var(--theme-surface)]`}
             role="radiogroup"
-            aria-label={translate("workbench.agent")}
+            aria-label={translate(protocolAware ? "workbench.acpAgentGroup" : "workbench.agent")}
           >
-            {visibleAgentOptions.map((entry) => {
+            {acpAgents.map((entry) => {
               const meta = entry.acpAgent;
               const ready = isolatedCreation || meta?.availability === 'ready' || meta?.availability === 'adapter_missing';
               const adapterMissing = meta?.availability === 'adapter_missing';
@@ -762,12 +869,12 @@ export function ThreadCreateForm({
                       className="sr-only"
                       disabled={!ready || fieldsLocked || installingAgentId !== null}
                       name={`${formId}-agent`}
-                      onChange={() => setAgentId(entry.model)}
+                      onChange={() => chooseAcpAgent(entry.model)}
                       type="radio"
                       value={entry.model}
                     />
                     <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                      <span className="truncate font-medium">{entry.displayName}</span>
+                      <span className="truncate font-medium">{agentDisplayName(entry.model, entry.displayName)}</span>
                       <span className="host-pill rounded-full px-2 py-0.5 text-[0.68rem]">{statusLabel}</span>
                     </span>
                     {!isolatedCreation && <span className="mt-1 block truncate font-mono text-[0.68rem] text-[var(--theme-fg-muted)]">
@@ -806,7 +913,7 @@ export function ThreadCreateForm({
                 </div>
               );
             })}
-          </div>
+          </div> : null}
         </fieldset>
       ) : null}
 
@@ -824,6 +931,50 @@ export function ThreadCreateForm({
               : !environmentLoading && !environmentConnections.length ? <ErrorMark kind="unavailable" message={environmentLabel('setupHint')} /> : null}
         </div>
       </Field>}
+
+      {worktreeAvailable ? (
+        <div className="thread-create-worktree">
+          <label className="flex min-h-11 cursor-pointer items-center gap-2.5 text-sm font-medium">
+            <input
+              id={`${formId}-worktree`}
+              type="checkbox"
+              role="switch"
+              checked={worktreeOn}
+              disabled={fieldsLocked}
+              onChange={(event) => { setWorktreeOn(event.currentTarget.checked); setError(null); }}
+              className="h-5 w-5 shrink-0 accent-[var(--theme-accent-solid)] disabled:cursor-not-allowed disabled:opacity-50"
+            />
+            {worktreeText('toggle')}
+          </label>
+          {worktreeOn ? (
+            <>
+              {selectedWorkspace && worktreeNameFromTitle(title) ? (
+                <PathChip
+                  path={worktreePathPreview(selectedWorkspace.absPath, worktreeNameFromTitle(title)!)}
+                  display={shortPath(worktreePathPreview(selectedWorkspace.absPath, worktreeNameFromTitle(title)!), 60)}
+                  className="mb-2 max-w-full text-xs"
+                />
+              ) : null}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field id={`${formId}-worktree-branch`} label={worktreeText('branch')}>
+                  <input id={`${formId}-worktree-branch`} value={worktreeBranch} disabled={fieldsLocked}
+                    onChange={(event) => setWorktreeBranch(event.target.value)}
+                    placeholder={`agent/${worktreeNameFromTitle(title) ?? '…'}`}
+                    className={controlClass} autoComplete="off" spellCheck={false} />
+                </Field>
+                <Field id={`${formId}-worktree-base`} label={worktreeText('base')}>
+                  <input id={`${formId}-worktree-base`} value={worktreeBase} disabled={fieldsLocked}
+                    onChange={(event) => setWorktreeBase(event.target.value)}
+                    placeholder="HEAD" title={worktreeText('baseHint')}
+                    className={controlClass} autoComplete="off" spellCheck={false} />
+                </Field>
+              </div>
+            </>
+          ) : (
+            <p className="-mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">{worktreeText('hint')}</p>
+          )}
+        </div>
+      ) : null}
 
       <div className={selectedModel?.supportedReasoningEfforts.length ? 'grid gap-5 sm:grid-cols-2' : ''}>
         <Field id={`${formId}-thread-model`} label={translate("workbench.model")}>
@@ -951,7 +1102,7 @@ export function ThreadCreateForm({
           }
         >
           {busy ? created && environmentConnectionId ? environmentLabel('startingCreatedEnvironment') : translate("workbench.creating")
-            : created ? environmentConnectionId ? environmentLabel('retryEnvironmentStart') : translate("workbench.retryRunMode")
+            : created ? environmentConnectionId ? environmentLabel('retryEnvironmentStart') : setupFailed ? worktreeText('openThread') : translate("workbench.retryRunMode")
             : firstPrompt.trim() ? translate("workbench.createAndSend") : translate("workbench.createThread_ea3fa3")}
         </button>
         {error && error.at !== 'runtime' ? (
@@ -965,7 +1116,7 @@ export function ThreadCreateForm({
         ) : backendUnavailable ? (
           <ErrorMark kind="unavailable" message={translate("workbench.selectAnAvailableBackendBeforeCreatingA")} />
         ) : null}
-        {created && !busy ? (
+        {created && !busy && !setupFailed ? (
           <button
             type="button"
             onClick={() => onCreated(created)}

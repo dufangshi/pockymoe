@@ -39,6 +39,8 @@ export interface HarnessSettingsFieldsProps {
   liveModelSwitch?: boolean;
 }
 
+// Moving the thread to another agent lives in the composer's model picker and
+// the fork panel (docs/harness-switching.md); this window is the harness's own settings.
 export function HarnessSettingsDialog({
   onClose,
   composerFocusOwner,

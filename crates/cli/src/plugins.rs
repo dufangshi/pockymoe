@@ -83,6 +83,16 @@ impl crate::threads::Client {
 
 #[derive(Subcommand)]
 pub enum McpCommand {
+    /// Serve Pockymoe tools to an outside MCP client over stdio.
+    Serve {
+        #[arg(long)]
+        device: Option<String>,
+        #[arg(long, default_value="supervised", value_parser=["read","supervised","full"])]
+        access: String,
+        /// Limit the client to these workspace IDs (repeat the flag); default all.
+        #[arg(long = "workspace", value_name = "WORKSPACE_ID")]
+        workspaces: Vec<String>,
+    },
     /// Device MCP servers passed to ACP sessions; values of env and headers are hidden.
     List,
     /// Add or replace a server from a JSON definition (stdin with -).
@@ -98,6 +108,7 @@ pub enum McpCommand {
 impl crate::threads::Client {
     pub async fn mcp(&self, command: McpCommand) -> Result<Value> {
         let value = match command {
+            McpCommand::Serve { .. } => unreachable!("stdio is handled by the command runner"),
             McpCommand::List => json!({"operation":"mcpList"}),
             McpCommand::Set { json: text } => {
                 let text = if text == "-" {

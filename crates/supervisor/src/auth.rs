@@ -111,11 +111,38 @@ pub async fn require_auth(
     {
         return next.run(request).await;
     }
+    // Without sign-in, a browser page on a rebound DNS name could drive the
+    // whole API; tunnel requests never come from such a page.
+    if !auth_required(&state) && request.extensions().get::<TrustedRelayForward>().is_none() {
+        if let Some(refusal) = crate::local_hosts::refuse(&state, request.headers(), request.uri())
+        {
+            return refusal;
+        }
+    }
     let path = request.uri().path();
     if let Some((enabled, feature)) = crate::host_policy::route_feature(&state, path) {
         if let Err(error) = pockymoe_runtime::host_mode::require_feature(enabled, feature) {
             return crate::http::map_err(error).into_response();
         }
+    }
+    // MCP bearer credentials form a separate audience even on an unauthenticated
+    // local installation. They must never inherit the browser/owner API rights.
+    if bearer_token(request.headers()).is_some_and(|t| t.starts_with("pmcp_")) && path != "/mcp" {
+        return axum::http::StatusCode::FORBIDDEN.into_response();
+    }
+    if path == "/mcp"
+        || path.starts_with("/oauth/mcp/")
+        || matches!(
+            path,
+            "/.well-known/oauth-protected-resource"
+                | "/.well-known/oauth-protected-resource/mcp"
+                | "/.well-known/oauth-authorization-server"
+        )
+    {
+        if request.extensions().get::<TrustedRelayForward>().is_some() {
+            return axum::http::StatusCode::FORBIDDEN.into_response();
+        }
+        return next.run(request).await;
     }
     let bootstrap = crate::owner_trust::bootstrap(request.method().as_str(), path);
     let owner_endpoint = path == "/api/transport/trust"

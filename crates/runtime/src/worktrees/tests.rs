@@ -796,3 +796,679 @@ fn git_returns_by_its_deadline_when_a_descendant_keeps_its_output_open() {
     .unwrap();
     assert_eq!(out.bytes, b".git\n");
 }
+
+#[tokio::test]
+async fn checkpoints_preserve_index_head_include_untracked_and_restore_roundtrip() {
+    let f = Fixture::new().await;
+    let root = &f.repo;
+    std::fs::write(root.join("tracked.txt"), "staged\n").unwrap();
+    run_git(root, &["add", "tracked.txt"]);
+    std::fs::write(root.join("tracked.txt"), "unstaged\n").unwrap();
+    std::fs::write(root.join("new.txt"), "new\n").unwrap();
+    std::fs::write(root.join("ignored.env"), "private\n").unwrap();
+    let index = std::fs::read(root.join(".git/index")).unwrap();
+    let head = run_git(root, &["rev-parse", "HEAD"]);
+    let start = checkpoints::snapshot(root, "refs/pockymoe/checkpoints/test/start").unwrap();
+    assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), index);
+    assert_eq!(run_git(root, &["rev-parse", "HEAD"]), head);
+    let oid = start["commit"].as_str().unwrap();
+    let names = run_git(root, &["ls-tree", "-r", "--name-only", oid]);
+    assert!(names.contains("new.txt"));
+    assert!(!names.contains("ignored.env"));
+    std::fs::remove_file(root.join("new.txt")).unwrap();
+    std::fs::write(root.join("later.txt"), "later\n").unwrap();
+    std::fs::write(root.join("tracked.txt"), "after\n").unwrap();
+    let end = checkpoints::snapshot(root, "refs/pockymoe/checkpoints/test/end").unwrap();
+    checkpoints::restore(root, oid).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+        "unstaged\n"
+    );
+    assert!(root.join("new.txt").exists());
+    assert!(!root.join("later.txt").exists());
+    assert!(root.join("ignored.env").exists());
+    checkpoints::restore(root, end["commit"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+        "after\n"
+    );
+    assert!(root.join("later.txt").exists());
+    assert!(!root.join("new.txt").exists());
+    assert_eq!(std::fs::read(root.join(".git/index")).unwrap(), index);
+}
+#[tokio::test]
+async fn git_writes_stage_unstage_hunks_and_reject_stale_patch() {
+    let f = Fixture::new().await;
+    std::fs::write(f.repo.join("tracked.txt"), "modified\n").unwrap();
+    let patch = f
+        .state
+        .worktree_git_diff(&f.thread, None, "worktree", None, Some("tracked.txt"))
+        .unwrap()["patch"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.state
+        .worktree_git_write(&f.thread, "stage", &json!({"patch":patch}))
+        .unwrap();
+    assert!(run_git(&f.repo, &["diff", "--cached"]).contains("+modified"));
+    assert!(f
+        .state
+        .worktree_git_write(&f.thread, "stage", &json!({"patch":patch}))
+        .is_err());
+    f.state
+        .worktree_git_write(&f.thread, "unstage", &json!({"paths":["tracked.txt"]}))
+        .unwrap();
+    assert!(run_git(&f.repo, &["diff", "--cached"]).is_empty());
+    f.state
+        .worktree_git_write(&f.thread, "discard", &json!({"patch":patch}))
+        .unwrap();
+    assert!(run_git(&f.repo, &["diff"]).is_empty());
+    assert!(f
+        .state
+        .worktree_git_write(&f.thread, "stage", &json!({"paths":["../secret"]}))
+        .is_err());
+    assert!(f
+        .state
+        .worktree_git_write(&f.thread, "checkout", &json!({"name":"--detach"}))
+        .is_err());
+}
+#[tokio::test]
+async fn commit_all_context_does_not_stage_files() {
+    let f = Fixture::new().await;
+    std::fs::write(f.repo.join("tracked.txt"), "message context\n").unwrap();
+    let before = std::fs::read(f.repo.join(".git/index")).unwrap();
+    let context = f
+        .state
+        .commit_message_context(&f.thread, &json!({"all":true}))
+        .unwrap();
+    assert!(context.contains("message context"));
+    assert_eq!(std::fs::read(f.repo.join(".git/index")).unwrap(), before);
+}
+#[tokio::test]
+async fn git_network_writes_use_local_bare_remote() {
+    let f = Fixture::new().await;
+    let bare = f._dir.path().join("remote.git");
+    std::fs::create_dir(&bare).unwrap();
+    run_git(&bare, &["init", "--bare", "-q"]);
+    run_git(
+        &f.repo,
+        &["remote", "add", "origin", bare.to_str().unwrap()],
+    );
+    let result = f
+        .state
+        .worktree_git_write(&f.thread, "push", &json!({"setUpstream":true}))
+        .unwrap();
+    assert_eq!(result["status"]["upstream"], "origin/main");
+    f.state
+        .worktree_git_write(&f.thread, "fetch", &json!({}))
+        .unwrap();
+    f.state
+        .worktree_git_write(&f.thread, "pull", &json!({}))
+        .unwrap();
+    let branches = f.state.worktree_git_branches(&f.thread, None).unwrap();
+    assert!(branches["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|b| b["name"] == "main"));
+}
+#[tokio::test]
+async fn turn_diff_excludes_clean_merge_imports_but_keeps_local_edits() {
+    let f = Fixture::new().await;
+    run_git(&f.repo, &["checkout", "-qb", "upstream"]);
+    std::fs::write(f.repo.join("imported.txt"), "from upstream\n").unwrap();
+    run_git(&f.repo, &["add", "imported.txt"]);
+    run_git(&f.repo, &["commit", "-qm", "upstream change"]);
+    run_git(&f.repo, &["checkout", "-q", "main"]);
+    f.state
+        .capture_turn_checkpoints(&f.thread, "merge-turn", "start");
+    run_git(
+        &f.repo,
+        &["merge", "--no-ff", "upstream", "-m", "merge upstream"],
+    );
+    std::fs::write(f.repo.join("tracked.txt"), "local edit\n").unwrap();
+    f.state
+        .capture_turn_checkpoints(&f.thread, "merge-turn", "end");
+    let diff = f
+        .state
+        .checkpoint_diff(&f.thread, None, "merge-turn", None, false)
+        .unwrap();
+    assert!(diff["patch"].as_str().unwrap().contains("+local edit"));
+    assert!(!diff["patch"].as_str().unwrap().contains("imported.txt"));
+    assert_eq!(diff["files"], 1);
+}
+#[tokio::test]
+async fn restore_preview_undo_and_busy_refusal() {
+    let f = Fixture::new().await;
+    f.state
+        .capture_turn_checkpoints(&f.thread, "restore-turn", "start");
+    std::fs::write(f.repo.join("tracked.txt"), "restore me\n").unwrap();
+    let input = json!({"turnId":"restore-turn","phase":"start"});
+    let preview = f
+        .state
+        .checkpoint_restore(&f.thread, &input, true)
+        .await
+        .unwrap();
+    assert!(preview["patch"].as_str().unwrap().contains("restore me"));
+    assert!(std::fs::read_to_string(f.repo.join("tracked.txt"))
+        .unwrap()
+        .contains("restore me"));
+    let restored = f
+        .state
+        .checkpoint_restore(&f.thread, &input, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("tracked.txt")).unwrap(),
+        "initial\n"
+    );
+    f.state
+        .checkpoint_undo(&f.thread, restored["undoId"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("tracked.txt")).unwrap(),
+        "restore me\n"
+    );
+    f.state
+        .db
+        .with(|c| {
+            c.execute(
+                "UPDATE threads SET status='running' WHERE id=?1",
+                [&f.thread],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(f
+        .state
+        .checkpoint_restore(&f.thread, &input, false)
+        .await
+        .is_err());
+    assert!(f
+        .state
+        .worktree_git_write(&f.thread, "stage", &json!({"paths":["tracked.txt"]}))
+        .is_err());
+}
+#[tokio::test]
+async fn rewind_truncates_journal_emits_event_and_restores_files() {
+    let f = Fixture::new().await;
+    for text in ["first", "second"] {
+        f.state
+            .fixture_event(crate::fake::FixtureEventInput {
+                r#type: "start".into(),
+                thread_id: f.thread.clone(),
+                text: None,
+            })
+            .await
+            .unwrap();
+        std::fs::write(f.repo.join("tracked.txt"), format!("{text}\n")).unwrap();
+        f.state
+            .fixture_event(crate::fake::FixtureEventInput {
+                r#type: "complete".into(),
+                thread_id: f.thread.clone(),
+                text: Some(text.into()),
+            })
+            .await
+            .unwrap();
+    }
+    let options = f.state.list_fork_turn_options(&f.thread).unwrap();
+    assert_eq!(options.len(), 2);
+    let turn = &options[1].turn_id;
+    let mut events = f.state.bus.subscribe();
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        f.state
+            .rewind_thread(&f.thread, &json!({"turnId":turn,"restoreFiles":true})),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(result["removedTurns"], 1);
+    assert_eq!(result["history"], "rollback");
+    assert!(result["undoId"].is_string());
+    assert_eq!(f.state.list_fork_turn_options(&f.thread).unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("tracked.txt")).unwrap(),
+        "first\n"
+    );
+    let mut found = false;
+    while let Ok(e) = events.try_recv() {
+        if e.payload["reason"] == "historyRewound" {
+            found = true;
+        }
+    }
+    assert!(found);
+    f.state
+        .checkpoint_undo(&f.thread, result["undoId"].as_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("tracked.txt")).unwrap(),
+        "second\n"
+    );
+}
+#[tokio::test]
+async fn rewind_preserves_lineage_automation_and_spent_usage_but_removes_search() {
+    let f = Fixture::new().await;
+    f.state
+        .fixture_event(crate::fake::FixtureEventInput {
+            r#type: "complete".into(),
+            thread_id: f.thread.clone(),
+            text: Some("rewind-search-unique".into()),
+        })
+        .await
+        .unwrap();
+    let turn = f.state.list_fork_turn_options(&f.thread).unwrap()[0]
+        .turn_id
+        .clone();
+    f.state.db.with(|c|{
+        c.execute_batch(include_str!("../node_migrations/0011_thread_forks.sql"))?;
+        c.execute("INSERT INTO thread_forks(id,source_thread_id,source_turn_id,source_turn_index,forked_thread_id,created_at) VALUES('lineage',?1,?2,1,'fork-child','now')",params![f.thread,turn])?;
+        c.execute("INSERT INTO automations(id,thread_id,definition_json,state,event_cursor,created_at,updated_at) VALUES('rewind-auto',?1,'{}','paused',0,'now','now')",[&f.thread])?;
+        c.execute("INSERT INTO automation_runs(id,automation_id,occurrence_key,state,scheduled_at,observed_at,definition_json,event_json,turn_id) VALUES('rewind-run','rewind-auto','one','completed','now','now','{}','{}',?1)",[&turn])?;
+        c.execute("UPDATE thread_turns SET token_usage_json=?2 WHERE id=?1",params![turn,json!({"total":{"inputTokens":120,"outputTokens":8}}).to_string()])?;Ok(())
+    }).unwrap();
+    f.state
+        .rewind_thread(&f.thread, &json!({"turnId":turn}))
+        .await
+        .unwrap();
+    f.state.db.with(|c|{
+        for table in ["thread_forks","automation_runs"]{let n:i64=c.query_row(&format!("SELECT COUNT(*) FROM {table}"),[],|r|r.get(0))?;assert_eq!(n,1);}
+        let n:i64=c.query_row("SELECT COUNT(*) FROM search_documents WHERE thread_id=?1 AND turn_id=?2",params![f.thread,turn],|r|r.get(0))?;assert_eq!(n,0);
+        let n:i64=c.query_row("SELECT COUNT(*) FROM search_documents_fts WHERE search_documents_fts MATCH '\"rewind-search-unique\"'",[],|r|r.get(0))?;assert_eq!(n,0);
+        let usage:String=c.query_row("SELECT token_usage_json FROM all_turn_accounting WHERE id=?1",[&turn],|r|r.get(0))?;assert!(usage.contains("120"));Ok(())
+    }).unwrap();
+}
+#[tokio::test]
+async fn rewind_failure_automatically_undoes_files_and_keeps_journal() {
+    let f = Fixture::new().await;
+    f.state
+        .fixture_event(crate::fake::FixtureEventInput {
+            r#type: "start".into(),
+            thread_id: f.thread.clone(),
+            text: None,
+        })
+        .await
+        .unwrap();
+    std::fs::write(f.repo.join("tracked.txt"), "keep after failure\n").unwrap();
+    f.state
+        .fixture_event(crate::fake::FixtureEventInput {
+            r#type: "complete".into(),
+            thread_id: f.thread.clone(),
+            text: Some("done".into()),
+        })
+        .await
+        .unwrap();
+    let turn = f.state.list_fork_turn_options(&f.thread).unwrap()[0]
+        .turn_id
+        .clone();
+    f.state.db.with(|c|{c.execute_batch("CREATE TRIGGER refuse_test_rewind BEFORE DELETE ON thread_turns BEGIN SELECT RAISE(ABORT,'injected journal failure'); END;")?;Ok(())}).unwrap();
+    let error = f
+        .state
+        .rewind_thread(&f.thread, &json!({"turnId":turn,"restoreFiles":true}))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("injected journal failure"));
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("tracked.txt")).unwrap(),
+        "keep after failure\n"
+    );
+    assert_eq!(f.state.list_fork_turn_options(&f.thread).unwrap().len(), 1);
+}
+#[tokio::test]
+async fn restore_keeps_unchanged_file_mtime_and_checkpoint_counts_are_cached() {
+    let f = Fixture::new().await;
+    let untouched = f.repo.join("src/file.rs");
+    let before = untouched.metadata().unwrap().modified().unwrap();
+    let start = checkpoints::snapshot(&f.repo, "refs/pockymoe/checkpoints/mtime/start").unwrap();
+    std::fs::write(f.repo.join("tracked.txt"), "changed\n").unwrap();
+    checkpoints::restore(&f.repo, start["commit"].as_str().unwrap()).unwrap();
+    assert_eq!(untouched.metadata().unwrap().modified().unwrap(), before);
+    f.state
+        .fixture_event(crate::fake::FixtureEventInput {
+            r#type: "complete".into(),
+            thread_id: f.thread.clone(),
+            text: Some("done".into()),
+        })
+        .await
+        .unwrap();
+    f.state
+        .db
+        .with(|c| {
+            let counts: Option<u64> = c.query_row(
+                "SELECT files FROM turn_checkpoints WHERE thread_id=?1 AND phase='start'",
+                [&f.thread],
+                |r| r.get(0),
+            )?;
+            assert_eq!(counts, Some(0));
+            Ok(())
+        })
+        .unwrap();
+    // Cached metadata remains available even when Git is temporarily unavailable.
+    std::fs::rename(f.repo.join(".git"), f.repo.join(".git-hidden")).unwrap();
+    let list = f.state.checkpoints_list(&f.thread).unwrap();
+    assert_eq!(list["turns"][0]["workingCopies"][0]["files"], 0);
+}
+#[tokio::test]
+async fn stash_write_list_and_pop_roundtrip() {
+    let f = Fixture::new().await;
+    std::fs::write(f.repo.join("tracked.txt"), "stash change\n").unwrap();
+    std::fs::write(f.repo.join("new-stash.txt"), "untracked\n").unwrap();
+    let result = f
+        .state
+        .worktree_git_write(
+            &f.thread,
+            "stashPush",
+            &json!({"message":"保留 working changes"}),
+        )
+        .unwrap();
+    assert_eq!(result["status"]["stashCount"], 1);
+    let stashes = f.state.worktree_git_stashes(&f.thread, None).unwrap();
+    assert_eq!(stashes["stashes"].as_array().unwrap().len(), 1);
+    assert!(stashes["stashes"][0]["subject"]
+        .as_str()
+        .unwrap()
+        .contains("保留"));
+    f.state
+        .worktree_git_write(&f.thread, "stashPop", &json!({"index":0}))
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("tracked.txt")).unwrap(),
+        "stash change\n"
+    );
+    assert!(f.repo.join("new-stash.txt").exists());
+}
+
+#[tokio::test]
+async fn rewind_selects_native_only_when_current_session_contains_the_journal() {
+    // Exercise the public operation, including its portable-session transaction.
+    for (case, expected) in [
+        ("legacy_session", "rollback"),
+        ("session_before_turn", "rollback"),
+        ("session_at_turn", "rollback"),
+        ("session_after_turn", "handoff"),
+        ("no_session", "handoff"),
+        ("foreign_provider", "handoff"),
+        ("foreign_agent", "handoff"),
+    ] {
+        let f = Fixture::new().await;
+        f.state
+            .fixture_event(crate::fake::FixtureEventInput {
+                r#type: "complete".into(),
+                thread_id: f.thread.clone(),
+                text: Some("done".into()),
+            })
+            .await
+            .unwrap();
+        let turn = f.state.list_fork_turn_options(&f.thread).unwrap()[0]
+            .turn_id
+            .clone();
+        f.state.db.with(|c| {
+            c.execute("DELETE FROM thread_harness_sessions WHERE thread_id=?1", [&f.thread])?;
+            c.execute("UPDATE thread_turns SET started_at='2026-01-02T00:00:00Z' WHERE id=?1", [&turn])?;
+            match case {
+                "no_session" => {c.execute("UPDATE threads SET provider_session_id=NULL WHERE id=?1", [&f.thread])?;},
+                "foreign_provider" => {c.execute("UPDATE thread_turns SET provider='acp' WHERE id=?1", [&turn])?;},
+                "foreign_agent" => {c.execute("UPDATE thread_turns SET agent_id='claude' WHERE id=?1", [&turn])?;},
+                "session_before_turn" | "session_at_turn" | "session_after_turn" => {
+                    let created = match case {
+                        "session_before_turn" => "2026-01-01T00:00:00Z",
+                        "session_at_turn" => "2026-01-02T00:00:00Z",
+                        _ => "2026-01-03T00:00:00Z",
+                    };
+                    c.execute("INSERT INTO thread_harness_sessions(thread_id,provider,agent_id,session_id,turns_seen,created_at,last_used_at) SELECT id,provider,COALESCE(agent_id,''),provider_session_id,0,?2,?2 FROM threads WHERE id=?1", params![f.thread,created])?;
+                },
+                _ => {},
+            }
+            Ok(())
+        }).unwrap();
+        let result = f
+            .state
+            .rewind_thread(&f.thread, &json!({"turnId":turn}))
+            .await
+            .unwrap();
+        assert_eq!(result["history"], expected, "{case}");
+        assert!(f
+            .state
+            .list_fork_turn_options(&f.thread)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            f.state
+                .get_thread(&f.thread)
+                .unwrap()
+                .provider_session_id
+                .is_none(),
+            expected == "handoff",
+            "{case}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn portable_rewind_transaction_failure_keeps_files_journal_and_session_state() {
+    let f = Fixture::new().await;
+    f.state
+        .fixture_event(crate::fake::FixtureEventInput {
+            r#type: "start".into(),
+            thread_id: f.thread.clone(),
+            text: None,
+        })
+        .await
+        .unwrap();
+    std::fs::write(f.repo.join("tracked.txt"), "keep after portable failure\n").unwrap();
+    f.state
+        .fixture_event(crate::fake::FixtureEventInput {
+            r#type: "complete".into(),
+            thread_id: f.thread.clone(),
+            text: Some("keep journal".into()),
+        })
+        .await
+        .unwrap();
+    let turn = f.state.list_fork_turn_options(&f.thread).unwrap()[0]
+        .turn_id
+        .clone();
+    f.state.db.with(|c| {
+        c.execute("UPDATE thread_turns SET agent_id='foreign' WHERE id=?1", [&turn])?;
+        c.execute_batch("CREATE TRIGGER refuse_portable_stage BEFORE INSERT ON kv WHEN NEW.key LIKE 'handoff:pending:%' BEGIN SELECT RAISE(ABORT,'injected portable failure'); END;")?;
+        Ok(())
+    }).unwrap();
+    let session = f.state.get_thread(&f.thread).unwrap().provider_session_id;
+    let error = f
+        .state
+        .rewind_thread(&f.thread, &json!({"turnId":turn,"restoreFiles":true}))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("injected portable failure"),
+        "{error:#}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("tracked.txt")).unwrap(),
+        "keep after portable failure\n"
+    );
+    assert_eq!(
+        f.state.get_thread(&f.thread).unwrap().provider_session_id,
+        session
+    );
+    assert_eq!(f.state.list_fork_turn_options(&f.thread).unwrap().len(), 1);
+    assert!(f
+        .state
+        .db
+        .get_kv(&format!("handoff:pending:{}", f.thread))
+        .unwrap()
+        .is_none());
+    f.state
+        .db
+        .with(|c| {
+            let archived: i64 = c.query_row(
+                "SELECT COUNT(*) FROM rewound_turn_accounting WHERE thread_id=?1",
+                [&f.thread],
+                |r| r.get(0),
+            )?;
+            assert_eq!(archived, 0);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn guarded_git_command_reopens_finite_stdin_without_shell_interpolation() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    run_git(repo, &["init", "-q", "-b", "main"]);
+    let name = "file $(touch unexpected) ' with spaces.txt";
+    std::fs::write(repo.join(name), "initial\n").unwrap();
+    run_git(repo, &["add", "--", name]);
+    std::fs::write(repo.join(name), "changed\n").unwrap();
+    let input = repo.join("paths $(touch unexpected) '.bin");
+    std::fs::write(&input, format!("{name}\0")).unwrap();
+    // Reproduce the guardian: command's original stdin setting is discarded.
+    let output = git_command(Some(&input))
+        .current_dir(repo)
+        .args(["checkout-index", "--force", "--stdin", "-z"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join(name)).unwrap(),
+        "initial\n"
+    );
+    assert!(!repo.join("unexpected").exists());
+}
+
+#[tokio::test]
+async fn checkpoint_preview_ignores_claims_and_loaded_harnesses_without_creating_refs() {
+    let f = Fixture::new().await;
+    f.state
+        .capture_turn_checkpoints(&f.thread, "preview-turn", "start");
+    std::fs::write(f.repo.join("tracked.txt"), "preview current files\n").unwrap();
+    std::fs::write(f.repo.join("untracked.txt"), "include untracked\n").unwrap();
+    std::fs::write(f.repo.join("ignored.env"), "do not include\n").unwrap();
+    let other = new_thread(&f.state, &f.workspace).await;
+    assert!(f.state.runtime(Provider::Codex).unwrap().session_loaded(
+        f.state
+            .get_thread(&other)
+            .unwrap()
+            .provider_session_id
+            .as_deref()
+            .unwrap()
+    ));
+    let _other = f.state.hold_harness(&other).await;
+    let claim = f.state.try_claim(std::slice::from_ref(&f.thread)).unwrap();
+    f.state
+        .db
+        .with(|c| {
+            c.execute(
+                "UPDATE threads SET status='running' WHERE id=?1",
+                [&f.thread],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let before = run_git(
+        &f.repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/pockymoe/",
+        ],
+    );
+    let index = std::fs::read(f.repo.join(".git/index")).unwrap();
+    let commits_before = run_git(
+        &f.repo,
+        &[
+            "cat-file",
+            "--batch-all-objects",
+            "--batch-check=%(objecttype)",
+        ],
+    )
+    .lines()
+    .filter(|kind| *kind == "commit")
+    .count();
+    let db_changes: i64 = f
+        .state
+        .db
+        .with(|c| Ok(c.query_row("SELECT total_changes()", [], |r| r.get(0))?))
+        .unwrap();
+    let input = json!({"turnId":"preview-turn","phase":"start"});
+    for _ in 0..2 {
+        let preview = f
+            .state
+            .checkpoint_restore(&f.thread, &input, true)
+            .await
+            .unwrap();
+        let patch = preview["patch"].as_str().unwrap();
+        assert!(patch.contains("preview current files") && patch.contains("untracked.txt"));
+        assert!(!patch.contains("ignored.env"));
+        assert_eq!(preview["files"].as_array().unwrap().len(), 2);
+    }
+    assert_eq!(
+        run_git(
+            &f.repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/pockymoe/"
+            ]
+        ),
+        before
+    );
+    assert_eq!(std::fs::read(f.repo.join(".git/index")).unwrap(), index);
+    let commits_after = run_git(
+        &f.repo,
+        &[
+            "cat-file",
+            "--batch-all-objects",
+            "--batch-check=%(objecttype)",
+        ],
+    )
+    .lines()
+    .filter(|kind| *kind == "commit")
+    .count();
+    assert_eq!(
+        commits_after, commits_before,
+        "preview must not create even unreferenced commits"
+    );
+    let after_changes: i64 = f
+        .state
+        .db
+        .with(|c| Ok(c.query_row("SELECT total_changes()", [], |r| r.get(0))?))
+        .unwrap();
+    assert_eq!(
+        after_changes, db_changes,
+        "preview must not update working-copy metadata or checkpoint rows"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("tracked.txt")).unwrap(),
+        "preview current files\n"
+    );
+    f.state
+        .db
+        .with(|c| {
+            c.execute("UPDATE threads SET status='idle' WHERE id=?1", [&f.thread])?;
+            Ok(())
+        })
+        .unwrap();
+    let error = f
+        .state
+        .checkpoint_restore(&f.thread, &input, false)
+        .await
+        .unwrap_err();
+    // Check this thread first, so its transient pre-write busy error remains
+    // identifiable even when another loaded thread shares the copy.
+    assert!(error.is::<CheckpointBusy>(), "{error}");
+    drop(claim);
+    assert!(f
+        .state
+        .checkpoint_restore(&f.thread, &input, false)
+        .await
+        .is_err());
+}
