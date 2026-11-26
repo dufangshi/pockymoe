@@ -244,3 +244,25 @@
 }
 :root[data-theme-preset='terminal'] .pd-device-settings { border-radius: 0; }
 
+/* A phone's device cards (issue #116): readable readings in two rows, keys a finger can hit. */
+@media (max-width: 639px) {
+  .pd-web-page .pd-page-header h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .pd-page .pd-device-card { height: auto; padding: 10px 12px; }
+  .pd-page .pd-device-grid { gap: 8px; }
+  .pd-card-heading { height: 36px; gap: 4px; }
+  .pd-device-title strong { font-size: 14px; }
+  .pd-page .pd-card-heading .pd-icon-button { width: 36px; height: 36px; }
+  .pd-page .pd-card-heading .pd-icon-button > svg { width: 18px; height: 18px; }
+  .pd-workspaces-arrow { margin-inline: 2px; }
+  .pd-card-readings { height: auto; flex-wrap: wrap; row-gap: 6px; padding-block: 4px; }
+  .pd-page .pd-counts { gap: 14px; font-size: 12px; }
+  .pd-counts .status-mark { width: 11px; height: 11px; }
+  .pd-counts b { font-size: 12px; }
+  .pd-counts svg { width: 13px; height: 13px; }
+  .pd-page .pd-monitor { flex: 1 1 100%; justify-content: flex-start; }
+  .pd-page .pd-monitor .device-monitor-button { font-size: 11px; line-height: 16px; }
+  .pd-page .pd-monitor .device-monitor-button { display: flex; flex-wrap: wrap; column-gap: 12px; }
+  .pd-page .pd-monitor .device-monitor-button b { font-size: 11px; }
+  .pd-card-bottom { height: 32px; }
+  .pd-card-bottom .pd-today { font-size: 12px; }
+}
