@@ -654,6 +654,9 @@ fn operation(input: Value) -> Result<Value> {
             )?;
             Ok(Value::Null)
         }
+        "gitCheckpointTree" => Ok(Value::String(crate::worktrees::checkpoints::working_tree(
+            root,
+        )?)),
         "gitCheckpoint" => crate::worktrees::checkpoints::snapshot(
             root,
             input["reference"].as_str().context("reference required")?,

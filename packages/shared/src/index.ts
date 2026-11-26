@@ -13,6 +13,7 @@ export type {
 } from './agent-providers';
 
 export type ApiErrorCode =
+  | 'checkpoint_busy'
   | 'fileAlreadyExists'
   | 'permissionDenied'
   | 'reauthentication_required'

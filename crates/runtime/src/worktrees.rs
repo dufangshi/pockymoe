@@ -16,6 +16,7 @@ use std::{
 
 pub(crate) mod actions;
 pub(crate) mod checkpoints;
+pub use checkpoints::CheckpointBusy;
 
 const OUTPUT_LIMIT: usize = 512 * 1024;
 static MUTATION: Mutex<()> = Mutex::new(());

@@ -100,11 +100,17 @@ merge changes do not. Merge conflict resolutions use Git's remerge diff.
 Every diff area accepts `ignoreWhitespace=1`.
 
 `POST .../checkpoints/preview` accepts `{turnId, phase: "start" | "end",
-workingCopyId?}` and returns a file list plus a patch. `restore` accepts the same
+workingCopyId?}` and returns a file list plus a patch. Preview hashes the current
+files with a disposable index; it takes no thread claims and creates no commit,
+undo ref or safety snapshot. It remains available while harnesses are loaded or
+busy. `restore` accepts the same
 body, captures a safety snapshot first, then restores tracked and untracked
 nonignored files. It returns `undoId`; `undo` accepts `{undoId}`. Undo itself
 creates another safety snapshot. Restoring never changes the user's index.
 Restores refuse an active thread or another running/loaded thread using the copy.
+If a harness operation still holds the current thread, restore and undo return
+`409 checkpoint_busy` before writing; the Web UI retries that refusal once after
+750 milliseconds, then shows the reason if the operation is still busy.
 
 `POST .../rewind` accepts `{turnId, restoreFiles, dropQueued?}`. It removes the
 selected user turn and later journal turns, returning the prompt and attachment
