@@ -1,6 +1,6 @@
 import { useHostScope } from '../../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { Select, ErrorMark, formatReasoningEffortLabel } from '@pockymoe/thread-ui';
+import { Select, ErrorMark, formatReasoningEffortLabel, matchesSendModKey } from '@pockymoe/thread-ui';
 import type { FormEvent, ReactNode } from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { seedThreadDraft } from '../useThreadDrafts';
@@ -577,7 +577,7 @@ export function ThreadCreateForm({
           onChange={(event) => setFirstPrompt(event.target.value)}
           onKeyDown={(event) => {
             // The composer's own send keys: Ctrl or Command with Enter creates and sends.
-            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) {
+            if (event.key === 'Enter' && matchesSendModKey(event) && !event.nativeEvent.isComposing) {
               event.preventDefault();
               event.currentTarget.form?.requestSubmit();
             }

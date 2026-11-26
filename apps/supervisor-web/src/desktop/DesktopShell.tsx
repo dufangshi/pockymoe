@@ -14,6 +14,7 @@ import { DesktopSurfaceContext, hasWorkspaceContext, type NavigationActions } fr
 import { DesktopMapPage } from './MapPage';
 import { focusedKeyFromPath, handleHostCommand, syncActivity } from './integration';
 import type { DesktopCapabilities } from './host';
+import { matchesModKey } from '@pockymoe/thread-ui';
 import './desktop.css';
 
 export function DesktopShell({ children, capabilities }: { children: ReactNode; capabilities: DesktopCapabilities }) {
@@ -62,9 +63,14 @@ export function DesktopShell({ children, capabilities }: { children: ReactNode; 
   }, [host, navigate, newThread, openMap, revealInMap, shell, store]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey)) return;
+      // Mod is ⌘ on a Mac, where Ctrl+K kills to the end of the line, and Ctrl elsewhere (§19).
+      // AltGr reports Ctrl+Alt on Windows and is not Mod.
+      if (!matchesModKey(event) || event.altKey) return;
       if (event.key === '0') { event.preventDefault(); openMap(); }
       else if (event.key.toLowerCase() === 'k') {
+        // A terminal or code editor keeps Mod+K (kill line, the editor's chords) and its focus.
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest('.xterm, .monaco-editor')) return;
         event.preventDefault();
         const input = Array.from(document.querySelectorAll<HTMLInputElement>('.workbench-search.is-open input')).find(field => field.getClientRects().length);
         if (input) input.focus();

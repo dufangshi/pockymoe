@@ -262,3 +262,28 @@ Relay 管理后台「服务器」分区的每个数值有一个健康状态，�
 - 鼠标悬停、点按、方向键都能选中一根柱；选中内容显示在图下方，不用只有悬停才出现的浮层。
 - 调色板的亮色和暗色各自选定并用色觉障碍校验脚本检查过，主题包可以换色但要重新校验（`styles/composer-context.css` 的 `--context-cat-*`，`composer/ContextInsights.tsx`）。
 
+
+## 19. 快捷键
+
+- 「Mod」在 Mac（以及接了键盘的 iPad、iPhone）上是 ⌘，在 Windows 和 Linux 上是 Ctrl。带 Mod 的快捷键只认本平台的那一个键：Mac 上 Ctrl 加字母是系统文本编辑键和终端控制键（Ctrl+F 前进一个字符，Ctrl+K 删到行尾），必须原样交给输入框或终端；其他系统上不处理 ⌘。
+- 判断和显示都用共享 UI 的三个函数（`components/shortcuts.ts`）：`isMacPlatform()`、`matchesModKey(event)`、`formatShortcut('Mod+F')`。桌面客户端以宿主的 `capabilities.platform` 为准（`setHostPlatform`），浏览器先看 `navigator.userAgentData.platform`，再回落到 `navigator.platform`。源码里不直接写 `metaKey || ctrlKey`；`apps/supervisor-web/src/lib/shortcutGuard.test.ts` 检查 Web 和共享 UI。
+- 界面上出现的按键（按钮提示、占位文字、设置说明、引导）都由 `formatShortcut` 按当前平台写出，不写死 Ctrl 或 ⌘：Mac 写 ⌘F、⇧⌘Enter（修饰键顺序 ⌃⌥⇧⌘，不加 `+`），其他系统写 Ctrl+F、Ctrl+Shift+Enter。快捷键提示只是增强（§8），操作本身另有可见入口。
+- 终端（`.xterm`）和代码编辑器（`.monaco-editor`）里的按键先属于它们：Mod+F 是它们自己的查找，Mod+K 不抢走焦点。文件树里 Mod+F 打开文件过滤，不同时打开对话搜索（树上的 `data-native-find`）。
+- 现有绑定：
+
+  | 操作 | Windows / Linux | Mac |
+  | --- | --- | --- |
+  | 搜索对话 | Ctrl+F | ⌘F |
+  | 文件过滤（焦点在文件树里） | Ctrl+F | ⌘F |
+  | 搜索（桌面客户端） | Ctrl+K | ⌘K |
+  | 地图（桌面客户端） | Ctrl+0 | ⌘0 |
+  | 打开或收起终端 | Ctrl+` | ⌃` |
+  | 在终端分屏之间移动 | Alt+←/→ | ⌥⌘←/→ |
+  | 终端复制、粘贴 | Ctrl+C（有选中时）、Ctrl+V | ⌘C、⌘V |
+  | 发送（及运行中的排队、插话） | Ctrl+Enter | ⌘Enter，Ctrl+Enter 也可 |
+
+- 例外：发送在所有平台同时接受 Ctrl 和 ⌘（`matchesSendModKey`，输入框和新建线程表单共用）。原因：Ctrl+Enter 在 Mac 的文本框里没有别的含义，而发送方式是跟随账号、跨设备的设置（[消息快捷键](account-composer-shortcuts.md)）；文案仍只写本平台的键，设置页注明另一个键也可用。
+- 例外：Ctrl+` 在所有平台都是 Ctrl，焦点在终端里时也生效。原因：与 VS Code 一致，⌘` 在 Mac 上是系统的窗口切换键。
+- 例外：Mac 上终端分屏之间移动用 ⌥⌘←/→，不用 Alt+←/→。原因：Option+←/→ 在 shell 里是按词移动（`shell/splitPaneKey.ts`）。
+- Mac 上终端设置不显示「Ctrl+V」的选择：那里 ⌘V 粘贴，Ctrl+V 始终是终端自己的按键。
+- Electron 菜单的加速键在客户端仓库里定义，不在本文范围内。

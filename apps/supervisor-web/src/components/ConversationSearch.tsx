@@ -5,7 +5,7 @@ import {
   type ConversationSearchMatch, type GlobalConversationSearchMatch, searchConversations,
 } from '../lib/api';
 import type { ThreadTurnDto } from '@pockymoe/shared';
-import { ConversationSearchExcerpt, ConversationSearchScopePicker, ErrorMark, type ConversationSearchScope } from '@pockymoe/thread-ui';
+import { ConversationSearchExcerpt, ConversationSearchScopePicker, ErrorMark, formatShortcut, type ConversationSearchScope } from '@pockymoe/thread-ui';
 import { useSearchMessages } from './searchMessages';
 
 type SearchMatch = ConversationSearchMatch | GlobalConversationSearchMatch;
@@ -177,7 +177,7 @@ export function ConversationSearch({ threadId, workspaceId, deviceLabel, deviceI
   };
 
   return <div ref={root} className={`workbench-search ${open ? 'is-open' : ''}`}>
-    {!open ? <button ref={trigger} className="matter-search-trigger" aria-label={labels.trigger} onClick={onOpen}>
+    {!open ? <button ref={trigger} className="matter-search-trigger" aria-label={labels.trigger} title={`${labels.trigger} (${formatShortcut('Mod+F')})`} onClick={onOpen}>
       <Search data-icon="search" /><span>{labels.trigger}</span>
     </button> : <>
       <div className="workbench-search-field">

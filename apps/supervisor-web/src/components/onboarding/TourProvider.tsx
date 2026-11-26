@@ -1,6 +1,7 @@
 import { devicesHref } from '../../lib/devicesRoute';
 import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { Check, CircleHelp, Compass, X } from 'lucide-react';
+import { formatShortcut } from '@pockymoe/thread-ui';
 import {
   createContext,
   useCallback,
@@ -573,7 +574,8 @@ function TourStepOverlay({
           </button>
         </div>
         <h2 id={titleId} className="pm-tour-title">{translate(step.title)}</h2>
-        <p className="pm-tour-body">{translate(body)}</p>
+        {/* Keys a step names are written as this platform has them (§19). */}
+        <p className="pm-tour-body">{translate(body, { terminalShortcut: formatShortcut('Ctrl+`') })}</p>
         {prerequisite && (
           <p className="pm-tour-prerequisite" role="status">
             <strong>{translate('tour.prerequisite')}</strong>

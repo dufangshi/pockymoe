@@ -791,9 +791,10 @@ opens them below it (the same count and name as the tab's, in the row's soft tex
 colour); the row keeps its place, and the thread sheet keeps its height
 and scrolls rather than growing upward. Both sections of the thread sheet fold.
 
-On the desktop the tabs row is the only bar: search at its left (Ctrl/⌘+F opens
-it, except in the terminal and code editors, which keep their own find; the open
-field covers the tabs), then the tabs, New thread and the thread tools, with the
+On the desktop the tabs row is the only bar: search at its left (Ctrl+F opens it,
+⌘F on a Mac, where Ctrl+F stays the text field's and the terminal's key; the
+terminal and code editors keep their own find, and in the file tree the same key
+opens the file filter; the open field covers the tabs), then the tabs, New thread and the thread tools, with the
 connection and notifications at the right. The sidebar switch, Back and Forward
 moved to the rail under the brand, which leads home. The thread tools menu holds
 the thread's actions, then its panels (agents, automations, plugins, split); it
@@ -1005,7 +1006,8 @@ enabled, stored in this browser):
   set to copy a selection and otherwise paste.
 - A paste of several lines into a shell without bracketed paste asks first, since
   the shell would run the lines one by one.
-- On a Mac ⌘C and ⌘V copy and paste, and Ctrl stays with the terminal.
+- On a Mac ⌘C and ⌘V copy and paste, and Ctrl stays with the terminal; the Ctrl+V
+  choice is not shown there, and the settings note names the Mac's keys.
 - On a touch keyboard the terminal's field takes text as any field does, so input
   methods work (pinyin and other candidates, predictions, autocorrect): the shell
   gets what changed, a composition once it is chosen. Enter, arrows, Tab, Esc and
