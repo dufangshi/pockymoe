@@ -451,6 +451,12 @@ impl Supervisor {
             .or_default()
             .clone()
     }
+    /// The harness's "Sign-in required: …" message from its last ACP check.
+    pub fn harness_sign_in_error(&self, id: &str) -> Option<String> {
+        self.runtimes
+            .values()
+            .find_map(|runtime| runtime.sign_in_error(id))
+    }
     pub async fn restart_harness(&self, id: &str) -> Result<usize> {
         let mut count = 0;
         for runtime in self.runtimes.values() {

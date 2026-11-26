@@ -392,9 +392,86 @@ pub async fn inventory(state: &Supervisor) -> Value {
         let job = state.management_jobs.lock().unwrap().get(&def.id).cloned();
         let base=base.map(dto).unwrap_or_else(|_|json!({"installed":false,"canInstall":can_install(&def.id),"canUpdate":false,"path":"","resolvedPath":"","manager":"pockymoe","reason":if can_install(&def.id){""}else{no_installer(&def.id)}}));
         let adapter_command = (def.transport == "adapter").then_some(&def.server_command);
-        json!({"id":def.id,"name":def.display_name,"transport":def.transport,"baseCommand":def.base_command,"adapterCommand":adapter_command,"base":base,"adapter":adapter,"job":job})
+        let sign_in_required = state.harness_sign_in_error(&def.id);
+        json!({"id":def.id,"name":def.display_name,"transport":def.transport,"baseCommand":def.base_command,"adapterCommand":adapter_command,"signInCommand":def.sign_in_command,"signInRequired":sign_in_required,"base":base,"adapter":adapter,"job":job})
     })).await;
     json!(rows)
+}
+
+/// Program, arguments and added environment of a sign-in terminal.
+pub type SignInProgram = (String, Vec<String>, Vec<(String, String)>);
+
+/// What a sign-in terminal runs for a harness: its catalog sign-in command,
+/// with the program resolved the way its ACP launch resolves it, and the
+/// variables that launch would add (`sign_in_environment`). `None` when the
+/// catalog has no sign-in command for it.
+pub fn sign_in_program(def: &crate::acp::catalog::AcpAgentDef) -> Result<Option<SignInProgram>> {
+    let Some(command) = def.sign_in_command.as_deref() else {
+        return Ok(None);
+    };
+    // Resolution must find the program: a PTY would only print "not found".
+    resolve(&def.base_command)?;
+    let parsed = crate::acp::rpc::parse_spawn_command(command)?;
+    let env = crate::acp::catalog::sign_in_environment(def, |key| std::env::var(key).ok());
+    Ok(Some((parsed.program, parsed.args, env)))
+}
+
+/// The runtime a harness's ACP check runs in: the ACP runtime when it is
+/// enabled, otherwise the harness's own provider.
+fn harness_provider(state: &Supervisor, id: &str) -> Result<pockymoe_protocol::Provider> {
+    Ok(
+        if state
+            .config
+            .enabled_providers
+            .contains(&pockymoe_protocol::Provider::Acp)
+        {
+            pockymoe_protocol::Provider::Acp
+        } else {
+            serde_json::from_value(json!(id))?
+        },
+    )
+}
+
+/// Mark the harness's sign-in check as running (`check_sign_in` does it too).
+pub fn begin_sign_in_check(state: &Supervisor, id: &str) {
+    state
+        .management_jobs
+        .lock()
+        .unwrap()
+        .insert(id.into(), json!({"state":"running","action":"signIn"}));
+}
+
+/// After a sign-in terminal ends: check the harness again the way a new
+/// thread would (a prompt-free ACP session), and record the result as the
+/// harness's `signIn` job, which Settings polls like Install and Update.
+pub async fn check_sign_in(state: &Supervisor, id: &str) {
+    begin_sign_in_check(state, id);
+    state.invalidate_models(id).await;
+    let checked = match harness_provider(state, id) {
+        Ok(provider) => state
+            .list_models(
+                provider,
+                Some(id),
+                Some(&state.config.workspace_root.to_string_lossy()),
+            )
+            .await
+            .map(|_| ()),
+        Err(error) => Err(error),
+    };
+    let value = match (checked, state.harness_sign_in_error(id)) {
+        (_, Some(message)) => {
+            json!({"state":"completed","action":"signIn","signedIn":false,"message":message})
+        }
+        (Ok(()), None) => json!({"state":"completed","action":"signIn","signedIn":true}),
+        (Err(error), None) => {
+            json!({"state":"failed","action":"signIn","error":format!("{error:#}")})
+        }
+    };
+    state
+        .management_jobs
+        .lock()
+        .unwrap()
+        .insert(id.into(), value);
 }
 
 pub async fn update_harness(state: &Supervisor, id: &str, component: &str) -> Result<()> {
@@ -415,15 +492,7 @@ pub async fn update_harness(state: &Supervisor, id: &str, component: &str) -> Re
         state.restart_harness(id).await?;
         crate::acp::dependencies::ensure(&def, true).await?;
         state.restart_harness(id).await?;
-        let provider = if state
-            .config
-            .enabled_providers
-            .contains(&pockymoe_protocol::Provider::Acp)
-        {
-            pockymoe_protocol::Provider::Acp
-        } else {
-            serde_json::from_value(json!(id))?
-        };
+        let provider = harness_provider(state, id)?;
         state
             .list_models(
                 provider,

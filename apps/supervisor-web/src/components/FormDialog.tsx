@@ -57,7 +57,9 @@ export function FormDialog({
           if (busy) event.preventDefault();
         }}
         onEscapeKeyDown={(event) => {
-          if (busy) event.preventDefault();
+          // A terminal in the window owns its keys (ui-principles §19): Esc
+          // goes to the program running there, not to the window.
+          if (busy || (event.target instanceof Element && event.target.closest('.xterm'))) event.preventDefault();
         }}
       >
         <DialogHeader className={meta ? 'text-left' : undefined}>

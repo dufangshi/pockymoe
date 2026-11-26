@@ -3023,6 +3023,13 @@ main:has(.product-navigation) { padding-top: 0 !important; }
     animation: host-secondary-enter 180ms ease-out;
   }
 }
+/* The sign-in window (HarnessSignInDialog): the command may be a long path,
+   and on a phone the sheet keeps narrower side padding so the terminal's key
+   bar still has nine keys of at least 40px (UI §10). */
+.harness-sign-in-dialog [data-slot='dialog-description'] { overflow-wrap: anywhere; }
+@media (max-width: 639px) {
+  .harness-sign-in-dialog.host-secondary-window[data-slot='dialog-content'] { padding-inline: 12px; }
+}
 /* Rises 24px from wherever it sits, above a keyboard too. */
 @keyframes host-secondary-enter { from { opacity: 0; margin-bottom: -24px; } }
 @media (prefers-reduced-motion: reduce) { .host-secondary-window[data-slot='dialog-content'] { animation: none; } }

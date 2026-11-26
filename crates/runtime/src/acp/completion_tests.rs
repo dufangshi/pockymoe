@@ -56,6 +56,7 @@ async fn claude_background_wake_output_stays_live_and_persists_after_foreground_
             server_command: command,
             install_command: None,
             model_list_command: None,
+            sign_in_command: None,
         };
         let runtime = AcpRuntime::bound(Provider::Acp, "claude", 5_000);
         let (session, live) = runtime
@@ -405,6 +406,7 @@ async fn claude_coalesced_prompt_drains_only_proven_completed_work() {
         server_command: command,
         install_command: None,
         model_list_command: None,
+        sign_in_command: None,
     };
     let runtime = AcpRuntime::bound(Provider::Acp, "claude", 5_000);
     // Each scenario has its own session, native transcript and event bus, so
@@ -629,6 +631,7 @@ async fn claude_incomplete_tool_reconciles_only_abandoned_streams() {
         server_command: command,
         install_command: None,
         model_list_command: None,
+        sign_in_command: None,
     };
     let runtime = AcpRuntime::bound(Provider::Acp, "claude", 5_000);
     for scenario in ["abandoned", "real", "missing", "background"] {

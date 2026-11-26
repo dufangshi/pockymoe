@@ -1,10 +1,11 @@
 import { formatNumber, translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { useEffect, useState } from 'react';
-import { Download, RefreshCw, RotateCw } from 'lucide-react';
+import { Download, LogIn, RefreshCw, RotateCw } from 'lucide-react';
 import { ErrorMark, useVisibleClock } from '@pockymoe/thread-ui';
 import { ApiError, request } from '../lib/api';
 import { useSettingsDevice } from '../lib/settingsDevice';
 import { FormDialog } from './FormDialog';
+import { HarnessSignInDialog } from './HarnessSignInDialog';
 import { UpstreamManagement } from './UpstreamManagement';
 
 type Installation = {
@@ -21,6 +22,9 @@ type Installation = {
 };
 type Job = {
   state?: string;
+  /** A `signIn` job: whether the check after a sign-in found the harness signed in. */
+  signedIn?: boolean;
+  message?: string;
   phase?: string;
   action?: string;
   component?: string;
@@ -36,6 +40,10 @@ type Harness = {
   /** Command names; absent on devices before 0.12.81. */
   baseCommand?: string;
   adapterCommand?: string | null;
+  /** The catalog's sign-in command; absent on older devices and for harnesses without one. */
+  signInCommand?: string | null;
+  /** "Sign-in required: …" when the harness's last ACP check answered auth_required. */
+  signInRequired?: string | null;
   base: Installation | null;
   adapter: Installation | null;
   job?: Job;
@@ -154,6 +162,7 @@ export function RuntimeManagement({
   return (
     <DeviceRuntimeManagement
       view={view}
+      deviceId={deviceId ?? null}
       key={deviceId ?? 'local'}
       apiRoot={
         deviceId ? `relay/devices/${encodeURIComponent(deviceId)}/api` : 'api'
@@ -165,8 +174,10 @@ export function RuntimeManagement({
 function DeviceRuntimeManagement({
   apiRoot,
   view,
+  deviceId,
 }: {
   apiRoot: string;
+  deviceId: string | null;
   view: 'all' | 'device' | 'harnesses' | 'supervisor';
 }) {
   const { locale: i18nLocale } = useI18n();
@@ -187,6 +198,7 @@ function DeviceRuntimeManagement({
   const [busy, setBusy] = useState(false);
   const [reconnectSince, setReconnectSince] = useState<number | null>(null);
   const [ownerDenied, setOwnerDenied] = useState(false);
+  const [signIn, setSignIn] = useState<{ id: string; name: string } | null>(null);
   const [clockElement, setClockElement] = useState<HTMLElement | null>(null);
   const clock = useVisibleClock(view !== 'harnesses' || reconnectSince !== null, 1000, clockElement);
   const [confirm, setConfirm] = useState<{
@@ -425,6 +437,7 @@ function DeviceRuntimeManagement({
   function row(h: Harness) {
     const job = jobs[h.id];
     const status = harnessStatus(h);
+    const signInNeeded = status !== 'missing' && Boolean(h.signInRequired);
     return (
       <div
         key={h.id}
@@ -439,11 +452,25 @@ function DeviceRuntimeManagement({
                 <ErrorMark message={translate("devices.lastOperationFailed", { value1: job.error })} />
               )}
             </div>
-            <p className="mt-0.5 flex items-center gap-1.5 text-xs text-[var(--theme-fg-muted)]">
-              <span aria-hidden className={`h-2 w-2 shrink-0 rounded-full ${statusDot[status]}`} />
-              {statusText(status)}
+            <p className="mt-0.5 flex items-center gap-1.5 text-xs text-[var(--theme-fg-muted)]" title={h.signInRequired ?? undefined}>
+              <span aria-hidden className={`h-2 w-2 shrink-0 rounded-full ${signInNeeded ? statusDot.adapter : statusDot[status]}`} />
+              {signInNeeded ? translate('devices.signInNeeded') : statusText(status)}
             </p>
           </div>
+          <span className="flex shrink-0 items-center gap-2">
+          {/* Only harnesses whose catalog names a checked sign-in command. */}
+          {status !== 'missing' && h.signInCommand && (
+            <button
+              className={`${button} ${signInNeeded ? 'harness-sign-in-needed !border-[var(--theme-accent-border)] !bg-[var(--theme-accent-soft)] !text-[var(--theme-accent-strong)]' : ''}`}
+              disabled={busy || active(job)}
+              title={h.signInCommand}
+              aria-label={translate('devices.signInTo', { value1: h.name })}
+              onClick={() => setSignIn({ id: h.id, name: h.name })}
+            >
+              <LogIn size={13} />
+              {translate('devices.signIn')}
+            </button>
+          )}
           {status !== 'missing' && (
             <button
               className={button}
@@ -456,6 +483,7 @@ function DeviceRuntimeManagement({
               {translate("devices.restart_b134bd")}</button>
           )}
           {error?.at === `restart:${h.id}` && <ErrorMark message={error.message} />}
+          </span>
         </div>
         <ul
           aria-label={translate("devices.harnessComponents", { value1: h.name })}
@@ -494,7 +522,11 @@ function DeviceRuntimeManagement({
             role="status"
             className="mt-2 text-xs text-[var(--theme-fg-muted)]"
           >
-            {job.error
+            {job.action === 'signIn'
+              ? active(job)
+                ? translate('devices.checkingSignIn')
+                : job.signedIn ? translate('devices.signedIn') : translate('devices.notSignedInYet')
+              : job.error
               ? translate("devices.lastOperationFailed", { value1: job.error })
               : (active(job)
                 ? `${job.action === 'install' ? translate("devices.installing") : job.action === 'update' ? translate("devices.updating") : translate("devices.restarting")}…`
@@ -689,6 +721,17 @@ function DeviceRuntimeManagement({
         />
       )}
 
+      {signIn && (
+        <HarnessSignInDialog
+          deviceId={deviceId}
+          agentId={signIn.id}
+          name={signIn.name}
+          onClose={() => {
+            setSignIn(null);
+            reload();
+          }}
+        />
+      )}
       {confirm && (
         <FormDialog
           title={`${confirm.action === 'restart' ? translate("devices.restart_b134bd") : confirm.installing ? translate("devices.install") : translate("devices.update")} ${confirm.name}`}

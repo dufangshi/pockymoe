@@ -569,7 +569,13 @@ impl AcpRuntime {
     ) -> Result<(String, LiveSession)> {
         let result = self
             .spawn_session_inner(def, cwd, policy, load_id, reasoning_effort, model)
-            .await;
+            .await
+            .map_err(
+                |error| match super::catalog::sign_in_required(def, &format!("{error:#}")) {
+                    Some(message) => anyhow!(message),
+                    None => error,
+                },
+            );
         self.inner.health.lock().unwrap().insert(
             agent_cache_key(&def.id),
             result.as_ref().err().map(|error| format!("{error:#}")),
@@ -2060,6 +2066,17 @@ impl AgentRuntime for AcpRuntime {
             .unwrap_or_else(|| toolbox_from_capabilities(&self.negotiated_caps(Some(&id))))
     }
 
+    fn sign_in_error(&self, agent_id: &str) -> Option<String> {
+        self.inner
+            .health
+            .lock()
+            .unwrap()
+            .get(&agent_cache_key(agent_id))
+            .cloned()
+            .flatten()
+            .filter(|error| error.starts_with(super::catalog::SIGN_IN_REQUIRED))
+    }
+
     async fn restart(&self, agent_id: &str) -> Result<usize> {
         if self.bound_agent.as_deref().is_some_and(|id| id != agent_id) {
             return Ok(0);
@@ -2221,6 +2238,7 @@ impl AgentRuntime for AcpRuntime {
                     crate::management::inspect(&entry.server_command, &entry.id));
                 let health = self.inner.health.lock().unwrap().get(&agent_cache_key(&entry.id)).cloned();
                 let verified = availability == "ready" && matches!(health, Some(None));
+                let sign_in = matches!(&health, Some(Some(error)) if error.starts_with(super::catalog::SIGN_IN_REQUIRED));
                 ModelOptionDto {
                     id: entry.id.clone(),
                     model: entry.id.clone(),
@@ -2244,12 +2262,13 @@ impl AgentRuntime for AcpRuntime {
                         "basePath": base.as_ref().ok().map(|found| &found.path),
                         "serverVersion": server.as_ref().ok().and_then(|found| found.version.clone()),
                         "serverPath": server.as_ref().ok().map(|found| &found.path),
-                        "connectionStatus": if availability != "ready" { "unavailable" } else if verified { "verified" } else if health.is_some() { "failed" } else { "unverified" },
+                        "connectionStatus": if availability != "ready" { "unavailable" } else if verified { "verified" } else if sign_in { "sign_in_required" } else if health.is_some() { "failed" } else { "unverified" },
                         "connectionError": health.clone().flatten(),
                         "installCommand": entry.install_command,
+                        "signInCommand": entry.sign_in_command,
                         "busy": false,
                         "statusMessage": match availability {
-                            "ready" => match health { Some(Some(error)) => format!("ACP verification failed: {error}"), Some(None) => "Ready".into(), None => "Installed · ACP connection is checked when selecting a model".into() },
+                            "ready" => match health { Some(Some(error)) if sign_in => error, Some(Some(error)) => format!("ACP verification failed: {error}"), Some(None) => "Ready".into(), None => "Installed · ACP connection is checked when selecting a model".into() },
                             "adapter_missing" => format!(
                                 "Base agent detected. Install its ACP adapter: {}",
                                 entry.install_command.as_deref().unwrap_or(entry.server_command.as_str())
@@ -5076,14 +5095,7 @@ async fn apply_mode_update(inner: &Inner, update: &Value) {
 
 fn extra_env_for(def: &AcpAgentDef) -> Vec<(&'static str, String)> {
     let mut env = crate::upstreams::launch_environment(&def.id);
-    let home_key = match def.id.as_str() {
-        "codex" => Some("CODEX_HOME"),
-        "grok" => Some("GROK_HOME"),
-        "claude" => Some("CLAUDE_CONFIG_DIR"),
-        "opencode" => Some("OPENCODE_HOME"),
-        "gemini" => Some("GEMINI_CLI_HOME"),
-        _ => None,
-    };
+    let home_key = super::catalog::home_variable(&def.id);
     if let Some(key) = home_key {
         if let Some(value) = std::env::var(key)
             .ok()

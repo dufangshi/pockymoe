@@ -158,6 +158,54 @@ preserve the detected installation owner, and a global npm installation of
 managed installation. npm installs use Node `^22.19 || >=24`; without one, the
 Supervisor installs a private Node 22.
 
+### Signing in to a harness
+
+**Sign in** on a harness in Settings → Harnesses opens a window with a terminal
+on that device, running the harness's own sign-in command; follow it there (open
+the link it prints, paste a code when asked). The command comes from the device's
+harness catalog (`sign_in_command` in `crates/runtime/src/acp/catalog.rs`), built
+from the same executable the Supervisor launches (`CODEX_COMMAND` and friends), and
+runs as the Supervisor's user in the device's home directory with the
+configuration home its ACP launch passes (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`,
+`GROK_HOME`, `OPENCODE_HOME`), so the login lands where the harness reads it.
+Where a CLI has a device-code flow it is used, because a browser callback on the
+device's own loopback cannot be completed from another machine:
+
+| Harness | Command | Checked against |
+| --- | --- | --- |
+| OpenAI Codex | `codex login --device-auth` | `codex login --help`, codex-cli 0.167.0 |
+| Claude Code | `claude auth login` | `claude auth login --help`, 2.1.318 |
+| GitHub Copilot CLI | `copilot login --device-code` | `copilot login --help`, 1.0.116 |
+| OpenCode | `opencode auth login` | `opencode auth login --help`, 1.19.6 |
+| Grok Build | `grok login --device-auth` | `grok login --help`, 1.0.92 |
+| Cursor Agent | `cursor-agent login` (with `NO_OPEN_BROWSER=1`) | `cursor-agent login --help`, 2026.11.22 |
+
+Gemini CLI has no sign-in command (it signs in inside its interactive session),
+nor do DeepSeek Harness and a custom ACP agent; they get no button. The button
+shows once the command-line tool is installed and is highlighted when the
+harness's last ACP check answered `auth_required` (**Sign-in needed**).
+
+The endpoint is `POST /api/shells/sign-in` with only `{agentId, cols, rows}`; a
+command line from the client is refused. It is a terminal route, so only the
+device owner reaches it (no share or grant, and never a scoped agent interface),
+and it needs a device with a Web terminal (not Windows). The terminal belongs to
+no thread and no isolated environment, uses the ordinary terminal stream, and
+one sign-in per harness is open at a time: a new one ends the previous. Its
+output is not logged or sent anywhere but the terminal stream. When the command
+exits, or the window closes and ends it, the device checks the harness again
+with a prompt-free ACP session and records the result as the harness's `signIn`
+job (`signedIn`, or the "Sign-in required: …" message), which Settings shows on
+the harness and the window shows before it closes. A completed login of a real
+account is not covered by automated tests.
+
+When an agent answers a new or resumed session with ACP's `auth_required` error
+(code -32000, "Authentication required"), starting a thread or listing its models
+fails with "Sign-in required: …" instead of the raw RPC error, and the new-thread
+agent list marks it **Sign-in needed** and says how to sign in. For the device
+owner, an agent with a sign-in command has a **Sign in** button there that opens
+the same window; everyone else is told to run the command in a terminal on the
+device.
+
 Every process that may run a harness gets the managed harness, adapter and
 private Node directories in front of its PATH, computed when it starts: ACP
 processes and the tools they run, Pockymoe terminals, automation commands and

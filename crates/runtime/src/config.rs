@@ -198,7 +198,7 @@ fn default_database_path(environment: &str, relay: bool) -> String {
         .into()
 }
 
-pub(crate) fn home_dir() -> PathBuf {
+pub fn home_dir() -> PathBuf {
     select_home_dir(
         nonempty_env("HOME"),
         nonempty_env("USERPROFILE"),
