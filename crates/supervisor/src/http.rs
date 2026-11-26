@@ -850,6 +850,8 @@ pub(crate) fn map_err(e: anyhow::Error) -> ApiErr {
             pockymoe_runtime::host_mode::FEATURE_DISABLED_CODE,
             message,
         )
+    } else if e.is::<pockymoe_runtime::worktrees::CheckpointBusy>() {
+        err(StatusCode::CONFLICT, "checkpoint_busy", message)
     } else if message.contains("database disk image is malformed")
         || message.contains("SQLITE_CORRUPT")
     {

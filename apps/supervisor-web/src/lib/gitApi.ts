@@ -1,4 +1,4 @@
-import { deviceRequest } from './api';
+import { ApiError, deviceRequest } from './api';
 
 export interface WorkingCopy {
   id: string;
@@ -83,6 +83,14 @@ export function fetchCheckpoints(id: string, deviceId?: string | null, signal?: 
 export function fetchGitBranches(id: string, workingCopyId: string, deviceId?: string | null) {
   return deviceRequest<GitBranches>(deviceId, `${threadPath(id)}/git/branches?${new URLSearchParams({ workingCopyId })}`, {}, id);
 }
-export function gitWrite<T = { status: GitStatus }>(id: string, action: string, input: Record<string, unknown>, deviceId?: string | null) {
-  return deviceRequest<T>(deviceId, `${threadPath(id)}/${action}`, { method: 'POST', body: JSON.stringify(input) }, id);
+export async function gitWrite<T = { status: GitStatus }>(id: string, action: string, input: Record<string, unknown>, deviceId?: string | null) {
+  const send = () => deviceRequest<T>(deviceId, `${threadPath(id)}/${action}`, { method: 'POST', body: JSON.stringify(input) }, id);
+  try { return await send(); }
+  catch (error) {
+    // A definitive refusal before any write is safe to retry once while the
+    // thread finishes a capability load or its turn settlement.
+    if (!(error instanceof ApiError) || error.statusCode !== 409 || error.payload.code !== 'checkpoint_busy' || !['checkpoints/restore', 'checkpoints/undo'].includes(action)) throw error;
+    await new Promise(resolve => setTimeout(resolve, 750));
+    return send();
+  }
 }

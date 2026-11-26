@@ -120,7 +120,16 @@ pub(crate) async fn checkpoint_action(
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiErr> {
     let result = match action.as_str() {
-        "preview" | "restore" => {
+        "preview" => {
+            return pockymoe_runtime::execution::spawn_blocking(move || {
+                state.checkpoint_preview(&id, &input)
+            })
+            .await
+            .map_err(|e| map_err(e.into()))?
+            .map(Json)
+            .map_err(map_err);
+        }
+        "restore" => {
             state
                 .checkpoint_restore(&id, &input, action == "preview")
                 .await
@@ -138,6 +147,13 @@ pub(crate) async fn cli(state: &Arc<Supervisor>, input: Value) -> anyhow::Result
     let thread = input["threadId"].as_str().unwrap_or("").to_owned();
     if input["operation"] == "threadRewind" {
         return state.rewind_thread(&thread, &input).await;
+    }
+    if input["operation"] == "checkpointRestore" && input["preview"] == true {
+        let state = state.clone();
+        return pockymoe_runtime::execution::spawn_blocking(move || {
+            state.checkpoint_preview(&thread, &input)
+        })
+        .await?;
     }
     if input["operation"] == "checkpointRestore" {
         return state

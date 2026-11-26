@@ -1343,3 +1343,132 @@ fn guarded_git_command_reopens_finite_stdin_without_shell_interpolation() {
     );
     assert!(!repo.join("unexpected").exists());
 }
+
+#[tokio::test]
+async fn checkpoint_preview_ignores_claims_and_loaded_harnesses_without_creating_refs() {
+    let f = Fixture::new().await;
+    f.state
+        .capture_turn_checkpoints(&f.thread, "preview-turn", "start");
+    std::fs::write(f.repo.join("tracked.txt"), "preview current files\n").unwrap();
+    std::fs::write(f.repo.join("untracked.txt"), "include untracked\n").unwrap();
+    std::fs::write(f.repo.join("ignored.env"), "do not include\n").unwrap();
+    let other = new_thread(&f.state, &f.workspace).await;
+    assert!(f.state.runtime(Provider::Codex).unwrap().session_loaded(
+        f.state
+            .get_thread(&other)
+            .unwrap()
+            .provider_session_id
+            .as_deref()
+            .unwrap()
+    ));
+    let _other = f.state.hold_harness(&other).await;
+    let claim = f.state.try_claim(std::slice::from_ref(&f.thread)).unwrap();
+    f.state
+        .db
+        .with(|c| {
+            c.execute(
+                "UPDATE threads SET status='running' WHERE id=?1",
+                [&f.thread],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let before = run_git(
+        &f.repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/pockymoe/",
+        ],
+    );
+    let index = std::fs::read(f.repo.join(".git/index")).unwrap();
+    let commits_before = run_git(
+        &f.repo,
+        &[
+            "cat-file",
+            "--batch-all-objects",
+            "--batch-check=%(objecttype)",
+        ],
+    )
+    .lines()
+    .filter(|kind| *kind == "commit")
+    .count();
+    let db_changes: i64 = f
+        .state
+        .db
+        .with(|c| Ok(c.query_row("SELECT total_changes()", [], |r| r.get(0))?))
+        .unwrap();
+    let input = json!({"turnId":"preview-turn","phase":"start"});
+    for _ in 0..2 {
+        let preview = f
+            .state
+            .checkpoint_restore(&f.thread, &input, true)
+            .await
+            .unwrap();
+        let patch = preview["patch"].as_str().unwrap();
+        assert!(patch.contains("preview current files") && patch.contains("untracked.txt"));
+        assert!(!patch.contains("ignored.env"));
+        assert_eq!(preview["files"].as_array().unwrap().len(), 2);
+    }
+    assert_eq!(
+        run_git(
+            &f.repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/pockymoe/"
+            ]
+        ),
+        before
+    );
+    assert_eq!(std::fs::read(f.repo.join(".git/index")).unwrap(), index);
+    let commits_after = run_git(
+        &f.repo,
+        &[
+            "cat-file",
+            "--batch-all-objects",
+            "--batch-check=%(objecttype)",
+        ],
+    )
+    .lines()
+    .filter(|kind| *kind == "commit")
+    .count();
+    assert_eq!(
+        commits_after, commits_before,
+        "preview must not create even unreferenced commits"
+    );
+    let after_changes: i64 = f
+        .state
+        .db
+        .with(|c| Ok(c.query_row("SELECT total_changes()", [], |r| r.get(0))?))
+        .unwrap();
+    assert_eq!(
+        after_changes, db_changes,
+        "preview must not update working-copy metadata or checkpoint rows"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("tracked.txt")).unwrap(),
+        "preview current files\n"
+    );
+    f.state
+        .db
+        .with(|c| {
+            c.execute("UPDATE threads SET status='idle' WHERE id=?1", [&f.thread])?;
+            Ok(())
+        })
+        .unwrap();
+    let error = f
+        .state
+        .checkpoint_restore(&f.thread, &input, false)
+        .await
+        .unwrap_err();
+    // Check this thread first, so its transient pre-write busy error remains
+    // identifiable even when another loaded thread shares the copy.
+    assert!(error.is::<CheckpointBusy>(), "{error}");
+    drop(claim);
+    assert!(f
+        .state
+        .checkpoint_restore(&f.thread, &input, false)
+        .await
+        .is_err());
+}

@@ -54,6 +54,36 @@ fn indexed_until(root: &Path, index: &Path, args: &[&str], deadline: Instant) ->
     ensure!(!out.truncated, "checkpoint output exceeds limit");
     Ok(String::from_utf8(out.bytes)?.trim_end().into())
 }
+#[derive(Debug, thiserror::Error)]
+#[error("A harness operation is still using this thread. Wait a moment and try restoring again.")]
+pub struct CheckpointBusy;
+
+/// Hash the current tracked and nonignored files without creating a commit/ref.
+pub(crate) fn working_tree(root: &Path) -> Result<String> {
+    if let Some(value) = crate::execution::file_request("gitCheckpointTree", root, "", json!({}))? {
+        return value
+            .as_str()
+            .map(str::to_owned)
+            .context("invalid checkpoint tree");
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let temp = tempfile::tempdir()?;
+    let index = temp.path().join("index");
+    let run = |args: &[&str]| indexed_until(root, &index, args, deadline);
+    let original = root.join(git_text(root, &["rev-parse", "--git-path", "index"])?);
+    if original.exists() {
+        let modified = original.metadata()?.modified()?;
+        std::fs::copy(original, &index)?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&index)?
+            .set_times(std::fs::FileTimes::new().set_modified(modified))?;
+    } else {
+        run(&["read-tree", "--empty"])?;
+    }
+    run(&["-c", "core.splitIndex=false", "add", "-A", "--", "."])?;
+    run(&["write-tree"])
+}
 pub(crate) fn snapshot(root: &Path, reference: &str) -> Result<Value> {
     if let Some(v) =
         crate::execution::file_request("gitCheckpoint", root, "", json!({"reference":reference}))?
@@ -426,6 +456,85 @@ impl Supervisor {
             json!({"workingCopyId":copy.id,"area":"turn","turnId":turn,"patch":String::from_utf8_lossy(&out.bytes),"truncated":out.truncated,"files":files,"additions":additions,"deletions":deletions}),
         )
     }
+    pub fn checkpoint_preview(&self, thread: &str, input: &Value) -> Result<Value> {
+        // Resolve the configured copy without worktree_context: discovery there
+        // remembers associations under the mutation lock, which a preview must
+        // neither take nor update.
+        let id = match input["workingCopyId"].as_str() {
+            Some(id) => id.to_owned(),
+            None => {
+                let thread = self.get_thread(thread)?;
+                let cwd = self
+                    .session_cwd(&thread)
+                    .context("thread has no working directory")?;
+                probe(Path::new(&cwd))?.id
+            }
+        };
+        let copy = self.worktree_copy(thread, &id)?;
+        let turn = input["turnId"].as_str().context("turnId required")?;
+        let phase = input["phase"].as_str().unwrap_or("start");
+        let oid = self.checkpoint_oid(thread, turn, &copy.id, phase)?;
+        let root = Path::new(&copy.path);
+        let current = working_tree(root)?;
+        let diff = git(
+            root,
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                &current,
+                &oid,
+                "--",
+            ],
+        )?;
+        let mut changes = std::collections::HashMap::new();
+        let names = git(
+            root,
+            &[
+                "diff",
+                "--name-status",
+                "--no-renames",
+                "-z",
+                &current,
+                &oid,
+                "--",
+            ],
+        )?;
+        ensure!(!names.truncated, "preview paths exceed limit");
+        let mut fields = names.bytes.split(|b| *b == 0);
+        while let (Some(change), Some(path)) = (fields.next(), fields.next()) {
+            changes.insert(
+                String::from_utf8_lossy(path).into_owned(),
+                String::from_utf8_lossy(change).into_owned(),
+            );
+        }
+        let stats = git(
+            root,
+            &[
+                "diff",
+                "--numstat",
+                "--no-renames",
+                "-z",
+                &current,
+                &oid,
+                "--",
+            ],
+        )?;
+        ensure!(!stats.truncated, "preview statistics exceed limit");
+        let mut files = Vec::new();
+        for row in stats.bytes.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+            let row = std::str::from_utf8(row)?;
+            let mut fields = row.splitn(3, '\t');
+            let a = fields.next().unwrap_or("");
+            let d = fields.next().unwrap_or("");
+            let path = fields.next().unwrap_or("");
+            files.push(json!({"path":path,"change":changes.get(path),"additions":a.parse::<u64>().unwrap_or(0),"deletions":d.parse::<u64>().unwrap_or(0),"binary":a=="-"}));
+        }
+        Ok(
+            json!({"files":files,"patch":String::from_utf8_lossy(&diff.bytes),"truncated":diff.truncated}),
+        )
+    }
     pub async fn checkpoint_restore(
         &self,
         thread: &str,
@@ -442,6 +551,9 @@ impl Supervisor {
         preview: bool,
         claimed: bool,
     ) -> Result<Value> {
+        if preview {
+            return self.checkpoint_preview(thread, input);
+        }
         let t = self.get_thread(thread)?;
         ensure!(
             !matches!(t.status.as_str(), "running" | "recovering"),
@@ -449,13 +561,23 @@ impl Supervisor {
         );
         let copy = self.selected_copy(thread, input["workingCopyId"].as_str())?;
         let others=self.db.with(|c|{let mut s=c.prepare("SELECT DISTINCT t.id FROM threads t LEFT JOIN thread_working_copies w ON w.thread_id=t.id WHERE t.id!=?1 AND (t.worktree_path=?2 OR w.copy_id=?3 OR (t.worktree_path IS NULL AND t.workspace_id=?4))")?;let rows=s.query_map(params![thread,copy.path,copy.id,t.workspace_id],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok(rows)})?;
-        let mut claim_ids = others.clone();
+        let mut claim_ids = Vec::new();
         if !claimed {
             claim_ids.push(thread.into());
         }
-        let _claim = self
-            .try_claim(&claim_ids)
-            .context("conflict: a thread using this working copy is busy")?;
+        claim_ids.extend(others.iter().cloned());
+        let mut claims = Vec::new();
+        for id in &claim_ids {
+            let claim = self.try_claim(std::slice::from_ref(id)).ok_or_else(|| {
+                if id == thread {
+                    anyhow::Error::new(CheckpointBusy)
+                } else {
+                    anyhow::anyhow!("conflict: working copy is busy in thread {id}")
+                }
+            })?;
+            claims.extend(claim);
+        }
+        let _claims = claims;
         for other in others {
             let t = self.get_thread(&other)?;
             let loaded = if let Some(session) = &t.provider_session_id {
@@ -484,66 +606,6 @@ impl Supervisor {
         );
         let before = snapshot(root, &reference)?;
         let result = (|| {
-            let diff = git(
-                root,
-                &[
-                    "diff",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--no-color",
-                    before["commit"].as_str().unwrap(),
-                    &oid,
-                    "--",
-                ],
-            )?;
-            if preview {
-                let mut changes = std::collections::HashMap::new();
-                let names = git(
-                    root,
-                    &[
-                        "diff",
-                        "--name-status",
-                        "--no-renames",
-                        "-z",
-                        before["commit"].as_str().unwrap(),
-                        &oid,
-                        "--",
-                    ],
-                )?;
-                ensure!(!names.truncated, "preview paths exceed limit");
-                let mut fields = names.bytes.split(|b| *b == 0);
-                while let (Some(change), Some(path)) = (fields.next(), fields.next()) {
-                    changes.insert(
-                        String::from_utf8_lossy(path).into_owned(),
-                        String::from_utf8_lossy(change).into_owned(),
-                    );
-                }
-                let stats = git(
-                    root,
-                    &[
-                        "diff",
-                        "--numstat",
-                        "--no-renames",
-                        "-z",
-                        before["commit"].as_str().unwrap(),
-                        &oid,
-                        "--",
-                    ],
-                )?;
-                ensure!(!stats.truncated, "preview statistics exceed limit");
-                let mut files = Vec::new();
-                for row in stats.bytes.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-                    let row = std::str::from_utf8(row)?;
-                    let mut fields = row.splitn(3, '\t');
-                    let a = fields.next().unwrap_or("");
-                    let d = fields.next().unwrap_or("");
-                    let path = fields.next().unwrap_or("");
-                    files.push(json!({"path":path,"change":changes.get(path),"additions":a.parse::<u64>().unwrap_or(0),"deletions":d.parse::<u64>().unwrap_or(0),"binary":a=="-"}));
-                }
-                return Ok(
-                    json!({"files":files,"patch":String::from_utf8_lossy(&diff.bytes),"truncated":diff.truncated}),
-                );
-            }
             self.db.with(|c|{c.execute("INSERT INTO turn_checkpoints(thread_id,turn_id,copy_id,phase,commit_oid,status,created_at) VALUES(?1,?2,?3,?4,?5,'available',?6)",params![thread,turn,copy.id,format!("undo-{undo}"),before["commit"].as_str(),now_rfc3339()])?;Ok(())})?;
             if let Err(error) = restore(root, &oid) {
                 restore(
@@ -560,9 +622,6 @@ impl Supervisor {
             self.git_changed(thread, "gitChanged");
             Ok(json!({"restored":true,"undoId":format!("{turn}:{}:{undo}",copy.id)}))
         })();
-        if preview {
-            let _ = git(root, &["update-ref", "-d", &reference]);
-        }
         result
     }
     pub async fn checkpoint_undo(&self, thread: &str, undo: &str) -> Result<Value> {
