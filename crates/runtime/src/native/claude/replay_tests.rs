@@ -366,6 +366,9 @@ async fn replay_background_agent_holds_the_turn_until_its_follow_up() {
         .any(|l| l[0]["isBackground"] == true && l[0]["name"] == "Run echo CHILD42"));
     assert_eq!(lists.last().unwrap(), &json!([]));
     assert_eq!(t.of("generic")[0].extra["origin"], "nativeTaskNotification");
+    let last = t.of("agentMessage");
+    assert_eq!(last.last().unwrap().extra["responsePhase"], "final");
+    assert_eq!(last[0].extra["responsePhase"], "commentary");
 }
 
 #[tokio::test]
@@ -524,7 +527,7 @@ async fn replay_questions_and_plan_approval() {
     let requests = t.events("thread.request.created");
     let exit = requests
         .iter()
-        .find(|e| e.payload["request"]["title"] == "ExitPlanMode")
+        .find(|e| e.payload["request"]["title"] == "Approve Plan")
         .unwrap();
     let labels: Vec<_> = exit.payload["request"]["questions"][0]["options"]
         .as_array()
@@ -535,7 +538,8 @@ async fn replay_questions_and_plan_approval() {
     assert_eq!(
         labels,
         [
-            "Yes, start implementing",
+            "Yes, manually approve edits",
+            "Yes, and use auto mode",
             "Yes, and auto-accept edits",
             "No, keep planning"
         ]
@@ -632,4 +636,38 @@ async fn replay_capabilities_toolbox_and_models_follow_claude() {
         .supported_reasoning_efforts
         .iter()
         .any(|e| e.reasoning_effort == "high"));
+}
+
+#[tokio::test]
+async fn replay_mcp_elicitation_is_a_question_answered_as_an_mcp_result() {
+    let r = replay("elicitation", "guarded").await;
+    let t = run(
+        &r,
+        "elicit",
+        "ask",
+        |runtime: Arc<ClaudeRuntime>, _: String, event: ThreadEventEnvelope| async move {
+            if event.event_type == "thread.request.created" {
+                let request = &event.payload["request"];
+                assert_eq!(request["kind"], "requestUserInput");
+                assert_eq!(request["title"], "tickets");
+                assert_eq!(request["questions"][0]["options"][1]["label"], "high");
+                let answer = json!({"priority":{"answers":["high"]}}).to_string();
+                runtime
+                    .respond_permission(request["id"].as_str().unwrap(), true, Some(&answer))
+                    .await
+                    .unwrap();
+            }
+        },
+    )
+    .await;
+    assert_eq!(t.text(), "Filed as high.");
+    let reply = r
+        .inputs()
+        .into_iter()
+        .find(|v| v["type"] == "control_response" && v["response"]["request_id"] == "e1")
+        .unwrap();
+    assert_eq!(
+        reply["response"]["response"],
+        json!({"action":"accept","content":{"priority":"high"}})
+    );
 }

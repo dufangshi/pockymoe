@@ -53,6 +53,10 @@ struct Session {
     auto_mode: bool,
     /// Slash commands and skills, from initialize and `commands_changed`.
     commands: std::sync::Mutex<Vec<crate::acp::NegotiatedCommand>>,
+    /// Device-registry MCP servers passed at launch, and those whose startup
+    /// failure was already reported (Claude repeats `init` on every turn).
+    configured_mcp: Vec<String>,
+    reported_mcp: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Fast mode as last applied.
     fast: std::sync::Mutex<Option<bool>>,
     context_delivered: AtomicBool,
@@ -86,6 +90,8 @@ impl Session {
     }
 }
 struct Permission {
+    /// An MCP server's form (`elicitation`), answered as an MCP ElicitResult.
+    elicitation: Option<Value>,
     session: String,
     choices: Vec<permissions::Choice>,
     tool_use: Option<String>,
@@ -228,6 +234,7 @@ impl ClaudeRuntime {
                 mcp.insert(name.into(), config);
             }
         }
+        let configured_mcp: Vec<String> = mcp.keys().cloned().collect();
         if !mcp.is_empty() {
             args.extend(["--mcp-config".into(), json!({"mcpServers":mcp}).to_string()]);
         }
@@ -316,6 +323,8 @@ impl ClaudeRuntime {
                 auto_mode,
                 commands: std::sync::Mutex::new(commands.clone()),
                 fast: Default::default(),
+                configured_mcp,
+                reported_mcp: Default::default(),
                 context_delivered: AtomicBool::new(false),
                 load: Mutex::new(load),
                 models: parse_models(&init["models"]),
@@ -350,6 +359,63 @@ impl ClaudeRuntime {
             session.assert_mode(&settings).await?;
         }
         Ok(result)
+    }
+    /// An MCP server asks the user for input (form mode), as ACP elicitation.
+    async fn elicit(
+        &self,
+        session_id: &str,
+        session: &Arc<Session>,
+        input: &StartTurnInput,
+        bus: &EventBus,
+        native_id: String,
+        request: &Value,
+    ) -> Result<()> {
+        let params = json!({
+            "mode": request["mode"].as_str().unwrap_or("form"),
+            "message": request["message"],
+            "requestedSchema": request["requested_schema"],
+        });
+        let questions = match crate::acp::elicitation_questions(&params, false) {
+            Ok(questions) => questions,
+            Err(_) => {
+                // URL mode and empty forms are declined, as on ACP.
+                return session.process.write(json!({"type":"control_response","response":{"subtype":"success","request_id":native_id,"response":{"action":"decline"}}})).await;
+            }
+        };
+        let id = format!("claude-native:{}", uuid::Uuid::new_v4());
+        let server = request["mcp_server_name"].as_str().unwrap_or("MCP server");
+        let dto = ThreadActionRequestDto {
+            id: id.clone(),
+            kind: "requestUserInput".into(),
+            title: request["title"].as_str().unwrap_or(server).into(),
+            description: request["message"].as_str().map(str::to_owned),
+            turn_id: Some(input.turn_id.clone()),
+            item_id: None,
+            created_at: now_rfc3339(),
+            questions,
+        };
+        self.pending.lock().await.insert(
+            id,
+            Permission {
+                elicitation: Some(params),
+                session: session_id.into(),
+                choices: Vec::new(),
+                tool_use: None,
+                thread: input.thread_id.clone(),
+                native_id,
+                input: Value::Null,
+                process: session.process.clone(),
+                dto: dto.clone(),
+                bus: bus.clone(),
+            },
+        );
+        bus.emit(ThreadEventEnvelope {
+            event_type: "thread.request.created".into(),
+            thread_id: input.thread_id.clone(),
+            timestamp: now_rfc3339(),
+            payload: json!({"turnId":input.turn_id,"request":dto}),
+        });
+        Ok(())
     }
     /// Ask Claude what its context holds and publish it (inspection opt-in).
     fn spawn_context_summary(
@@ -423,7 +489,11 @@ impl ClaudeRuntime {
         allow: bool,
         answer: Option<&str>,
     ) -> Result<()> {
-        let response = if permission.dto.kind != "requestUserInput" {
+        let response = if let Some(params) = &permission.elicitation {
+            // A malformed answer declines rather than failing the request.
+            crate::acp::elicitation_response(params, false, allow, answer)
+                .unwrap_or_else(|_| json!({"action":"decline"}))
+        } else if permission.dto.kind != "requestUserInput" {
             permissions::response(
                 &permission.choices,
                 allow,
@@ -487,6 +557,11 @@ impl ClaudeRuntime {
             .context("Claude control request missing id")?
             .to_owned();
         let request = &message["request"];
+        if request["subtype"] == "elicitation" {
+            return self
+                .elicit(session_id, session, input, bus, native_id, request)
+                .await;
+        }
         if request["subtype"] != "can_use_tool" {
             // Unsupported callbacks must never hang or silently approve an action.
             return session.process.write(json!({"type":"control_response","response":{"subtype":"error","request_id":native_id,"error":"Unsupported native Claude control callback"}})).await;
@@ -494,7 +569,7 @@ impl ClaudeRuntime {
         let tool = request["tool_name"].as_str().unwrap_or("Tool");
         let settings = session.settings.lock().await.clone();
         let id = format!("claude-native:{}", uuid::Uuid::new_v4());
-        let choices = permissions::choices(tool, request);
+        let choices = permissions::choices(tool, request, session.auto_mode);
         let ask = tool == "AskUserQuestion";
         let (title, description, questions) = if ask {
             (
@@ -503,7 +578,13 @@ impl ClaudeRuntime {
                 request_questions(tool, &request["input"]),
             )
         } else {
-            permissions::dto_parts(tool, request, &choices)
+            let (title, description, questions) = permissions::dto_parts(tool, request, &choices);
+            let title = if tool == "ExitPlanMode" {
+                "Approve Plan".into()
+            } else {
+                title
+            };
+            (title, description, questions)
         };
         let dto = ThreadActionRequestDto {
             id: id.clone(),
@@ -522,6 +603,7 @@ impl ClaudeRuntime {
         };
         let permission = Permission {
             session: session_id.into(),
+            elicitation: None,
             choices,
             tool_use: request["tool_use_id"].as_str().map(str::to_owned),
             thread: input.thread_id.clone(),
@@ -1030,6 +1112,23 @@ impl AgentRuntime for ClaudeRuntime {
                 };
                 s.completion.lock().unwrap().record(&message);
                 s.observe(&message);
+                if message["type"]=="system" && message["subtype"]=="init" {
+                    // A device MCP server that failed to start, once per session, as ACP
+                    // reports client-supplied servers; the account's own connectors are not ours.
+                    for server in message["mcp_servers"].as_array().into_iter().flatten() {
+                        let Some(name) = server["name"].as_str().filter(|n| s.configured_mcp.iter().any(|c| c == n)) else { continue };
+                        let notice = match server["status"].as_str() {
+                            Some("failed") => Some(("warning", format!("MCP server \"{name}\" failed to start"), "Its tools are unavailable in this session.")),
+                            Some("needs-auth") => Some(("info", format!("MCP server \"{name}\" needs authentication"), "Sign in to it to use its tools.")),
+                            _ => None,
+                        };
+                        if let Some((severity, title, detail)) = notice {
+                            if s.reported_mcp.lock().unwrap().insert(name.to_owned()) {
+                                crate::acp::runtime::emit_mapped(&bus,&input.thread_id,&input.turn_id,mapper.notice(severity,&title,detail),input.hidden);
+                            }
+                        }
+                    }
+                }
                 if message["type"]=="rate_limit_event" {
                     // Live plan allowance from the API response itself; ACP drops it.
                     if let Some(update)=crate::subscription::claude_rate_update(&message["rate_limit_info"]) { allowance.announce(&bus,&input.thread_id,"claude",update,input.hidden); }
@@ -1135,6 +1234,15 @@ impl AgentRuntime for ClaudeRuntime {
         let mut items = mapper.finish(interrupted || failed);
         if let Some(reader) = reader.as_ref() {
             reader.annotate_background_reply_phases(&mut items, !interrupted && !failed);
+        }
+        // Native completion already waited for every task and the final idle,
+        // so the last reply of a completed turn is its answer, not commentary.
+        if !interrupted && !failed {
+            if let Some(last) = items.iter_mut().rev().find(|i| i.kind == "agentMessage") {
+                if last.extra.contains_key("responsePhase") {
+                    last.extra.insert("responsePhase".into(), json!("final"));
+                }
+            }
         }
         // Like ACP: whatever did not finish takes the turn's status, so no
         // tool stays "running" in history.

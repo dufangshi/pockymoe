@@ -188,7 +188,7 @@ impl Mapper {
         mapped.active_subagents = Some(agents);
     }
 
-    fn notice(&mut self, severity: &str, title: &str, description: &str) -> MappedUpdate {
+    pub fn notice(&mut self, severity: &str, title: &str, description: &str) -> MappedUpdate {
         self.inner.apply(&json!({"sessionUpdate":"notice","severity":severity,"title":title,"description":description}))
     }
 
@@ -471,24 +471,6 @@ impl Mapper {
 
     fn system(&mut self, message: &Value, updates: &mut Vec<MappedUpdate>) {
         match message["subtype"].as_str() {
-            Some("init") => {
-                for server in message["mcp_servers"].as_array().into_iter().flatten() {
-                    let name = server["name"].as_str().unwrap_or("MCP");
-                    match server["status"].as_str() {
-                        Some("failed") => updates.push(self.notice(
-                            "warning",
-                            &format!("MCP server \"{name}\" failed to start"),
-                            "Its tools are unavailable in this session.",
-                        )),
-                        Some("needs-auth") => updates.push(self.notice(
-                            "info",
-                            &format!("MCP server \"{name}\" needs authentication"),
-                            "Sign in to it from Claude Code to use its tools.",
-                        )),
-                        _ => {}
-                    }
-                }
-            }
             Some("status") => {
                 if message["status"] == "compacting" {
                     let id = message["uuid"].as_str().unwrap_or("compaction").to_owned();

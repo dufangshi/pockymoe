@@ -12,7 +12,8 @@ use serde_json::{json, Value};
 
 pub(super) const YES: &str = "Yes";
 pub(super) const NO: &str = "No";
-const PLAN_YES: &str = "Yes, start implementing";
+const PLAN_YES: &str = "Yes, manually approve edits";
+const PLAN_AUTO: &str = "Yes, and use auto mode";
 const PLAN_EDITS: &str = "Yes, and auto-accept edits";
 const PLAN_NO: &str = "No, keep planning";
 
@@ -24,20 +25,35 @@ pub(super) struct Choice {
 }
 
 /// Choices for a tool permission; empty for AskUserQuestion.
-pub(super) fn choices(tool: &str, request: &Value) -> Vec<Choice> {
+pub(super) fn choices(tool: &str, request: &Value, auto: bool) -> Vec<Choice> {
     if tool == "AskUserQuestion" {
         return Vec::new();
     }
     if tool == "ExitPlanMode" {
-        return vec![
-            choice(PLAN_YES, "allow_once", None),
+        // As claude-agent-acp words them; "clear context" restarts the query
+        // and bypass is the product policy's call, so neither is offered.
+        // Claude would otherwise return to the mode it had before planning.
+        let mut plan = vec![choice(
+            PLAN_YES,
+            "allow_once",
+            Some(json!([{"type":"setMode","mode":"default","destination":"session"}])),
+        )];
+        if auto {
+            plan.push(choice(
+                PLAN_AUTO,
+                "allow_always",
+                Some(json!([{"type":"setMode","mode":"auto","destination":"session"}])),
+            ));
+        }
+        plan.extend([
             choice(
                 PLAN_EDITS,
                 "allow_always",
                 Some(json!([{"type":"setMode","mode":"acceptEdits","destination":"session"}])),
             ),
             choice(PLAN_NO, "reject_once", None),
-        ];
+        ]);
+        return plan;
     }
     let mut choices = vec![choice(YES, "allow_once", None)];
     if request["suppress_always_allow_rule"] != true {
@@ -155,7 +171,7 @@ pub(super) fn summary(tool: &str, request: &Value) -> String {
         "NotebookEdit" => input["notebook_path"].as_str(),
         "WebFetch" => input["url"].as_str(),
         "WebSearch" => input["query"].as_str(),
-        "ExitPlanMode" => Some("Approve the plan and leave plan mode"),
+        "ExitPlanMode" => return "Approve Plan".into(),
         _ => None,
     };
     let name = request["display_name"]
@@ -260,11 +276,17 @@ pub(super) fn dto_parts(
     choices: &[Choice],
 ) -> (String, Option<String>, Vec<Value>) {
     let question = summary(tool, request);
-    (
-        tool.to_owned(),
-        description(request),
-        questions(choices, &question),
-    )
+    let description = description(request).or_else(|| {
+        // The plan itself, so a phone can decide without opening the row.
+        (tool == "ExitPlanMode")
+            .then(|| {
+                request["input"]["plan"]
+                    .as_str()
+                    .map(|p| truncate(p.trim(), 300))
+            })
+            .flatten()
+    });
+    (tool.to_owned(), description, questions(choices, &question))
 }
 
 #[cfg(test)]
@@ -278,7 +300,7 @@ mod tests {
     #[test]
     fn rejecting_never_allows() {
         let request = json!({"permission_suggestions":[{"type":"setMode","mode":"acceptEdits","destination":"session"}]});
-        let c = choices("Edit", &request);
+        let c = choices("Edit", &request, false);
         assert_eq!(
             labels(&c),
             [YES, "Yes, allow all edits during this session", NO]
@@ -312,7 +334,7 @@ mod tests {
     fn labels_name_exactly_what_is_remembered() {
         let bash = json!({"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"npm test:*"}],"behavior":"allow","destination":"localSettings"}]});
         assert_eq!(
-            labels(&choices("Bash", &bash))[1],
+            labels(&choices("Bash", &bash, false))[1],
             "Yes, and don't ask again for `npm test` commands"
         );
         // A rule for another tool, a deny rule, or an unknown update: no "always".
@@ -325,20 +347,21 @@ mod tests {
             assert_eq!(
                 labels(&choices(
                     "Bash",
-                    &json!({"permission_suggestions":suggestions})
+                    &json!({"permission_suggestions":suggestions}),
+                    false
                 )),
                 [YES, NO]
             );
         }
         let suppressed = json!({"suppress_always_allow_rule":true,"permission_suggestions":bash["permission_suggestions"]});
-        assert_eq!(labels(&choices("Bash", &suppressed)), [YES, NO]);
+        assert_eq!(labels(&choices("Bash", &suppressed, false)), [YES, NO]);
         let first_no = json!({"default_to_no":true});
-        assert_eq!(labels(&choices("Bash", &first_no)), [NO, YES]);
+        assert_eq!(labels(&choices("Bash", &first_no, false)), [NO, YES]);
     }
 
     #[test]
     fn plan_exit_choices_and_questions_have_no_options() {
-        let c = choices("ExitPlanMode", &json!({}));
+        let c = choices("ExitPlanMode", &json!({}), false);
         let input = json!({"plan":"p"});
         let ui = |label: &str| json!({"permission":{"answers":[label]}}).to_string();
         assert_eq!(
@@ -349,7 +372,7 @@ mod tests {
         let keep = response(&c, true, Some(&ui(PLAN_NO)), &input, None);
         assert_eq!(keep["behavior"], "deny");
         assert!(keep["message"].as_str().unwrap().contains("keep planning"));
-        assert!(choices("AskUserQuestion", &json!({})).is_empty());
+        assert!(choices("AskUserQuestion", &json!({}), false).is_empty());
         let request = json!({"display_name":"Bash","input":{"command":"ls"},"description":"List","decision_reason":"This command requires approval"});
         assert_eq!(summary("Bash", &request), "Bash: ls");
         assert_eq!(

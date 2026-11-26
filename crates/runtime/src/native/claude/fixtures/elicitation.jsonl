@@ -1,0 +1,9 @@
+{"_dir": "in", "type": "control_request", "request_id": "init", "request": {"subtype": "initialize"}}
+{"type": "control_response", "response": {"subtype": "success", "request_id": "init", "response": {"commands": [], "models": [{"value": "haiku", "displayName": "Haiku", "supportedEffortLevels": ["low"]}]}}}
+{"_dir": "in", "type": "user", "uuid": "p1", "message": {"role": "user", "content": [{"type": "text", "text": "Ask"}]}}
+{"type": "system", "subtype": "session_state_changed", "state": "running"}
+{"type": "control_request", "request_id": "e1", "request": {"subtype": "elicitation", "mcp_server_name": "tickets", "message": "Pick a priority", "mode": "form", "requested_schema": {"type": "object", "properties": {"priority": {"type": "string", "title": "Priority", "enum": ["low", "high"]}}, "required": ["priority"]}}}
+{"_dir": "in", "type": "control_response", "response": {"subtype": "success", "request_id": "e1", "response": {}}}
+{"type": "assistant", "uuid": "a1", "message": {"id": "msg_1", "model": "claude-haiku-5-5", "content": [{"type": "text", "text": "Filed as high."}], "usage": {"input_tokens": 10, "output_tokens": 3}}}
+{"type": "result", "subtype": "success", "is_error": false, "user_message_uuids": ["p1"], "modelUsage": {}}
+{"type": "system", "subtype": "session_state_changed", "state": "idle"}

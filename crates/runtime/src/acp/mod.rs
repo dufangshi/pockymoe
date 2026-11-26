@@ -18,6 +18,9 @@ mod deepseek;
 pub use deepseek::visible_models as visible_deepseek_models;
 pub(crate) mod dependencies;
 pub(crate) mod elicitation;
+pub(crate) use elicitation::{
+    questions as elicitation_questions, response as elicitation_response,
+};
 mod grok;
 pub mod mcp_servers;
 pub(crate) use grok::billing_usage as grok_billing_usage;
