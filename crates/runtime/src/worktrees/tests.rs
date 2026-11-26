@@ -1312,3 +1312,34 @@ async fn portable_rewind_transaction_failure_keeps_files_journal_and_session_sta
         })
         .unwrap();
 }
+
+#[cfg(unix)]
+#[test]
+fn guarded_git_command_reopens_finite_stdin_without_shell_interpolation() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path();
+    run_git(repo, &["init", "-q", "-b", "main"]);
+    let name = "file $(touch unexpected) ' with spaces.txt";
+    std::fs::write(repo.join(name), "initial\n").unwrap();
+    run_git(repo, &["add", "--", name]);
+    std::fs::write(repo.join(name), "changed\n").unwrap();
+    let input = repo.join("paths $(touch unexpected) '.bin");
+    std::fs::write(&input, format!("{name}\0")).unwrap();
+    // Reproduce the guardian: command's original stdin setting is discarded.
+    let output = git_command(Some(&input))
+        .current_dir(repo)
+        .args(["checkout-index", "--force", "--stdin", "-z"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join(name)).unwrap(),
+        "initial\n"
+    );
+    assert!(!repo.join("unexpected").exists());
+}

@@ -204,6 +204,16 @@ pub(crate) fn restore(root: &Path, oid: &str) -> Result<()> {
             Some(paths),
         )?;
     }
+    // Verify the actual working tree, including removals and untracked files.
+    // This also guards undo and the automatic safety restore: a transport that
+    // silently loses checkout-index input must never report success.
+    indexed(root, &index, &["add", "-A", "--", "."])?;
+    let restored = indexed(root, &index, &["write-tree"])?;
+    let target = git_text(root, &["rev-parse", &format!("{oid}^{{tree}}")])?;
+    ensure!(
+        restored == target,
+        "restore verification failed: working tree differs from checkpoint"
+    );
     Ok(())
 }
 // T3 attribution rule: dirty changes at either boundary and locally authored

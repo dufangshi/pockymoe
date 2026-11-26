@@ -62,13 +62,28 @@ fn git_options(
 ) -> Result<GitOutput> {
     git_options_input(root, args, timeout, env, None)
 }
+fn git_command(input_file: Option<&Path>) -> Command {
+    if let Some(path) = input_file {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "exec \"$@\" < \"$0\""])
+            .arg(path)
+            .arg("git");
+        cmd
+    } else {
+        Command::new("git")
+    }
+}
 fn git_options_input(
     root: &Path,
     args: &[&str],
     timeout: Duration,
     env: &[(&str, &str)],
-    input: Option<std::fs::File>,
+    mut input: Option<std::fs::File>,
 ) -> Result<GitOutput> {
+    ensure!(
+        input.is_none() || crate::execution::current().is_none(),
+        "sandbox Git stdin requires an enclosing file operation"
+    );
     if let Some(value) = crate::execution::file_request(
         "git",
         root,
@@ -82,7 +97,22 @@ fn git_options_input(
             truncated: value["truncated"].as_bool().unwrap_or(false),
         });
     }
-    let mut cmd = Command::new("git");
+    // The host guardian reconstructs commands from argv and closes stdin.
+    // Give finite Git input a private file and open it inside the guarded
+    // process. Keep every path/argument positional: no shell interpolation.
+    let input_file = if crate::execution::host_process::enabled_context().is_some() {
+        input
+            .as_mut()
+            .map(|input| -> Result<_> {
+                let mut file = tempfile::NamedTempFile::new()?;
+                std::io::copy(input, file.as_file_mut())?;
+                Ok(file)
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let mut cmd = git_command(input_file.as_ref().map(|file| file.path()));
     let hooks = tempfile::tempdir()?;
     cmd.current_dir(root)
         .args(["-c", "core.fsmonitor=false", "-c", "core.pager=cat"])
