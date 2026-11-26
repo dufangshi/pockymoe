@@ -1,3 +1,4 @@
+import { useHandoffModelNames } from '../pages/useHandoffModelNames';
 import { TurnNotification } from './TurnNotification';
 import { useMemo } from 'react';
 import { GraphChatThreadChatPanel, ThreadLoadingIndicator, createWorkspacePathResolver, type ThreadComposerProps, type ThreadContextInspector } from '@pockymoe/thread-ui';
@@ -30,6 +31,7 @@ export function WorkbenchReferencePane({
   useI18n();
   const { detail, error, loadEarlier, loadingEarlier, retry } = controller;
   const threadId = detail?.thread.id;
+  const describeHandoffModel = useHandoffModelNames(detail?.turns, controller.deviceId);
   // The pane's own device, and no settings link: it may be another device than the page's.
   const contextInspector = useMemo<ThreadContextInspector | null>(() => threadId && controller.canControl ? {
     load: options => fetchThreadContext(threadId, options, controller.deviceId),
@@ -86,6 +88,7 @@ export function WorkbenchReferencePane({
             timelineAdapter={adapter}
             transcriptItemCount={detail.turns.reduce((total, turn) => total + turn.items.length, 0)}
             timelineProps={{
+              describeHandoffModel,
               renderTurnNotification: turnId => <TurnNotification key={`${controller.deviceId}:${threadId}:${turnId}`} deviceId={controller.deviceId === 'local' ? null : controller.deviceId} threadId={threadId!} turnId={turnId} />,
               liveItems: detail.liveItems ?? null,
               respondingRequestId: controller.respondingRequestId,

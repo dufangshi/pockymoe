@@ -9,7 +9,8 @@ in an isolated execution environment are refused.
 Each harness retains its own native session. Returning to a harness resumes its
 saved session and transfers only journal turns after its last use. The thread's
 identity and public conversation stay together; turns keep the provider, agent
-and model that produced them. A divider marks a change of agent in the transcript.
+and model that produced them. A compact divider shows the agents and catalog model names at each change. Its info
+control shows the full names and settings reset note on hover, focus or tap.
 
 ## Portable history
 
