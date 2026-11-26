@@ -49,7 +49,9 @@ and dynamic registration. Public clients use authorization code with PKCE S256,
 exact registered redirects and a `resource` parameter equal to the MCP URL.
 The sign-in opens the Supervisor Web UI. Sign in as the owner, review the client
 name and redirect, choose an access ceiling and optionally select workspaces,
-then allow or deny. Shares cannot grant outside-agent access.
+then allow or deny. Shares cannot grant outside-agent access. An approved
+sign-in whose client never collects its code expires after five minutes and is
+not listed as a connected client.
 
 Access tokens expire after 15 minutes. Refresh tokens rotate on every use and
 expire after 30 days; replaying a used refresh token or authorization code
@@ -82,6 +84,12 @@ Tools cover device identity, workspaces, harnesses and models, thread search,
 thread/turn reading, bounded waits, launch, inbox/queue/steer, stop, approvals,
 Git status/diff, checkpoint turn diffs, harness switching with handoff preview and milestone polling. `thread_wait` waits at most ten minutes
 and returns status and the latest transcript, including the final reply.
+
+`thread_read` pages back with `beforeTurnId` set to the returned
+`nextBeforeTurnId`; the `pockymoe transcript …` hints in its replies are the CLI
+equivalents. Arguments are read by their schema type, so `30` and `"30"` are the
+same cursor or limit. Refusals say what the grant allows and how the owner can
+widen it.
 
 Workspace restrictions apply to both collections and individual targets.
 Supervised clients cannot send to or stop a yolo thread. Unknown tools,

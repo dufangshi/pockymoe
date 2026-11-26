@@ -243,15 +243,21 @@ pub(crate) async fn local(
     }
     Ok(rpc(state, &grant, request).await.unwrap_or(Value::Null))
 }
-fn unauthorized(s: &Supervisor) -> Response {
+fn unauthorized(s: &Supervisor, presented: bool) -> Response {
     let mut r = (
         StatusCode::UNAUTHORIZED,
         Json(json!({"error":"invalid_token"})),
     )
         .into_response();
     if let Ok(v) = format!(
-        "Bearer resource_metadata=\"{}/.well-known/oauth-protected-resource/mcp\"",
-        oauth::issuer(s)
+        "Bearer resource_metadata=\"{}/.well-known/oauth-protected-resource/mcp\"{}",
+        oauth::issuer(s),
+        // RFC 6750 §3.1: a presented token that no longer works is invalid.
+        if presented {
+            ", error=\"invalid_token\", error_description=\"The access token expired or its grant was revoked\""
+        } else {
+            ""
+        }
     )
     .parse()
     {
@@ -279,7 +285,7 @@ async fn http(
         return StatusCode::FORBIDDEN.into_response();
     }
     let Ok((grant_id, grant)) = oauth::authenticate(&s, &h) else {
-        return unauthorized(&s);
+        return unauthorized(&s, h.contains_key("authorization"));
     };
     if !request.is_object() {
         return bad_request("Send one JSON-RPC message per request; batches are not supported");
@@ -369,7 +375,7 @@ async fn no_stream(State(s): State<Arc<Supervisor>>, h: HeaderMap) -> Response {
         return StatusCode::FORBIDDEN.into_response();
     }
     if oauth::authenticate(&s, &h).is_err() {
-        return unauthorized(&s);
+        return unauthorized(&s, h.contains_key("authorization"));
     }
     StatusCode::METHOD_NOT_ALLOWED.into_response()
 }
@@ -378,7 +384,7 @@ async fn terminate(State(s): State<Arc<Supervisor>>, h: HeaderMap) -> Response {
         return StatusCode::FORBIDDEN.into_response();
     }
     let Ok((grant_id, _)) = oauth::authenticate(&s, &h) else {
-        return unauthorized(&s);
+        return unauthorized(&s, h.contains_key("authorization"));
     };
     let result = store::transaction(&s, |db| {
         let id = h

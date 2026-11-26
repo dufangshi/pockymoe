@@ -445,3 +445,83 @@ async fn mcp_events_carry_turn_and_request_ids_but_no_text() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
+
+#[tokio::test]
+async fn mcp_abandoned_consent_leaves_no_connected_client() {
+    let f = crate::isolation_tests::setup().await;
+    let s = &f.state;
+    let client = client(s).await;
+    let listed = |s: Arc<Supervisor>| async move {
+        req(&s, "GET", "/api/mcp/clients", Value::Null, &[]).await.2["clients"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    // Approved, but the client never comes back for its code.
+    let (code, verifier) = code(s, &client, "read").await;
+    assert_eq!(listed(s.clone()).await, 0);
+    let expires: i64 = store::transaction(s, |db| {
+        Ok(db.query_row(
+            "SELECT MAX(expires) FROM entries WHERE kind='grant'",
+            [],
+            |r| r.get(0),
+        )?)
+    })
+    .unwrap();
+    assert!(expires <= store::now() + 300);
+    let (status, tokens) = form(s, "/oauth/mcp/token", &exchange(&client, &code, &verifier)).await;
+    assert_eq!(status, StatusCode::OK, "{tokens}");
+    assert_eq!(listed(s.clone()).await, 1);
+    let (status, headers, _) = req(
+        s,
+        "POST",
+        "/mcp",
+        json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
+        &[JSON, ("authorization", "Bearer pmcp_revoked")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let challenge = headers["www-authenticate"].to_str().unwrap();
+    assert!(
+        challenge.contains("resource_metadata=") && challenge.contains("error=\"invalid_token\"")
+    );
+    let (_, headers, _) = req(s, "POST", "/mcp", json!({}), &[JSON]).await;
+    assert!(!headers["www-authenticate"]
+        .to_str()
+        .unwrap()
+        .contains("invalid_token"));
+}
+
+#[tokio::test]
+async fn mcp_arguments_take_the_schema_type() {
+    let f = crate::isolation_tests::setup().await;
+    let thread = crate::isolation_tests::thread(&f.state, &f.open).await;
+    let grant = Grant {
+        device: None,
+        client: "c".into(),
+        access: "read".into(),
+        workspaces: None,
+    };
+    let events = tools::call(&f.state, &grant, "pockymoe_events", &json!({"cursor":0}))
+        .await
+        .unwrap();
+    assert!(events["cursor"].is_string());
+    let wait = tools::call(
+        &f.state,
+        &grant,
+        "pockymoe_thread_wait",
+        &json!({"threadId":thread,"timeoutSeconds":"1"}),
+    )
+    .await
+    .unwrap();
+    assert!(wait.get("status").is_some());
+    let err = tools::call(
+        &f.state,
+        &grant,
+        "pockymoe_thread_wait",
+        &json!({"threadId":thread,"timeoutSeconds":"soon"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("invalid argument type"), "{err}");
+}

@@ -22,15 +22,24 @@ impl Grant {
             matches!(self.access.as_str(), "read" | "supervised" | "full"),
             "invalid access level"
         );
-        ensure!(level == 0 || self.access != "read", "read-only grant");
-        ensure!(level < 2 || self.access == "full", "full access required");
+        ensure!(
+            level == 0 || self.access != "read",
+            "read-only grant: this client may only read; the owner can grant supervised or full access"
+        );
+        ensure!(
+            level < 2 || self.access == "full",
+            "full access required: the owner can grant it with `pockymoe mcp serve --access full` or Full access when signing in"
+        );
         if let Some(w) = workspace {
-            ensure!(self.allows_workspace(w), "workspace outside grant");
+            ensure!(
+                self.allows_workspace(w),
+                "workspace outside grant: pockymoe_workspaces lists the ones this client may use"
+            );
         }
         if level > 0 && self.access == "supervised" {
             ensure!(
                 approval.is_none_or(|m| m == "guarded"),
-                "supervised access requires guarded approval mode"
+                "supervised access requires guarded approval mode: this client may only launch and operate guarded threads"
             );
         }
         Ok(())
@@ -82,13 +91,13 @@ pub fn catalog() -> Value {
         ),
         (
             "thread_read",
-            "Read a thread, transcript page, or turn",
+            "Read a thread (default), a transcript page (view summary or overview; page back with beforeTurnId = nextBeforeTurnId) or one turn (turnId). The `pockymoe transcript` commands in replies are the CLI equivalents",
             json!({"threadId":s(),"turnId":s(),"beforeTurnId":s(),"view":{"type":"string","enum":["summary","overview","turn"]},"limit":{"type":"integer","minimum":1,"maximum":100}}),
             vec!["threadId"],
         ),
         (
             "thread_wait",
-            "Wait until idle or input is needed; returns status and transcript",
+            "Wait until the thread is idle or needs input, at most timeoutSeconds (default 60); returns status and the latest turn. Call again while status.status is running",
             json!({"threadId":s(),"timeoutSeconds":{"type":"integer","minimum":0,"maximum":600}}),
             vec!["threadId"],
         ),
@@ -113,7 +122,7 @@ pub fn catalog() -> Value {
         (
             "thread_stop",
             "Stop a thread",
-            json!({"threadId":s(),"reason":s()}),
+            json!({"threadId":s()}),
             vec!["threadId"],
         ),
         (
@@ -149,6 +158,35 @@ pub fn catalog() -> Value {
     ];
     json!({"tools":defs.into_iter().map(|(n,d,p,r)| {let name=format!("pockymoe_{n}"); let l=level(&name).unwrap(); json!({"name":name,"description":d,"inputSchema":{"type":"object","properties":p,"required":r,"additionalProperties":false},"outputSchema":{"type":"object","additionalProperties":true},"annotations":{"readOnlyHint":l==0,"destructiveHint":l>0,"openWorldHint":l>0}})}).collect::<Vec<_>>()})
 }
+/// Clients and models often send `30` for a string cursor or `"30"` for an
+/// integer; take the schema's meaning instead of failing the call.
+fn coerce(name: &str, args: &Value) -> Value {
+    let catalog = catalog();
+    let Some(spec) = catalog["tools"]
+        .as_array()
+        .and_then(|tools| tools.iter().find(|t| t["name"] == name))
+    else {
+        return args.clone();
+    };
+    let mut args = args.clone();
+    for (key, value) in args.as_object_mut().into_iter().flatten() {
+        let kind = spec["inputSchema"]["properties"][key.as_str()]["type"].as_str();
+        let coerced = match (kind, &*value) {
+            (Some("string"), Value::Number(n)) => Some(json!(n.to_string())),
+            (Some("integer"), Value::String(s)) => s.trim().parse::<u64>().ok().map(Value::from),
+            (Some("boolean"), Value::String(s)) => match s.as_str() {
+                "true" => Some(json!(true)),
+                "false" => Some(json!(false)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(v) = coerced {
+            *value = v;
+        }
+    }
+    args
+}
 pub async fn call(
     state: &Arc<Supervisor>,
     grant: &Grant,
@@ -157,6 +195,7 @@ pub async fn call(
 ) -> Result<Value> {
     grant.check(name, None, None)?;
     ensure!(args.is_object(), "arguments must be an object");
+    let args = &coerce(name, args);
     let catalog = catalog();
     let spec = catalog["tools"]
         .as_array()

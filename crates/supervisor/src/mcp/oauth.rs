@@ -263,8 +263,10 @@ pub async fn consent_post(
                     db,
                     "grant",
                     &grant,
-                    &json!({"id":grant,"clientId":q["client_id"],"clientName":consent["client"]["client_name"],"access":access,"workspaces":workspaces,"createdAt":now(),"lastUsedAt":now()}),
-                    30 * 86400,
+                    &json!({"id":grant,"clientId":q["client_id"],"clientName":consent["client"]["client_name"],"access":access,"workspaces":workspaces,"createdAt":now(),"lastUsedAt":now(),"pending":true}),
+                    // Until the client exchanges its code: an abandoned
+                    // sign-in leaves no connected client behind.
+                    300,
                 )?;
                 let code = secret();
                 put(
@@ -350,6 +352,13 @@ pub async fn token(
                 }
                 record["used"] = json!(true);
                 put(db, "code", &hash(code), &record, 120)?;
+                let id = record["grant"].as_str().unwrap_or("");
+                let mut grant = get(db, "grant", id).map_err(|_| grant_error("grant expired"))?;
+                if grant["pending"] == true {
+                    grant.as_object_mut().unwrap().remove("pending");
+                    grant["createdAt"] = json!(now());
+                    put(db, "grant", id, &grant, 30 * 86400)?;
+                }
                 Ok(Ok(mint(
                     db,
                     record["grant"].as_str().unwrap(),
@@ -439,7 +448,11 @@ pub fn authenticate(s: &Supervisor, h: &HeaderMap) -> Result<(String, Grant)> {
 }
 pub async fn settings(State(s): State<Arc<Supervisor>>) -> Response {
     response(transaction(&s, |db| {
-        Ok(json!({"endpoint":resource(&s),"clients":list(db,"grant")?,"calls":list(db,"audit")?}))
+        let clients: Vec<Value> = list(db, "grant")?
+            .into_iter()
+            .filter(|g| g["pending"] != true)
+            .collect();
+        Ok(json!({"endpoint":resource(&s),"clients":clients,"calls":list(db,"audit")?}))
     }))
 }
 pub async fn remove(State(s): State<Arc<Supervisor>>, Path(id): Path<String>) -> Response {
