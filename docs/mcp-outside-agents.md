@@ -34,9 +34,9 @@ Cursor (agent CLI 2026.11) reads `~/.cursor/mcp.json`:
 Add `--access read` or `--access full`, or `--workspace ID`, after `mcp serve`.
 
 `--access read` permits inspection, `supervised` additionally permits creating,
-sending to and stopping guarded threads (guarded is the harness's own guarded
-mode: Codex asks before leaving its workspace sandbox, Claude uses its auto
-mode, which decides itself when to ask), and `full` additionally permits yolo
+sending to and stopping guarded threads (guarded is the harness's normal agent
+mode, Codex `agent` and Claude `auto`, in which the harness itself decides what
+needs approval; both edit files and run ordinary commands without asking), and `full` additionally permits yolo
 threads, answering approvals and switching harnesses. The default is supervised. This is a ceiling;
 tool arguments cannot widen it, and `tools/list` offers only the tools it allows.
 `--workspace ID` (repeatable) limits the client to those workspaces, like the
