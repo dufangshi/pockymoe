@@ -162,26 +162,36 @@ fn list(paths: &[String]) -> String {
     }
 }
 
-/// The card's question: what Claude wants to do, in its own words.
-pub(super) fn summary(tool: &str, request: &Value) -> String {
+/// The card's question, titled as claude-agent-acp titles the tool call:
+/// the command itself, or the tool and its path relative to the workspace.
+pub(super) fn summary(tool: &str, request: &Value, cwd: &str) -> String {
     let input = &request["input"];
-    let target = match tool {
-        "Bash" | "PowerShell" => input["command"].as_str(),
-        "Edit" | "Write" | "MultiEdit" | "Read" => input["file_path"].as_str(),
-        "NotebookEdit" => input["notebook_path"].as_str(),
-        "WebFetch" => input["url"].as_str(),
-        "WebSearch" => input["query"].as_str(),
-        "ExitPlanMode" => return "Approve Plan".into(),
-        _ => None,
+    let relative = |p: &str| {
+        std::path::Path::new(p)
+            .strip_prefix(cwd)
+            .map(|r| r.display().to_string())
+            .ok()
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| p.to_owned())
     };
     let name = request["display_name"]
         .as_str()
         .or(request["title"].as_str())
         .unwrap_or(tool);
-    match target {
-        Some(target) => format!("{name}: {}", truncate(target, 400)),
-        None => name.to_owned(),
-    }
+    let text = match tool {
+        "Bash" | "PowerShell" => input["command"].as_str().map(str::to_owned),
+        "Edit" | "Write" | "MultiEdit" | "Read" => input["file_path"]
+            .as_str()
+            .map(|p| format!("{name} {}", relative(p))),
+        "NotebookEdit" => input["notebook_path"]
+            .as_str()
+            .map(|p| format!("Edit notebook {}", relative(p))),
+        "WebFetch" => input["url"].as_str().map(|u| format!("Fetch {u}")),
+        "WebSearch" => input["query"].as_str().map(|q| format!("Search \"{q}\"")),
+        "ExitPlanMode" => Some("Approve Plan".into()),
+        _ => None,
+    };
+    truncate(&text.unwrap_or_else(|| name.to_owned()), 400)
 }
 
 /// Why Claude asks: its description and the decision reason.
@@ -274,8 +284,9 @@ pub(super) fn dto_parts(
     tool: &str,
     request: &Value,
     choices: &[Choice],
+    cwd: &str,
 ) -> (String, Option<String>, Vec<Value>) {
-    let question = summary(tool, request);
+    let question = summary(tool, request, cwd);
     let description = description(request).or_else(|| {
         // The plan itself, so a phone can decide without opening the row.
         (tool == "ExitPlanMode")
@@ -286,7 +297,7 @@ pub(super) fn dto_parts(
             })
             .flatten()
     });
-    (tool.to_owned(), description, questions(choices, &question))
+    (question.clone(), description, questions(choices, &question))
 }
 
 #[cfg(test)]
@@ -374,7 +385,9 @@ mod tests {
         assert!(keep["message"].as_str().unwrap().contains("keep planning"));
         assert!(choices("AskUserQuestion", &json!({}), false).is_empty());
         let request = json!({"display_name":"Bash","input":{"command":"ls"},"description":"List","decision_reason":"This command requires approval"});
-        assert_eq!(summary("Bash", &request), "Bash: ls");
+        assert_eq!(summary("Bash", &request, "/w"), "ls");
+        let write = json!({"display_name":"Write","input":{"file_path":"/w/src/a.rs"}});
+        assert_eq!(summary("Write", &write, "/w"), "Write src/a.rs");
         assert_eq!(
             description(&request).unwrap(),
             "List · This command requires approval"

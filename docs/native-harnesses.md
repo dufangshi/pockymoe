@@ -202,14 +202,30 @@ evidence kept with the release notes. Status as of 2026-11-26:
 | Isolated environment: API broker, restart and resume, rewind, guarded approval, protocol switch on one thread, no host credentials or homes | pass (scripted upstream through the real broker) | pass (real model with a native file login; scripted upstream through the real broker) |
 | Isolated environment with an approved native file login | gated, not run (no ChatGPT file login on the lab host) | pass |
 | Turn lifecycle events identical to ACP (`thread.turn.started` / `completed`) | pass | pass |
-| Token usage, context, cost and plan allowance identical to ACP for the same prompts; allowance live during a turn | pass (scripted upstream, real CLI) | not compared side by side |
+| Token usage, context, cost and plan allowance identical to ACP for the same prompts; allowance live during a turn | pass (scripted upstream, real CLI) | pass (same JSONL billing reader as ACP; output counts equal in the side-by-side lab; allowance live from `rate_limit_event`) |
 | Plan and performance modes reach the model | pass (Codex Plan Mode instructions, fast service tier) | pass (plan) |
-| Extended items render as on ACP (MCP, web search, images, review, hooks, notices) | pass in mapping tests; no real MCP, image or review run | not applicable |
+| Extended items render as on ACP (MCP, web search, images, review, hooks, notices) | pass in mapping tests; no real MCP, image or review run | pass (replays of real sessions; real side-by-side lab for tools, questions, images, subagents, background shells, plan) |
 | AskUserQuestion, explicit compaction, Write diffs in a real lab | compaction waits for completion (scripted) | pass |
-| SDK callback hooks and SDK-hosted MCP | not applicable | partial: Write preview hook; no SDK MCP |
-| Background work outside a prompt | not run | not qualified |
+| SDK callback hooks and SDK-hosted MCP | not applicable | not applicable: neither path registers them for Pockymoe; Claude's own hooks and MCP servers run unchanged; MCP form elicitation answered |
+| Background work outside a prompt | not run | pass (background Agent and shell hold the turn and their follow-up stays in it; frames between turns never reach the next turn; release waits for tasks) |
+| Every SDK frame, control request and tool shape of the installed CLI mapped or explicitly ignored, with replay tests of real sessions | not applicable | pass (Claude Code 2.1.322) |
+| Side-by-side real lab, same prompts on both protocols, every difference explained | not run | pass (2026-11-26, haiku; isolated rows were not re-run after this audit's changes) |
 | A full release matrix (macOS, Windows/WSL, mobile hosts) | not run | not run |
 
-A failing or unrun row keeps ACP the default. Re-run the isolated rows whenever
+A failing or unrun row keeps ACP the default. For Claude, the remaining blockers
+are the release matrix and a re-run of the isolated-environment rows on the
+current runtime.
+
+### What native Claude gives beyond ACP
+
+Measured against the ACP path as Pockymoe runs it (claude-agent-acp 0.106.0):
+command exit status; exact whole-file diffs for Edit, Write and MultiEdit; API
+retry, model fallback and Claude warning notices (ACP drops the retries); live
+plan allowance during a turn; the reason a permission was denied; context
+inspection without a Node bridge, also inside environments; permission cards in
+Claude's own words with its reason; no
+Node adapter process per session. ACP still has two things native does not
+offer: the plan-approval "clear context" restart and a bypass choice inside the
+plan card (full access stays a product setting). Re-run the isolated rows whenever
 the environment image's harness versions change: both runtimes pin the versions
 they were reviewed against.

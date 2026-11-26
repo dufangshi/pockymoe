@@ -578,7 +578,8 @@ impl ClaudeRuntime {
                 request_questions(tool, &request["input"]),
             )
         } else {
-            let (title, description, questions) = permissions::dto_parts(tool, request, &choices);
+            let (title, description, questions) =
+                permissions::dto_parts(tool, request, &choices, &session.cwd);
             let title = if tool == "ExitPlanMode" {
                 "Approve Plan".into()
             } else {

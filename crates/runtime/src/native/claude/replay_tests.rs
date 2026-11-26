@@ -238,8 +238,9 @@ async fn replay_tools_render_like_acp_with_exact_diffs_and_exit_codes() {
         labels,
         ["Yes", "Yes, allow all edits during this session", "No"]
     );
-    assert_eq!(request["title"], "Edit");
-    assert_eq!(request["questions"][0]["question"], "Edit: /work/notes.txt");
+    // Outside the workspace the path stays absolute; inside it is relative.
+    assert_eq!(request["title"], "Edit /work/notes.txt");
+    assert_eq!(request["questions"][0]["question"], "Edit /work/notes.txt");
     let answers = r.answers();
     assert!(
         answers
