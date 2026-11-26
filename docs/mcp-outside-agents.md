@@ -22,7 +22,14 @@ codex mcp add pockymoe -- pockymoe mcp serve
 `--access read` permits inspection, `supervised` additionally permits creating,
 sending to and stopping guarded threads, and `full` additionally permits yolo
 threads, answering approvals and switching harnesses. The default is supervised. This is a ceiling;
-tool arguments cannot widen it. Git tools only read status and diffs.
+tool arguments cannot widen it, and `tools/list` offers only the tools it allows.
+`--workspace ID` (repeatable) limits the client to those workspaces, like the
+workspace choice on the HTTP consent page. Git tools only read status and diffs.
+
+The Supervisor issues a new CLI token each time it starts. A running
+`pockymoe mcp serve` reads the saved connection again when a call is refused or
+cannot connect, and retries for up to 30 seconds, so a Supervisor restart or
+update does not end the client's session. Errors name the Supervisor's reason.
 
 `--device DEVICE` uses the existing cross-device CLI trust boundary. Remote
 connections advertise only tools supported by that boundary: directory/workspace
@@ -45,19 +52,28 @@ name and redirect, choose an access ceiling and optionally select workspaces,
 then allow or deny. Shares cannot grant outside-agent access.
 
 Access tokens expire after 15 minutes. Refresh tokens rotate on every use and
-expire after 30 days; replaying a used refresh token revokes its grant. Grants
+expire after 30 days; replaying a used refresh token or authorization code
+revokes its grant. Errors use the OAuth codes (`invalid_grant`, `invalid_target`,
+`invalid_redirect_uri` …); once the client and redirect are verified, sign-in
+errors return to the client's redirect. `resource` may be omitted (it defaults
+to this MCP URL) and unknown scope values are ignored. Registration (30 a
+minute), sign-in (60) and token and revoke requests (120) are limited per
+Supervisor, failed attempts included, with HTTP 429 and `Retry-After`. Grants
 expire after 30 days. Tokens and authorization codes are stored as hashes in a
 separate `*.mcp.sqlite` database beside the Supervisor journal. Revoke a client
 in **Settings → Outside agents**. Back up the sidecar to preserve grants;
 omitting it from a restore revokes those grants. MCP tokens never authorize the general HTTP
 API, WebSockets or local CLI bridge.
 
-The server supports MCP 2025-06-18 and 2025-11-25. Streamable HTTP uses JSON POST
-responses, `Mcp-Session-Id` sessions and DELETE termination. GET returns 405;
-there is no unsolicited SSE stream. Include the negotiated
-`MCP-Protocol-Version` header after initialization. HTTP Origin headers must
-match the configured issuer. Cancellation notifications cancel an outstanding
-call in that same session; cancelling a wait does not stop the agent.
+The server supports MCP 2025-03-26, 2025-06-18 and 2025-11-25. Streamable HTTP
+uses JSON POST responses, `Mcp-Session-Id` sessions and DELETE termination. GET
+returns 405; there is no unsolicited SSE stream, and JSON-RPC batches are
+refused. After initialization a missing `MCP-Protocol-Version` header means the
+session's negotiated version; an unsupported one is refused. HTTP Origin
+headers must match the configured issuer. Against DNS rebinding, `/mcp`, the
+OAuth endpoints and the consent API accept only an IP address, `localhost` or
+the issuer's host name in `Host`. Cancellation notifications cancel an
+outstanding call in that same session; cancelling a wait does not stop the agent.
 
 ## Tools and records
 
@@ -70,8 +86,9 @@ and returns status and the latest transcript, including the final reply.
 Workspace restrictions apply to both collections and individual targets.
 Supervised clients cannot send to or stop a yolo thread. Unknown tools,
 arguments, values and out-of-range limits fail closed. Milestones retain the
-latest 1,000 turn-completed, turn-failed, approval and PR-change events. Poll
-with the returned cursor; events outside the grant are filtered.
+latest 1,000 turn-completed, turn-failed, approval and PR-change events with
+their thread, turn and request IDs (never text). Poll with the returned cursor;
+it survives Supervisor restarts. Events outside the grant are filtered.
 
 Settings shows setup commands, connected grants, last use, revocation and recent
 calls. Audit records contain client, tool, target, timestamp and success/error;

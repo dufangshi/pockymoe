@@ -36,6 +36,9 @@ impl Grant {
         Ok(())
     }
 }
+pub fn known(name: &str) -> bool {
+    level(name).is_some()
+}
 fn level(name: &str) -> Option<u8> {
     Some(match name {
         "pockymoe_devices"
@@ -57,7 +60,12 @@ fn level(name: &str) -> Option<u8> {
 pub fn catalog() -> Value {
     let s = || json!({"type":"string"});
     let defs = vec![
-        ("devices", "Local device identity", json!({}), vec![]),
+        (
+            "devices",
+            "This device and the owner's other devices (pockymoe mcp serve --device reaches one)",
+            json!({}),
+            vec![],
+        ),
         ("workspaces", "List allowed workspaces", json!({}), vec![]),
         ("agents", "List harnesses", json!({}), vec![]),
         (
@@ -202,7 +210,24 @@ pub async fn call(
     }
     let id = || args["threadId"].as_str().context("threadId required");
     match name {
-        "pockymoe_devices" => Ok(json!({"deviceId":state.db.host_id,"name":state.config.app_name})),
+        "pockymoe_devices" => {
+            let name: Option<String> = state.db.with(|db| {
+                Ok(db
+                    .query_row(
+                        "SELECT hostname FROM hosts WHERE id=?1",
+                        [&state.db.host_id],
+                        |row| row.get(0),
+                    )
+                    .ok())
+            })?;
+            let peers = match crate::peer_link::directory(state).await {
+                Ok(devices) => json!({"devices":devices}),
+                Err(e) => json!({"devices":[],"directoryError":e.to_string()}),
+            };
+            Ok(
+                json!({"deviceId":state.db.host_id,"name":name,"app":state.config.app_name,"peers":peers}),
+            )
+        }
         "pockymoe_workspaces" => Ok(
             json!({"workspaces":state.list_workspaces()?.into_iter().filter(|w|grant.allows_workspace(&w.id)).collect::<Vec<_>>()}),
         ),

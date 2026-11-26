@@ -48,7 +48,7 @@ pub fn start(state: &Arc<Supervisor>) {
                     "INSERT INTO milestones(thread,value) VALUES(?,?)",
                     rusqlite::params![
                         event.thread_id,
-                        json!({"type":kind,"threadId":event.thread_id,"time":event.timestamp})
+                        milestone(&kind, &event.thread_id, &event.timestamp, &event.payload)
                             .to_string()
                     ],
                 )?;
@@ -57,6 +57,26 @@ pub fn start(state: &Arc<Supervisor>) {
             });
         }
     });
+}
+/// Identifiers and outcome only: never message text, tool input or output.
+fn milestone(kind: &Value, thread: &str, time: &str, payload: &Value) -> Value {
+    let mut value = json!({"type":kind,"threadId":thread,"time":time});
+    for key in ["turnId", "requestId", "status", "reason"] {
+        if let Some(v) = payload[key].as_str().filter(|v| v.len() <= 200) {
+            value[key] = json!(v);
+        }
+    }
+    let request = &payload["request"];
+    for (from, to) in [
+        ("id", "requestId"),
+        ("turnId", "turnId"),
+        ("kind", "requestKind"),
+    ] {
+        if let Some(v) = request[from].as_str().filter(|v| v.len() <= 200) {
+            value[to] = json!(v);
+        }
+    }
+    value
 }
 pub fn poll(state: &Supervisor, grant: &Grant, cursor: &str) -> Result<Value> {
     let cursor = if cursor.is_empty() {

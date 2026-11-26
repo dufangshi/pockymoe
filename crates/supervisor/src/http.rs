@@ -73,7 +73,7 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
     let router = Router::new()
         .merge(crate::source_control::routes())
         .merge(crate::environments::routes())
-        .merge(crate::mcp::routes())
+        .merge(crate::mcp::routes(&state))
         .merge(crate::treer::routes())
         .merge(crate::notifications::routes())
         .route(

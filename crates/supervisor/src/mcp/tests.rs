@@ -7,7 +7,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
-async fn req(
+pub(super) async fn req(
     s: &Arc<Supervisor>,
     method: &str,
     path: &str,
@@ -39,7 +39,11 @@ async fn req(
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
 }
-async fn form(s: &Arc<Supervisor>, path: &str, values: &[(&str, &str)]) -> (StatusCode, Value) {
+pub(super) async fn form(
+    s: &Arc<Supervisor>,
+    path: &str,
+    values: &[(&str, &str)],
+) -> (StatusCode, Value) {
     let data = url::form_urlencoded::Serializer::new(String::new())
         .extend_pairs(values.iter().copied())
         .finish();

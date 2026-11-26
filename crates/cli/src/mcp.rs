@@ -1,33 +1,109 @@
 //! Newline JSON-RPC bridge. stdout is exclusively MCP protocol messages.
+use crate::threads::{Client, Connection};
 use anyhow::Result;
 use serde_json::{json, Value};
+use std::{sync::Arc, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::RwLock;
+
+/// How long a call waits for a restarting Supervisor before it fails.
+const RECONNECT: Duration = Duration::from_secs(30);
+
+/// The Supervisor connection, rebuilt from the saved `cli.json` when the
+/// Supervisor restarts: it issues a new CLI token each time it starts.
+struct Link {
+    connection: Connection,
+    client: RwLock<Arc<Client>>,
+}
+
+/// Failures where the request never ran: the Supervisor was down, or it
+/// restarted and no longer accepts the token this process read at start.
+fn not_delivered(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<reqwest::Error>()
+        .is_some_and(reqwest::Error::is_connect)
+        || error.to_string().starts_with("HTTP 401")
+}
+
+impl Link {
+    async fn request(&self, input: Value, wait_seconds: u64) -> Result<Value> {
+        let client = self.client.read().await.clone();
+        let error = match client.request_for(input.clone(), wait_seconds).await {
+            Err(error) if not_delivered(&error) => error,
+            done => return done,
+        };
+        let deadline = tokio::time::Instant::now() + RECONNECT;
+        let mut last = error;
+        while tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let Ok(fresh) = Client::new(self.connection.clone()) else {
+                continue;
+            };
+            match fresh.request_for(input.clone(), wait_seconds).await {
+                Err(error) if not_delivered(&error) => last = error,
+                done => {
+                    *self.client.write().await = Arc::new(fresh);
+                    return done;
+                }
+            }
+        }
+        Err(last)
+    }
+}
+
+/// A short reason for the client, without the request body.
+fn failure(id: &Value, error: &anyhow::Error) -> Value {
+    let text = error.to_string();
+    let reason = text
+        .split_once(": ")
+        .and_then(|(_, body)| serde_json::from_str::<Value>(body).ok())
+        .and_then(|body| body["message"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| {
+            if not_delivered(error) {
+                "the Pockymoe Supervisor is not running or its CLI connection changed".into()
+            } else {
+                text
+            }
+        });
+    let reason: String = reason.chars().take(500).collect();
+    json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":format!("Supervisor request failed: {reason}")}})
+}
 
 pub async fn serve(
-    client: crate::threads::Client,
+    connection: Connection,
     device: Option<String>,
     access: String,
+    workspaces: Vec<String>,
 ) -> Result<()> {
-    let client = std::sync::Arc::new(client);
+    let link = Arc::new(Link {
+        client: RwLock::new(Arc::new(Client::new(connection.clone())?)),
+        connection,
+    });
+    let workspaces = (!workspaces.is_empty()).then_some(workspaces);
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    let output = std::sync::Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
+    let output = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
     let mut tasks = tokio::task::JoinSet::new();
     let mut pending = std::collections::HashMap::<String, tokio::task::AbortHandle>::new();
     let mut initialized = false;
     let session_id = uuid::Uuid::new_v4().to_string();
+    let envelope = |request: &Value| json!({"operation":"outsideMcp","deviceId":device,"access":access,"workspaces":workspaces,"sessionId":session_id,"request":request});
     while let Some(line) = lines.next_line().await? {
+        if line.trim().is_empty() {
+            continue;
+        }
         let request: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => {
                 let mut out = output.lock().await;
                 out.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}\n").await?;
+                out.flush().await?;
                 continue;
             }
         };
         if request["method"] == "notifications/cancelled" {
             if let Some(handle) = pending.remove(&request["params"]["requestId"].to_string()) {
                 handle.abort();
-                let _=client.request(json!({"operation":"outsideMcp","deviceId":device,"access":access,"sessionId":session_id,"request":request})).await;
+                let _ = link.request(envelope(&request), 0).await;
             }
             continue;
         }
@@ -40,19 +116,23 @@ pub async fn serve(
         if !initialized {
             let mut out = output.lock().await;
             out.write_all(format!("{}\n",json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32000,"message":"Initialize first"}})).as_bytes()).await?;
+            out.flush().await?;
             continue;
         }
         let key = request["id"].to_string();
-        let client = client.clone();
+        let link = link.clone();
         let output = output.clone();
-        let device = device.clone();
-        let access = access.clone();
-        let session_id = session_id.clone();
-        let handle=tasks.spawn(async move {
-            let id=request["id"].clone();
-            let result=client.request_for(json!({"operation":"outsideMcp","deviceId":device,"access":access,"sessionId":session_id,"request":request}),600).await;
-            let response=match result {Ok(v)=>v,Err(_)=>json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":"Supervisor request failed"}})};
-            let mut out=output.lock().await;out.write_all(format!("{response}\n").as_bytes()).await?;out.flush().await?;Ok::<_,std::io::Error>(())
+        let input = envelope(&request);
+        let handle = tasks.spawn(async move {
+            let id = request["id"].clone();
+            let response = match link.request(input, 600).await {
+                Ok(v) => v,
+                Err(error) => failure(&id, &error),
+            };
+            let mut out = output.lock().await;
+            out.write_all(format!("{response}\n").as_bytes()).await?;
+            out.flush().await?;
+            Ok::<_, std::io::Error>(())
         });
         pending.insert(key, handle);
         while tasks.try_join_next().is_some() {}
@@ -60,4 +140,27 @@ pub async fn serve(
     }
     tasks.abort_all();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_names_the_supervisor_reason_and_never_the_request() {
+        let error = anyhow::anyhow!(
+            "HTTP 400 Bad Request: {}",
+            json!({"code":"bad","message":"outside MCP requires the owner CLI credential"})
+        );
+        let reply = failure(&json!(7), &error);
+        assert_eq!(reply["id"], 7);
+        assert_eq!(
+            reply["error"]["message"],
+            "Supervisor request failed: outside MCP requires the owner CLI credential"
+        );
+        assert!(not_delivered(&anyhow::anyhow!(
+            "HTTP 401 Unauthorized: {{}}"
+        )));
+        assert!(!not_delivered(&error));
+    }
 }

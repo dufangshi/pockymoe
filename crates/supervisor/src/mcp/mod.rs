@@ -3,13 +3,15 @@ mod audit;
 mod cancellation;
 mod events;
 mod oauth;
+#[cfg(test)]
+mod regression_tests;
 mod remote;
 mod store;
 #[cfg(test)]
 mod tests;
 mod tools;
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -26,7 +28,10 @@ pub(crate) fn start(state: &Arc<Supervisor>) {
     events::start(state);
 }
 
-pub(crate) fn routes() -> Router<Arc<Supervisor>> {
+/// Protocol versions this server speaks, newest first.
+const VERSIONS: [&str; 3] = ["2025-11-25", "2025-06-18", "2025-03-26"];
+
+pub(crate) fn routes(state: &Arc<Supervisor>) -> Router<Arc<Supervisor>> {
     Router::new()
         .route("/mcp", post(http).get(no_stream).delete(terminate))
         .route(
@@ -54,7 +59,64 @@ pub(crate) fn routes() -> Router<Arc<Supervisor>> {
             "/api/mcp/clients/{id}",
             axum::routing::delete(oauth::remove),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            guard_host,
+        ))
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
+}
+/// DNS rebinding: a page on a hostile name resolved to this machine sends its
+/// own name as Host. IP literals, localhost and the issuer cannot be such a name.
+fn host_valid(s: &Supervisor, h: &HeaderMap) -> bool {
+    let Some(host) = h.get("host") else {
+        return true;
+    };
+    let Ok(host) = host.to_str() else {
+        return false;
+    };
+    let Ok(url) = url::Url::parse(&format!("http://{host}")) else {
+        return false;
+    };
+    let issuer = url::Url::parse(&oauth::issuer(s)).ok();
+    match url.host() {
+        Some(url::Host::Ipv4(_) | url::Host::Ipv6(_)) => true,
+        Some(url::Host::Domain(name)) => {
+            name.eq_ignore_ascii_case("localhost")
+                || issuer
+                    .as_ref()
+                    .and_then(|i| i.host_str())
+                    .is_some_and(|i| i.eq_ignore_ascii_case(name))
+        }
+        None => false,
+    }
+}
+async fn guard_host(
+    State(s): State<Arc<Supervisor>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path();
+    let guarded = path == "/mcp"
+        || path.starts_with("/oauth/mcp/")
+        || path.starts_with("/.well-known/oauth-")
+        || path.starts_with("/api/mcp/consent/");
+    if guarded && !host_valid(&s, request.headers()) {
+        return (
+            StatusCode::MISDIRECTED_REQUEST,
+            Json(json!({"error":"invalid_host","error_description":"Use the address in POCKYMOE_MCP_ISSUER, localhost or an IP address."})),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+const INSTRUCTIONS: &str = "Pockymoe runs coding agents in threads on the owner's devices. List workspaces, launch a thread with a prompt, then call pockymoe_thread_wait (repeat it while the status is still running) and pockymoe_thread_read. The grant decides which tools are listed.";
+/// The client's version when this server speaks it, else the newest.
+fn negotiate(request: &Value) -> &'static str {
+    let asked = request["params"]["protocolVersion"].as_str().unwrap_or("");
+    VERSIONS
+        .into_iter()
+        .find(|v| *v == asked)
+        .unwrap_or(VERSIONS[0])
 }
 fn rpc_error(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
@@ -76,25 +138,26 @@ pub(crate) async fn rpc(state: &Arc<Supervisor>, grant: &Grant, request: Value) 
     let method = request["method"].as_str().unwrap();
     let id = id?;
     let result: Result<Value> = match method {
-        "initialize" => {
-            let version = request["params"]["protocolVersion"].as_str().unwrap_or("");
-            Ok(
-                json!({"protocolVersion":if matches!(version,"2025-06-18"|"2025-11-25"){version}else{"2025-11-25"},"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"pockymoe","version":pockymoe_protocol::APP_VERSION}}),
-            )
-        }
+        "initialize" => Ok(
+            json!({"protocolVersion":negotiate(&request),"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"pockymoe","title":"Pockymoe","version":pockymoe_protocol::APP_VERSION},"instructions":INSTRUCTIONS}),
+        ),
         "ping" => Ok(json!({})),
         "tools/list" => {
+            // Only what this grant can call, so a model is not offered tools
+            // that can only fail.
             let mut c = tools::catalog();
-            if grant.device.is_some() {
-                c["tools"]
-                    .as_array_mut()
-                    .unwrap()
-                    .retain(|t| remote::supported(t["name"].as_str().unwrap(), &grant.access));
-            }
+            c["tools"].as_array_mut().unwrap().retain(|t| {
+                let name = t["name"].as_str().unwrap();
+                grant.check(name, None, None).is_ok()
+                    && (grant.device.is_none() || remote::supported(name, &grant.access))
+            });
             Ok(c)
         }
         "tools/call" => {
             let name = request["params"]["name"].as_str().unwrap_or("");
+            if !tools::known(name) {
+                return Some(rpc_error(id, -32602, &format!("Unknown tool: {name}")));
+            }
             let args = request["params"]
                 .get("arguments")
                 .cloned()
@@ -135,10 +198,26 @@ pub(crate) async fn local(
         matches!(access, "read" | "supervised" | "full"),
         "invalid access"
     );
+    let workspaces = match &input["workspaces"] {
+        Value::Null => None,
+        Value::Array(ids) => Some(
+            ids.iter()
+                .map(|id| {
+                    let id = id.as_str().context("workspace IDs must be strings")?;
+                    // A remote device checks the workspace when it is used.
+                    if input["deviceId"].is_null() {
+                        state.get_workspace(id)?;
+                    }
+                    Ok(id.to_owned())
+                })
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        _ => anyhow::bail!("workspaces must be a list"),
+    };
     let grant = Grant {
         client: "local-stdio".into(),
         access: access.into(),
-        workspaces: None,
+        workspaces,
         device: input["deviceId"].as_str().map(str::to_owned),
     };
     let request = input["request"].clone();
@@ -184,6 +263,13 @@ fn origin_valid(s: &Supervisor, h: &HeaderMap) -> bool {
     h.get("origin")
         .is_none_or(|v| v.to_str().ok().is_some_and(|o| o == oauth::issuer(s)))
 }
+fn bad_request(message: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(rpc_error(Value::Null, -32600, message)),
+    )
+        .into_response()
+}
 async fn http(
     State(s): State<Arc<Supervisor>>,
     h: HeaderMap,
@@ -195,23 +281,27 @@ async fn http(
     let Ok((grant_id, grant)) = oauth::authenticate(&s, &h) else {
         return unauthorized(&s);
     };
+    if !request.is_object() {
+        return bad_request("Send one JSON-RPC message per request; batches are not supported");
+    }
     let init = request["method"] == "initialize";
     let session = h.get("mcp-session-id").and_then(|v| v.to_str().ok());
     if !init {
-        let valid = store::transaction(&s, |db| {
+        let negotiated = store::transaction(&s, |db| {
             let v = store::get(db, "session", session.unwrap_or(""))?;
             ensure!(v["grant"] == grant_id, "wrong session");
-            Ok(())
+            Ok(v["version"].as_str().map(str::to_owned))
         });
-        if valid.is_err() {
+        let Ok(negotiated) = negotiated else {
             return StatusCode::NOT_FOUND.into_response();
-        }
-        if !h
+        };
+        // Without the header the session's negotiated version applies.
+        let version = h
             .get("mcp-protocol-version")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| matches!(v, "2025-06-18" | "2025-11-25"))
-        {
-            return StatusCode::BAD_REQUEST.into_response();
+            .map(|v| v.to_str().unwrap_or(""))
+            .or(negotiated.as_deref());
+        if version.is_some_and(|v| !VERSIONS.contains(&v)) {
+            return bad_request("Unsupported MCP-Protocol-Version");
         }
     }
     let call_key = |id: &Value| {
@@ -238,7 +328,13 @@ async fn http(
     let session_id = if init {
         let id = store::secret();
         if store::transaction(&s, |db| {
-            store::put(db, "session", &id, &json!({"grant":grant_id}), 86400)
+            store::put(
+                db,
+                "session",
+                &id,
+                &json!({"grant":grant_id,"version":negotiate(&request)}),
+                86400,
+            )
         })
         .is_err()
         {
