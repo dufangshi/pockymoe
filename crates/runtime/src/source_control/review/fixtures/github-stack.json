@@ -1,0 +1,40 @@
+{
+ "number": 15153,
+ "id": 4090256,
+ "base": {
+  "ref": "trunk"
+ },
+ "open": false,
+ "pull_requests": [
+  {
+   "number": 15100,
+   "title": "Revoke CLI OAuth tokens on logout",
+   "state": "closed",
+   "merged_at": "2026-11-24T22:39:52Z",
+   "draft": false,
+   "html_url": "https://github.com/cli/cli/pull/15100",
+   "head": {
+    "ref": "fixture-user/oauth-logout-revocation",
+    "sha": "fe9ea5c35b64183e94ba4cdfd2cb679cc42b2a19"
+   },
+   "base": {
+    "ref": "trunk"
+   }
+  },
+  {
+   "number": 15152,
+   "title": "Clear Git helper credentials on logout",
+   "state": "closed",
+   "merged_at": "2026-11-24T22:39:53Z",
+   "draft": false,
+   "html_url": "https://github.com/cli/cli/pull/15152",
+   "head": {
+    "ref": "fixture-user/git-helper-logout-cleanup",
+    "sha": "a18329c936e4d7adb59d1c91720107d94f062c3e"
+   },
+   "base": {
+    "ref": "fixture-user/oauth-logout-revocation"
+   }
+  }
+ ]
+}

@@ -134,4 +134,41 @@ mod tests {
             .await
             .is_err());
     }
+
+    /// Bitbucket and Azure DevOps were removed: what an older version saved for
+    /// them is ignored on read instead of breaking settings or thread links.
+    #[tokio::test]
+    async fn removed_host_kinds_are_ignored_when_read() {
+        let fixture = crate::isolation_tests::setup().await;
+        let s = &fixture.state;
+        let path = pockymoe_runtime::upstreams::directory(&s.config.database_url)
+            .join("source-control.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, json!({"hosts":{"bitbucket.org":{"kind":"bitbucket","token":"t","enabled":true},"dev.azure.com":{"kind":"azure","token":"t","enabled":true},"github.com":{"kind":"github","token":"","enabled":true}}}).to_string()).unwrap();
+        let settings = s.source_control_settings().unwrap();
+        let hosts: Vec<&str> = settings["hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["host"].as_str().unwrap())
+            .collect();
+        assert_eq!(hosts, ["github.com"]);
+        let thread = crate::isolation_tests::thread(s, &fixture.open).await;
+        s.db.with(|c| {
+            c.execute(
+                "INSERT INTO thread_source_links(thread_id,url,item_json) VALUES(?1,'https://bitbucket.org/t/r/pull-requests/1',?2)",
+                rusqlite::params![thread, json!({"url":"https://bitbucket.org/t/r/pull-requests/1","number":1,"kind":"pr","repository":{"host":"bitbucket.org","owner":"t","name":"r","kind":"bitbucket"}}).to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(s.source_links(&thread).unwrap().is_empty());
+        assert!(s
+            .source_link(&thread, "https://bitbucket.org/t/r/pull-requests/2", false)
+            .is_err());
+        assert!(pockymoe_runtime::source_control::Repository::parse(
+            "https://dev.azure.com/o/p/_git/r"
+        )
+        .is_err());
+    }
 }

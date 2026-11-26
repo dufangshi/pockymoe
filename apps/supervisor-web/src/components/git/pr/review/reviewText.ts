@@ -64,6 +64,13 @@ const messages = {
   into: ['{head} → {base}', '{head} → {base}'], viewLink: ['审阅', 'Review'], allPullRequests: ['所有拉取请求', 'All pull requests'],
   settingsTitle: ['PR 评审', 'Pull request review'], guideInstructions: ['导览偏好', 'Guide instructions'], guideInstructionsHint: ['语气、重点和顺序。留空使用默认。', 'Tone, emphasis and order. Leave blank for the default.'],
   guideWorkspace: ['工作区覆盖', 'Workspace override'], guideSource: ['导览由谁来写', 'Guide writer'], sourceAuto: ['自动（Codex，其次 Claude）', 'Automatic (Codex, then Claude)'], sourceUpstream: ['已保存的模型连接', 'Saved model connection'], guideModel: ['模型（可选）', 'Model (optional)'],
+  stack: ['栈', 'Stack'], stackPosition: ['栈中第 {i} / {n} 层', 'Layer {i} of {n} in a stack'], stackNative: ['GitHub 栈', 'GitHub stack'], stackInferred: ['按目标分支推断的栈', 'Stack inferred from base branches'],
+  stackBase: ['基于 {base}', 'on {base}'], mergeStack: ['合并栈', 'Merge stack'], rebaseStack: ['变基栈', 'Rebase stack'],
+  mergeStackTitle: ['合并 {n} 个 PR？', 'Merge {n} PRs?'], mergeStackNative: ['GitHub 一次合并这些层，需要时进入合并队列，并遵守分支规则。', 'GitHub merges these layers together, through the merge queue when the base requires one, under its branch rules.'],
+  mergeStackInferred: ['从下往上逐个合并：每一层先改为以 {base} 为目标，再按它载入时的提交合并。压缩或变基合并后，上面的层会重新叠放并强制推送。', 'Merged one at a time from the bottom: each layer is retargeted to {base}, then merged at the commit you loaded. After a squash or rebase merge the layers above are restacked and force-pushed.'],
+  mergeStackCredits: ['栈合并不去掉智能体署名。', 'Stack merges keep agent credits.'], mergeLayers: ['合并 {n} 个 PR', 'Merge {n} PRs'],
+  rebaseStackTitle: ['把栈变基到 {base}？', 'Rebase the stack onto {base}?'], rebaseStackBody: ['会改写 {n} 个分支的历史并强制推送（带租约），检查会重新开始。不会改动你的本地检出。', 'Rewrites the history of {n} branches and force-pushes them with a lease; checks start again. Your local checkout is not touched.'],
+  stackDone: ['栈已更新', 'Stack updated'], stackOn: ['叠在 PR 之上（编号）', 'Stack on PR (number)'], openLayer: ['打开 #{n}', 'Open #{n}'],
   removeCreditsDefault: ['合并时默认去掉智能体署名', 'Remove agent credits when merging by default'],
 } as const;
 

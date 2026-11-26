@@ -13,6 +13,7 @@ export interface PullSummary {
   checks: ChecksState | null; reviewDecision: ReviewDecision | null; requestedReviewers: string[];
   additions: number | null; deletions: number | null; changedFiles: number | null; comments: number | null;
   labels: { name: string; color?: string }[];
+  stack?: StackRef | null;
 }
 export interface Reviewer { login: string; state: 'requested' | 'approved' | 'changesRequested' | 'commented' | 'dismissed' | 'pending'; team: boolean }
 export interface TimelineEntry { kind: 'comment' | 'review'; id: string; author: Person | null; body: string; createdAt: string; url: string | null; state: string | null; commit: string | null }
@@ -46,6 +47,7 @@ export interface GuideState { guide: Guide | null; stale: boolean; run: { state:
 export interface DetailResponse {
   detail: PullDetail; drafts: Draft[]; guide: GuideState; linkedThreads: { id: string; title: string }[];
   workspace: { id: string | null; label: string | null } | null; removeAgentCredits: boolean;
+  stack?: Stack | null;
 }
 export interface PageResponse {
   state: string; pulls: PullSummary[]; fetchedAt: string; viewers: Record<string, string | null>;
@@ -71,3 +73,9 @@ export function fetchViews(deviceId: string | null | undefined) {
 export function saveViews(deviceId: string | null | undefined, views: SavedView[]) {
   return request<{ views: SavedView[] }>(`${sourceRoot(deviceId)}/source-control/pull-request-views`, { method: 'PUT', body: JSON.stringify({ views }) });
 }
+
+/** A PR's place in a stack; position 1 sits on the base branch. */
+export interface StackRef { id: string; position: number; size: number; native: boolean }
+export interface StackLayer { number: number; url: string; title: string; state: PullState; draft: boolean; headRef: string; headSha: string; baseRef: string }
+/** Bottom to top. `native`: the host keeps the stack (GitHub); else inferred from bases. */
+export interface Stack { id: string; native: boolean; base: string; layers: StackLayer[] }

@@ -1,6 +1,6 @@
 //! Review behaviour against recorded host responses (GitHub recordings are
 //! read-only captures of a public PR with logins and e-mail replaced) and hand
-//! shaped GitLab/Forgejo/Bitbucket/Azure responses from their API references.
+//! shaped GitLab/Forgejo responses from their API references.
 use super::*;
 use crate::source_control::hosts::Operation;
 use async_trait::async_trait;
@@ -109,16 +109,10 @@ fn repo(kind: HostKind) -> Repository {
         host: match kind {
             HostKind::Github => "github.com",
             HostKind::Gitlab => "gitlab.com",
-            HostKind::Bitbucket => "bitbucket.org",
-            HostKind::Azure => "dev.azure.com",
             HostKind::Forgejo => "127.0.0.1:19173",
         }
         .into(),
-        owner: if kind == HostKind::Azure {
-            "org/project/_git".into()
-        } else {
-            "o".into()
-        },
+        owner: "o".into(),
         name: "r".into(),
         kind,
     }
@@ -655,53 +649,6 @@ async fn gitlab_submit_posts_positions_then_approves_with_the_reviewed_sha() {
 }
 
 #[test]
-fn bitbucket_and_azure_read_threads_and_votes() {
-    let pr = json!({"id":4,"title":"Docs","state":"OPEN","author":{"nickname":"dee"},"source":{"branch":{"name":"docs"},"commit":{"hash":"bb1"}},"destination":{"branch":{"name":"main"},"commit":{"hash":"bb0"}},"links":{"html":{"href":"https://bitbucket.org/o/r/pull-requests/4"}},"participants":[{"user":{"nickname":"eve"},"role":"REVIEWER","approved":true,"state":"approved"}]});
-    let comments = json!([
-        {"id":1,"content":{"raw":"Typo"},"user":{"nickname":"eve"},"inline":{"path":"README.md","to":3}},
-        {"id":2,"content":{"raw":"Fixed"},"user":{"nickname":"dee"},"parent":{"id":1}},
-        {"id":3,"content":{"raw":"Thanks"},"user":{"nickname":"eve"}}
-    ]);
-    let d = other::bitbucket_map(
-        &repo(HostKind::Bitbucket),
-        &pr,
-        &comments,
-        &json!([]),
-        &json!([{"key":"ci","state":"FAILED"}]),
-        None,
-    );
-    assert_eq!(d.threads.len(), 1);
-    assert_eq!(d.threads[0].comments.len(), 2);
-    assert_eq!(d.timeline.len(), 1);
-    assert_eq!(d.summary.review_decision.as_deref(), Some("approved"));
-    assert!(!d.capabilities.merge, "no atomic head guard on Bitbucket");
-    let az = json!({"pullRequestId":8,"title":"Az","status":"active","createdBy":{"uniqueName":"fay@example.com"},"sourceRefName":"refs/heads/az","targetRefName":"refs/heads/main","lastMergeSourceCommit":{"commitId":"a1"},"reviewers":[{"uniqueName":"gus@example.com","vote":-5}]});
-    let threads = json!([{"id":10,"status":"active","threadContext":{"filePath":"/src/x.cs","rightFileStart":{"line":4},"rightFileEnd":{"line":6}},"comments":[{"id":1,"content":"Nit","author":{"uniqueName":"gus@example.com"},"commentType":"text"}]},{"id":11,"status":"active","comments":[{"id":1,"content":"System","commentType":"system"}]}]);
-    let d = other::azure_map(
-        &repo(HostKind::Azure),
-        &az,
-        &threads,
-        &json!([]),
-        &json!([]),
-        &json!({"id":"me"}),
-    );
-    assert_eq!(d.threads.len(), 1);
-    assert_eq!(
-        (d.threads[0].start_line, d.threads[0].line),
-        (Some(4), Some(6))
-    );
-    assert_eq!(d.threads[0].path, "src/x.cs");
-    assert_eq!(
-        d.summary.review_decision.as_deref(),
-        Some("changesRequested")
-    );
-    assert_eq!(
-        d.summary.url,
-        "https://dev.azure.com/org/project/_git/r/pullrequest/8"
-    );
-}
-
-#[test]
 fn raw_diffs_split_into_files_with_blob_revisions() {
     let diff = "diff --git a/a.txt b/a.txt\nindex 1111111..2222222 100644\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1,2 @@\n-x\n+y\n+z\ndiff --git a/old.txt b/new.txt\nsimilarity index 90%\nrename from old.txt\nrename to new.txt\ndiff --git a/bin.png b/bin.png\nnew file mode 100644\nindex 0000000..3333333\nBinary files /dev/null and b/bin.png differ\n";
     let files = files_from_diff(diff);
@@ -897,4 +844,418 @@ async fn github_rerun_and_revert_use_the_run_and_the_pr_node() {
     // Open PRs cannot be reverted.
     d.summary.state = "open".into();
     assert!(revert(&host, &repo(HostKind::Github), &d).await.is_err());
+}
+
+fn summary_at(number: u64, head: &str, base: &str) -> PullSummary {
+    PullSummary {
+        stack: None,
+        url: format!("https://127.0.0.1:1/o/r/pulls/{number}"),
+        number,
+        title: format!("Layer {number}"),
+        state: "open".into(),
+        draft: false,
+        author: None,
+        repository: repo(HostKind::Forgejo),
+        head_ref: head.into(),
+        base_ref: base.into(),
+        head_sha: format!("sha-{number}"),
+        created_at: String::new(),
+        updated_at: String::new(),
+        checks: None,
+        review_decision: None,
+        requested_reviewers: Vec::new(),
+        additions: None,
+        deletions: None,
+        changed_files: None,
+        comments: None,
+        labels: Vec::new(),
+    }
+}
+
+#[test]
+fn stacks_are_inferred_from_bases_and_github_stacks_are_read() {
+    let mut pulls = vec![
+        summary_at(3, "c", "b"),
+        summary_at(1, "a", "main"),
+        summary_at(2, "b", "a"),
+        summary_at(9, "x", "main"),
+        summary_at(4, "d", "c"),
+    ];
+    pulls[4].state = "merged".into();
+    stack::infer(&mut pulls);
+    let at = |n: u64| pulls.iter().find(|p| p.number == n).unwrap().stack.clone();
+    assert_eq!(at(1).map(|s| (s.position, s.size)), Some((1, 3)));
+    assert_eq!(at(2).map(|s| (s.position, s.size)), Some((2, 3)));
+    assert_eq!(at(3).map(|s| s.position), Some(3));
+    assert_eq!(at(9), None, "a lone PR is not a stack");
+    assert_eq!(at(4), None, "merged PRs are not layers");
+    let found = stack::inferred(&pulls, 2).unwrap();
+    assert_eq!(found.base, "main");
+    assert_eq!(
+        found.layers.iter().map(|l| l.number).collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    assert!(!found.native);
+    // Lower layers merged: the stack's base is found through them, and they stay as merged layers.
+    let mut rest = vec![summary_at(3, "c", "b"), summary_at(4, "d", "c")];
+    rest[0].created_at = "2026-11-26T10:00:00Z".into();
+    let mut done = vec![
+        summary_at(2, "b", "a"),
+        summary_at(1, "a", "main"),
+        summary_at(8, "a", "old"),
+    ];
+    for p in &mut done {
+        p.state = "merged".into();
+    }
+    done[0].created_at = "2026-11-26T09:00:00Z".into();
+    done[0].updated_at = "2026-11-26T11:00:00Z".into();
+    done[1].created_at = "2026-11-26T08:00:00Z".into();
+    done[1].updated_at = "2026-11-26T11:30:00Z".into();
+    done[2].updated_at = "2025-01-01T00:00:00Z".into(); // an old PR from a reused branch name
+    let mut settled = stack::inferred(&rest, 4).unwrap();
+    assert_eq!(settled.base, "b");
+    stack::settle_base(&mut settled, &rest, &done);
+    assert_eq!(settled.base, "main");
+    assert_eq!(
+        settled
+            .layers
+            .iter()
+            .map(|l| (l.number, l.state.as_str()))
+            .collect::<Vec<_>>(),
+        [(1, "merged"), (2, "merged"), (3, "open"), (4, "open")]
+    );
+    // Two open PRs from the same branch name (forks) give no parent.
+    let mut forks = vec![
+        summary_at(1, "a", "main"),
+        summary_at(5, "a", "main"),
+        summary_at(2, "b", "a"),
+    ];
+    stack::infer(&mut forks);
+    assert!(forks.iter().all(|p| p.stack.is_none()));
+    // A recorded GitHub stack (cli/cli, logins replaced): bottom to top, merged layers kept.
+    let recorded: Value = serde_json::from_str(include_str!("fixtures/github-stack.json")).unwrap();
+    let native = stack::map_native(&repo(HostKind::Github), &recorded).unwrap();
+    assert!(native.native);
+    assert_eq!(native.base, "trunk");
+    assert_eq!(
+        native
+            .layers
+            .iter()
+            .map(|l| (l.number, l.state.as_str()))
+            .collect::<Vec<_>>(),
+        [(15100, "merged"), (15152, "merged")]
+    );
+    assert_eq!(native.layers[1].base_ref, native.layers[0].head_ref);
+}
+
+#[test]
+fn stack_merges_cover_the_layers_below_and_guard_every_head() {
+    let mut pulls = vec![
+        summary_at(1, "a", "main"),
+        summary_at(2, "b", "a"),
+        summary_at(3, "c", "b"),
+    ];
+    let stack = stack::inferred(&pulls, 1).unwrap();
+    let range = stack::merge_range(&stack, 2).unwrap();
+    assert_eq!(range.iter().map(|l| l.number).collect::<Vec<_>>(), [1, 2]);
+    let heads = |pairs: &[(u64, &str)]| {
+        pairs
+            .iter()
+            .map(|(n, h)| stack::StackHead {
+                number: *n,
+                head_sha: (*h).into(),
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(stack::guard_heads(&range, &heads(&[(1, "sha-1"), (2, "sha-2")])).is_ok());
+    assert!(stack::guard_heads(&range, &heads(&[(2, "sha-2")]))
+        .unwrap_err()
+        .to_string()
+        .contains("changed"));
+    assert!(
+        stack::guard_heads(&range, &heads(&[(1, "old"), (2, "sha-2")]))
+            .unwrap_err()
+            .to_string()
+            .contains("moved")
+    );
+    pulls[0].draft = true;
+    let drafted = stack::inferred(&pulls, 1).unwrap();
+    assert!(stack::merge_range(&drafted, 3)
+        .unwrap_err()
+        .to_string()
+        .contains("draft"));
+}
+
+#[tokio::test]
+async fn github_stack_merge_is_one_merge_async_call_with_the_target_head() {
+    let repo = repo(HostKind::Github);
+    let stack = stack::Stack {
+        id: "7".into(),
+        native: true,
+        base: "main".into(),
+        layers: vec![
+            stack::StackLayer {
+                number: 1,
+                url: String::new(),
+                title: String::new(),
+                state: "open".into(),
+                draft: false,
+                head_ref: "a".into(),
+                head_sha: "h1".into(),
+                base_ref: "main".into(),
+            },
+            stack::StackLayer {
+                number: 2,
+                url: String::new(),
+                title: String::new(),
+                state: "open".into(),
+                draft: false,
+                head_ref: "b".into(),
+                head_sha: "h2".into(),
+                base_ref: "a".into(),
+            },
+        ],
+    };
+    let host = FixtureHost::new(HostKind::Github)
+        .answer("GET", "repos/o/r/pulls/1", json!({"head":{"sha":"h1"}}))
+        .answer(
+            "GET",
+            "repos/o/r/pulls/2/merge-async/u1",
+            json!({"status":"merged","details":{"sha":"m"}}),
+        )
+        .answer("GET", "repos/o/r/pulls/2", json!({"head":{"sha":"h2"}}))
+        .answer(
+            "PUT",
+            "repos/o/r/pulls/2/merge-async",
+            json!({"status":"pending","details":{"uuid":"u1"}}),
+        );
+    let expected = vec![
+        stack::StackHead {
+            number: 1,
+            head_sha: "h1".into(),
+        },
+        stack::StackHead {
+            number: 2,
+            head_sha: "h2".into(),
+        },
+    ];
+    let result = stack::merge_stack(
+        &host,
+        &repo,
+        &stack::MergeStack {
+            stack: &stack,
+            target: 2,
+            method: "squash",
+            expected: &expected,
+            local: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["merged"], json!([1, 2]));
+    assert_eq!(result["result"]["status"], "merged");
+    let put = host
+        .requests()
+        .into_iter()
+        .find(|(m, _, _)| m == "PUT")
+        .unwrap();
+    assert_eq!(
+        put.2.unwrap(),
+        json!({"merge_method":"squash","merge_action":"default","sha":"h2"})
+    );
+    // A layer that moved refuses before any write.
+    let moved = FixtureHost::new(HostKind::Github)
+        .answer("GET", "repos/o/r/pulls/1", json!({"head":{"sha":"newer"}}))
+        .answer("GET", "repos/o/r/pulls/2", json!({"head":{"sha":"h2"}}));
+    assert!(stack::merge_stack(
+        &moved,
+        &repo,
+        &stack::MergeStack {
+            stack: &stack,
+            target: 2,
+            method: "squash",
+            expected: &expected,
+            local: None
+        }
+    )
+    .await
+    .is_err());
+    assert!(moved.requests().iter().all(|(m, _, _)| m == "GET"));
+    // Squash-merging an inferred stack without a local checkout is refused up front.
+    let inferred = stack::Stack {
+        native: false,
+        ..stack.clone()
+    };
+    let host = FixtureHost::new(HostKind::Forgejo)
+        .answer("GET", "repos/o/r/pulls/1", json!({"head":{"sha":"h1"}}))
+        .answer("GET", "repos/o/r/pulls/2", json!({"head":{"sha":"h2"}}));
+    let error = stack::merge_stack(
+        &host,
+        &repo_kind(HostKind::Forgejo),
+        &stack::MergeStack {
+            stack: &inferred,
+            target: 2,
+            method: "squash",
+            expected: &expected,
+            local: None,
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("workspace"));
+}
+
+fn repo_kind(kind: HostKind) -> Repository {
+    repo(kind)
+}
+
+/// The cascade on real Git: a bare "remote", a local clone that is never
+/// touched, three stacked branches, the bottom squash-merged into main.
+#[test]
+fn rebase_stack_replays_layers_in_a_temporary_clone_and_leases_each_push() {
+    use std::process::Command;
+    let dir = tempfile::tempdir().unwrap();
+    let run = |cwd: &std::path::Path, args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(cwd)
+            .args([
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    let remote = dir.path().join("remote.git");
+    let local = dir.path().join("local");
+    run(
+        dir.path(),
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    run(
+        dir.path(),
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            local.to_str().unwrap(),
+        ],
+    );
+    let write = |name: &str, text: &str| std::fs::write(local.join(name), text).unwrap();
+    write("base.txt", "base\n");
+    run(&local, &["add", "."]);
+    run(&local, &["commit", "-qm", "base"]);
+    run(&local, &["push", "-q", "origin", "HEAD:main"]);
+    let mut heads = Vec::new();
+    for (branch, from) in [("a", "main"), ("b", "a"), ("c", "b")] {
+        run(&local, &["checkout", "-q", "-B", branch, from]);
+        write(&format!("{branch}.txt"), branch);
+        run(&local, &["add", "."]);
+        run(&local, &["commit", "-qm", branch]);
+        run(&local, &["push", "-q", "origin", branch]);
+        heads.push(run(&local, &["rev-parse", "HEAD"]));
+    }
+    // Squash-merge layer a into main on the remote side.
+    run(&local, &["checkout", "-q", "main"]);
+    run(&local, &["merge", "-q", "--squash", "a"]);
+    run(&local, &["commit", "-qm", "a (squashed)"]);
+    run(&local, &["push", "-q", "origin", "main"]);
+    run(&local, &["checkout", "-q", "c"]);
+    let before = run(&local, &["rev-parse", "HEAD"]);
+    let layers: Vec<stack::StackLayer> = [("b", 1usize), ("c", 2)]
+        .iter()
+        .enumerate()
+        .map(|(i, (branch, at))| stack::StackLayer {
+            number: i as u64 + 2,
+            url: String::new(),
+            title: String::new(),
+            state: "open".into(),
+            draft: false,
+            head_ref: (*branch).into(),
+            head_sha: heads[*at].clone(),
+            base_ref: if i == 0 { "a".into() } else { "b".into() },
+        })
+        .collect();
+    let url = format!("file://{}", remote.display());
+    // A stale lease refuses.
+    let mut stale = layers.clone();
+    stale[0].head_sha = heads[0].clone();
+    assert!(stack::replay(&local, &url, "main", &stale, None)
+        .unwrap_err()
+        .to_string()
+        .contains("moved"));
+    let rebased = stack::replay(&local, &url, "main", &layers, Some(&heads[0])).unwrap();
+    assert_eq!(rebased.len(), 2);
+    let main = run(&local, &["ls-remote", &url, "refs/heads/main"]);
+    let b = run(&local, &["ls-remote", &url, "refs/heads/b"]);
+    assert_eq!(b.split_whitespace().next(), Some(rebased[0].1.as_str()));
+    // b now sits directly on the squashed main and holds only its own commit.
+    let log = run(
+        &remote,
+        &[
+            "log",
+            "--format=%s",
+            &format!(
+                "{}..{}",
+                main.split_whitespace().next().unwrap(),
+                rebased[1].1
+            ),
+        ],
+    );
+    assert_eq!(log.lines().collect::<Vec<_>>(), ["c", "b"]);
+    // The user's checkout did not move.
+    assert_eq!(run(&local, &["rev-parse", "HEAD"]), before);
+    assert_eq!(run(&local, &["status", "--porcelain"]), "");
+}
+
+#[tokio::test]
+async fn a_stacked_github_pr_joins_the_stack_below_or_starts_one() {
+    let repo = repo(HostKind::Github);
+    let host = FixtureHost::new(HostKind::Github).answer(
+        "GET",
+        "repos/o/r/stacks?pull_request=5",
+        json!([{"number":9}]),
+    );
+    stack::join_native(&host, &repo, 5, 6).await.unwrap();
+    let posted = host
+        .requests()
+        .into_iter()
+        .find(|(m, _, _)| m == "POST")
+        .unwrap();
+    assert_eq!(
+        (posted.1.as_str(), posted.2.unwrap()),
+        ("repos/o/r/stacks/9/add", json!({"pull_requests":[6]}))
+    );
+    let host = FixtureHost::new(HostKind::Github).answer(
+        "GET",
+        "repos/o/r/stacks?pull_request=5",
+        json!([]),
+    );
+    stack::join_native(&host, &repo, 5, 6).await.unwrap();
+    let posted = host
+        .requests()
+        .into_iter()
+        .find(|(m, _, _)| m == "POST")
+        .unwrap();
+    assert_eq!(
+        (posted.1.as_str(), posted.2.unwrap()),
+        ("repos/o/r/stacks", json!({"pull_requests":[5, 6]}))
+    );
+    assert!(
+        stack::join_native(&host, &repo_kind(HostKind::Gitlab), 5, 6)
+            .await
+            .is_err()
+    );
 }

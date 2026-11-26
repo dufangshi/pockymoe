@@ -33,6 +33,12 @@ For a PR in another repository, link its URL first, then pass
 - `pockymoe pr review merge NUMBER --expected-head SHA --method squash
   --remove-agent-credits` merges without agent co-author trailers; human
   co-authors stay.
+- Stacks: `pockymoe pr create --head BRANCH --stack-on N` opens a PR on top of
+  open PR N. `pockymoe pr review stack N` lists the layers (bottom first) with
+  their heads; `review merge-stack N --expected-heads 12:SHA,13:SHA [--method
+  squash]` merges N and every open layer below it; `review rebase-stack N
+  --expected-heads …` replays every open layer onto the base and force-pushes
+  with a lease (history is rewritten, checks restart). A moved layer refuses.
 - `pockymoe issue list --search WORDS`, `show NUMBER`, `create --title TITLE`,
   `comment NUMBER --body BODY`, `link HTTPS_URL` (GitHub and GitLab).
 

@@ -42,10 +42,17 @@ pub enum Command {
         body: Option<String>,
         #[arg(long)]
         head: Option<String>,
-        #[arg(long, default_value = "main")]
-        base: String,
+        #[arg(
+            long,
+            default_value = "main",
+            default_value_if("stack_on", clap::builder::ArgPredicate::IsPresent, None)
+        )]
+        base: Option<String>,
         #[arg(long)]
         draft: bool,
+        /// Stack the new PR on top of open PR NUMBER (its base becomes that PR's head branch).
+        #[arg(long, conflicts_with = "base")]
+        stack_on: Option<u64>,
     },
     Update {
         number: u64,
@@ -223,6 +230,26 @@ pub enum ReviewCommand {
     },
     /// Open a PR that reverts a merged GitHub PR.
     Revert { number: u64 },
+    /// The stack around a PR: layers bottom to top with their heads.
+    Stack { number: u64 },
+    /// Merge this PR and every open layer below it.
+    #[command(
+        after_long_help = "Pass the heads you reviewed for every open layer up to NUMBER, from `review stack`: --expected-heads 12:SHA,13:SHA. A moved layer refuses the merge."
+    )]
+    MergeStack {
+        number: u64,
+        #[arg(long, value_delimiter = ',')]
+        expected_heads: Vec<String>,
+        #[arg(long, default_value = "merge", value_parser = ["merge", "squash", "rebase"])]
+        method: String,
+    },
+    /// Rebase every open layer onto the stack's base and force-push each branch
+    /// with a lease. Rewrites history; checks start again.
+    RebaseStack {
+        number: u64,
+        #[arg(long, value_delimiter = ',')]
+        expected_heads: Vec<String>,
+    },
     /// Write the review guide (or --show the stored one).
     Guide {
         number: u64,
@@ -299,6 +326,24 @@ impl ReviewCommand {
             ),
             Self::Rerun { number, token } => ("rerun", number, json!({"token":token})),
             Self::Revert { number } => ("revert", number, json!({})),
+            Self::Stack { number } => ("stack", number, json!({})),
+            Self::MergeStack {
+                number,
+                expected_heads,
+                method,
+            } => (
+                "mergeStack",
+                number,
+                json!({"method":method,"expectedHeads":stack_heads(&expected_heads)}),
+            ),
+            Self::RebaseStack {
+                number,
+                expected_heads,
+            } => (
+                "rebaseStack",
+                number,
+                json!({"expectedHeads":stack_heads(&expected_heads)}),
+            ),
             Self::Guide { number, show } => {
                 (if show { "guideShow" } else { "guide" }, number, json!({}))
             }
@@ -324,8 +369,9 @@ impl Command {
                 head,
                 base,
                 draft,
+                stack_on,
             } => {
-                json!({"action":"create","title":title,"body":body,"head":head,"base":base,"draft":draft})
+                json!({"action":"create","title":title,"body":body,"head":head,"base":base,"draft":draft,"stackOn":stack_on})
             }
             Self::Update {
                 number,
@@ -379,6 +425,22 @@ impl Command {
         }
     }
 }
+/// `12:SHA` pairs into `[{number, headSha}]`; malformed entries are sent as
+/// given so the Supervisor refuses them with a reason.
+fn stack_heads(pairs: &[String]) -> Value {
+    Value::Array(
+        pairs
+            .iter()
+            .map(|pair| match pair.split_once(':') {
+                Some((number, sha)) => {
+                    json!({"number":number.trim().parse::<u64>().ok(),"headSha":sha.trim()})
+                }
+                None => json!({"number":null,"headSha":pair}),
+            })
+            .collect(),
+    )
+}
+
 /// PR or issue for item commands. Review actions use `kind` for the draft kind
 /// (line, file, summary), so it is left as the command set it.
 fn item_kind(input: &mut Value, issue: bool) {
@@ -448,9 +510,22 @@ mod tests {
             v["kind"], "line",
             "the draft kind survives the item scoping"
         );
+        assert_eq!(v["startLine"], 10);
         let mut show = Command::Show { number: 1 }.request();
         item_kind(&mut show, true);
         assert_eq!(show["kind"], "issue");
-        assert_eq!(v["startLine"], 10);
+        let v = Command::Review {
+            command: ReviewCommand::MergeStack {
+                number: 13,
+                expected_heads: vec!["12:aaa".into(), "13:bbb".into()],
+                method: "squash".into(),
+            },
+        }
+        .request();
+        assert_eq!(v["reviewAction"], "mergeStack");
+        assert_eq!(
+            v["expectedHeads"],
+            json!([{"number":12,"headSha":"aaa"},{"number":13,"headSha":"bbb"}])
+        );
     }
 }

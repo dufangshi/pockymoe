@@ -59,6 +59,7 @@ pub(super) async fn list(
         .into_iter()
         .flatten()
         .map(|n| PullSummary {
+            stack: None,
             url: str_of(&n["webUrl"]),
             number: n["iid"]
                 .as_str()
@@ -115,6 +116,7 @@ pub(super) fn map_detail(
     jobs: &[Value],
 ) -> PullDetail {
     let summary = PullSummary {
+        stack: None,
         url: str_of(&m["web_url"]),
         number: m["iid"].as_u64().unwrap_or(0),
         title: str_of(&m["title"]),

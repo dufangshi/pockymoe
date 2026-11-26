@@ -195,6 +195,7 @@ impl Supervisor {
             .await
             .into_iter()
             .collect();
+        stack::infer(&mut pulls);
         pulls.sort_by(|a: &PullSummary, b| b.updated_at.cmp(&a.updated_at));
         Ok(json!({
             "state": state,
@@ -286,6 +287,7 @@ impl Supervisor {
                     "linkedThreads": self.linked_threads(&detail.summary.url)?,
                     "workspace": local.as_ref().map(|k| json!({"id":k.workspace_id,"label":k.workspace_label})),
                     "removeAgentCredits": crate::source_control::load(self)?.remove_agent_credits,
+                    "stack": stack::read(host, repo, number).await.ok().flatten(),
                     "detail": detail,
                 }))
             }
@@ -445,6 +447,37 @@ impl Supervisor {
                     auto_merge(host, repo, &detail, &merge_input, input["enable"] != false).await
                 }
             }
+            "stack" => Ok(json!({"stack": stack::read(host, repo, number).await?})),
+            "mergeStack" | "rebaseStack" => {
+                let current = stack::read(host, repo, number)
+                    .await?
+                    .context("This PR is not in a stack")?;
+                let expected: Vec<stack::StackHead> = serde_json::from_value(
+                    input["expectedHeads"].clone(),
+                )
+                .context("expectedHeads required: [{number, headSha}] for each open layer")?;
+                let local = self.known_repository(repo);
+                if action == "rebaseStack" {
+                    let local = local.context(
+                        "Add a workspace with this repository to this device to rebase a stack",
+                    )?;
+                    stack::rebase_stack(host, repo, &current, &expected, &local).await
+                } else {
+                    let method = input["method"].as_str().unwrap_or("merge").to_owned();
+                    stack::merge_stack(
+                        host,
+                        repo,
+                        &stack::MergeStack {
+                            stack: &current,
+                            target: number,
+                            method: &method,
+                            expected: &expected,
+                            local: local.as_ref(),
+                        },
+                    )
+                    .await
+                }
+            }
             "rerun" => {
                 let detail = detail(host, repo, number).await?;
                 rerun(host, repo, &detail, input["token"].as_str().unwrap_or("")).await
@@ -489,10 +522,7 @@ impl Supervisor {
         number: u64,
         key: &str,
     ) -> Result<(String, Vec<PullFile>, bool)> {
-        if matches!(
-            repo.kind,
-            HostKind::Forgejo | HostKind::Bitbucket | HostKind::Azure
-        ) {
+        if repo.kind == HostKind::Forgejo {
             if let Some(known) = self.known_repository(repo) {
                 let detail = detail(host, repo, number).await?;
                 let local = fetch_review_refs(&known, repo, &detail, &format!("files-{number}"))
@@ -685,7 +715,7 @@ pub(crate) fn valid_ref_name(name: &str) -> bool {
 
 /// Fetch the reviewed head and the base into the local checkout and check the
 /// head is the one the host reports. Hosts that refresh their PR refs after a
-/// push (Forgejo, Bitbucket, Azure) are read from the head branch itself, in
+/// push (Forgejo) are read from the head branch itself, in
 /// its own repository for forks, so the diff is never a push behind.
 pub(crate) fn fetch_review_refs(
     known: &KnownRepository,

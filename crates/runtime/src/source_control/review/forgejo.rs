@@ -46,6 +46,7 @@ fn combined(value: &Value) -> Option<String> {
 pub(super) fn summary(repo: &Repository, p: &Value) -> PullSummary {
     let title = str_of(&p["title"]);
     PullSummary {
+        stack: None,
         url: str_of(&p["html_url"]),
         number: p["number"].as_u64().unwrap_or(0),
         draft: p["draft"] == true || draft_title(&title),
