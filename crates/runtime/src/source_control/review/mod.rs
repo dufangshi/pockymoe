@@ -14,6 +14,7 @@ mod gitlab;
 pub mod guide;
 mod other;
 mod service;
+pub mod stack;
 pub mod store;
 #[cfg(test)]
 mod tests;
@@ -69,6 +70,20 @@ pub struct PullSummary {
     pub changed_files: Option<u64>,
     pub comments: Option<u64>,
     pub labels: Vec<Label>,
+    /// Where the PR sits in a stack (host-native or inferred from its base).
+    #[serde(default)]
+    pub stack: Option<StackRef>,
+}
+
+/// A PR's place in a stack: `position` 1 is the layer on the base branch.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StackRef {
+    pub id: String,
+    pub position: u64,
+    pub size: u64,
+    /// The host keeps the stack (GitHub stacks); otherwise it is inferred.
+    pub native: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

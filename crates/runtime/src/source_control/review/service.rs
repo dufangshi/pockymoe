@@ -195,6 +195,7 @@ impl Supervisor {
             .await
             .into_iter()
             .collect();
+        stack::infer(&mut pulls);
         pulls.sort_by(|a: &PullSummary, b| b.updated_at.cmp(&a.updated_at));
         Ok(json!({
             "state": state,
@@ -286,6 +287,7 @@ impl Supervisor {
                     "linkedThreads": self.linked_threads(&detail.summary.url)?,
                     "workspace": local.as_ref().map(|k| json!({"id":k.workspace_id,"label":k.workspace_label})),
                     "removeAgentCredits": crate::source_control::load(self)?.remove_agent_credits,
+                    "stack": stack::read(host, repo, number).await.ok().flatten(),
                     "detail": detail,
                 }))
             }
@@ -443,6 +445,37 @@ impl Supervisor {
                     merge(host, repo, &detail, &merge_input).await
                 } else {
                     auto_merge(host, repo, &detail, &merge_input, input["enable"] != false).await
+                }
+            }
+            "stack" => Ok(json!({"stack": stack::read(host, repo, number).await?})),
+            "mergeStack" | "rebaseStack" => {
+                let current = stack::read(host, repo, number)
+                    .await?
+                    .context("This PR is not in a stack")?;
+                let expected: Vec<stack::StackHead> = serde_json::from_value(
+                    input["expectedHeads"].clone(),
+                )
+                .context("expectedHeads required: [{number, headSha}] for each open layer")?;
+                let local = self.known_repository(repo);
+                if action == "rebaseStack" {
+                    let local = local.context(
+                        "Add a workspace with this repository to this device to rebase a stack",
+                    )?;
+                    stack::rebase_stack(host, repo, &current, &expected, &local).await
+                } else {
+                    let method = input["method"].as_str().unwrap_or("merge").to_owned();
+                    stack::merge_stack(
+                        host,
+                        repo,
+                        &stack::MergeStack {
+                            stack: &current,
+                            target: number,
+                            method: &method,
+                            expected: &expected,
+                            local: local.as_ref(),
+                        },
+                    )
+                    .await
                 }
             }
             "rerun" => {

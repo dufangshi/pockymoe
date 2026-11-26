@@ -340,6 +340,20 @@ impl Supervisor {
             let detail = host.request(&detail.method, &detail.path, None).await?;
             input["headSha"] = json!(hosts::head_oid(repo.kind, &detail));
         }
+        // A PR on top of another: its base is that PR's head branch.
+        let stack_on = input["stackOn"]
+            .as_u64()
+            .filter(|_| action == "create" && !issue);
+        if let Some(below) = stack_on {
+            let op = host.operation("show", false, Some(below), &json!({}))?;
+            let shown = host.request(&op.method, &op.path, None).await?;
+            let head = shown["head"]["ref"]
+                .as_str()
+                .or(shown["source_branch"].as_str())
+                .filter(|b| !b.is_empty())
+                .context("The PR to stack on has no head branch")?;
+            input["base"] = json!(head);
+        }
         if action == "create" && !issue && input["head"].as_str().is_none_or(str::is_empty) {
             input["head"] = json!(hosts::git(&root, &["symbolic-ref", "--short", "HEAD"])?.trim());
         }
@@ -385,6 +399,20 @@ impl Supervisor {
         let result = host
             .request(&operation.method, &operation.path, operation.body)
             .await?;
+        let mut joined = Value::Null;
+        if let (Some(below), Some(created)) = (
+            stack_on,
+            result["number"].as_u64().or(result["iid"].as_u64()),
+        ) {
+            if repo.kind == HostKind::Github && repo.host == "github.com" {
+                // The PR exists either way; a refused stack join is reported, not fatal.
+                joined =
+                    match review::stack::join_native(host.as_ref(), &repo, below, created).await {
+                        Ok(stack) => json!({"stack":stack["number"]}),
+                        Err(error) => json!({"error":error.to_string()}),
+                    };
+            }
+        }
         if action == "create" {
             if let Some(url) = hosts::item_url(repo.kind, &result) {
                 self.source_link(thread, url, false)?;
@@ -395,7 +423,7 @@ impl Supervisor {
                 self.source_link(thread, &repo.pull_request_url(number), false)?;
             }
         }
-        Ok(json!({"repository":repo,"data":result}))
+        Ok(json!({"repository":repo,"data":result,"stack":joined}))
     }
     /// Fetch a PR's head (forks included) into `target` in the checkout at `root`.
     pub(crate) async fn fetch_pull_request_ref(

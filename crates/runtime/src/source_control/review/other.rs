@@ -45,6 +45,7 @@ fn bb_summary(repo: &Repository, p: &Value) -> PullSummary {
         None
     };
     PullSummary {
+        stack: None,
         url: str_of(&p["links"]["html"]["href"]),
         number: p["id"].as_u64().unwrap_or(0),
         title: str_of(&p["title"]),
@@ -448,6 +449,7 @@ fn az_summary(repo: &Repository, p: &Value) -> PullSummary {
         .filter_map(|r| r["vote"].as_i64())
         .collect();
     PullSummary {
+        stack: None,
         url: repo.pull_request_url(number),
         number,
         title: str_of(&p["title"]),
