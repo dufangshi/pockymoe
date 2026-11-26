@@ -25,7 +25,7 @@ export function summary(range: StatsRange, device = 0): StatsSummary {
     longestThreads: ['Build device overview and statistics', 'Polish desktop navigation', 'Review transport security'].map((title, i) => ({ threadId: `t-${i}`, workspaceId: 'w-0', title, durationMs: 240000 - i * 60000 })), activeThreads: 3, runningTurns: 3 };
 }
 
-export async function seed(page: Page, pack = 'classic', dark = false, unsupported = false, realShape = false, host = true, usageShape = false) {
+export async function seed(page: Page, pack = 'classic', dark = false, unsupported = false, realShape = false, host = true, usageShape = false, portalExtras: Record<string, unknown> = {}) {
   const devices = (usageShape ? ['MacBook Pro', 'Windows Studio', 'Linux Server', ...Array.from({ length: 9 }, (_, i) => `Usage device ${i + 3}`)] : realShape ? ['MacBook Pro', 'Windows Studio', 'Linux Server', 'wsl', 'LuisMini2', 'Build Box', 'Studio Linux', 'Mac mini', 'Office Windows', 'Archive', 'Empty device'] : ['MacBook Pro', 'Windows Studio', 'Linux Server']).map((name, i) => ({ id: `device-${i}`, ownerUserId: account.id, name, connected: i !== 2 && i !== 9, lastHeartbeatAt: new Date(Date.now() - (i === 2 ? 3 * 3600000 : 0)).toISOString() }));
   await page.addInitScript(({ pack, dark, host }) => {
     localStorage.setItem('remote-codex-theme-mode', dark ? 'dark' : 'light'); localStorage.setItem('pockymoe-theme-preset', pack); localStorage.setItem('remote-codex.locale', 'zh-CN');
@@ -40,7 +40,7 @@ export async function seed(page: Page, pack = 'classic', dark = false, unsupport
   await page.route('**/api/auth/session', route => route.fulfill({ json: { authenticated: true, authRequired: false, username: 'Alex', mode: 'local' } }));
   await page.route('**/api/config/runtime', route => route.fulfill({ json: { defaultBackend: 'acp' } }));
   await page.route('**/relay/auth/session', route => route.fulfill({ json: { authenticated: true, user: account } }));
-  await page.route('**/relay/portal', route => route.fulfill({ json: { user: account, devices, sharedWithMe: [], sharedByMe: [] } }));
+  await page.route('**/relay/portal', route => route.fulfill({ json: { user: account, devices, sharedWithMe: [], sharedByMe: [], ...portalExtras } }));
   await page.route(/\/relay\/devices\/device-\d+$/, async route => {
     const device = devices.find(d => route.request().url().endsWith(`/${d.id}`))!;
     if (route.request().method() === 'PATCH') device.name = route.request().postDataJSON().name;
@@ -54,6 +54,8 @@ export async function seed(page: Page, pack = 'classic', dark = false, unsupport
     if (url.pathname.endsWith('/transport/key')) { await route.fulfill({ status: 404, json: { code: 'not_found' } }); return; }
     if (url.pathname.endsWith('/stats/summary')) { const data = realShape ? accountSummary(url.searchParams.get('range') as StatsRange, number) : summary(url.searchParams.get('range') as StatsRange, number); if (usageShape) usageStatsShape(data, number); const origin = url.searchParams.get('origin'); if (origin && data.byOrigin) { const row = data.byOrigin.find(row => row.origin === origin)!; data.origin = row.origin; data.byModel = data.byModel.map(model => ({ ...model, turns: Math.round(model.turns * .1), tokens: model.tokens * .1, costUsd: model.costUsd! * .1 })); data.byWorkspace = data.byWorkspace.map(workspace => ({ ...workspace, tokens: workspace.tokens * .1, costUsd: workspace.costUsd! * .1 })); data.totals = { ...data.totals, turns: row.turns, inputTokens: row.tokens * .8, outputTokens: row.tokens * .2, costUsd: row.costUsd }; } await route.fulfill(unsupported || realShape && number >= 3 && number <= 9 ? { status: 404, json: { code: 'not_found', message: 'Unsupported' } } : { json: data }); return; }
     if (url.pathname.endsWith('/management/supervisor')) { await route.fulfill({ json: { runningVersion: realShape && number >= 3 && number <= 9 ? '0.12.73' : '0.13.41', installedVersion: '0.13.41', latestVersion: number === 1 || realShape && number >= 3 && number <= 9 ? '0.13.42' : '0.13.41', canUpdate: true } }); return; }
+    // What every Supervisor answers: the workspace list shows its root as a path chip.
+    if (url.pathname.endsWith('/config/runtime')) { await route.fulfill({ json: { appName: 'pockymoe', appVersion: '0.13.41', mode: 'relay', environment: 'production', host: '127.0.0.1', port: 45679, workspaceRoot: '/fixture', defaultBackend: 'acp' } }); return; }
     if (url.pathname.endsWith('/management/harnesses')) { await route.fulfill({ json: [] }); return; }
     if (url.pathname.endsWith('/management/templates')) { await route.fulfill({ json: { harnesses: [], profiles: [] } }); return; }
     if (url.pathname.endsWith('/api/workspaces')) { await route.fulfill({ json: Array.from({ length: realShape && number === 3 ? 21 : 1 }, (_, i) => ({ id: `w-${i}`, hostId: 'host', absPath: '/fixture', label: 'Pockymoe', isFavorite: true, createdAt: new Date().toISOString(), lastOpenedAt: null })) }); return; }

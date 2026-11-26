@@ -92,17 +92,8 @@ const explorerToggle = (layout: TourLayout) => layout === 'mobile'
 const terminalPanel = '[data-testid="workbench-bottom-panel"] [data-testid="terminal-panel"]';
 
 const workspaceSteps: TourStep[] = [
-  {
-    id: 'relay-add-device',
-    page: 'relayDevices',
-    title: 'tour.devices.relayAdd.title',
-    body: 'tour.devices.relayAdd.body',
-    targets: [{ selector: 'button[aria-controls="add-device-form"]' }],
-    advanceOnClick: true,
-    only: { mode: 'relay', layout: 'mobile' },
-  },
-  // A computer's device page adds a device in a window over the page, where the
-  // tour steps aside: one card explains the whole form before it opens.
+  // The device page adds a device in a window over the page, on a computer and a
+  // phone alike, where the tour steps aside: one card explains the whole form before it opens.
   {
     id: 'relay-add-device',
     page: 'relayDevices',
@@ -110,24 +101,14 @@ const workspaceSteps: TourStep[] = [
     body: 'tour.devices.relayAddDesktop.body',
     targets: [{ selector: 'button[aria-controls="add-device-form"]' }],
     advanceOnClick: true,
-    only: { mode: 'relay', layout: 'desktop' },
-  },
-  {
-    id: 'relay-device-form',
-    page: 'relayDevices',
-    title: 'tour.devices.relayForm.title',
-    body: 'tour.devices.relayForm.body',
-    targets: [{ selector: '#add-device-form' }],
-    prerequisite: 'tour.devices.relayForm.prereq',
-    prerequisiteTarget: 'button[aria-controls="add-device-form"]',
-    only: { mode: 'relay', layout: 'mobile' },
+    only: { mode: 'relay' },
   },
   {
     id: 'relay-device-list',
     page: 'relayDevices',
     title: 'tour.devices.relayList.title',
     body: 'tour.devices.relayList.body',
-    targets: [{ selector: 'section[aria-labelledby="devices-heading"] article:has(.device-presence-dot), .pd-device-card' }],
+    targets: [{ selector: '.pd-device-card' }],
     optional: true,
     only: { mode: 'relay' },
   },

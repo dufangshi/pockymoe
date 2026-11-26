@@ -11,7 +11,7 @@ import {
 } from './lib/transcriptPreferences';
 import { appUrl, webBase } from './lib/webBase';
 import { HostCapabilitiesProvider, UnscopedOnly, useHostScope } from './lib/hostCapabilities';
-import { relayDeviceIdFromPath } from './lib/relayRoutes';
+import { relayDeviceIdFromPath, settingsDeviceId } from './lib/relayRoutes';
 import { AccountSessionGate } from './components/AccountSessionGate';
 import { SharedInvitePage } from './pages/SharedInvitePage';
 import { WorkspaceDocumentNavigationGuard } from "./components/WorkspaceDocumentNavigationGuard";
@@ -31,14 +31,12 @@ import {
   useParams,
 } from 'react-router-dom';
 import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
-import { PluginProvider, ThreadPluginScope, type PluginSettingsSnapshot, type UpstreamConnectionPickerProps } from '@pockymoe/thread-ui';
+import { PluginProvider, ThreadPluginScope } from '@pockymoe/thread-ui';
 
 import type {
   AgentBackendIdDto,
   AuthSessionDto,
   RelaySessionDto,
-  ImportPluginInput,
-  UpdatePluginInput,
 } from '../../../packages/shared/src/index';
 import {
   defaultAgentBackendId,
@@ -72,23 +70,16 @@ import { WorkspaceNewPage } from './pages/WorkspaceNewPage';
 import { WorkspacesPage } from './pages/WorkspacesPage';
 import {
   ApiError,
-  deletePlugin,
-  fetchPluginRuns,
-  runPluginAction,
   fetchAuthSession,
-  fetchPlugins,
   readSelectedRelayDeviceId,
-  loadPluginSettings,
-  savePluginSettings,
-  threadPluginAdapter,
   fetchRelaySession,
-  importPlugin,
   login,
   relayModeActive,
-  updatePlugin,
 } from './lib/api';
 import { builtinFrontendPlugins } from './plugins/builtin-plugin-modules';
-import { ConnectionPicker } from './components/ConnectionPicker';
+import { devicePluginAdapter } from './plugins/devicePluginAdapter';
+import { deviceSettingsHref } from './lib/devicesRoute';
+import { chosenSettingsDevice } from './lib/settingsDevice';
 import { useComposerPreferences } from './lib/useComposerPreferences';
 import { useReasoningSummaries } from './lib/useReasoningSummaries';
 import { startQuietEnrollment } from './lib/quietEnrollment';
@@ -112,28 +103,7 @@ function RoutePluginProvider({ children }: { children: ReactNode }) {
   const { locale: i18nLocale } = useI18n();
   const location = useLocation();
   const deviceId = relayDeviceIdFromPath(location.pathname) ?? (relayModeActive() ? readSelectedRelayDeviceId() ?? undefined : null);
-  const adapter = useMemo(
-    () => ({
-      fetchPlugins: () => fetchPlugins(deviceId),
-      loadPluginSettings: (id: string) => loadPluginSettings(id, deviceId),
-      savePluginSettings: (id: string, settings: PluginSettingsSnapshot) => savePluginSettings(id, settings, deviceId),
-      importPlugin: (input: ImportPluginInput) => importPlugin(input, deviceId),
-      updatePlugin: (id: string, input: UpdatePluginInput) => updatePlugin(id, input, deviceId),
-      deletePlugin: (id: string) => deletePlugin(id, deviceId),
-      runPluginAction: (id: string, action: string, input?: unknown) => runPluginAction(id, action, input, deviceId),
-      fetchPluginRuns: (id: string) => fetchPluginRuns(id, deviceId),
-      threads: threadPluginAdapter(deviceId),
-      connections: {
-        renderPicker: (props: UpstreamConnectionPickerProps) => (
-          <ConnectionPicker
-            apiRoot={deviceId && deviceId !== 'local' ? `relay/devices/${encodeURIComponent(deviceId)}/api` : 'api'}
-            {...props}
-          />
-        ),
-      },
-    }),
-    [deviceId],
-  );
+  const adapter = useMemo(() => devicePluginAdapter(deviceId), [deviceId]);
 
   return (
     // The device's plugins swap in place: a key here remounted the whole app on a
@@ -212,7 +182,7 @@ function routeDocumentTitle(pathname: string) {
     return translate("workbench.account");
   }
   if (pathname === '/relay-devices' || pathname.startsWith('/desktop/devices')) {
-    return translate("workbench.devicesAndSharedSessions");
+    return translate("desktopDevices.devices");
   }
   if (pathname === SHARE_PENDING_PATH) {
     return translate('sharing.tabSharing');
@@ -291,6 +261,9 @@ function systemThemePreference(): 'light' | 'dark' {
   return 'light';
 }
 
+/** Settings tabs that, in Relay mode, open on the device's page instead of the window. */
+const DEVICE_PAGE_SECTIONS = new Set(['device', 'harnesses', 'upstreams', 'resources', 'environments', 'workspace']);
+
 function ScopedTourProvider({ children }: { children: ReactNode }) {
   return useHostScope() ? children : <TourProvider>{children}</TourProvider>;
 }
@@ -323,6 +296,7 @@ function AppShell({
     try { return localStorage.getItem(PHONE_HAND_STORAGE_KEY) === 'left' ? 'left' : 'right'; } catch { return 'right'; }
   });
   const location = useLocation();
+  const navigate = useNavigate();
   const isThreadUtilityRoute =
     /^\/threads\/(?:import|new)$/.test(location.pathname) ||
     /^\/devices\/[^/]+\/threads\/(?:import|new)$/.test(location.pathname);
@@ -392,8 +366,16 @@ function AppShell({
       setSettingsSection(null);
       setSettingsOpen(true);
     },
-    openSettingsSection: (sectionId: string) => {
+    openSettingsSection: (sectionId: string, deviceId?: string | null) => {
       setNavOpen(false);
+      // In Relay mode a device's own settings are the Settings tab of its page (issue #115):
+      // the device asked for, the page's, or the one chosen in the window; else the list to choose from.
+      if (relayModeActive() && DEVICE_PAGE_SECTIONS.has(sectionId)) {
+        const device = deviceId ?? settingsDeviceId(location.pathname) ?? chosenSettingsDevice();
+        setSettingsOpen(false);
+        navigate(device ? deviceSettingsHref(device, sectionId) : devicesHref());
+        return;
+      }
       setSettingsSection(sectionId);
       setSettingsOpen(true);
     },

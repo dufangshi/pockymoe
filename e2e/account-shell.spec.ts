@@ -117,7 +117,7 @@ test('real Electron: rail account menu and reachable working security controls',
   } finally { if (app) { const running = app; await Promise.race([running.close(), new Promise<void>(done => { const timer = setTimeout(() => { if (running.process().exitCode === null) running.process().kill('SIGKILL'); done(); }, 5000); timer.unref(); })]); } await f.close(); }
 });
 
-test('browser routes: PC queries, signed-out portal, retained phone and mobile-host page', async ({ browser }, info) => {
+test('browser routes: old queries, signed-out portal, and one device center on a phone and in the mobile host', async ({ browser }, info) => {
   const f = await fixture(browser, info);
   try {
     const owner = await f.account('route-owner'); const page = owner.page;
@@ -135,14 +135,11 @@ test('browser routes: PC queries, signed-out portal, retained phone and mobile-h
     const signedOut = await f.context(); await signedOut.page.goto(f.base + '/relay-devices?tab=shared&dir=out');
     await expect(signedOut.page).toHaveURL(/\/relay-portal\?/);
     await expect(signedOut.page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
-    // Start a new document after setting the phone width, then resize while
-    // mounted: neither the route nor its helper switches destinations.
+    // A phone uses the same device center (issue #115): the old page redirects with its query.
     await page.setViewportSize({width:390,height:844});
     await page.goto(f.base + '/relay-devices?tab=shared&dir=out');
-    await expect(page.locator('.devices-page-tabs')).toBeVisible();
-    await expect(page.getByTestId('desktop-devices')).toHaveCount(0);
-    await page.setViewportSize({width:1280,height:900});
-    await expect(page).toHaveURL(f.base + '/relay-devices?tab=shared&dir=out');
+    await expect(page).toHaveURL(f.base + '/desktop/devices?tab=shared&dir=out');
+    await expect(page.getByTestId('desktop-devices')).toBeVisible();
     await expect(page.locator('.devices-page-tabs')).toBeVisible();
     for (const pack of ['classic','plum-pocket','terminal']) for (const mode of ['light','dark']) {
       await page.setViewportSize({width:390,height:844});
@@ -152,7 +149,7 @@ test('browser routes: PC queries, signed-out portal, retained phone and mobile-h
       await capture(page,`${pack}-${mode}-phone-account`);
       await page.locator('.product-topbar').getByRole('button',{name:/Relay account menu/}).click();
       await capture(page,`${pack}-${mode}-phone-menu`); await page.keyboard.press('Escape');
-      await page.goto(f.base+'/relay-devices'); await expect(page.locator('.devices-page-tabs')).toBeVisible();
+      await page.goto(f.base+'/relay-devices'); await expect(page).toHaveURL(f.base + '/desktop/devices'); await expect(page.locator('.devices-page-tabs')).toBeVisible();
       await capture(page,`${pack}-${mode}-phone-devices`);
       await page.getByRole('tab',{name:/Sharing/}).click();
       await expect(page.getByRole('tab',{name:/Sharing/})).toHaveAttribute('aria-selected','true');
@@ -163,9 +160,11 @@ test('browser routes: PC queries, signed-out portal, retained phone and mobile-h
     const mobile = { page, context: owner.context };
     await mobile.context.addInitScript(() => { (window as any).pockymoeHost = { capabilities: async () => ({surface:'mobile',platform:'ios',haptics:false}), onCommand:()=>()=>{}, commandResult:async()=>{}, window:{setTitle:async()=>{}}, settings:{get:async()=>({webOrigin:location.origin,relayOrigin:location.origin})}, activity:{sync:async()=>{}}, appearance:{sync:async()=>{}} }; });
     await mobile.page.setViewportSize({width:1280,height:900});
+    // The native mobile shell's old link lands on the same device center.
     await mobile.page.goto(f.base+'/relay-devices?tab=shared&dir=out');
+    await expect(mobile.page).toHaveURL(f.base + '/desktop/devices?tab=shared&dir=out');
     await expect(mobile.page.locator('.devices-page-tabs')).toBeVisible();
-    await expect(mobile.page.getByTestId('desktop-devices')).toHaveCount(0);
-    writeFileSync(`${evidence}/route-results.json`,JSON.stringify({pcRedirect:true,oldQueriesPreserved:true,shareDeviceOpened:true,signedOutPortal:true,phoneRetained:true,resizeStable:true,mobileHostRetained:true},null,2));
+    await expect(mobile.page.getByTestId('desktop-devices')).toBeVisible();
+    writeFileSync(`${evidence}/route-results.json`,JSON.stringify({pcRedirect:true,oldQueriesPreserved:true,shareDeviceOpened:true,signedOutPortal:true,phoneRedirect:true,mobileHostRedirect:true},null,2));
   } finally { await f.close(); }
 });

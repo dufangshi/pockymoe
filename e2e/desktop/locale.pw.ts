@@ -4,7 +4,9 @@ import { seed } from './fixtures';
 const evidence = process.env.DESKTOP_EVIDENCE_DIR ?? 'test-results/desktop';
 async function switchLanguage(page: Page, locale: 'en' | 'zh-CN') {
   const english = await page.locator('html').getAttribute('lang') === 'en';
-  await page.locator('.matter-rail').getByRole('button', { name: english ? 'Settings' : '设置', exact: true }).click();
+  // A signed-in rail ends with the account avatar; Settings is in its menu.
+  await page.locator('.matter-rail').getByRole('button', { name: english ? /account menu/i : /账号菜单/ }).click();
+  await page.getByRole('menuitem', { name: english ? 'Settings' : '设置', exact: true }).click();
   const settings = page.getByTestId('settingsDialog');
   await settings.getByRole('tab', { name: english ? 'Preferences' : '偏好设置', exact: true }).click();
   const language = settings.getByLabel(english ? 'Language' : '语言', { exact: true });
@@ -49,7 +51,7 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
       await chart.scrollIntoViewIfNeeded(); await chart.locator('g[tabindex]').nth(1).focus();
       await expect(page.locator('.pd-statistics .pd-chart-tip')).toContainText(english ? 'turn' : '轮');
       await page.screenshot({ path: `${evidence}/${name}-statistics.png` });
-      await page.getByRole('button', { name: english ? 'Actions for MacBook Pro' : 'MacBook Pro 的操作', exact: true }).click();
+      await page.getByRole('button', { name: english ? 'More actions for MacBook Pro' : 'MacBook Pro 的更多操作', exact: true }).click();
       await expect(page.getByRole('menuitem', { name: english ? 'Show in map' : '在地图中显示', exact: true })).toBeVisible();
       await page.screenshot({ path: `${evidence}/${name}-menu.png` });
       await page.getByRole('menuitem', { name: english ? 'Rename' : '重命名', exact: true }).click();
@@ -59,7 +61,7 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
       const input = page.getByRole('textbox', { name: english ? 'Device name' : '设备名称', exact: true });
       await input.fill('Temporary draft');
       await page.keyboard.press('Escape');
-      const discard = page.getByRole('dialog', { name: english ? 'Discard name changes?' : '放弃名称修改？', exact: true });
+      const discard = page.getByRole('dialog', { name: english ? 'Discard unsaved changes?' : '放弃未保存的更改？', exact: true });
       await expect(discard).toBeVisible();
       await page.screenshot({ path: `${evidence}/${name}-discard.png` });
       await discard.getByRole('button', { name: english ? 'Cancel' : '取消', exact: true }).click();
@@ -70,10 +72,15 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
       await expect(page.getByRole('dialog', { name: english ? 'Device monitor' : '设备监控', exact: true })).toBeVisible();
       await page.screenshot({ path: `${evidence}/${name}-monitor.png` });
       await page.keyboard.press('Escape');
+      // The update badge opens the device page's Settings tab, at its Supervisor (issue #115).
       await page.getByRole('button', { name: english ? 'Update 0.13.42' : '有更新 0.13.42', exact: true }).click();
-      await expect(page.getByRole('dialog')).toContainText(english ? "Check versions and manage this device's runtime." : '检查版本并管理这台设备的运行环境。');
+      await expect(page).toHaveURL(/\/desktop\/devices\/device-1\?tab=settings&section=device/);
+      await expect(page.getByRole('tab', { name: 'Supervisor', exact: true })).toHaveAttribute('aria-selected', 'true');
+      await expect(page.getByRole('tab', { name: english ? 'Settings' : '设置', exact: true })).toHaveAttribute('aria-selected', 'true');
       await page.screenshot({ path: `${evidence}/${name}-update.png` });
-      await page.keyboard.press('Escape');
+      await page.goBack();
+      await expect(page.getByRole('article', { name: 'Windows Studio', exact: true })).toBeVisible();
+      await page.locator('.pd-page').evaluate(element => { element.setAttribute('data-locale-preserved', 'yes'); });
       expect(await page.locator('.pd-page').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
       expect(await page.locator('.pd-device-card').evaluateAll(cards => cards.every(card => card.scrollWidth <= card.clientWidth + 1))).toBe(true);
     }
@@ -83,7 +90,7 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
 test('saved notice and existing product errors follow a Settings language change', async ({ page }) => {
   await prepare(page, 'classic', false);
   await switchLanguage(page, 'en');
-  await page.getByRole('button', { name: 'Actions for MacBook Pro', exact: true }).click();
+  await page.getByRole('button', { name: 'More actions for MacBook Pro', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Rename', exact: true }).click();
   await page.getByRole('textbox', { name: 'Device name', exact: true }).fill('Studio Mac');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -91,18 +98,30 @@ test('saved notice and existing product errors follow a Settings language change
   await switchLanguage(page, 'zh-CN');
   await expect(page.getByRole('status').filter({ hasText: '设备名称已保存' })).toBeVisible();
   await page.route(/\/relay\/devices\/device-[0-2]$/, route => route.fulfill({ status: 405, json: { code: 'unsupported', message: 'Legacy Relay' } }));
-  await page.getByRole('button', { name: 'Studio Mac 的操作', exact: true }).click();
+  await page.getByRole('button', { name: 'Studio Mac 的更多操作', exact: true }).click();
   await page.getByRole('menuitem', { name: '重命名', exact: true }).click();
   await page.getByRole('textbox', { name: '设备名称', exact: true }).fill('Other Mac');
   await page.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: '重命名设备' })).toHaveCount(0);
+  // The refusal is said beside Save, in the rename window; afterwards the action is greyed with the same reason.
+  const rename = page.getByRole('dialog', { name: '重命名设备' });
+  await rename.locator('.error-mark').click();
+  await expect(page.locator('.error-mark-bubble')).toContainText('当前 Relay 暂不支持重命名设备。');
+  await rename.locator('.error-mark').click();
+  // Nothing can be saved on this relay, so Cancel asks nothing.
+  await rename.getByRole('button', { name: '取消', exact: true }).click();
+  await expect(rename).toHaveCount(0);
   await switchLanguage(page, 'en');
-  await page.locator('.pd-header-actions .error-mark').last().click();
+  await page.getByRole('button', { name: 'More actions for Studio Mac', exact: true }).click();
+  let menu = page.getByRole('menu', { name: 'Actions for Studio Mac', exact: true });
+  await expect(menu.getByRole('menuitem', { name: 'Rename', exact: true })).toBeDisabled();
+  await menu.locator('.error-mark').click();
   await expect(page.locator('.error-mark-bubble')).toContainText('This Relay does not support renaming devices yet.');
   await page.screenshot({ path: `${evidence}/saved-error-en.png` });
-  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape'); await page.keyboard.press('Escape');
   await switchLanguage(page, 'zh-CN');
-  await page.locator('.pd-header-actions .error-mark').last().click();
+  await page.getByRole('button', { name: 'Studio Mac 的更多操作', exact: true }).click();
+  menu = page.getByRole('menu', { name: 'Studio Mac 的操作', exact: true });
+  await menu.locator('.error-mark').click();
   await expect(page.locator('.error-mark-bubble')).toContainText('当前 Relay 暂不支持重命名设备。');
   await page.screenshot({ path: `${evidence}/saved-error-zh-CN.png` });
 });

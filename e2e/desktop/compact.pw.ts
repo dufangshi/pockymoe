@@ -11,6 +11,8 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
     await expect(page.locator('.pd-device-card')).toHaveCount(11);
     await expect.poll(async () => (await page.locator('.pd-page').boundingBox())!.width).toBeGreaterThanOrEqual(Math.min(width - 20, 260));
     expect((await page.locator('.pd-page-header').boundingBox())!.height).toBeLessThanOrEqual(40);
+    // A narrow page lists its devices first and folds the statistics below them (issue #115).
+    if (width < 640) await page.locator('details.pd-stats-fold > summary').click();
     expect((await page.locator('.pd-device-card').first().boundingBox())!.height).toBeLessThanOrEqual(100);
     await expect(page.locator('.pd-page select')).toHaveCount(0);
     await expect(page.locator('.pd-page')).not.toContainText('≈ —');
@@ -21,7 +23,7 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
     const usageWidth = (await page.locator('.pd-account-usage').boundingBox())!.width;
     expect((await page.locator('.pd-account-models').boundingBox())!.width).toBeGreaterThanOrEqual(usageWidth - 1);
     await page.screenshot({ path: `${evidence}/${name}-overview.png`, fullPage: true });
-    const picker = page.getByRole('combobox', { name: '统计设备', exact: true });
+    const picker = page.getByRole('combobox', { name: '统计范围', exact: true });
     await picker.click();
     await page.keyboard.press('End');
     await expect(page.getByRole('option').last()).toBeFocused();
@@ -55,9 +57,11 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
 test('custom device/origin filters, legacy updater and stable refresh', async ({ page }) => {
   await seed(page, 'classic', false, false, true);
   const old = page.getByRole('article', { name: 'wsl', exact: true });
+  // The legacy updater is the device page's Settings tab, at its Supervisor (issue #115).
   await old.getByRole('button', { name: '更新以获取完整统计', exact: true }).click();
-  await expect(page.getByRole('dialog')).toContainText('0.12.73'); await page.keyboard.press('Escape');
-  await page.getByRole('combobox', { name: '统计设备', exact: true }).click();
+  await expect(page).toHaveURL(/\/desktop\/devices\/device-3\?tab=settings&section=device/);
+  await expect(page.getByTestId('desktop-devices')).toContainText('0.12.73'); await page.goBack();
+  await page.getByRole('combobox', { name: '统计范围', exact: true }).click();
   await page.getByRole('option', { name: 'MacBook Pro', exact: true }).click();
   await expect(page.locator('.pd-device-card')).toHaveCount(1);
   await page.locator('.pd-page').evaluate(el => el.setAttribute('data-preserved', 'yes'));

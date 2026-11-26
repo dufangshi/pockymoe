@@ -291,7 +291,9 @@ export class Fixture {
   async bind(owner: Account, device: Device, capture = false) {
     const page = owner.page;
     await page.goto(this.base + '/desktop/devices/' + device.id);
-    const row = page.locator('article').filter({ has: page.getByText(`Signed device ${device.db.match(/device-(\d+)/)![1]}`, { exact: true }) });
+    // The device's own page names it and shows its protection in its status line (issue #115).
+    await expect(page.getByTestId('desktop-devices').getByRole('heading', { level: 1 })).toHaveText(`Signed device ${device.db.match(/device-(\d+)/)![1]}`);
+    const row = page.getByTestId('desktop-devices').locator('.device-status-line');
     const status = row.getByRole('button', { name: 'Not protected', exact: true });
     await expect(status).toBeVisible();
     if (capture) await screenshot(page, this.info, 'v2-device-unprotected');

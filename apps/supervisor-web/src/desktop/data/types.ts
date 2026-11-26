@@ -3,6 +3,9 @@ export interface DesktopDevice {
   id: string; name: string; connected: boolean; lastHeartbeatAt: string | null; cachedAt?: string;
   unavailableSince?: string; activityStale?: boolean; missingFromPortal?: boolean;
 }
+/** A device someone else shared with this account: listed (the device switcher),
+ * never indexed. Its owner decides what it reaches (docs/ui-principles.md §3). */
+export interface SharedDesktopDevice { id: string; name: string; connected: boolean; ownerName: string }
 export interface DesktopWorkspace extends WorkspaceDto { key: string; deviceId: string }
 export interface DesktopRequest { id: string; kind: 'approval' | 'input'; summary: string; createdAt: string }
 export interface DesktopThread extends ThreadDto {
@@ -17,7 +20,10 @@ export interface DesktopExtra {
 }
 export interface DesktopIndex {
   accountId: string;
-  devices: readonly DesktopDevice[]; workspaces: readonly DesktopWorkspace[]; threads: readonly DesktopThread[];
+  devices: readonly DesktopDevice[];
+  /** Devices shared with this account; their threads are not part of the index. */
+  sharedDevices?: readonly SharedDesktopDevice[];
+  workspaces: readonly DesktopWorkspace[]; threads: readonly DesktopThread[];
   activity: Readonly<Record<string, ThreadActivityResponseDto>>;
   extras: Readonly<Record<string, DesktopExtra>>;
   hydrated: boolean; refreshing: boolean; error: string | null;

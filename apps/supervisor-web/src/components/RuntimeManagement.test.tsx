@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Link, MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { setLocale } from '@pockymoe/thread-ui/i18n';
 import { RuntimeManagement } from './RuntimeManagement';
 
 const api = vi.hoisted(() => ({ request: vi.fn(), relay: true }));
@@ -75,6 +76,29 @@ it('offers repair when npm is old but the running process already matches latest
   fireEvent.click(screen.getByRole('button', { name: 'Update' }));
   await waitFor(() => expect(api.request).toHaveBeenCalledWith('relay/devices/a/api/management/supervisor/update', expect.objectContaining({method:'POST'})));
 });
+// docs/ui-principles.md §13: no English sentence in the Chinese interface.
+it.each([
+  [{ phase: 'scheduled', action: 'update' }, '已请求更新…'],
+  [{ phase: 'preparing', action: 'restart' }, '正在准备重启：保存进行中的任务…'],
+  [{ phase: 'completed', action: 'update' }, '更新已完成'],
+])('says what a Supervisor job is doing in the reader\'s language: %j', async (job, text) => {
+  setLocale('zh-CN', false);
+  try {
+    api.request.mockImplementation(async (path: string) => path.endsWith('/harnesses') ? [] : { runningVersion: '0.13.41', canUpdate: true, job });
+    mount('/devices/a/workspaces');
+    expect(await screen.findByText(text)).toBeVisible();
+    expect(screen.queryByText(/requested|Preparing|completed/)).toBeNull();
+  } finally { setLocale('en', false); }
+});
+it('explains a failed Supervisor job in the reader\'s language', async () => {
+  setLocale('zh-CN', false);
+  try {
+    api.request.mockImplementation(async (path: string) => path.endsWith('/harnesses') ? [] : { runningVersion: '0.13.41', canUpdate: true, job: { phase: 'rolled-back', action: 'update', error: 'disk full' } });
+    mount('/devices/a/workspaces');
+    expect(await screen.findByText('上次更新失败，已恢复之前的服务。disk full')).toBeInTheDocument();
+    expect(screen.queryByText(/Last update failed/)).toBeNull();
+  } finally { setLocale('en', false); }
+});
 describe('device-scoped runtime settings', () => {
   it('pins requests to the route and discards old device state and late responses', async () => {
     let resolveOld!: (value: unknown) => void;
@@ -91,7 +115,8 @@ describe('device-scoped runtime settings', () => {
     fireEvent.click(screen.getByRole('button', {name:'Check updates'}));
     await waitFor(() => expect(api.request).toHaveBeenCalledWith('relay/devices/b/api/management/supervisor/check', expect.objectContaining({method:'POST'})));
     fireEvent.click(screen.getByRole('link', {name:'Devices'}));
-    expect(screen.getByText(/Open a device to view/)).toBeVisible();
+    // No device on this page and none chosen: nothing to manage, and never the remembered one.
+    expect(screen.queryByRole('region', { name: 'Runtime management' })).not.toBeInTheDocument();
     expect(screen.queryByText('Running B-version')).not.toBeInTheDocument();
     expect(api.request.mock.calls.every(([path]) => String(path).startsWith('relay/devices/a/') || String(path).startsWith('relay/devices/b/'))).toBe(true);
   });

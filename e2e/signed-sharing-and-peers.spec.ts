@@ -200,7 +200,7 @@ row=c.execute("SELECT id,owner_user_id,name,token,token_hash,token_preview,creat
 assert row is not None
 print(json.dumps(row))`, { id: d3.id });
     await owner.page.getByRole('button', { name: 'More actions for Signed device 3', exact: true }).click();
-    await owner.page.getByRole('menuitem', { name: 'Remove device', exact: true }).click();
+    await owner.page.getByRole('menuitem', { name: 'Remove…', exact: true }).click();
     const removal = owner.page.getByRole('dialog', { name: 'Remove device', exact: true });
     await removal.getByRole('button', { name: 'Remove device', exact: true }).click();
     await unlock(owner.page, owner.password);

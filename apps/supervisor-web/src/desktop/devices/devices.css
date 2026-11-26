@@ -1,8 +1,10 @@
 .pd-page { --pd-radius: 6px; container-type: inline-size; color: var(--theme-fg); padding: 0 16px 24px; width: 100%; max-width: 1600px; box-sizing: border-box; margin: 0 auto; font-size: 12px; line-height: 18px; font-variant-numeric: tabular-nums; }
 :root[data-theme-preset="terminal"] .pd-page { --pd-radius: 0px; }
-.pd-page h1, .pd-page h2, .pd-page h3, .pd-page p { margin: 0; }
-.pd-page button { font: inherit; cursor: pointer; color: inherit; }
-.pd-page button:disabled { opacity: .45; cursor: default; }
+/* The page's own compact resets stop at the panels it hosts (a device's settings
+   and access), which keep the look they have in the settings window. */
+.pd-page :is(h1, h2, h3, p):not(:where(.pd-device-settings, .device-management-embedded) *) { margin: 0; }
+.pd-page button:not(:where(.pd-device-settings, .device-management-embedded) *) { font: inherit; cursor: pointer; color: inherit; }
+.pd-page button:disabled:not(:where(.pd-device-settings, .device-management-embedded) *) { opacity: .45; cursor: default; }
 .pd-page button:focus-visible, .pd-page a:focus-visible, .pd-page svg g:focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 2px; }
 .pd-page-header { height: 40px; display: flex; align-items: center; gap: 10px; user-select: none; -webkit-app-region: drag; }
 .pd-page-header h1 { font-size: 13px; font-weight: 600; flex: none; }
@@ -89,8 +91,10 @@
 .pd-empty { grid-column: 1 / -1; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 24px 0; color: var(--theme-fg-muted); }
 .pd-empty h2 { font-size: 13px; font-weight: 500; }
 .pd-empty p { font-size: 11px; }
+.pd-empty { flex-wrap: wrap; }
+.pd-empty .pd-add-device { min-height: 30px; margin-left: 8px; padding: 0 10px; color: var(--theme-accent-solid-fg); }
 .pd-skeleton { width: 50px; height: 12px; border-radius: var(--pd-radius); background: var(--theme-hover); }
-@media (hover: hover) { .pd-page .pd-icon-button:hover, .pd-select:hover, .pd-usage-device-row:hover, .pd-workspace-usage a:hover, .pd-device-menu :is(button,a):hover { background: var(--theme-hover); } }
+@media (hover: hover) { .pd-page .pd-icon-button:hover, .pd-select:hover, .pd-usage-device-row:hover, .pd-workspace-usage a:hover { background: var(--theme-hover); } }
 @media (max-width: 1000px) { .pd-page { padding-inline: 10px; } .pd-account-models { grid-template-columns: 145px minmax(0,1fr); gap: 10px; }  .pd-usage-table th:first-child { width: 29%; } .pd-usage-table th,.pd-usage-table td { padding-inline: 2px; } }
 @media (max-width: 640px) { .pd-page-header { gap: 5px; } .pd-page-header .pd-select { min-width: 0; max-width: 100px; } .pd-page-header .pd-segment button { padding-inline: 5px; } .pd-device-count { display: none; } .pd-account-models { grid-template-columns: 1fr; gap: 4px; } .pd-donut { width: 145px; margin: 0 auto; } .pd-usage-table { font-size: 10px; } .pd-usage-table th:first-child { width: 32%; } .pd-charts-grid { grid-template-columns: 1fr; gap: 6px; }  .pd-account-usage { margin-top: 2px; } .pd-usage-device-row { grid-template-columns: 12px 90px 1fr 70px; } .pd-workspace-usage a { grid-template-columns: 90px 1fr 70px; } }
 .pd-page .pd-sparkline { position: relative; flex: 1; max-width: 168px; min-width: 80px; height: 26px; }
@@ -102,8 +106,6 @@
 .pd-page .pd-chart-tip b { font-weight: 500; margin-left: auto; padding-left: 10px; white-space: nowrap; }
 .pd-page .pd-sparkline .pd-chart-tip { white-space: nowrap; top: 28px; right: auto; left: 0; max-width: none; padding: 5px 8px; }
 .pd-page .pd-chart-tip i, .pd-page .pd-legend i { flex: none; display: inline-block; width: 6px; height: 6px; border-radius: 2px; }
-.pd-device-menu { position: absolute; top: 38px; right: 10px; z-index: 30; width: 190px; padding: 4px; border: 1px solid var(--theme-border); border-radius: 8px; background: var(--theme-bg); box-shadow: var(--theme-shadow); }
-.pd-device-menu :is(button, a) { display: flex; align-items: center; justify-content: space-between; width: 100%; background: transparent; border: 0; border-radius: 4px; padding: 7px 8px; color: inherit; font-size: 12px; text-align: left; }
 .pd-page .pd-chart-wrap { position: relative; }
 .pd-page .pd-chart-wrap > svg { display: block; width: 100%; height: auto; min-height: 140px; overflow: visible; }
 .pd-page .pd-axis { stroke: var(--theme-border); stroke-width: 1px; }
@@ -115,11 +117,7 @@
 @keyframes pd-spin { to { transform: rotate(360deg); } }
 @keyframes pd-pulse { 50% { opacity: .5; } }
 
-.pd-device-menu { color: var(--theme-fg); background: var(--theme-panel); z-index: 100; position: fixed; width: 212px; box-shadow: var(--theme-shadow); font: inherit; }
-.pd-device-menu :is(button, a) { text-decoration: none; min-height: 32px; font: inherit; font-size: 12px; }
-.pd-device-menu :is(button, a):focus-visible { outline: 1px solid var(--theme-accent-solid); outline-offset: -1px; background: var(--theme-hover); }
-:root[data-theme-preset='terminal'] :is(.pd-device-card, .pd-kpis, .pd-chart-panel, .pd-segment, .pd-segment button, .pd-chart-tip, .pd-device-menu, .pd-device-menu button, .pd-device-menu a) { border-radius: 0; }
-.pd-device-menu { right: auto; bottom: auto; }
+:root[data-theme-preset='terminal'] :is(.pd-device-card, .pd-kpis, .pd-chart-panel, .pd-segment, .pd-segment button, .pd-chart-tip) { border-radius: 0; }
 .pd-page .pd-kpi small, .pd-page .pd-chart-caption, .pd-page .pd-legend { font-size: 11px; }
 
 .pd-page .pd-donut circle:focus-visible { outline: none; stroke-width: 28px; }
@@ -141,10 +139,6 @@
 .pd-link { padding: 0; border: 0; background: none; color: var(--theme-accent-solid); font: inherit; }
 .pd-web-page { height: 100%; min-height: 0; overflow: auto; background: var(--theme-bg); }
 
-.pd-device-menu > div { display: flex; align-items: center; }
-.pd-device-menu > div > button { flex: 1; }
-.pd-device-menu .pd-menu-separated { border-top: 1px solid var(--theme-border); margin-top: 8px; padding-top: 8px; }
-.pd-device-menu button[data-tone="danger"] { color: var(--status-danger-fg); }
 .pd-header-actions .pd-add-device { min-height: 30px; padding: 0 10px; color: var(--theme-accent-solid-fg); }
 
 .pd-workspaces-arrow { position: relative; margin-inline: 9px; }
@@ -199,4 +193,76 @@
 /* An isolated device: a small lock after its name, as on the phone's device rows. */
 .pd-page .pd-protect-badge { border: 0; display: inline-flex; flex: none; gap: 3px; align-items: center; min-height: 20px; font-size: 10px; font-weight: 600; color: var(--status-warning-fg); background: color-mix(in oklch, var(--status-warning-fg) 12%, transparent); border-radius: 4px; padding: 0 5px; white-space: nowrap; cursor: pointer; }
 @media (hover: hover) { .pd-page .pd-protect-badge:hover:not(:disabled) { background: color-mix(in oklch, var(--status-warning-fg) 20%, transparent); } }
-.pd-page .pd-isolated { display: inline-flex; flex: none; align-items: center; color: var(--theme-fg-muted); }
+/* The card's ⋯ key and "Isolated" mark are the shared ones, drawn at the card's scale. */
+.pd-page .pd-icon-button.managed-menu-trigger > svg { width: 14px; height: 14px; }
+.pd-card-heading .isolation-mark { min-height: 18px; padding: 0 5px; font-size: 10px; }
+/* A narrow card keeps the device's name readable: the lock alone, still named "Isolated" and tapped for what it means (§13). */
+.pd-card-heading { container: pd-card-heading / inline-size; }
+@container pd-card-heading (max-width: 300px) { .isolation-mark-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } }
+
+/* A device's own page (issue #115): back to all devices, its name and one menu,
+   its state, then the tabs Overview / Settings / Access. */
+.pd-breadcrumb { display: flex; align-items: center; min-height: 40px; }
+.pd-breadcrumb a { position: relative; display: inline-flex; align-items: center; gap: 5px; color: var(--theme-fg-muted); font-size: 12px; text-decoration: none; }
+.pd-breadcrumb a::after { content: ''; position: absolute; inset: -10px -6px; }
+@media (hover: hover) { .pd-breadcrumb a:hover { color: var(--theme-fg); } }
+.pd-device-page-header { display: flex; align-items: center; gap: 10px; min-height: 40px; min-width: 0; }
+.pd-device-page-header h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; font-weight: 600; line-height: 26px; }
+.pd-device-page-header .pd-saved { flex: none; font-size: 11px; color: var(--theme-fg-muted); }
+.pd-device-page-header .pd-header-actions { flex: none; }
+.pd-page .pd-open-device { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; color: var(--theme-accent-solid-fg); text-decoration: none; font-size: 12px; font-weight: 600; }
+.pd-page .pd-device-menu.pd-icon-button { width: 32px; height: 32px; }
+.pd-page .pd-device-menu.managed-menu-trigger > svg { width: 18px; height: 18px; }
+.pd-device-page .device-status-line { min-height: 24px; margin-top: 2px; }
+.pd-page > .pd-device-tabs { width: auto; margin-block: 10px 14px; }
+.pd-page > .pd-device-tabs > [role='tab'] { padding: 0 2px; font-size: 13px; }
+.pd-page > .pd-device-tabs > [role='tab'][aria-selected='true'] { background: transparent; }
+.pd-device-panel { min-width: 0; }
+.pd-page .pd-device-card.is-bare { height: auto; min-height: 64px; }
+.pd-page .pd-device-grid.is-detail { grid-template-columns: minmax(0, 1fr); }
+/* The device's settings use the settings window's tabs and panels, on the page. */
+.pd-device-settings { overflow: hidden; border: 1px solid var(--theme-border); border-radius: var(--pd-radius); background: var(--theme-panel); font-size: 14px; line-height: 1.5; font-variant-numeric: normal; }
+.pd-device-panel > .device-management-embedded { font-size: 14px; line-height: 1.5; font-variant-numeric: normal; }
+.pd-device-settings .settings-workspace { overflow: visible; }
+.pd-device-settings .settings-panel { overflow: visible; }
+.pd-device-settings .settings-navigation { border-radius: var(--pd-radius) 0 0 var(--pd-radius); }
+.pd-stats-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.pd-stats-fold { margin-top: 14px; border-top: 1px solid var(--theme-border); }
+.pd-stats-fold > summary { min-height: 44px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.pd-stats-fold > .pd-stats-toolbar { margin-top: 4px; }
+@media (max-width: 639px) {
+  .pd-device-page-header h1 { font-size: 16px; }
+  .pd-page .pd-open-device { min-height: 40px; }
+  .pd-page .pd-device-menu.pd-icon-button { width: 40px; height: 40px; }
+  .pd-page > .pd-device-tabs { gap: 0; }
+  .pd-page > .pd-device-tabs > [role='tab'] { flex: 1; justify-content: center; }
+  .pd-device-settings { margin-inline: -10px; border-inline: 0; border-radius: 0; }
+  .pd-device-settings .settings-navigation { border-radius: 0; }
+  .pd-stats-toolbar .pd-segment { flex: 1; }
+  .pd-stats-toolbar .pd-segment button { flex: 1; min-height: 36px; }
+  .pd-stats-toolbar .pd-select { max-width: none; flex: 1 1 100%; height: 36px; }
+}
+:root[data-theme-preset='terminal'] .pd-device-settings { border-radius: 0; }
+
+/* A phone's device cards (issue #116): readable readings in two rows, keys a finger can hit. */
+@media (max-width: 639px) {
+  .pd-web-page .pd-page-header h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .pd-page .pd-device-card { height: auto; padding: 10px 12px; }
+  .pd-page .pd-device-grid { gap: 8px; }
+  .pd-card-heading { height: 36px; gap: 4px; }
+  .pd-device-title strong { font-size: 14px; }
+  .pd-page .pd-card-heading .pd-icon-button { width: 36px; height: 36px; }
+  .pd-page .pd-card-heading .pd-icon-button > svg { width: 18px; height: 18px; }
+  .pd-workspaces-arrow { margin-inline: 2px; }
+  .pd-card-readings { height: auto; flex-wrap: wrap; row-gap: 6px; padding-block: 4px; }
+  .pd-page .pd-counts { gap: 14px; font-size: 12px; }
+  .pd-counts .status-mark { width: 11px; height: 11px; }
+  .pd-counts b { font-size: 12px; }
+  .pd-counts svg { width: 13px; height: 13px; }
+  .pd-page .pd-monitor { flex: 1 1 100%; justify-content: flex-start; }
+  .pd-page .pd-monitor .device-monitor-button { font-size: 11px; line-height: 16px; }
+  .pd-page .pd-monitor .device-monitor-button { display: flex; flex-wrap: wrap; column-gap: 12px; }
+  .pd-page .pd-monitor .device-monitor-button b { font-size: 11px; }
+  .pd-card-bottom { height: 32px; }
+  .pd-card-bottom .pd-today { font-size: 12px; }
+}

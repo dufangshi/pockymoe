@@ -7,7 +7,7 @@ test('workspace visual evidence and route frames', async ({ page }) => {
   mkdirSync(`${evidence}/${phase}`, { recursive: true });
   await page.addInitScript(() => localStorage.setItem(`pockymoe.onboarding.v1:${JSON.stringify([location.origin, 'relay:devices-test'])}`, JSON.stringify({ welcomeDismissed: true, completed: [], resume: {} })));
   await seed(page);
-  await page.getByRole('button', { name: 'MacBook Pro 的操作', exact: true }).click();
+  await page.getByRole('button', { name: 'MacBook Pro 的更多操作', exact: true }).click();
   // Navigate through the app so the desktop shell stays mounted.
   await page.getByRole('menuitem', { name: '新建线程', exact: true }).click();
   await page.evaluate(() => { history.pushState({}, '', '/devices/device-0/workspaces'); dispatchEvent(new PopStateEvent('popstate')); });
@@ -35,7 +35,7 @@ test('workspace visual evidence and route frames', async ({ page }) => {
 });
 
 
-test('workspace states keep their gaps below 900px and a plain browser keeps its header', async ({ page, browser }) => {
+test('workspace states keep their gaps below 900px and a phone browser keeps its header', async ({ page, browser }) => {
   await page.setViewportSize({ width: 850, height: 1000 });
   await seed(page);
   let release!: () => void;
@@ -59,7 +59,9 @@ test('workspace states keep their gaps below 900px and a plain browser keeps its
   await expect(content.locator('.product-empty')).toBeVisible(); await gap();
   failed = true; await page.reload();
   await expect(content.getByRole('button', { name: '重试', exact: true })).toBeVisible(); await gap();
-  const ordinary = await browser.newPage();
+  // A signed-in computer browser shares the workbench navigation (ui-principles
+  // §9); a phone browser keeps the page's own header.
+  const ordinary = await browser.newPage({ viewport: { width: 390, height: 844 } });
   await seed(ordinary, 'classic', false, false, false, false);
   await ordinary.route('**/api/workspaces', route => route.fulfill({ json: [] }));
   await ordinary.route('**/api/storage*', route => route.fulfill({ json: { deviceName: 'Fixture' } }));

@@ -1,5 +1,6 @@
 import { devicesHref } from '../lib/devicesRoute';
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { MobileIndexContext } from '../desktop/data/context';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
 import { useThemeRegistry } from '../lib/themePacks';
@@ -50,6 +51,10 @@ export function MobileHostBoundary({ children, effectiveTheme }: { children: Rea
 export function MobileActivity({ children }: { children: ReactNode }) {
   const surface = useHostSurface(); const navigate = useNavigate(); const location = useLocation();
   const route = useRef(location.pathname); route.current = location.pathname;
+  // The account's activity outlives navigation: a route change (the old
+  // `/relay-devices` link redirecting, issue #115) must not restart it.
+  const navigateRef = useRef(navigate); navigateRef.current = navigate;
+  const [index, setIndex] = useState<DesktopIndexStore | null>(null);
   useEffect(() => { if (surface === 'mobile') window.dispatchEvent(new Event('pockymoe-desktop-route')); }, [surface, location.pathname]);
   useEffect(() => {
     const host = mobileHost(); if (!host || !relayModeActive()) return;
@@ -61,13 +66,13 @@ export function MobileActivity({ children }: { children: ReactNode }) {
       }).catch(() => undefined);
       store = new DesktopIndexStore(session.user.id); await store.hydrate(); if (cancelled) return;
       store.start(); stop = syncActivity(store, host, () => focusedKeyFromPath(route.current), true);
-      const index = store;
+      const index = store; setIndex(store);
       commands = host.onCommand(command => {
         if (command.type === 'back' || command.type === 'liveActivityToken') return;
-        void handleHostCommand(command, { store: index, navigate, openMap: () => navigate('/'), revealInMap: () => navigate('/'), newThread: () => navigate(devicesHref()), openUpstreams: () => navigate('/relay-settings?tab=connections') }).then(result => host.commandResult(command.id, result));
+        void handleHostCommand(command, { store: index, navigate: (to: string) => navigateRef.current(to), openMap: () => navigateRef.current('/'), revealInMap: () => navigateRef.current('/'), newThread: () => navigateRef.current(devicesHref()), openUpstreams: () => navigateRef.current('/relay-settings?tab=connections') }).then(result => host.commandResult(command.id, result));
       });
     })().catch(() => { /* Device/index retries are owned by the shared store. */ });
-    return () => { cancelled = true; stop(); commands(); store?.stop(); };
-  }, [surface, navigate]);
-  return children;
+    return () => { cancelled = true; stop(); commands(); store?.stop(); setIndex(null); };
+  }, [surface]);
+  return <MobileIndexContext.Provider value={index}>{children}</MobileIndexContext.Provider>;
 }

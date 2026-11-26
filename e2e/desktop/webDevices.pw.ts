@@ -25,8 +25,9 @@ for (const [pack, dark] of [['classic', false], ['classic', true], ['plum-pocket
     for (const width of [1440, 900, 390]) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 1100 });
       if (width === 390) {
+        // The old phone page leads to the same device center (issue #115), without the computer's frame.
         await page.goto('/relay-devices');
-        await expect(page).toHaveURL(/\/relay-devices$/);
+        await expect(page).toHaveURL(/\/desktop\/devices$/);
         await expect(page.locator('[data-navigation-shell], .matter-rail')).toHaveCount(0);
         await expect(page.locator('[data-page="devices"]')).toContainText('MacBook Pro');
       }
@@ -65,14 +66,16 @@ test('sidebar survives opening a thread, workspaces and returning without a seco
   await page.route('**/api/threads/*/models*', route => route.fulfill({ json: [] }));
   const sidebar = page.locator('.matter-sidebar');
   await sidebar.evaluate(el => { el.setAttribute('data-retained-sidebar', 'yes'); });
-  const railBefore = await page.locator('.matter-rail > button').evaluateAll(nodes => nodes.slice(0, 5).map(node => ({ icon: node.querySelector('svg')?.getAttribute('data-icon'), top: node.getBoundingClientRect().top })));
+  const railBefore = await page.locator('.matter-rail > button').evaluateAll(nodes => nodes.map(node => ({ icon: node.querySelector('svg')?.getAttribute('data-icon'), top: node.getBoundingClientRect().top })));
   await sidebar.locator('a[href="/devices/device-0/threads/t-0"]').first().click();
   await expect(page).toHaveURL(/\/devices\/device-0\/threads\/t-0/);
   await expect(page.getByTestId('thread-scroll-container')).toBeVisible();
   await expect(page.locator('[data-retained-sidebar="yes"]')).toBeVisible();
   await expect(page.locator('.matter-rail')).toHaveCount(1);
-  const railThread = await page.locator('.matter-rail > button').evaluateAll(nodes => nodes.slice(0, 5).map(node => ({ icon: node.querySelector('svg')?.getAttribute('data-icon'), top: node.getBoundingClientRect().top })));
-  expect(railThread).toEqual(railBefore);
+  // A thread adds its own tools (Git, isolated environments) after the global
+  // entries; every global entry keeps its icon and position (ui-principles §9).
+  const railThread = await page.locator('.matter-rail > button').evaluateAll(nodes => nodes.map(node => ({ icon: node.querySelector('svg')?.getAttribute('data-icon'), top: node.getBoundingClientRect().top })));
+  expect(railThread.filter(entry => railBefore.some(before => before.icon === entry.icon))).toEqual(railBefore);
   // Width and collapse belong to the same retained workbench.
   await page.getByRole('separator', { name: '调整侧栏宽度', exact: true }).focus();
   await page.keyboard.press('ArrowRight');
@@ -112,11 +115,11 @@ test('sidebar survives opening a thread, workspaces and returning without a seco
   expect(accountStreams).toHaveLength(2);
 });
 
-test('phone load keeps the original devices page', async ({ page }) => {
+test('a phone load uses the same device center, without the computer\'s frame', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await seedWeb(page);
   await page.goto('/relay-devices');
-  await expect(page).toHaveURL(/\/relay-devices$/);
+  await expect(page).toHaveURL(/\/desktop\/devices$/);
   await expect(page.locator('[data-navigation-shell], .matter-rail')).toHaveCount(0);
   await expect(page.locator('[data-page="devices"]')).toContainText('MacBook Pro');
   await page.screenshot({ path: `${evidence}/phone-devices-390.png`, animations: 'disabled' });

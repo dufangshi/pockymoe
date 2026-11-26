@@ -6,6 +6,8 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
     await page.setViewportSize({ width, height: 1100 });
     await seed(page, pack, dark, false, false, true, true);
     await expect(page.locator('.pd-device-card')).toHaveCount(12);
+    // A narrow page lists its devices first and folds the statistics below them (issue #115).
+    if (width < 640) await page.locator('details.pd-stats-fold > summary').click();
     const captions = page.locator('.pd-chart-excluded');
     await expect(captions).toHaveCount(2);
     await expect(captions.first()).toContainText('1 台设备版本较旧，未计入');
@@ -64,7 +66,7 @@ test('category colours persist across range, metric and device filters', async (
   await page.getByRole('button', { name: '按费用', exact: true }).click();
   await expect.poll(() => row.locator('.pd-horizontal-track i').evaluate(el => getComputedStyle(el).backgroundColor)).toBe(deviceColor);
   await expect.poll(() => model.locator('i').evaluate(el => getComputedStyle(el).backgroundColor)).toBe(modelColor);
-  await page.getByRole('combobox', { name: '统计设备', exact: true }).click();
+  await page.getByRole('combobox', { name: '统计范围', exact: true }).click();
   await page.getByRole('option', { name: 'MacBook Pro', exact: true }).click();
   await expect(page.locator('.pd-device-card')).toHaveCount(1);
   await expect.poll(() => row.locator('.pd-horizontal-track i').evaluate(el => getComputedStyle(el).backgroundColor)).toBe(deviceColor);
