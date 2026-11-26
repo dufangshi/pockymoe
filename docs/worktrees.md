@@ -54,7 +54,7 @@ grant that ownership.
 ## Git panel
 
 The Git entry on the workbench rail (on a phone, the top bar or the dock's More
-sheet) docks a read-only Git inspector at the right of the conversation, which
+sheet) docks a Git inspector at the right of the conversation, which
 stays usable beside it; Files and the isolation inspector share that dock. It
 follows the open thread and shows that thread's title.
 
@@ -70,7 +70,7 @@ another working copy, one line names that copy and the time, with **View**
 latest operation was here.
 
 Below it one row picks the view: **Unstaged** (including untracked) and
-**Staged** with their file counts, **Compare** (from a revision's merge base;
+**Staged** with their file counts, **Turn** (checkpoint changes for a selected turn), **Compare** (from a revision's merge base;
 a base field and Compare button appear) and **Commits**. The file list starts
 with the file count and the lines added and removed. Each row
 is one line: change letter, name, directory (shortened from its start) and the
@@ -92,8 +92,27 @@ whole-scope diff as new files within the same output limit, each under its own
 name. Commits are paginated (the pager shows only when there is more than one
 page); each row shows the subject, short ID, author and date. Selecting a commit
 shows what it changed against its first parent, headed by its short ID (with a
-copy of the full ID) and subject, with Back to the commit list. PR status and
-Git writes are not included.
+copy of the full ID) and subject, with Back to the commit list. Owners can stage, unstage or discard a file or a complete hunk. Discard always
+asks for confirmation; writes during a running turn ask once while that turn is
+running. The Staged view has a commit message box, one-shot message generation,
+amend, and Commit; with an empty index it explicitly stages all files before
+committing. Branch selection, creation, fetch, fast-forward pull, push and stash
+controls sit beside the location. Shares retain read-only inspection.
+
+Turn view offers before/after restore with a preview list, confirmation and Undo.
+A completed turn's file-count chip opens this view. Edit from here under a user
+message rewinds the conversation, optionally restoring files, then returns the
+prompt to the composer. External effects remain. A restore refusal disables the
+file option and explains why.
+
+Diff preferences (unified/split, ignore whitespace, and default file folding) are
+remembered in this browser. Split applies at dock widths of at least 720px.
+Find in diff (Ctrl/Cmd+F within the patch) opens matching files; Enter and
+Shift+Enter move between matches. Hunk writes are hidden for whitespace-filtered
+or truncated diffs. Select lines on one side of a diff and choose Comment to
+collect file review chips in the normal composer; several comments send together
+using the existing `<pockymoe-quotes>` format with path, line range and comment.
+The panel provides an optional PR view slot for the source-control integration.
 It refreshes when opened, on thread updates and on request; it does not poll.
 
 The endpoints are `GET /api/threads/{id}/working-context` and

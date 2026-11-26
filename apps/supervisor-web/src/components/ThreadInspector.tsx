@@ -24,17 +24,20 @@ const readView = (): InspectorView | null => {
  * the dock (opening one closes the other) and on a phone the dock is a full
  * view that Back closes (docs/ui-principles.md §4).
  */
-export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, isolationAvailable, filesOpen, closeFiles }: {
+export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, isolationAvailable, filesOpen, closeFiles, onReviewQuote, onAskAgent }: {
   thread: Pick<ThreadDto, 'id' | 'title' | 'status' | 'agentId' | 'provider' | 'providerSessionId' | 'updatedAt' | 'parentThreadId'> | null | undefined;
   deviceId: string | null | undefined;
+  onAskAgent?: ((prompt: string) => void) | undefined;
+  onReviewQuote?: ((quote: import('@pockymoe/thread-ui').PromptQuote) => boolean) | undefined;
   canManage: boolean;
   gitAvailable: boolean;
   isolationAvailable: boolean;
   filesOpen: boolean;
   /** False when closing Files was refused (unsaved documents in another workspace). */
   closeFiles(): boolean | void;
-}): { toolPanels: WorkbenchToolPanel[]; inspector: WorkbenchInspector | null } {
+}): { toolPanels: WorkbenchToolPanel[]; inspector: WorkbenchInspector | null; openTurn(id: string): void } {
   useI18n();
+  const [turnId, setTurnId] = useState<string>();
   const [view, setViewState] = useState<InspectorView | null>(readView);
   const setView = useCallback((next: InspectorView | null) => {
     setViewState(next);
@@ -67,11 +70,11 @@ export function useThreadInspector({ thread, deviceId, canManage, gitAvailable, 
     // Keyed by device and thread: switching threads never shows the previous
     // thread's diff, request or decision target.
     content: shown === 'git'
-      ? <ThreadGitPanel key={`git:${scope}`} threadId={thread.id} deviceId={deviceId} refreshKey={thread.updatedAt} />
+      ? <ThreadGitPanel key={`git:${scope}:${turnId ?? ''}`} initialTurnId={turnId} canWrite={canManage} running={thread.status === 'running' || thread.status === 'recovering'} onReviewQuote={onReviewQuote} onAskAgent={onAskAgent} threadId={thread.id} deviceId={deviceId} refreshKey={thread.updatedAt} />
       : <ThreadIsolationPanel key={`isolation:${scope}`} thread={thread} deviceId={deviceId} canManage={canManage} />,
     onClose: () => setView(null),
   } : null;
-  return { toolPanels, inspector };
+  return { toolPanels, inspector, openTurn: (id: string) => { if (filesOpen && closeFiles() === false) return; setTurnId(id); setView('git'); } };
 }
 
 /** The isolation entry's icon. A request that needs a look carries the thread

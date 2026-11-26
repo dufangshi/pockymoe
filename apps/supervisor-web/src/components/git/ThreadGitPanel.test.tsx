@@ -5,7 +5,7 @@ import { ApiError } from '../../lib/api';
 import { ThreadGitPanel } from './ThreadGitPanel';
 import * as git from '../../lib/gitApi';
 
-vi.mock('../../lib/gitApi', () => ({ fetchThreadWorkingContext: vi.fn(), fetchThreadGitStatus: vi.fn(), fetchThreadGitDiff: vi.fn(), fetchThreadGitCommits: vi.fn() }));
+vi.mock('../../lib/gitApi', () => ({ fetchCheckpoints: vi.fn().mockResolvedValue({ turns: [] }), fetchGitBranches: vi.fn(), gitWrite: vi.fn(), fetchThreadWorkingContext: vi.fn(), fetchThreadGitStatus: vi.fn(), fetchThreadGitDiff: vi.fn(), fetchThreadGitCommits: vi.fn() }));
 const context: git.ThreadWorkingContext = {
   configuredCwd: '/repo', primaryWorkingCopyId: 'a',
   workingCopies: [
@@ -222,4 +222,16 @@ describe('thread Git inspection', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Staged/ }));
     expect(await screen.findByText('Nothing staged')).toBeVisible();
   });
+});
+
+it('opens turn diffs and stages only the selected file through owner controls', async () => {
+  vi.mocked(git.fetchCheckpoints).mockResolvedValue({ turns: [{ turnId: 'turn-1', turnIndex: 1, startedAt: '2026-11-01T12:00:00Z', status: 'completed', workingCopies: [{ workingCopyId: 'a', available: true, files: 1, additions: 2, deletions: 1 }] }] });
+  vi.mocked(git.gitWrite).mockResolvedValue({ status: { workingCopyId: 'a', branch: 'main', head: 'abc', files: [], truncated: false } });
+  render(<ThreadGitPanel threadId="thread" canWrite />);
+  await screen.findByRole('button', { name: 'View diff for src/app.rs' });
+  fireEvent.click(screen.getByRole('button', { name: 'Stage', exact: true }));
+  await waitFor(() => expect(git.gitWrite).toHaveBeenCalledWith('thread', 'git/stage', { workingCopyId: 'a', paths: ['src/app.rs'], confirmRunning: false }, undefined));
+  fireEvent.click(screen.getByRole('button', { name: 'Turn', exact: true }));
+  await waitFor(() => expect(git.fetchThreadGitDiff).toHaveBeenLastCalledWith('thread', 'a', { area: 'turn', turnId: 'turn-1' }, undefined, expect.any(AbortSignal)));
+  expect(screen.getByRole('button', { name: 'Restore before' })).toBeEnabled();
 });
