@@ -65,14 +65,16 @@ test('sidebar survives opening a thread, workspaces and returning without a seco
   await page.route('**/api/threads/*/models*', route => route.fulfill({ json: [] }));
   const sidebar = page.locator('.matter-sidebar');
   await sidebar.evaluate(el => { el.setAttribute('data-retained-sidebar', 'yes'); });
-  const railBefore = await page.locator('.matter-rail > button').evaluateAll(nodes => nodes.slice(0, 5).map(node => ({ icon: node.querySelector('svg')?.getAttribute('data-icon'), top: node.getBoundingClientRect().top })));
+  const railBefore = await page.locator('.matter-rail > button').evaluateAll(nodes => nodes.map(node => ({ icon: node.querySelector('svg')?.getAttribute('data-icon'), top: node.getBoundingClientRect().top })));
   await sidebar.locator('a[href="/devices/device-0/threads/t-0"]').first().click();
   await expect(page).toHaveURL(/\/devices\/device-0\/threads\/t-0/);
   await expect(page.getByTestId('thread-scroll-container')).toBeVisible();
   await expect(page.locator('[data-retained-sidebar="yes"]')).toBeVisible();
   await expect(page.locator('.matter-rail')).toHaveCount(1);
-  const railThread = await page.locator('.matter-rail > button').evaluateAll(nodes => nodes.slice(0, 5).map(node => ({ icon: node.querySelector('svg')?.getAttribute('data-icon'), top: node.getBoundingClientRect().top })));
-  expect(railThread).toEqual(railBefore);
+  // A thread adds its own tools (Git, isolated environments) after the global
+  // entries; every global entry keeps its icon and position (ui-principles §9).
+  const railThread = await page.locator('.matter-rail > button').evaluateAll(nodes => nodes.map(node => ({ icon: node.querySelector('svg')?.getAttribute('data-icon'), top: node.getBoundingClientRect().top })));
+  expect(railThread.filter(entry => railBefore.some(before => before.icon === entry.icon))).toEqual(railBefore);
   // Width and collapse belong to the same retained workbench.
   await page.getByRole('separator', { name: '调整侧栏宽度', exact: true }).focus();
   await page.keyboard.press('ArrowRight');

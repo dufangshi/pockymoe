@@ -35,7 +35,7 @@ test('workspace visual evidence and route frames', async ({ page }) => {
 });
 
 
-test('workspace states keep their gaps below 900px and a plain browser keeps its header', async ({ page, browser }) => {
+test('workspace states keep their gaps below 900px and a phone browser keeps its header', async ({ page, browser }) => {
   await page.setViewportSize({ width: 850, height: 1000 });
   await seed(page);
   let release!: () => void;
@@ -59,7 +59,9 @@ test('workspace states keep their gaps below 900px and a plain browser keeps its
   await expect(content.locator('.product-empty')).toBeVisible(); await gap();
   failed = true; await page.reload();
   await expect(content.getByRole('button', { name: '重试', exact: true })).toBeVisible(); await gap();
-  const ordinary = await browser.newPage();
+  // A signed-in computer browser shares the workbench navigation (ui-principles
+  // §9); a phone browser keeps the page's own header.
+  const ordinary = await browser.newPage({ viewport: { width: 390, height: 844 } });
   await seed(ordinary, 'classic', false, false, false, false);
   await ordinary.route('**/api/workspaces', route => route.fulfill({ json: [] }));
   await ordinary.route('**/api/storage*', route => route.fulfill({ json: { deviceName: 'Fixture' } }));
