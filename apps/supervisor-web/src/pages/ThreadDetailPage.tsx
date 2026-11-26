@@ -4212,6 +4212,7 @@ export function ThreadDetailPage() {
       {...(relayModeActive() && !hostScope ? { renderRailSettings: (open: () => void) => <RelayUserMenu rail onSettings={open} /> } : {})}
       settingsSections={appSettingsSections({ scoped: Boolean(hostScope) })}
       settingsTitle={settingsChrome.title}
+      settingsDescription={settingsChrome.description}
       settingsExtraContent={settingsChrome.extraContent}
       mobileHeaderAction={mobileSessionConnectionButton}
       workspaceReturnHref={workspaceReturnHref}

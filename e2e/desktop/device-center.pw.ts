@@ -115,6 +115,8 @@ test('the settings window keeps this browser and the account, and names where de
   await go(page, '/desktop/devices/device-1');
   const dialog = await openSettings(page);
   await expect(dialog.getByRole('tab')).toHaveText(['偏好设置', '通知', '插件']);
+  // Its subtitle says what it holds now.
+  await expect(dialog).toContainText('这个浏览器和你的账号：偏好、通知与插件。设备的设置在它的设备页。');
   const link = dialog.getByTestId('settings-device-link');
   await expect(link).toHaveText(/设备设置 · Windows Studio$/);
   await link.click();

@@ -63,6 +63,7 @@ export function ThreadWorkspaceLayout({
       workspaceReturnHref={appUrl(desktopSurface ? '/' : props.workspaceReturnHref ?? currentWorkspacesHref())}
       settingsSections={props.settingsSections ?? appSettingsSections()}
       settingsTitle={props.settingsTitle ?? settingsChrome.title}
+      settingsDescription={props.settingsDescription ?? settingsChrome.description}
       settingsExtraContent={props.settingsExtraContent ?? settingsChrome.extraContent}
       {...(effectiveTheme ? { effectiveTheme } : {})}
       {...(themeMode ? { themeMode } : {})}

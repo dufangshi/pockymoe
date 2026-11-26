@@ -71,7 +71,7 @@ export function AppShellSettingsDialog({
     });
   }, []);
   const effectiveTheme = shellNav?.effectiveTheme ?? 'dark';
-  const { title: settingsTitle, extraContent: settingsExtra } = useAppSettingsChrome();
+  const { title: settingsTitle, description: settingsDescription, extraContent: settingsExtra } = useAppSettingsChrome();
   const [fontSize, setFontSize] = useFontSize();
   const autoCollapseCompletedTurns =
     shellNav?.autoCollapseCompletedTurns ?? true;
@@ -255,6 +255,7 @@ export function AppShellSettingsDialog({
     onOpenChange={(open) => { if (!open) closeSettings(); }}
     themeMode={selectedThemeMode} effectiveTheme={effectiveTheme}
     title={settingsTitle}
+    description={settingsDescription}
     extraContent={settingsExtra(closeSettings)}
     sections={appSettingsSections()}
     {...(shellNav?.settingsSection ? { initialId: shellNav.settingsSection } : {})}
@@ -358,7 +359,7 @@ let localNameRequest: Promise<string | null> | null = null;
  * the thread page's: in Relay mode one line to the device's own settings page;
  * in local mode the title names this machine (issue #115).
  */
-export function useAppSettingsChrome(): { title: string | undefined; extraContent: (close: () => void) => ReactNode } {
+export function useAppSettingsChrome(): { title: string | undefined; description: string | undefined; extraContent: (close: () => void) => ReactNode } {
   useI18n();
   const relay = relayModeActive();
   const hostScope = useHostScope();
@@ -372,6 +373,8 @@ export function useAppSettingsChrome(): { title: string | undefined; extraConten
   }, [relay, hostScope]);
   return {
     title: !relay && !hostScope && name ? `${translate('files.settings')} · ${name}` : undefined,
+    // In Relay mode the window holds this browser's and the account's settings only.
+    description: relay && !hostScope ? translate('settings.windowDescriptionRelay') : undefined,
     extraContent: close => relay && !hostScope ? <DeviceSettingsLink onNavigate={close} /> : null,
   };
 }
