@@ -1,7 +1,7 @@
 //! Native forks cannot inherit the environment's thread-bound worker grants.
 use pockymoe_protocol::AgentProviderCapabilitiesDto;
 
-pub(super) fn restrict(caps: &mut AgentProviderCapabilitiesDto, isolated: bool) {
+pub(crate) fn restrict(caps: &mut AgentProviderCapabilitiesDto, isolated: bool) {
     if isolated {
         caps.branching.fork = false;
         caps.branching.fork_at = false;

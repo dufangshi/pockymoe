@@ -317,6 +317,16 @@ Explicit full access selects Claude's advertised `bypassPermissions` mode. If
 project settings or the adapter disable that mode, the request fails explicitly
 instead of silently entering another permission mode. Guarded policies retain
 their existing permission mapping.
+The native protocols (Settings → Resources) run in environments with the same
+projection. Native Claude starts the image's `claude` stream-json CLI through
+the worker, requires Claude Code 2.1.318 and pins the same route as the ACP
+adapter in the process environment and the CLI's `--settings` tier. Native Codex
+runs `codex app-server` through the worker; a native file login uses the image's
+`codex-subscription` launcher and requires Codex 0.167.0. Both use
+environment-scoped session IDs, hide native forks and never read host homes;
+see [native harness protocols](native-harnesses.md#isolated-environments).
+The image's Codex 0.167.0 sends no tools for models it does not know, on either
+protocol; select a model that release knows or rebuild the image.
 The image's package/ELF installation checks do not establish native protocol
 compatibility. Validate its actual ACP/native CLI with a dedicated API fixture
 and enforced worker limits before enabling that image.

@@ -1,6 +1,7 @@
 //! Per-device protocol selection with backend affinity for loaded sessions.
 pub mod claude;
 pub mod codex;
+pub(crate) mod turn_events;
 use crate::actor::*;
 use anyhow::Result;
 use async_trait::async_trait;

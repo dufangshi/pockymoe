@@ -1,5 +1,7 @@
 //! Native Claude Code stream-json runtime. ACP remains an independent backend.
 mod completion;
+mod hooks;
+mod isolated;
 mod mapping;
 #[cfg(test)]
 mod tests;
@@ -25,6 +27,8 @@ use transport::Process;
 
 struct Session {
     process: Arc<Process>,
+    /// The native store's session UUID, resolved once in the load's context.
+    raw: String,
     cwd: String,
     settings: Mutex<SessionSettings>,
     operation: Mutex<()>,
@@ -135,12 +139,22 @@ impl ClaudeRuntime {
                 args.extend(["--resume-session-at".into(), at.into()]);
             }
         }
+        let isolated = isolated::Launch::current()?;
+        if let Some(launch) = &isolated {
+            args.extend(launch.args());
+        }
         let caps = crate::acp::NegotiatedCaps {
             mcp_http: true,
             mcp_sse: true,
             ..Default::default()
         };
-        let servers = crate::acp::mcp_servers::for_session("claude", &caps);
+        // The isolated projection refused a nonempty host registry already; the
+        // host registry is never converted for a container session.
+        let servers = if isolated.is_some() {
+            json!([])
+        } else {
+            crate::acp::mcp_servers::for_session("claude", &caps)
+        };
         let mut mcp = serde_json::Map::new();
         for s in servers.as_array().into_iter().flatten() {
             if let Some(name) = s["name"].as_str() {
@@ -158,11 +172,31 @@ impl ClaudeRuntime {
         if !mcp.is_empty() {
             args.extend(["--mcp-config".into(), json!({"mcpServers":mcp}).to_string()]);
         }
-        let process = Process::spawn(&self.command, cwd, &args, clean).await?;
-        let init = match process.request(json!({"subtype":"initialize","hooks":{},"sdkMcpServers":[],"agents":{},"forwardSubagentText":true})).await {
+        let process = match &isolated {
+            Some(launch) => {
+                Process::spawn_isolated(&launch.context, &args, cwd, launch.env.clone()).await?
+            }
+            None => Process::spawn(&self.command, cwd, &args, clean).await?,
+        };
+        let init = match process.request(json!({"subtype":"initialize","hooks":hooks::registration(),"sdkMcpServers":[],"agents":{},"forwardSubagentText":true})).await {
             Ok(init) => init,
             Err(e) => { process.stop().await; return Err(e); }
         };
+        if isolated.is_some() {
+            if let Err(error) = isolated::verify(&init) {
+                process.stop().await;
+                return Err(error);
+            }
+            if let Some(model) = settings.model.as_deref().filter(|m| !m.is_empty()) {
+                // The broker admits exactly the thread model; a model the CLI does
+                // not advertise fails here rather than at the first prompt.
+                let advertised = parse_models(&init["models"]);
+                if !advertised.iter().any(|m| m.id == model) {
+                    process.stop().await;
+                    bail!("unsupported_environment_claude_model: select an advertised model");
+                }
+            }
+        }
         let intent = load_intent();
         let now = chrono::Utc::now();
         let load = LoadedSession {
@@ -196,6 +230,7 @@ impl ClaudeRuntime {
             id.into(),
             Arc::new(Session {
                 process,
+                raw: raw_id(id)?.into(),
                 cwd: cwd.into(),
                 settings: Mutex::new(settings),
                 operation: Mutex::new(()),
@@ -264,12 +299,26 @@ impl ClaudeRuntime {
         input: &StartTurnInput,
         bus: &EventBus,
         message: &Value,
+        mapper: &mut mapping::Mapper,
     ) -> Result<()> {
         let native_id = message["request_id"]
             .as_str()
             .context("Claude control request missing id")?
             .to_owned();
         let request = &message["request"];
+        if request["subtype"] == "hook_callback" && request["callback_id"] == hooks::WRITE_PREVIEW {
+            // Never blocks or changes the tool: it only records what the file
+            // held before Claude overwrites it, for a truthful diff.
+            if let Some(tool) = request["tool_use_id"].as_str() {
+                let input = &request["input"]["tool_input"];
+                if let Some(path) = input["file_path"].as_str() {
+                    if let Some(previous) = hooks::previous_text(&session.cwd, path) {
+                        mapper.write_preview(tool, path, previous);
+                    }
+                }
+            }
+            return session.process.write(json!({"type":"control_response","response":{"subtype":"success","request_id":native_id,"response":{"continue":true}}})).await;
+        }
         if request["subtype"] != "can_use_tool" {
             // Unsupported callbacks must never hang or silently approve an action.
             return session.process.write(json!({"type":"control_response","response":{"subtype":"error","request_id":native_id,"error":"Unsupported native Claude control callback"}})).await;
@@ -327,13 +376,56 @@ impl ClaudeRuntime {
         Ok(())
     }
 }
+/// The native store's session UUID. An environment-scoped identity
+/// (`claude::env/{environment}/{generation}/{raw}`) is accepted only inside the
+/// matching environment context; a host identity only on the host.
 fn raw_id(id: &str) -> Result<&str> {
-    let id = id.strip_prefix("claude::").unwrap_or(id);
+    let context = crate::execution::current();
+    raw_in(
+        id,
+        context
+            .as_ref()
+            .map(|c| (c.environment_id.as_str(), c.generation)),
+    )
+}
+fn raw_in<'a>(id: &'a str, context: Option<(&str, u64)>) -> Result<&'a str> {
+    let scoped = id.strip_prefix("claude::").unwrap_or(id);
+    let (raw, environment) = match scoped.strip_prefix("env/") {
+        Some(reference) => {
+            let mut parts = reference.splitn(3, '/');
+            let environment = parts.next().unwrap_or("");
+            let generation = parts.next().and_then(|g| g.parse::<u64>().ok());
+            let raw = parts.next().unwrap_or("");
+            ensure!(
+                !environment.is_empty() && generation.is_some(),
+                "Invalid environment Claude session identity"
+            );
+            (raw, Some((environment, generation.unwrap_or(0))))
+        }
+        None => (scoped, None),
+    };
     ensure!(
-        !id.contains("::") && !id.starts_with("env/") && !id.is_empty(),
-        "Invalid host Claude session identity"
+        !raw.contains("::") && !raw.contains('/') && !raw.is_empty(),
+        "Invalid Claude session identity"
     );
-    Ok(id)
+    match (environment, context) {
+        (None, None) => {}
+        (Some((environment, generation)), Some((current, current_generation))) => ensure!(
+            current == environment && generation <= current_generation,
+            "environment_session_context_mismatch"
+        ),
+        _ => bail!("environment_session_context_mismatch"),
+    }
+    Ok(raw)
+}
+/// The identity a session has in the current context: environment sessions are
+/// re-scoped to the current generation, like ACP's `resume_session_identity`.
+fn canonical_id(id: &str) -> Result<String> {
+    let raw = raw_id(id)?;
+    Ok(isolated::session_id(
+        crate::execution::current().as_ref(),
+        raw,
+    ))
 }
 fn permission_mode(settings: &SessionSettings) -> &'static str {
     let policy = crate::acp::ProductSessionPolicy {
@@ -436,7 +528,10 @@ impl AgentRuntime for ClaudeRuntime {
                 return Ok(session.models.clone());
             }
         }
-        let id = format!("claude::{}", uuid::Uuid::new_v4());
+        let id = isolated::session_id(
+            crate::execution::current().as_ref(),
+            &uuid::Uuid::new_v4().to_string(),
+        );
         self.load(
             &id,
             cwd.unwrap_or("."),
@@ -458,6 +553,22 @@ impl AgentRuntime for ClaudeRuntime {
         caps.branching.fork_at = true;
         caps.branching.resume_at = true;
         caps.controls.live_model_switch = true;
+        crate::acp::runtime::isolated_capabilities::restrict(
+            &mut caps,
+            crate::execution::current().is_some(),
+        );
+        caps
+    }
+    fn session_negotiated_caps(
+        &self,
+        agent: Option<&str>,
+        session_id: &str,
+    ) -> AgentProviderCapabilitiesDto {
+        let mut caps = self.negotiated_caps(agent);
+        crate::acp::runtime::isolated_capabilities::restrict(
+            &mut caps,
+            session_id.contains("::env/"),
+        );
         caps
     }
     async fn capabilities(&self, _agent: Option<&str>) -> Result<AgentCapabilitySnapshotDto> {
@@ -465,14 +576,19 @@ impl AgentRuntime for ClaudeRuntime {
             provider: self.provider(),
             agent_id: "claude".into(),
             availability: "available".into(),
-            negotiated: Some(json!({"protocol":"stream-json","isolatedExecution":false})),
+            negotiated: Some(
+                json!({"protocol":"stream-json","isolatedExecution":crate::execution::current().is_some()}),
+            ),
             effective_capabilities: Some(self.negotiated_caps(None)),
             toolbox_items: self.toolbox(None),
         })
     }
     async fn start_session(&self, input: StartSessionInput) -> Result<StartSessionResult> {
         self.load(
-            &format!("claude::{}", uuid::Uuid::new_v4()),
+            &isolated::session_id(
+                crate::execution::current().as_ref(),
+                &uuid::Uuid::new_v4().to_string(),
+            ),
             &input.cwd,
             SessionSettings {
                 model: Some(input.model),
@@ -492,8 +608,7 @@ impl AgentRuntime for ClaudeRuntime {
         cwd: Option<&str>,
         settings: SessionSettings,
     ) -> Result<StartSessionResult> {
-        raw_id(id)?;
-        let canonical = format!("claude::{}", raw_id(id)?);
+        let canonical = canonical_id(id)?;
         let existing = self.sessions.lock().await.get(&canonical).cloned();
         if let Some(session) = existing {
             if session.process.alive.load(Ordering::SeqCst) {
@@ -605,11 +720,12 @@ impl AgentRuntime for ClaudeRuntime {
             load.prompted = true;
             load.last_activity_at = chrono::Utc::now();
         }
+        crate::native::turn_events::started(&bus, &input);
         let mut mapper = mapping::Mapper::new(&input.turn_id);
         let mut lifecycle = completion::Completion::default();
         let mut events = s.process.events.lock().await;
         let outcome: Result<bool> = async {
-            s.process.write(json!({"type":"user","uuid":uuid::Uuid::new_v4().to_string(),"session_id":raw_id(&input.provider_session_id)?,"parent_tool_use_id":null,"message":{"role":"user","content":blocks}})).await?;
+            s.process.write(json!({"type":"user","uuid":uuid::Uuid::new_v4().to_string(),"session_id":s.raw,"parent_tool_use_id":null,"message":{"role":"user","content":blocks}})).await?;
             if !input.hidden { s.context_delivered.store(true,Ordering::SeqCst); }
 
             loop {
@@ -617,7 +733,7 @@ impl AgentRuntime for ClaudeRuntime {
                     _=cancel.cancelled()=> { let _=tokio::time::timeout(Duration::from_secs(3),s.process.request(json!({"subtype":"interrupt"}))).await; s.process.stop().await; return Ok(true); }
                     message=events.recv()=> message.context(ExecutionUncertain("Claude stream closed mid-turn".into()))?
                 };
-                if message["type"]=="control_request" { self.control(&input.provider_session_id,&s,&input,&bus,&message).await?; continue; }
+                if message["type"]=="control_request" { self.control(&input.provider_session_id,&s,&input,&bus,&message,&mut mapper).await?; continue; }
                 if message["type"]=="control_cancel_request" {
                     let native=message["request_id"].as_str().unwrap_or("");
                     let mut pending=self.pending.lock().await;
@@ -664,16 +780,7 @@ impl AgentRuntime for ClaudeRuntime {
                 }
             }
         }
-        if !input.hidden {
-            for item in &items {
-                bus.emit(ThreadEventEnvelope {
-                    event_type: "thread.item.completed".into(),
-                    thread_id: input.thread_id.clone(),
-                    timestamp: now_rfc3339(),
-                    payload: json!({"turnId":input.turn_id,"item":item}),
-                });
-            }
-        }
+        crate::native::turn_events::finished(&bus, &input, &outcome, interrupted, Some(&items));
         outcome?;
         Ok(items)
     }
@@ -702,7 +809,7 @@ impl AgentRuntime for ClaudeRuntime {
                 .is_some_and(|(_, active)| active == turn),
             "Claude turn is no longer active"
         );
-        s.process.write(json!({"type":"user","uuid":uuid::Uuid::new_v4().to_string(),"session_id":raw_id(id)?,"parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"text","text":prompt}]}})).await
+        s.process.write(json!({"type":"user","uuid":uuid::Uuid::new_v4().to_string(),"session_id":s.raw,"parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"text","text":prompt}]}})).await
     }
     async fn active_subagents(&self, id: &str) -> Vec<ThreadSubagentDto> {
         match self.session(id).await {
@@ -827,6 +934,12 @@ impl AgentRuntime for ClaudeRuntime {
             .session)
     }
     async fn fork_session_at(&self, id: &str, point: &ForkPoint) -> Result<ForkResult> {
+        // Like ACP: a fork would be a new, unbound thread and cannot inherit
+        // the environment's thread-bound grants. Never scan host stores for it.
+        ensure!(
+            !id.contains("::env/"),
+            "unsupported_environment_fork: native forks are unavailable for isolated threads"
+        );
         let s = self.session(id).await?;
         let _op = s.operation.try_lock().map_err(|_| TurnRunning)?;
         let original_at = point.reply.as_ref().and_then(|r| r.message_id.as_deref());
@@ -837,7 +950,10 @@ impl AgentRuntime for ClaudeRuntime {
             point.rollback_count == 0 || at.is_some(),
             "Claude fork at a prior turn requires the native message UUID"
         );
-        let new = format!("claude::{}", uuid::Uuid::new_v4());
+        let new = isolated::session_id(
+            crate::execution::current().as_ref(),
+            &uuid::Uuid::new_v4().to_string(),
+        );
         let settings = s.settings.lock().await.clone();
         let session = self
             .load(&new, &s.cwd, settings, Some(id), Some(at))
