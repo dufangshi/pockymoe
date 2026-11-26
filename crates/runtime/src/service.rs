@@ -7,6 +7,8 @@ mod context;
 mod environment_requests;
 mod generation;
 mod handoff;
+mod thread_worktree;
+pub use thread_worktree::NewThreadWorktree;
 mod harness_release;
 pub use handoff::{HandoffPreview, HarnessSwitchInput};
 mod inbox_reminder;
@@ -1872,11 +1874,16 @@ impl Supervisor {
         }
         let worktree = match &options.worktree {
             Some(branch) => {
-                let slug = options.name.clone().unwrap_or_else(|| id[..8].to_string());
-                Some(crate::interaction::create_worktree(
+                let slug = options
+                    .worktree_name
+                    .clone()
+                    .or_else(|| options.name.clone())
+                    .unwrap_or_else(|| id[..8].to_string());
+                Some(crate::interaction::create_worktree_from(
                     Path::new(&workspace.abs_path),
                     &slug,
                     branch.as_deref(),
+                    options.worktree_base.as_deref(),
                 )?)
             }
             None => None,

@@ -1,6 +1,6 @@
 import { useHostScope } from '../../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { Select, ErrorMark, formatReasoningEffortLabel } from '@pockymoe/thread-ui';
+import { Select, ErrorMark, PathChip, formatReasoningEffortLabel } from '@pockymoe/thread-ui';
 import type { FormEvent, ReactNode } from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { seedThreadDraft } from '../useThreadDrafts';
@@ -21,6 +21,7 @@ import { dshRunModeHint, dshRunModeName, type DshRunMode } from '../../component
 import {
   ApiError,
   createThread,
+  createThreadInWorktree,
   createWorkspaceThread,
   fetchAgentBackendAgents,
   fetchAgentBackends,
@@ -39,6 +40,7 @@ import { currentRelayDeviceIdFromPath, currentRelayScopedPath } from '../../lib/
 import { actOnEnvironment, fetchEnvironments, fetchThreadEnvironment, notifyEnvironmentChanged, type EnvironmentConnectionDto } from '../../lib/environmentApi';
 import { environmentText as environmentLabel } from '../../lib/environmentI18n';
 import { environmentError } from '../../components/environments/model';
+import { worktreeNameFromTitle, worktreePathPreview, worktreeText } from '../../lib/worktreeI18n';
 
 function canStart(backend: AgentBackendDto) {
   return backend.enabled && backend.capabilities.sessions.resume && backend.capabilities.turns.start;
@@ -82,6 +84,15 @@ class RunModeNotApplied extends Error {
 
 /** Creation succeeded. Retain that thread and retry only its environment startup. */
 class EnvironmentNotStarted extends Error {}
+
+/** The worktree thread exists; its repository setup failed. Say why, then open it on request. */
+class WorktreeSetupFailed extends Error {
+  constructor(readonly detail: string) {
+    super(worktreeText('setupFailed'));
+  }
+}
+
+const requestId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
 // The isolation contract supports these ACP agents without probing the Host.
 const isolatedAcpDefaults: ModelOptionDto[] = ['codex', 'claude'].map(id => ({
@@ -169,6 +180,13 @@ export function ThreadCreateForm({
   const [environmentLoading, setEnvironmentLoading] = useState(true);
   const [environmentLoadError, setEnvironmentLoadError] = useState<string | null>(null);
   const [environmentLoadAttempt, setEnvironmentLoadAttempt] = useState(0);
+  // A new thread in its own worktree (docs/worktrees.md); the request id makes a
+  // retried submit return the first worktree instead of creating a second.
+  const [worktreeOn, setWorktreeOn] = useState(false);
+  const [worktreeBranch, setWorktreeBranch] = useState('');
+  const [worktreeBase, setWorktreeBase] = useState('');
+  const worktreeRequests = useRef(new Map<string, string>());
+  const [setupFailed, setSetupFailed] = useState(false);
   const [title, setTitle] = useState(() => initialTitle ?? '');
   // The first prompt, optional: written here, the thread is created and sent in
   // one step (quick start); left empty, the thread opens with an empty composer.
@@ -200,6 +218,9 @@ export function ThreadCreateForm({
   const selectedAgent = visibleAgentOptions.find((entry) => entry.model === agentId) ?? null;
   const backendCanStart = (backend: AgentBackendDto) => isolatedCreation ? backend.enabled : canStart(backend);
   const fieldsLocked = busy || Boolean(created);
+  // Owner threads on the host only: shares, host scopes and isolated environments make no worktrees.
+  const worktreeAvailable = !hostScope && !sharedWorkspaceId && !isolatedCreation;
+  const useWorktree = worktreeAvailable && worktreeOn;
   const environmentSupported = provider === 'codex' || provider === 'claude'
     || (provider === 'acp' && (!agentId || ['codex', 'claude'].includes(agentId) || selectedAgent?.acpAgent?.transport === 'custom'));
   const environmentUnavailable = sharedWorkspaceId ? environmentLabel('readOnly')
@@ -431,6 +452,7 @@ export function ThreadCreateForm({
     } as const;
     const thread = created ?? await (sharedWorkspaceId && sharedWorkspaceId === workspaceId
       ? createWorkspaceThread(sharedWorkspaceId, input)
+      : useWorktree ? createInWorktree(input)
       : createThread(input));
     if (!alive.current) return;
     if (environmentConnectionId) {
@@ -470,6 +492,24 @@ export function ThreadCreateForm({
       seedThreadDraft(`${currentRelayDeviceIdFromPath() ?? 'local'}:${thread.id}`, firstPrompt, true);
     }
     onCreated(thread);
+  }
+  // Never isolated (useWorktree excludes it), so the input carries no environment.
+  async function createInWorktree(thread: Parameters<typeof createThread>[0]) {
+    const options = {
+      ...(worktreeBranch.trim() ? { branch: worktreeBranch.trim() } : {}),
+      ...(worktreeBase.trim() ? { base: worktreeBase.trim() } : {}),
+    };
+    const key = JSON.stringify([thread, options]);
+    const clientRequestId = worktreeRequests.current.get(key) ?? requestId();
+    worktreeRequests.current.set(key, clientRequestId);
+    const started = await createThreadInWorktree(thread, { ...options, clientRequestId });
+    if (started.setup && !started.setup.completed) {
+      // Keep the thread; the reason (and the setup's output) stay on the form.
+      setCreated(started.thread);
+      setSetupFailed(true);
+      throw new WorktreeSetupFailed([started.setup.error, ...(started.setup.output ?? [])].filter(Boolean).join('\n').slice(0, 4000));
+    }
+    return started.thread;
   }
   function askAdapterInstall(entry: ModelOptionDto, createAfter: boolean) {
     setAdapterError(null);
@@ -524,12 +564,13 @@ export function ThreadCreateForm({
     } catch (caught) {
       setError({
         at: 'create',
-        message: caught instanceof RunModeNotApplied
+        message: caught instanceof WorktreeSetupFailed ? caught.message
+          : caught instanceof RunModeNotApplied
           ? translate("workbench.dshRunModeNotApplied", { value1: errorText(caught.cause, '') })
           : caught instanceof EnvironmentNotStarted ? environmentLabel('createdEnvironmentFailed')
           : isolatedCreation ? environmentError(caught)
           : errorText(caught, translate("workbench.unableToCreateThread")),
-        ...(caught instanceof EnvironmentNotStarted ? { detail: caught.message } : {}),
+        ...(caught instanceof EnvironmentNotStarted ? { detail: caught.message } : caught instanceof WorktreeSetupFailed ? { detail: caught.detail } : {}),
       });
     } finally {
       setBusy(false);
@@ -779,6 +820,50 @@ export function ThreadCreateForm({
         </div>
       </Field>}
 
+      {worktreeAvailable ? (
+        <div className="thread-create-worktree">
+          <label className="flex min-h-11 cursor-pointer items-center gap-2.5 text-sm font-medium">
+            <input
+              id={`${formId}-worktree`}
+              type="checkbox"
+              role="switch"
+              checked={worktreeOn}
+              disabled={fieldsLocked}
+              onChange={(event) => { setWorktreeOn(event.currentTarget.checked); setError(null); }}
+              className="h-5 w-5 shrink-0 accent-[var(--theme-accent-solid)] disabled:cursor-not-allowed disabled:opacity-50"
+            />
+            {worktreeText('toggle')}
+          </label>
+          {worktreeOn ? (
+            <>
+              {selectedWorkspace && worktreeNameFromTitle(title) ? (
+                <PathChip
+                  path={worktreePathPreview(selectedWorkspace.absPath, worktreeNameFromTitle(title)!)}
+                  display={shortPath(worktreePathPreview(selectedWorkspace.absPath, worktreeNameFromTitle(title)!), 60)}
+                  className="mb-2 max-w-full text-xs"
+                />
+              ) : null}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field id={`${formId}-worktree-branch`} label={worktreeText('branch')}>
+                  <input id={`${formId}-worktree-branch`} value={worktreeBranch} disabled={fieldsLocked}
+                    onChange={(event) => setWorktreeBranch(event.target.value)}
+                    placeholder={`agent/${worktreeNameFromTitle(title) ?? '…'}`}
+                    className={controlClass} autoComplete="off" spellCheck={false} />
+                </Field>
+                <Field id={`${formId}-worktree-base`} label={worktreeText('base')}>
+                  <input id={`${formId}-worktree-base`} value={worktreeBase} disabled={fieldsLocked}
+                    onChange={(event) => setWorktreeBase(event.target.value)}
+                    placeholder="HEAD" title={worktreeText('baseHint')}
+                    className={controlClass} autoComplete="off" spellCheck={false} />
+                </Field>
+              </div>
+            </>
+          ) : (
+            <p className="-mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">{worktreeText('hint')}</p>
+          )}
+        </div>
+      ) : null}
+
       <div className={selectedModel?.supportedReasoningEfforts.length ? 'grid gap-5 sm:grid-cols-2' : ''}>
         <Field id={`${formId}-thread-model`} label={translate("workbench.model")}>
           {isolatedCreation ? <>
@@ -897,7 +982,7 @@ export function ThreadCreateForm({
           }
         >
           {busy ? created && environmentConnectionId ? environmentLabel('startingCreatedEnvironment') : translate("workbench.creating")
-            : created ? environmentConnectionId ? environmentLabel('retryEnvironmentStart') : translate("workbench.retryRunMode")
+            : created ? environmentConnectionId ? environmentLabel('retryEnvironmentStart') : setupFailed ? worktreeText('openThread') : translate("workbench.retryRunMode")
             : firstPrompt.trim() ? translate("workbench.createAndSend") : translate("workbench.createThread_ea3fa3")}
         </button>
         {error && error.at !== 'runtime' ? (
@@ -911,7 +996,7 @@ export function ThreadCreateForm({
         ) : backendUnavailable ? (
           <ErrorMark kind="unavailable" message={translate("workbench.selectAnAvailableBackendBeforeCreatingA")} />
         ) : null}
-        {created && !busy ? (
+        {created && !busy && !setupFailed ? (
           <button
             type="button"
             onClick={() => onCreated(created)}

@@ -681,6 +681,7 @@ async fn run_as(
                         name,
                         role,
                         worktree,
+                        ..Default::default()
                     },
                 )
                 .await?;

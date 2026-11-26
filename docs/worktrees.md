@@ -83,3 +83,38 @@ workspace share to include it.
 
 `thread create --worktree` remains available for a new delegate. It creates the
 checkout before the new session starts; see [thread interaction](thread-interaction.md).
+
+## New thread in its own worktree
+
+The new-thread form has a **New worktree** switch for the device owner (not for
+shares, host-integrated forms or isolated environments). On, it shows where the
+checkout goes and two optional fields: **Branch** (default `agent/NAME`; an
+existing branch is checked out as is) and **Base** (where a new branch starts,
+default `HEAD`). The thread's session starts in the new checkout. When the
+repository's [worktree setup](source-control.md#worktree-setup) fails, the thread
+and checkout stay; the form says so, with the output on its mark, and offers
+**Open thread**.
+
+The same layout and branch rules as `thread create --worktree` apply:
+`../REPO.worktrees/NAME`, where NAME is the given name, else the title as a
+lowercase slug when it makes a valid name (`[a-z][a-z0-9_-]{0,31}`), else the
+thread id's first eight characters.
+
+```text
+POST /api/threads/start-worktree
+{ "workspaceId": "…", "provider": "acp", "agentId": "codex", "model": "…",
+  "reasoningEffort": "high", "approvalMode": "yolo", "title": "Fix login",
+  "worktree": { "name": "fix-login", "branch": "feature/login",
+                "base": "main", "clientRequestId": "uuid" } }
+→ { "thread": ThreadDto, "worktree": { "path": "…", "branch": "feature/login" },
+    "setup": null | { "completed": true, "output": […] }
+                  | { "completed": false, "error": "…", "output": […] },
+    "created": true }
+```
+
+Every `worktree` field is optional. Retrying with the same `clientRequestId` and
+the same input returns the first outcome with `"created": false`; the same id with
+different input is a conflict. A request that created nothing (an invalid name,
+branch or base, a base given for an existing branch, a workspace that is not a Git
+repository) frees its id for a corrected retry. The route is owner-only: every
+share is refused (`crates/protocol/src/access.rs`).

@@ -6,9 +6,9 @@ import { environmentsFixture, isolatedEnvironment } from '../../test/environment
 import * as environmentApi from '../../lib/environmentApi';
 import { setLocale } from '@pockymoe/thread-ui/i18n';
 vi.mock('../../lib/environmentApi', async original => ({ ...await original<typeof import('../../lib/environmentApi')>(), fetchEnvironments: vi.fn(), fetchThreadEnvironment: vi.fn(), actOnEnvironment: vi.fn() }));
-const api = vi.hoisted(() => ({ create: vi.fn(), agents: vi.fn(), models: vi.fn(), install: vi.fn(), backends: vi.fn(), workspaces: vi.fn(), catalog: vi.fn(), harness: vi.fn() }));
+const api = vi.hoisted(() => ({ createInWorktree: vi.fn(), create: vi.fn(), agents: vi.fn(), models: vi.fn(), install: vi.fn(), backends: vi.fn(), workspaces: vi.fn(), catalog: vi.fn(), harness: vi.fn() }));
 vi.mock('../../lib/api', async original => ({
-  ...(await original<typeof import('../../lib/api')>()), createThread: api.create,
+  ...(await original<typeof import('../../lib/api')>()), createThread: api.create, createThreadInWorktree: api.createInWorktree,
   fetchAgentBackendAgents: api.agents, fetchAgentBackendModelsFor: api.models,
   fetchAgentBackendModels: api.models, installOrUpdateAgentBackend: api.install,
   fetchAgentBackends: api.backends, fetchWorkspaces: api.workspaces,
@@ -245,4 +245,52 @@ it('allows isolated creation when the supported ACP agent is missing on the Host
   await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
   expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'codex', environmentConnectionId: 'dokploy-local' }));
   expect(api.install).not.toHaveBeenCalled(); expect(api.models).not.toHaveBeenCalled();
+});
+
+it('creates a thread in its own worktree with a branch and base, retried with the same request id', async () => {
+  installed = true;
+  api.createInWorktree.mockRejectedValueOnce(new Error('network blip'))
+    .mockResolvedValueOnce({ thread: { id: 'worktree-thread' }, worktree: { path: '/project-a.worktrees/keep-my-title', branch: 'feature/x' }, setup: { completed: true, output: [] }, created: true });
+  const created = mount();
+  const create = await screen.findByRole('button', { name: /New thread/i });
+  await waitFor(() => expect(create).toBeEnabled());
+  const toggle = screen.getByRole('switch', { name: 'New worktree' });
+  expect(screen.queryByLabelText('Branch')).toBeNull();
+  fireEvent.click(toggle);
+  // Where it goes, from the title, before anything is created.
+  expect(toggle.closest('.thread-create-worktree')!.textContent).toContain('/project-a.worktrees/keep-my-title');
+  expect(screen.getByLabelText('Branch')).toHaveAttribute('placeholder', 'agent/keep-my-title');
+  fireEvent.change(screen.getByLabelText('Branch'), { target: { value: 'feature/x' } });
+  fireEvent.change(screen.getByLabelText('Base'), { target: { value: 'main~1' } });
+  fireEvent.click(create);
+  expect(await screen.findByRole('alert')).toHaveTextContent('network blip');
+  fireEvent.click(create);
+  await waitFor(() => expect(created).toHaveBeenCalledWith({ id: 'worktree-thread' }));
+  expect(api.create).not.toHaveBeenCalled();
+  const [first, second] = api.createInWorktree.mock.calls;
+  expect(first![0]).toEqual(expect.objectContaining({ workspaceId: 'workspace-a', model: 'model-a', title: 'Keep my title' }));
+  expect(first![0]).not.toHaveProperty('environmentConnectionId');
+  expect(first![1]).toEqual({ branch: 'feature/x', base: 'main~1', clientRequestId: expect.any(String) });
+  expect(second![1].clientRequestId).toBe(first![1].clientRequestId);
+});
+
+it('keeps a worktree thread whose setup failed, says why and opens it on request', async () => {
+  installed = true;
+  api.createInWorktree.mockResolvedValue({ thread: { id: 'worktree-thread' }, worktree: { path: '/p.worktrees/x', branch: 'agent/x' }, setup: { completed: false, error: 'Setup command 1 failed (exit status: 4)', output: ['npm ERR! missing'] }, created: true });
+  const created = mount();
+  const create = await screen.findByRole('button', { name: /New thread/i });
+  await waitFor(() => expect(create).toBeEnabled());
+  fireEvent.click(screen.getByRole('switch', { name: 'New worktree' }));
+  fireEvent.click(create);
+  expect(await screen.findByRole('alert')).toHaveTextContent('The worktree is ready but the repository setup failed');
+  expect(created).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Open thread' }));
+  await waitFor(() => expect(created).toHaveBeenCalledWith({ id: 'worktree-thread' }));
+  expect(api.createInWorktree).toHaveBeenCalledTimes(1);
+});
+
+it('offers no worktree to a host-scoped form', async () => {
+  host.scoped = true; installed = true; mount();
+  await screen.findByRole('button', { name: /New thread/i });
+  expect(screen.queryByRole('switch', { name: 'New worktree' })).toBeNull();
 });

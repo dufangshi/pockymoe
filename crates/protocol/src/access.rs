@@ -182,6 +182,11 @@ pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool
         return false;
     }
     // Portable history and harness credentials stay owner-only, including previews.
+    // A new thread in its own worktree creates a branch and a checkout on the
+    // device: the owner's, never a share's.
+    if pathname == "/api/threads/start-worktree" {
+        return false;
+    }
     if pathname.ends_with("/harness/switch")
         || pathname.ends_with("/harness/preview")
         || pathname.ends_with("/harness/fork")
@@ -721,6 +726,29 @@ mod tests {
             thread_id: None,
             workspace_id: Some("ws".into()),
             ..shared("workspace", thread_access, workspace_access)
+        }
+    }
+
+    #[test]
+    fn worktree_thread_creation_is_owner_only() {
+        let mut device = shared("device", "control", "write");
+        device.can_create_threads = true;
+        assert!(access_allows(&device, "POST", "/api/threads/start"));
+        let mut workspace = workspace_grant("control", "write");
+        workspace.can_create_threads = true;
+        for access in [
+            device,
+            workspace,
+            shared("thread", "control", "write"),
+            shared("peer", "control", "write"),
+        ] {
+            for method in ["GET", "POST", "PUT", "DELETE"] {
+                assert!(
+                    !access_allows(&access, method, "/api/threads/start-worktree"),
+                    "{} {method}",
+                    access.scope
+                );
+            }
         }
     }
 
