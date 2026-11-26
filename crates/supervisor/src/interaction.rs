@@ -164,6 +164,23 @@ async fn run_as(
         "automationCreate" | "automationPreview" | "automationList" | "automationShow"
         | "automationRuns" | "automationPause" | "automationResume" | "automationCancel"
         | "commandRun" | "commandShow" => crate::automations::cli(state, &input, requester).await,
+        "sourceControl" => {
+            anyhow::ensure!(
+                !peer,
+                "forbidden: source control requires a local credential"
+            );
+            reach(id)?;
+            if let Some(caller) = caller.as_deref() {
+                anyhow::ensure!(
+                    caller == id && from.is_none_or(|from| from == caller),
+                    "forbidden: source-control operation must use the authenticated thread"
+                );
+            }
+            let action = input["action"]
+                .as_str()
+                .context("source-control action required")?;
+            state.source_control_action(id, action, input.clone()).await
+        }
         "worktreeCreate" | "worktreeList" | "worktreeCurrent" | "worktreeShow"
         | "worktreeAdopt" | "worktreeUse" | "worktreeRemove" => {
             anyhow::ensure!(

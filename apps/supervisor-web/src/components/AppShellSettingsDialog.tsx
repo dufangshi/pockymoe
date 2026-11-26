@@ -1,3 +1,5 @@
+import { SourceControlSettings } from './git/pr/SourceControlSettings';
+import { prText } from './git/pr/text';
 import { NotificationSettings } from './NotificationSettings';
 import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { LanguageSwitcher } from '@pockymoe/thread-ui/i18n';
@@ -656,6 +658,7 @@ export function AppShellSettingsDialog({
             </section>
           )}
           {section === 'upstreams' && <UpstreamsSettings />}
+          {section === 'sourceControl' && <SourceControlSettings />}
           {section === 'resources' && <HarnessResourceSettings />}
           {section === 'environments' && <DokploySettings />}
           {section === 'device' && !hostScope && <LocalPasscodeSettings />}
@@ -710,6 +713,11 @@ export function appSettingsSections({ scoped = false }: { scoped?: boolean } = {
       label: translate("files.harnesses"),
       description:
         translate('settings.harnessMaintenanceDescription'),
+    },
+    {
+      id: 'sourceControl',
+      label: prText('sourceControl'),
+      description: prText('description'),
     },
     {
       id: 'upstreams',

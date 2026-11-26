@@ -480,7 +480,12 @@ impl Supervisor {
             })?;
         }
         self.emit_worktree_changed(thread);
-        Ok(json!({"workingCopy":copy,"created":true,"sessionCwdUpdated":false}))
+        let setup = crate::source_control::setup::run_after_create(
+            Path::new(&source.path),
+            &path,
+            self.execution_context(thread)?.is_some(),
+        );
+        Ok(json!({"workingCopy":copy,"created":true,"sessionCwdUpdated":false,"setup":setup}))
     }
     pub fn observe_worktree_location(
         &self,

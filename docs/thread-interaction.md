@@ -1014,3 +1014,11 @@ the shared confirmation; native touch scrolling remains on the viewport. Paste i
 the key bar reads the clipboard; where the browser does not allow that (plain
 http, permission denied) it opens a field
 to paste into and edit before sending.
+
+## Pull request wakes
+
+PR watches deliver a task through the thread queue every time a watched host
+reports a relevant change. The prompt names the PR and commands for inspecting
+it; it never assumes a merge or check result authorizes an external write.
+Watches persist across restarts and are restricted to root threads. See
+[source control](source-control.md#watching-a-pr) for hosts and stop rules.

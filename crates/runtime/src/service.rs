@@ -703,6 +703,17 @@ impl Supervisor {
                     };
                     let item = serde_json::from_value::<ThreadHistoryItemDto>(item)?;
                     supervisor.upsert_history_item(&event.thread_id, turn_id, &item)?;
+                    if event.event_type == "thread.item.completed" {
+                        // Link only confirmed creation-command output. This is
+                        // best effort and never delays or fails harness output.
+                        let detail = item.detail_text.as_deref().unwrap_or("");
+                        let (command, output) = detail
+                            .split_once("\n\nResult:\n")
+                            .or_else(|| detail.split_once("\n\nOutput:\n"))
+                            .unwrap_or((&item.text, detail));
+                        let command = format!("{}\n{command}", item.text);
+                        let _ = supervisor.source_auto_link(&event.thread_id, &command, output);
+                    }
                     if let Some(evidence) =
                         item.extra.get("workingLocations").and_then(Value::as_array)
                     {
