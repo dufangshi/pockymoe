@@ -3,7 +3,8 @@
 A thread's model and reasoning effort are chosen in the composer's model picker,
 opened from the model key (a popover on desktop, a bottom sheet on phones):
 
-- A search box, then the models of the agent in view under a header with the
+- A search box (when there are agents to switch to or more than eight models),
+  then the models of the agent in view under a header with the
   agent's mark and name. Rows show the model's context window and its price per
   million input and output tokens from the device's pricing catalog
   (`GET /api/config/model-pricing`, matched like the cost estimate); a model the
