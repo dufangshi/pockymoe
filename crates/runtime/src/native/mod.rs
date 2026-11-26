@@ -1,4 +1,5 @@
 //! Per-device protocol selection with backend affinity for loaded sessions.
+pub mod claude;
 pub mod codex;
 use crate::actor::*;
 use anyhow::Result;

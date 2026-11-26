@@ -29,3 +29,41 @@ no credentials.
 Regenerate the checked-in protocol schema and Rust wire structs with
 `scripts/generate-codex-schema.sh` using the installed Codex binary. The generator
 includes experimental fields because rollback and collaboration use them.
+
+## Claude Code
+
+The native Claude backend speaks Claude Code's stream-json control protocol
+straight from Rust (`--input-format stream-json --output-format stream-json`),
+without the Agent SDK or a Node bridge. `CLAUDE_COMMAND` selects the executable.
+It uses the same `claude::` identifiers and Claude JSONL session store as ACP;
+release the loaded session before switching protocols. Resume and fork preserve
+that store. Forking at an ACP reply resolves its API message id to the persisted
+Claude message UUID.
+
+The backend streams text and thinking, maps tool calls to the shared transcript
+items, forwards TodoWrite plans and subagent attribution, and accepts image
+attachments. It discovers models at initialization and uses control requests
+for model, effort and permission-mode changes. Guarded requests use the normal
+thread approval UI; interactive questions and plan exits still require a human
+in full-access mode. Read-only callbacks reject execution and write tools.
+Interrupt, steering, compaction, idle release and crash detection use the native
+connection. An unexpected EOF marks execution uncertain and never fabricates a
+successful turn. A restarted process resumes the same native session.
+
+Native Claude is experimental. Isolated environments reject this backend before
+launching a host process; select ACP there. SDK-hosted MCP servers and callback
+hooks are not implemented; unsupported control callbacks fail closed. Claude's
+own configured subprocess MCP servers, hooks, agents and project instructions
+continue to load normally, and the device MCP registry is passed at launch.
+Autonomous work outside an active prompt, complete TaskCreate/TaskUpdate plan
+projection and rich edit-diff parity remain qualification requirements. Keep ACP
+selected for those workflows. `rewind_files` is deliberately not exposed: the
+product's Git checkpoints own file restore and its undo boundary.
+
+Native usage deduplicates assistant snapshots by API message id, keeps child
+usage in billing, and keeps the latest parent response as context occupancy.
+When Claude reports the context window in the turn result it updates the normal
+context meter. TaskCreate/TaskUpdate/TaskList results project the known task list;
+Edit tool results carry the exact replacement snippet as a diff. A whole-file
+Write has no trustworthy previous contents in this protocol mapping, so its
+transcript reports the write without inventing an addition-only diff.

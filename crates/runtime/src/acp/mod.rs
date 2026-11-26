@@ -25,7 +25,7 @@ pub(crate) use mapper::TurnMapper;
 mod modes;
 pub(crate) mod prompt;
 pub(crate) mod rpc;
-mod runtime;
+pub(crate) mod runtime;
 mod terminal;
 pub(crate) mod upstream_models;
 

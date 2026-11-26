@@ -5092,8 +5092,24 @@ pub fn bootstrap_runtimes(config: &RuntimeConfig) -> Vec<SharedRuntime> {
                     "codex",
                     Arc::new(crate::native::codex::CodexRuntime::new(
                         provider,
-                        acp,
+                        acp.clone(),
                         crate::upstreams::directory(&config.database_url),
+                    )),
+                )
+            } else {
+                router
+            };
+            let router = if matches!(provider, Provider::Acp | Provider::Claude) {
+                router.with_backend(
+                    "claude",
+                    Arc::new(crate::native::claude::ClaudeRuntime::new(
+                        acp,
+                        crate::acp::builtin_agents(None)
+                            .into_iter()
+                            .find(|a| a.id == "claude")
+                            .map(|a| a.base_command)
+                            .unwrap_or_else(|| "claude".into()),
+                        Some(crate::upstreams::directory(&config.database_url)),
                     )),
                 )
             } else {

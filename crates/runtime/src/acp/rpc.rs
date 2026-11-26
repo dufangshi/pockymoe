@@ -1217,7 +1217,7 @@ mod tests {
 
 // Include explicit command overrides as well as inherited variable names. This
 // also makes tests deterministic without mutating the process environment.
-fn clear_native_oauth_environment(cmd: &mut tokio::process::Command, harness: &str) {
+pub(crate) fn clear_native_oauth_environment(cmd: &mut tokio::process::Command, harness: &str) {
     let names = std::env::vars_os()
         .map(|(key, _)| key)
         .chain(cmd.as_std().get_envs().map(|(key, _)| key.to_owned()))
