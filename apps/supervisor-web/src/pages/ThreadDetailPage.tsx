@@ -1,3 +1,4 @@
+import { useHandoffModelNames } from './useHandoffModelNames';
 import { RestoreNotice } from '../components/git/RestoreNotice';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import type { QuoteScope } from '@pockymoe/thread-ui';
@@ -3771,11 +3772,13 @@ export function ThreadDetailPage() {
     (turnId: string) => <TurnNotification key={`${relayRouteDeviceId}:${id}:${turnId}`} deviceId={relayRouteDeviceId} threadId={id!} turnId={turnId} />,
     [id, relayRouteDeviceId],
   );
+  const describeHandoffModel = useHandoffModelNames(detail?.turns, relayRouteDeviceId);
   const timelineProps = useMemo<Partial<ThreadTimelineProps>>(
     () => ({
       livePlan,
       liveItems,
       renderTurnNotification,
+      describeHandoffModel,
       backendProgress: backendProgress?.threadId === id ? backendProgress : null,
       backgroundAgentCount: detail?.activeSubagents?.filter((agent) => agent.isBackground && agent.status === 'running').length ?? 0,
       respondingRequestId,
@@ -3799,6 +3802,7 @@ export function ThreadDetailPage() {
       optimisticTurn: timelineOptimisticTurn,
     }),
     [
+      describeHandoffModel,
       detail?.answeredRequestNotes,
       detail?.activityNotes,
       detail?.pendingSteers,
