@@ -51,6 +51,10 @@ struct Session {
     mode: std::sync::Mutex<String>,
     /// The account offers Claude's `auto` mode.
     auto_mode: bool,
+    /// Slash commands and skills, from initialize and `commands_changed`.
+    commands: std::sync::Mutex<Vec<crate::acp::NegotiatedCommand>>,
+    /// Fast mode as last applied.
+    fast: std::sync::Mutex<Option<bool>>,
     context_delivered: AtomicBool,
     load: Mutex<LoadedSession>,
     models: Vec<ModelOptionDto>,
@@ -59,6 +63,9 @@ struct Session {
 impl Session {
     /// Track the mode Claude reports (init, a plan exit, `/permissions`).
     fn observe(&self, frame: &Value) {
+        if frame["type"] == "system" && frame["subtype"] == "commands_changed" {
+            *self.commands.lock().unwrap() = crate::acp::parse_commands(&frame["commands"]);
+        }
         if frame["type"] == "system" {
             if let Some(mode) = frame["permissionMode"].as_str() {
                 *self.mode.lock().unwrap() = mode.to_owned();
@@ -96,6 +103,15 @@ pub struct ClaudeRuntime {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     pending: Mutex<HashMap<String, Permission>>,
     lifecycle: broadcast::Sender<SessionLifecycle>,
+    /// The latest slash commands and account features Claude reported, for
+    /// capabilities and the toolbox before a session is loaded.
+    features: std::sync::Mutex<Features>,
+    inspection: std::sync::RwLock<Option<Arc<crate::context_inspection::InspectionState>>>,
+}
+#[derive(Clone, Default)]
+struct Features {
+    commands: Vec<crate::acp::NegotiatedCommand>,
+    fast: bool,
 }
 impl ClaudeRuntime {
     pub fn new(acp: SharedRuntime, command: String, upstream_directory: Option<PathBuf>) -> Self {
@@ -106,6 +122,8 @@ impl ClaudeRuntime {
             sessions: Default::default(),
             pending: Default::default(),
             lifecycle: broadcast::channel(128).0,
+            features: Default::default(),
+            inspection: Default::default(),
         }
     }
     async fn session(&self, id: &str) -> Result<Arc<Session>> {
@@ -245,6 +263,13 @@ impl ClaudeRuntime {
         let auto_mode = init["models"]
             .as_array()
             .is_some_and(|models| models.iter().any(|m| m["supportsAutoMode"] == true));
+        let commands = crate::acp::parse_commands(&init["commands"]);
+        *self.features.lock().unwrap() = Features {
+            commands: commands.clone(),
+            fast: init["models"]
+                .as_array()
+                .is_some_and(|models| models.iter().any(|m| m["supportsFastMode"] == true)),
+        };
         let intent = load_intent();
         let now = chrono::Utc::now();
         let load = LoadedSession {
@@ -289,6 +314,8 @@ impl ClaudeRuntime {
                 window: Default::default(),
                 mode: std::sync::Mutex::new(spawned_mode),
                 auto_mode,
+                commands: std::sync::Mutex::new(commands.clone()),
+                fast: Default::default(),
                 context_delivered: AtomicBool::new(false),
                 load: Mutex::new(load),
                 models: parse_models(&init["models"]),
@@ -323,6 +350,72 @@ impl ClaudeRuntime {
             session.assert_mode(&settings).await?;
         }
         Ok(result)
+    }
+    /// Ask Claude what its context holds and publish it (inspection opt-in).
+    fn spawn_context_summary(
+        &self,
+        session: &Arc<Session>,
+        id: &str,
+        thread: &str,
+        bus: &EventBus,
+        busy: Option<Arc<AtomicBool>>,
+    ) {
+        let Some(state) = self
+            .inspection
+            .read()
+            .unwrap()
+            .clone()
+            .filter(|s| s.enabled())
+        else {
+            return;
+        };
+        if busy
+            .as_ref()
+            .is_some_and(|b| b.swap(true, Ordering::AcqRel))
+        {
+            return;
+        }
+        let process = session.process.clone();
+        let (id, thread, bus) = (id.to_owned(), thread.to_owned(), bus.session_observation());
+        tokio::spawn(async move {
+            let raw = tokio::time::timeout(
+                Duration::from_secs(20),
+                process.request(json!({"subtype":"get_context_usage","detail":"summary"})),
+            )
+            .await;
+            if let Ok(Ok(raw)) = raw {
+                if let Some(snapshot) = crate::context_inspection::claude_snapshot(&raw, "summary")
+                {
+                    crate::context_inspection::emit(&state, &id, &thread, &bus, snapshot);
+                }
+            }
+            if let Some(busy) = busy {
+                busy.store(false, Ordering::Release);
+            }
+        });
+    }
+    /// Claude's own model list: a loaded session's, or a short probe session's.
+    async fn native_models(&self, cwd: Option<&str>) -> Result<Vec<ModelOptionDto>> {
+        for session in self.sessions.lock().await.values() {
+            if session.process.alive.load(Ordering::SeqCst) && !session.models.is_empty() {
+                return Ok(session.models.clone());
+            }
+        }
+        let id = isolated::session_id(
+            crate::execution::current().as_ref(),
+            &uuid::Uuid::new_v4().to_string(),
+        );
+        self.load(
+            &id,
+            cwd.unwrap_or("."),
+            SessionSettings::default(),
+            None,
+            None,
+        )
+        .await?;
+        let models = self.session(&id).await?.models.clone();
+        self.release_session(&id).await?;
+        Ok(models)
     }
     async fn resolve(
         &self,
@@ -570,8 +663,13 @@ fn parse_models(value: &Value) -> Vec<ModelOptionDto> {
                 description: m["description"].as_str().unwrap_or("").into(),
                 is_default: id == "default",
                 hidden: false,
-                supported_reasoning_efforts: efforts,
-                default_reasoning_effort: None,
+                supported_reasoning_efforts: efforts.clone(),
+                // As ACP learns per model: medium where offered, else the first.
+                default_reasoning_effort: efforts
+                    .iter()
+                    .find(|e| e.reasoning_effort == "medium")
+                    .or(efforts.first())
+                    .map(|e| e.reasoning_effort.clone()),
                 selection_kind: None,
                 acp_agent: None,
             })
@@ -597,12 +695,29 @@ impl AgentRuntime for ClaudeRuntime {
         d
     }
     async fn inspect_context(&self, id: &str, detail: &str) -> Result<Option<Value>> {
+        // Opt-in, like ACP's context bridge; native needs no bridge and works
+        // inside environments too.
+        let Some(state) = self
+            .inspection
+            .read()
+            .unwrap()
+            .clone()
+            .filter(|s| s.enabled())
+        else {
+            return Ok(None);
+        };
         let s = self.session(id).await?;
-        let raw = s
-            .process
-            .request(json!({"subtype":"get_context_usage"}))
-            .await?;
-        Ok(crate::context_inspection::claude_snapshot(&raw, detail))
+        let raw = tokio::time::timeout(
+            Duration::from_secs(20),
+            s.process
+                .request(json!({"subtype":"get_context_usage","detail":detail})),
+        )
+        .await??;
+        let snapshot = crate::context_inspection::claude_snapshot(&raw, detail);
+        if let Some(snapshot) = &snapshot {
+            state.store(id, snapshot.clone());
+        }
+        Ok(snapshot)
     }
     async fn start(&self) -> Result<()> {
         Ok(())
@@ -628,53 +743,74 @@ impl AgentRuntime for ClaudeRuntime {
         _agent_id: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<Vec<ModelOptionDto>> {
-        for session in self.sessions.lock().await.values() {
-            if session.process.alive.load(Ordering::SeqCst) && !session.models.is_empty() {
-                return Ok(session.models.clone());
+        let native = self.native_models(cwd).await?;
+        // A saved upstream connection names the models, as on ACP; Claude's own
+        // list supplies efforts for the ones it knows.
+        if let Some(directory) = self.upstream_directory.clone() {
+            if let Some((profile, models)) =
+                crate::acp::upstream_models::UpstreamModels::new(directory)
+                    .catalog("claude")
+                    .await?
+            {
+                return Ok(models
+                    .iter()
+                    .map(|m| m.option(&profile, native.iter().find(|n| n.model == m.id)))
+                    .collect());
             }
         }
-        let id = isolated::session_id(
-            crate::execution::current().as_ref(),
-            &uuid::Uuid::new_v4().to_string(),
-        );
-        self.load(
-            &id,
-            cwd.unwrap_or("."),
-            SessionSettings::default(),
-            None,
-            None,
-        )
-        .await?;
-        let models = self.session(&id).await?.models.clone();
-        self.release_session(&id).await?;
-        Ok(models)
+        Ok(native)
     }
     fn negotiated_caps(&self, _agent: Option<&str>) -> AgentProviderCapabilitiesDto {
-        let mut caps = AgentProviderCapabilitiesDto::conversational();
-        caps.turns.stream_input = true;
-        caps.turns.steer = true;
-        caps.turns.compact = true;
-        caps.branching.fork = true;
-        caps.branching.fork_at = true;
-        caps.branching.resume_at = true;
-        caps.controls.live_model_switch = true;
-        crate::acp::runtime::isolated_capabilities::restrict(
-            &mut caps,
+        let features = self.features.lock().unwrap().clone();
+        caps(
+            &features.commands,
+            features.fast,
             crate::execution::current().is_some(),
-        );
-        caps
+        )
     }
     fn session_negotiated_caps(
         &self,
         agent: Option<&str>,
         session_id: &str,
     ) -> AgentProviderCapabilitiesDto {
-        let mut caps = self.negotiated_caps(agent);
+        let session = self
+            .sessions
+            .try_lock()
+            .ok()
+            .and_then(|sessions| sessions.get(session_id).cloned());
+        let mut caps = match session {
+            Some(s) => caps(
+                &s.commands.lock().unwrap(),
+                self.features.lock().unwrap().fast,
+                session_id.contains("::env/"),
+            ),
+            None => self.negotiated_caps(agent),
+        };
         crate::acp::runtime::isolated_capabilities::restrict(
             &mut caps,
             session_id.contains("::env/"),
         );
         caps
+    }
+    fn toolbox(&self, _agent: Option<&str>) -> Vec<ToolboxItemDto> {
+        let features = self.features.lock().unwrap().clone();
+        toolbox(&self.negotiated_caps(None), &features.commands)
+    }
+    async fn session_capabilities(
+        &self,
+        agent: Option<&str>,
+        session_id: &str,
+    ) -> Result<AgentCapabilitySnapshotDto> {
+        let mut snapshot = self.capabilities(agent).await?;
+        if let Ok(s) = self.session(session_id).await {
+            let caps = self.session_negotiated_caps(agent, session_id);
+            snapshot.toolbox_items = toolbox(&caps, &s.commands.lock().unwrap());
+            snapshot.effective_capabilities = Some(caps);
+        }
+        Ok(snapshot)
+    }
+    fn configure_context_inspection(&self, state: Arc<crate::context_inspection::InspectionState>) {
+        *self.inspection.write().unwrap() = Some(state);
     }
     async fn capabilities(&self, _agent: Option<&str>) -> Result<AgentCapabilitySnapshotDto> {
         Ok(AgentCapabilitySnapshotDto {
@@ -768,6 +904,20 @@ impl AgentRuntime for ClaudeRuntime {
             next.collaboration_mode = settings.collaboration_mode;
         }
         s.assert_mode(&next).await?;
+        if let Some(fast) = settings.performance_mode {
+            let applied = *s.fast.lock().unwrap();
+            if applied.unwrap_or(false) != fast {
+                // Fast mode is Claude's own flag setting, as claude-agent-acp sets it.
+                let result = s
+                    .process
+                    .request(json!({"subtype":"apply_flag_settings","settings":{"fastMode":fast}}))
+                    .await;
+                if fast {
+                    result.context("Claude did not accept fast mode for this model")?;
+                }
+                *s.fast.lock().unwrap() = Some(fast);
+            }
+        }
         *current = next;
         Ok(())
     }
@@ -794,7 +944,7 @@ impl AgentRuntime for ClaudeRuntime {
                 sandbox_mode: input.sandbox_mode.clone(),
                 collaboration_mode: input.collaboration_mode.clone(),
                 approval_mode: input.approval_mode.clone(),
-                performance_mode: None,
+                performance_mode: input.performance_mode,
             },
         )
         .await?;
@@ -835,6 +985,8 @@ impl AgentRuntime for ClaudeRuntime {
         );
         let include_context = actual_input.prompt != input.prompt;
         let mut usage_tick = tokio::time::interval(Duration::from_secs(1));
+        let context_busy = Arc::new(AtomicBool::new(false));
+        let mut allowance = crate::subscription::Announcer::default();
         let prompt_id = uuid::Uuid::new_v4().to_string();
         s.interrupting.store(false, Ordering::SeqCst);
         s.completion.lock().unwrap().begin_turn(&prompt_id);
@@ -864,7 +1016,12 @@ impl AgentRuntime for ClaudeRuntime {
                         return Ok(true);
                     }
                     _ = usage_tick.tick() => {
-                        for usage in reader.as_mut().map(|r| r.poll()).unwrap_or_default() {
+                        let reports = reader.as_mut().map(|r| r.poll()).unwrap_or_default();
+                        if !reports.is_empty() && !input.hidden {
+                            // One composition per model request, as ACP's bridge does.
+                            self.spawn_context_summary(&s, &input.provider_session_id, &input.thread_id, &bus, Some(context_busy.clone()));
+                        }
+                        for usage in reports {
                             crate::acp::runtime::emit_mapped(&bus,&input.thread_id,&input.turn_id,mapping::usage(usage),input.hidden);
                         }
                         continue;
@@ -873,6 +1030,11 @@ impl AgentRuntime for ClaudeRuntime {
                 };
                 s.completion.lock().unwrap().record(&message);
                 s.observe(&message);
+                if message["type"]=="rate_limit_event" {
+                    // Live plan allowance from the API response itself; ACP drops it.
+                    if let Some(update)=crate::subscription::claude_rate_update(&message["rate_limit_info"]) { allowance.announce(&bus,&input.thread_id,"claude",update,input.hidden); }
+                    continue;
+                }
                 if message["type"]=="control_request" { self.control(&input.provider_session_id,&s,&input,&bus,&message).await?; continue; }
                 if message["type"]=="control_cancel_request" {
                     let native=message["request_id"].as_str().unwrap_or("");
@@ -950,6 +1112,15 @@ impl AgentRuntime for ClaudeRuntime {
         }
         if let Some(window) = mapper.window() {
             s.window.store(window, Ordering::SeqCst);
+        }
+        if !input.hidden && !failed {
+            self.spawn_context_summary(
+                &s,
+                &input.provider_session_id,
+                &input.thread_id,
+                &bus,
+                None,
+            );
         }
         if include_context && !failed && !input.hidden {
             // Persisted by the service, so a resumed session keeps knowing.
@@ -1195,6 +1366,51 @@ impl AgentRuntime for ClaudeRuntime {
         )
     }
 }
+/// Capabilities as the ACP Claude adapter computes them (`ClaudeAdapter`),
+/// plus what the native protocol adds: input during a turn, fork at a reply.
+fn caps(
+    commands: &[crate::acp::NegotiatedCommand],
+    fast: bool,
+    isolated: bool,
+) -> AgentProviderCapabilitiesDto {
+    use crate::acp::HarnessAdapter;
+    let negotiated = crate::acp::NegotiatedCaps {
+        load_session: true,
+        resume: true,
+        list: true,
+        close: true,
+        fork: true,
+        steer: true,
+        compact: true,
+        fast,
+        image: true,
+        available_commands: commands.to_vec(),
+        ..Default::default()
+    };
+    let mut caps = AgentProviderCapabilitiesDto::conversational();
+    crate::acp::ClaudeAdapter.patch_capabilities(&mut caps, &negotiated);
+    caps.turns.stream_input = true;
+    caps.turns.compact = true;
+    caps.branching.fork_at = true;
+    caps.branching.resume_at = true;
+    caps.sessions.import_local = true;
+    crate::acp::runtime::isolated_capabilities::restrict(&mut caps, isolated);
+    caps
+}
+
+/// The toolbox: product actions plus Claude's slash commands and skills.
+fn toolbox(
+    caps: &AgentProviderCapabilitiesDto,
+    commands: &[crate::acp::NegotiatedCommand],
+) -> Vec<ToolboxItemDto> {
+    use crate::acp::HarnessAdapter;
+    let negotiated = crate::acp::NegotiatedCaps {
+        available_commands: commands.to_vec(),
+        ..Default::default()
+    };
+    crate::acp::ClaudeAdapter.toolbox_items(caps, &negotiated)
+}
+
 /// How long a stopped turn may take to settle before its process is ended.
 const STOP_GRACE: Duration = Duration::from_secs(10);
 

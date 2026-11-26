@@ -599,3 +599,37 @@ async fn replay_foreground_agent_completes_in_its_turn() {
     let agent = t.of("agentToolCall")[0];
     assert!(agent.detail_text.as_deref().unwrap().contains("KID7"));
 }
+
+#[tokio::test]
+async fn replay_capabilities_toolbox_and_models_follow_claude() {
+    let r = replay("basic-tools", "guarded").await;
+    let caps = r
+        .runtime
+        .session_negotiated_caps(Some("claude"), &r.session);
+    // What ACP's ClaudeAdapter advertises, plus input during a turn and fork at a reply.
+    assert!(caps.usage.cost_usd && caps.usage.token_usage && caps.usage.context_window);
+    assert!(caps.controls.permission_requests && caps.controls.live_model_switch);
+    assert!(caps.turns.steer && caps.turns.stream_input && caps.turns.compact);
+    assert!(caps.branching.fork && caps.branching.fork_at && caps.sessions.import_local);
+    // The fixture's account offers fast mode on Opus.
+    assert!(caps.controls.performance_mode);
+    let snapshot = r
+        .runtime
+        .session_capabilities(Some("claude"), &r.session)
+        .await
+        .unwrap();
+    assert!(snapshot
+        .toolbox_items
+        .iter()
+        .any(|i| i.command == "/review" && i.action == "prompt"));
+    assert!(snapshot
+        .toolbox_items
+        .iter()
+        .any(|i| i.command == "/compact"));
+    let models = r.runtime.list_models(Some("claude"), None).await.unwrap();
+    let haiku = models.iter().find(|m| m.id == "haiku").unwrap();
+    assert!(haiku
+        .supported_reasoning_efforts
+        .iter()
+        .any(|e| e.reasoning_effort == "high"));
+}

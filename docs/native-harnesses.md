@@ -170,6 +170,20 @@ agents and project instructions continue to load normally, and the device MCP
 registry is passed at launch. `rewind_files` is deliberately not exposed: the
 product's Git checkpoints own file restore and its undo boundary.
 
+Capabilities and the toolbox are computed as the ACP Claude adapter computes
+them, with Claude's slash commands and skills from initialize and
+`commands_changed`, plus input during a turn, fork at a reply and local import.
+Models come from Claude's own list (efforts per model, medium by default), or
+from a saved upstream connection's catalog, as on ACP. Fast mode is Claude's
+`fastMode` flag setting where the account offers it. Context inspection, when
+enabled, asks Claude itself (`get_context_usage`) after each model request and
+at turn end, on the host and in environments; ACP needs its Node bridge and
+works on the host only.
+
+Plan allowance also updates live during a turn: each `rate_limit_event` from
+the API (5-hour and 7-day utilization and reset) feeds the shared subscription
+cache and refreshes the composer meter, which ACP drops.
+
 The mapping is tested against real Claude Code 2.1.322 sessions recorded with
 `haiku` and replayed through the whole runtime
 (`crates/runtime/src/native/claude/fixtures`).

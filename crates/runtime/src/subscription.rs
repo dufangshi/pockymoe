@@ -248,6 +248,25 @@ pub(crate) fn codex_rollout_rate_limits(rate_limits: &Value) -> Option<Value> {
     }))
 }
 
+/// A Claude Code SDK `rate_limit_event` (`rate_limit_info`), the allowance the
+/// running CLI just received from the API. Its utilization is a fraction; the
+/// OAuth usage read reports percent. Only the 5h and 7d windows feed the badge.
+pub(crate) fn claude_rate_update(info: &Value) -> Option<Value> {
+    let windows: Vec<Value> = [("five_hour", 300), ("seven_day", 10080)]
+        .into_iter()
+        .filter_map(|(id, minutes)| {
+            let (used, resets) = match info["unifiedWindows"].get(id) {
+                Some(w) => (&w["utilization"], &w["resetsAt"]),
+                None if info["rateLimitType"] == id => (&info["utilization"], &info["resetsAt"]),
+                None => return None,
+            };
+            let percent = json!(used.as_f64()? * 100.0);
+            window(id, minutes, &percent, resets)
+        })
+        .collect();
+    report("claude", windows)
+}
+
 /// One turn's announcements: a harness can report the same allowance through
 /// more than one source (app-server push and rollout record).
 #[derive(Default)]
@@ -567,6 +586,33 @@ pub(crate) fn parse_claude(data: &Value) -> Option<Value> {
         })
         .collect();
     report("claude", windows)
+}
+
+#[cfg(test)]
+mod claude_rate_tests {
+    use super::*;
+
+    #[test]
+    fn sdk_rate_limit_events_become_allowance_windows() {
+        let soon = Utc::now().timestamp() + 3600;
+        let update = claude_rate_update(
+            &json!({"status":"allowed","rateLimitType":"seven_day","resetsAt":soon,
+            "unifiedWindows":{"seven_day":{"utilization":0.04,"resetsAt":soon,"status":"allowed"},
+                "five_hour":{"utilization":0.5,"resetsAt":soon}}}),
+        )
+        .unwrap();
+        let windows = update["windows"].as_array().unwrap();
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0]["id"], "five_hour");
+        assert_eq!(windows[0]["usedPercent"], 50.0);
+        assert_eq!(windows[1]["usedPercent"], 4.0);
+        let single = claude_rate_update(
+            &json!({"rateLimitType":"five_hour","utilization":0.2,"resetsAt":soon}),
+        )
+        .unwrap();
+        assert_eq!(single["windows"][0]["label"], "5h");
+        assert!(claude_rate_update(&json!({"status":"allowed"})).is_none());
+    }
 }
 
 #[cfg(test)]
