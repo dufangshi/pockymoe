@@ -483,6 +483,15 @@ pub trait AgentRuntime: Send + Sync {
         agent_id: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<Vec<ModelOptionDto>>;
+    /// Keep a loaded thread's model catalog on the backend that owns it.
+    async fn session_models(
+        &self,
+        agent_id: Option<&str>,
+        _session_id: &str,
+        cwd: Option<&str>,
+    ) -> Result<Vec<ModelOptionDto>> {
+        self.list_models(agent_id, cwd).await
+    }
     async fn list_agents(&self) -> Result<Vec<ModelOptionDto>>;
     async fn capabilities(&self, agent_id: Option<&str>) -> Result<AgentCapabilitySnapshotDto>;
     async fn session_capabilities(
@@ -494,6 +503,13 @@ pub trait AgentRuntime: Send + Sync {
     }
     fn negotiated_caps(&self, _agent_id: Option<&str>) -> AgentProviderCapabilitiesDto {
         AgentProviderCapabilitiesDto::conversational()
+    }
+    fn session_negotiated_caps(
+        &self,
+        agent_id: Option<&str>,
+        _session_id: &str,
+    ) -> AgentProviderCapabilitiesDto {
+        self.negotiated_caps(agent_id)
     }
     async fn start_session(&self, input: StartSessionInput) -> Result<StartSessionResult>;
     async fn resume_session(

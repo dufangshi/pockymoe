@@ -544,11 +544,11 @@ impl Supervisor {
                     status == "running" && active_turn.is_some(),
                     "conflict: steering requires an active turn"
                 );
+                let runtime = self.runtime(thread.provider)?;
                 ensure!(
-                    self.runtime(thread.provider)?
-                        .negotiated_caps(thread.agent_id.as_deref())
-                        .turns
-                        .steer,
+                    thread.provider_session_id.as_deref().is_some_and(|session| {
+                        runtime.session_negotiated_caps(thread.agent_id.as_deref(), session).turns.steer
+                    }),
                     "conflict: this backend does not support steering"
                 );
             }
