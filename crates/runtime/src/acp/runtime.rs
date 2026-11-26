@@ -3548,6 +3548,29 @@ impl AgentRuntime for AcpRuntime {
             .session)
     }
 
+    async fn rewind_session(&self, session_id: &str, turns: u32) -> Result<()> {
+        let _lifecycle = self.inner.lifecycle.lock().await;
+        let (operation, bridge, raw) = {
+            let sessions = self.inner.sessions.lock().await;
+            let live = sessions
+                .get(session_id)
+                .context("ACP session is not running")?;
+            ensure!(
+                live.active.is_none(),
+                "conflict: session has an active turn"
+            );
+            (
+                live.operation.clone(),
+                live.codex_bridge.clone(),
+                live.session_id.clone(),
+            )
+        };
+        let _operation = operation
+            .try_lock()
+            .map_err(|_| anyhow!("conflict: session is busy"))?;
+        let bridge = bridge.context("unsupported_rewind")?;
+        bridge.rewind(&raw, turns).await
+    }
     async fn fork_session_at(&self, session_id: &str, point: &ForkPoint) -> Result<ForkResult> {
         let rollback_count = point.rollback_count;
         let _lifecycle = self.inner.lifecycle.lock().await;
