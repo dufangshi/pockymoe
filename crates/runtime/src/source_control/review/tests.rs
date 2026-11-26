@@ -949,6 +949,34 @@ fn stacks_are_inferred_from_bases_and_github_stacks_are_read() {
         [1, 2, 3]
     );
     assert!(!found.native);
+    // Lower layers merged: the stack's base is found through them, and they stay as merged layers.
+    let mut rest = vec![summary_at(3, "c", "b"), summary_at(4, "d", "c")];
+    rest[0].created_at = "2026-11-26T10:00:00Z".into();
+    let mut done = vec![
+        summary_at(2, "b", "a"),
+        summary_at(1, "a", "main"),
+        summary_at(8, "a", "old"),
+    ];
+    for p in &mut done {
+        p.state = "merged".into();
+    }
+    done[0].created_at = "2026-11-26T09:00:00Z".into();
+    done[0].updated_at = "2026-11-26T11:00:00Z".into();
+    done[1].created_at = "2026-11-26T08:00:00Z".into();
+    done[1].updated_at = "2026-11-26T11:30:00Z".into();
+    done[2].updated_at = "2025-01-01T00:00:00Z".into(); // an old PR from a reused branch name
+    let mut settled = stack::inferred(&rest, 4).unwrap();
+    assert_eq!(settled.base, "b");
+    stack::settle_base(&mut settled, &rest, &done);
+    assert_eq!(settled.base, "main");
+    assert_eq!(
+        settled
+            .layers
+            .iter()
+            .map(|l| (l.number, l.state.as_str()))
+            .collect::<Vec<_>>(),
+        [(1, "merged"), (2, "merged"), (3, "open"), (4, "open")]
+    );
     // Two open PRs from the same branch name (forks) give no parent.
     let mut forks = vec![
         summary_at(1, "a", "main"),

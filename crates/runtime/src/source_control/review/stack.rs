@@ -254,7 +254,44 @@ pub async fn read(host: &dyn Host, repo: &Repository, number: u64) -> Result<Opt
         return Ok(None);
     }
     let open = list(host, repo, "open").await?;
-    Ok(inferred(&open, number))
+    let Some(mut stack) = inferred(&open, number) else {
+        return Ok(None);
+    };
+    if let Ok(done) = list(host, repo, "merged").await {
+        settle_base(&mut stack, &open, &done);
+    }
+    Ok(Some(stack))
+}
+
+/// Once lower layers merge, the bottom open layer still targets their branch.
+/// Walk down through merged PRs whose head is that branch (merged after the
+/// layer above was opened) to the real base, keeping them as merged layers.
+pub fn settle_base(stack: &mut Stack, open: &[PullSummary], merged: &[PullSummary]) {
+    let mut below: Vec<StackLayer> = Vec::new();
+    loop {
+        let opened = below.first().or(stack.layers.first()).map(|l| l.number);
+        let since = open
+            .iter()
+            .chain(merged)
+            .find(|p| Some(p.number) == opened)
+            .map(|p| p.created_at.clone())
+            .filter(|c| !c.is_empty());
+        let candidate = merged.iter().find(|p| {
+            p.state == "merged"
+                && p.head_ref == stack.base
+                && !below.iter().any(|l| l.number == p.number)
+                && since
+                    .as_deref()
+                    .is_none_or(|created| p.updated_at.as_str() >= created)
+        });
+        let Some(p) = candidate else { break };
+        below.insert(0, layer(p));
+        stack.base = p.base_ref.clone();
+        if below.len() >= 20 {
+            break;
+        }
+    }
+    stack.layers.splice(0..0, below);
 }
 
 /// Point a PR at another base branch (the stack's base, once the layer below merged).
@@ -335,7 +372,10 @@ pub fn guard_heads(layers: &[StackLayer], expected: &[StackHead]) -> Result<()> 
 
 fn is_transient(error: &anyhow::Error) -> bool {
     let text = error.to_string();
-    text.contains("HTTP 405") || text.contains("still be checking") || text.contains("HTTP 406")
+    text.contains("HTTP 405")
+        || text.contains("still be checking")
+        || text.contains("HTTP 406")
+        || text.contains("HTTP 422")
 }
 
 /// Merge one layer with its head guard, waiting out a host that is still
@@ -352,7 +392,28 @@ async fn merge_layer(
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_secs(4)).await;
         }
+        if repo.kind == HostKind::Gitlab {
+            // GitLab checks mergeability lazily after a retarget or push.
+            let _ = host
+                .request(
+                    "GET",
+                    &format!(
+                        "projects/{}/merge_requests/{number}?with_merge_status_recheck=true",
+                        enc(&format!("{}/{}", repo.owner, repo.name))
+                    ),
+                    None,
+                )
+                .await;
+        }
         let detail = detail(host, repo, number).await?;
+        if detail.summary.head_sha != head && attempt < 14 {
+            // The host has not taken the pushed head yet; still different after
+            // the wait, the head guard in the merge refuses.
+            last = Some(anyhow::anyhow!(
+                "PR #{number} is not at the restacked head yet"
+            ));
+            continue;
+        }
         let input = MergeInput {
             method,
             expected_head: head,
@@ -491,9 +552,9 @@ pub async fn merge_stack(
         }
         merge_layer(host, repo, layer.number, input.method, &layer.head_sha)
             .await
-            .with_context(|| {
-                format!(
-                    "Stopped at PR #{} after merging {} layers",
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "Stopped at PR #{} after merging {} layers: {error:#}",
                     layer.number,
                     merged.len()
                 )
@@ -513,7 +574,9 @@ pub async fn merge_stack(
                 &pending,
                 Some(&layer.head_sha),
             )
-            .with_context(|| format!("Merged {merged:?}; restacking the layers above stopped"))?;
+            .map_err(|error| {
+                anyhow::anyhow!("Merged {merged:?}; restacking the layers above stopped: {error:#}")
+            })?;
             for (layer, (_, head)) in pending.iter_mut().zip(heads) {
                 layer.head_sha = head;
             }
