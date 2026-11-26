@@ -521,7 +521,7 @@ async fn migrates_node_0030_history_and_policies_idempotently() {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
-            assert_eq!(runtime_migration_count, 25);
+            assert_eq!(runtime_migration_count, 27);
             assert_eq!(legacy_metadata_count, 2);
             assert_eq!(
                 migrated_metadata.0,
@@ -546,7 +546,7 @@ async fn migrates_node_0030_history_and_policies_idempotently() {
                 |row| row.get(0),
             )?;
             assert_eq!(turns, 3);
-            assert_eq!(migrations, 25);
+            assert_eq!(migrations, 27);
             Ok(())
         })
         .unwrap();
@@ -1116,7 +1116,7 @@ fn accounting_migration_preserves_old_unknown_provenance_and_reapplies_safely() 
     drop(Database::open(&path).unwrap());
     let conn = Connection::open(&path).unwrap();
     conn.execute_batch("DELETE FROM __remote_codex_runtime_migrations WHERE version>=21;
-        ALTER TABLE thread_turns DROP COLUMN origin;
+        DROP VIEW IF EXISTS all_turn_accounting; ALTER TABLE thread_turns DROP COLUMN origin;
         ALTER TABLE thread_turns DROP COLUMN history_copy_of;
         INSERT INTO thread_turns(id,thread_id,status,ordinal,model) VALUES ('old-turn','old-thread','completed',1,'legacy-model');").unwrap();
     drop(conn);

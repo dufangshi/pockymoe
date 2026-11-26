@@ -32,9 +32,29 @@ impl ModelNames {
                 BEGIN INSERT OR IGNORE INTO pricing_dirty_turns VALUES(new.id); END;
                 CREATE TEMP TRIGGER pricing_turn_delete AFTER DELETE ON main.thread_turns BEGIN INSERT OR IGNORE INTO pricing_dirty_turns VALUES(old.id); END;
                 INSERT INTO pricing_dirty_turns SELECT id FROM thread_turns;")?;
+            if c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='all_turn_accounting')",
+                [],
+                |r| r.get::<_, bool>(0),
+            )? {
+                c.execute(
+                    "INSERT OR IGNORE INTO pricing_dirty_turns SELECT id FROM all_turn_accounting",
+                    [],
+                )?;
+            }
             self.initialized = true;
         }
-        let mut stmt = c.prepare_cached("SELECT d.id,t.thread_id,t.model,t.pricing_model_key,t.token_usage_json FROM pricing_dirty_turns d LEFT JOIN thread_turns t ON t.id=d.id")?;
+        let archived: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='all_turn_accounting')",
+            [],
+            |r| r.get(0),
+        )?;
+        let source = if archived {
+            "all_turn_accounting"
+        } else {
+            "thread_turns"
+        };
+        let mut stmt=c.prepare_cached(&format!("SELECT d.id,t.thread_id,t.model,t.pricing_model_key,t.token_usage_json FROM pricing_dirty_turns d LEFT JOIN {source} t ON t.id=d.id"))?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,

@@ -29,6 +29,7 @@ impl Supervisor {
                 self.emit_released(id, crate::actor::ReleaseReason::Deleted);
             }
         }
+        self.prune_checkpoints(id, true)?;
         let now = now_rfc3339();
         let root = self.db.with(|conn| {
             let tx = conn.unchecked_transaction()?;

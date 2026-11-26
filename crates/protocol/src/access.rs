@@ -213,9 +213,16 @@ pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool
         if pathname == format!("/api/threads/{thread_id}/working-context")
             || pathname
                 .strip_prefix(&format!("/api/threads/{thread_id}/git/"))
-                .is_some_and(|action| matches!(action, "status" | "diff" | "commits"))
+                .is_some_and(|action| matches!(action, "status" | "diff" | "commits" | "branches"))
         {
             return method == "GET" && linked_files_allowed(access);
+        }
+        if pathname.starts_with(&format!("/api/threads/{thread_id}/git/"))
+            || pathname == format!("/api/threads/{thread_id}/checkpoints")
+            || pathname.starts_with(&format!("/api/threads/{thread_id}/checkpoints/"))
+            || pathname == format!("/api/threads/{thread_id}/rewind")
+        {
+            return false;
         }
         if pathname
             .strip_prefix(&format!("/api/threads/{thread_id}/linked-files/"))
@@ -1046,6 +1053,54 @@ mod tests {
             "GET",
             "/api/threads/root/git/arbitrary"
         ));
+    }
+    #[test]
+    fn git_writes_checkpoints_and_rewind_are_owner_only() {
+        for action in [
+            "stage",
+            "unstage",
+            "discard",
+            "commit",
+            "commitMessage",
+            "branchCreate",
+            "checkout",
+            "fetch",
+            "pull",
+            "push",
+            "stashPush",
+            "stashPop",
+            "textSettings",
+        ] {
+            let path = format!("/api/threads/root/git/{action}");
+            assert!(access_allows(&owner_access(), "POST", &path));
+            for scope in ["device", "thread", "workspace"] {
+                assert!(!access_allows(
+                    &shared(scope, "control", "write"),
+                    "POST",
+                    &path
+                ));
+            }
+        }
+        for path in [
+            "/api/threads/root/checkpoints",
+            "/api/threads/root/checkpoints/preview",
+            "/api/threads/root/checkpoints/restore",
+            "/api/threads/root/checkpoints/undo",
+            "/api/threads/root/rewind",
+            "/api/threads/root/git/textSettings",
+            "/api/threads/root/git/stashes",
+        ] {
+            for method in ["GET", "POST"] {
+                assert!(access_allows(&owner_access(), method, path));
+                for scope in ["device", "thread", "workspace"] {
+                    assert!(!access_allows(
+                        &shared(scope, "control", "write"),
+                        method,
+                        path
+                    ));
+                }
+            }
+        }
     }
     #[test]
     fn grantee_registration_exception_is_encrypted_post_to_one_exact_endpoint() {

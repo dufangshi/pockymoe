@@ -16,6 +16,8 @@ pub(crate) struct GitQuery {
     path: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
+    turn_id: Option<String>,
+    ignore_whitespace: Option<String>,
 }
 pub(crate) async fn context(
     State(state): State<Arc<Supervisor>>,
@@ -34,12 +36,23 @@ pub(crate) async fn read_git(
 ) -> Result<Json<Value>, ApiErr> {
     pockymoe_runtime::execution::spawn_blocking(move || match action.as_str() {
         "status" => state.worktree_git_status(&id, query.working_copy_id.as_deref()),
-        "diff" => state.worktree_git_diff(
+        "stashes" => state.worktree_git_stashes(&id, query.working_copy_id.as_deref()),
+        "textSettings" => state.text_generation_settings(),
+        "branches" => state.worktree_git_branches(&id, query.working_copy_id.as_deref()),
+        "diff" if query.area.as_deref() == Some("turn") => state.checkpoint_diff(
+            &id,
+            query.working_copy_id.as_deref(),
+            query.turn_id.as_deref().unwrap_or(""),
+            query.path.as_deref(),
+            query.ignore_whitespace.as_deref() == Some("1"),
+        ),
+        "diff" => state.worktree_git_diff_options(
             &id,
             query.working_copy_id.as_deref(),
             query.area.as_deref().unwrap_or("worktree"),
             query.base.as_deref(),
             query.path.as_deref(),
+            query.ignore_whitespace.as_deref() == Some("1"),
         ),
         "commits" => state.worktree_git_commits(
             &id,
@@ -54,8 +67,88 @@ pub(crate) async fn read_git(
     .map(Json)
     .map_err(map_err)
 }
+pub(crate) async fn rewind(
+    State(state): State<Arc<Supervisor>>,
+    Path(id): Path<String>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiErr> {
+    state
+        .rewind_thread(&id, &input)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+pub(crate) async fn write_git(
+    State(state): State<Arc<Supervisor>>,
+    Path((id, action)): Path<(String, String)>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiErr> {
+    if action == "commitMessage" {
+        return state
+            .generate_commit_message(&id, &input)
+            .await
+            .map(Json)
+            .map_err(map_err);
+    }
+    if action == "textSettings" {
+        return state
+            .set_text_generation_settings(&input)
+            .map(Json)
+            .map_err(map_err);
+    }
+    pockymoe_runtime::execution::spawn_blocking(move || {
+        state.worktree_git_write(&id, &action, &input)
+    })
+    .await
+    .map_err(|e| map_err(e.into()))?
+    .map(Json)
+    .map_err(map_err)
+}
+pub(crate) async fn checkpoints(
+    State(state): State<Arc<Supervisor>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiErr> {
+    pockymoe_runtime::execution::spawn_blocking(move || state.checkpoints_list(&id))
+        .await
+        .map_err(|e| map_err(e.into()))?
+        .map(Json)
+        .map_err(map_err)
+}
+pub(crate) async fn checkpoint_action(
+    State(state): State<Arc<Supervisor>>,
+    Path((id, action)): Path<(String, String)>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiErr> {
+    let result = match action.as_str() {
+        "preview" | "restore" => {
+            state
+                .checkpoint_restore(&id, &input, action == "preview")
+                .await
+        }
+        "undo" => {
+            state
+                .checkpoint_undo(&id, input["undoId"].as_str().unwrap_or(""))
+                .await
+        }
+        _ => Err(anyhow::anyhow!("unknown checkpoint action")),
+    };
+    result.map(Json).map_err(map_err)
+}
 pub(crate) async fn cli(state: &Arc<Supervisor>, input: Value) -> anyhow::Result<Value> {
     let thread = input["threadId"].as_str().unwrap_or("").to_owned();
+    if input["operation"] == "threadRewind" {
+        return state.rewind_thread(&thread, &input).await;
+    }
+    if input["operation"] == "checkpointRestore" {
+        return state
+            .checkpoint_restore(&thread, &input, input["preview"] == true)
+            .await;
+    }
+    if input["operation"] == "checkpointUndo" {
+        return state
+            .checkpoint_undo(&thread, input["undoId"].as_str().unwrap_or(""))
+            .await;
+    }
     if input["operation"] == "worktreeUse" {
         return state
             .worktree_use(&thread, input["workingCopyId"].as_str().unwrap_or(""))
@@ -66,6 +159,8 @@ pub(crate) async fn cli(state: &Arc<Supervisor>, input: Value) -> anyhow::Result
         let id=input["workingCopyId"].as_str().unwrap_or("");
         let cwd=input["cwd"].as_str().unwrap_or("");
         Ok(match input["operation"].as_str().unwrap_or("") {
+            "checkpointList"=>state.checkpoints_list(&thread)?,
+            "checkpointDiff"=>state.checkpoint_diff(&thread,input["workingCopyId"].as_str(),input["turnId"].as_str().unwrap_or(""),None,false)?,
             "worktreeCreate"=>state.worktree_create(&thread,&input)?,
             "worktreeList"=>state.worktree_context(&thread)?,
             "worktreeCurrent"=>state.worktree_current(&thread,cwd)?,

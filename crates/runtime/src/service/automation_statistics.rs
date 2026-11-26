@@ -17,7 +17,10 @@ impl Supervisor {
     pub(super) fn automation_statistics(&self, thread: &str) -> Result<HashMap<String, Value>> {
         // All metadata, including persisted running usage, with the same per-turn
         // pricing catalog as native watches and the timeline. Never reprice a sum.
-        let turns = self.load_turns_meta(thread)?;
+        let mut turns = self.load_turns_meta(thread)?;
+        let catalog = self.model_pricing();
+        let archived=self.db.with(|c|{let mut query=c.prepare("SELECT id,status,NULL,model,NULL,token_usage_json,started_at,completed_at,pricing_model_key,pricing_tier_key,origin FROM rewound_turn_accounting WHERE thread_id=?1")?;let rows=query.query_map([thread],|r|turn_meta_row(r,&catalog))?.collect::<rusqlite::Result<Vec<_>>>()?;Ok(rows)})?;
+        turns.extend(archived);
         let mut stats = self.db.with(|c| {
             let mut stats = HashMap::<String, Statistics>::new();
             let mut q = c.prepare("SELECT id FROM automations WHERE thread_id=?1")?;

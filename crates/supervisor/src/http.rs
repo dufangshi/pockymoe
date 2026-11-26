@@ -429,9 +429,18 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
             "/api/threads/{id}/working-context",
             get(crate::worktrees::context),
         )
+        .route("/api/threads/{id}/rewind", post(crate::worktrees::rewind))
+        .route(
+            "/api/threads/{id}/checkpoints",
+            get(crate::worktrees::checkpoints),
+        )
+        .route(
+            "/api/threads/{id}/checkpoints/{action}",
+            post(crate::worktrees::checkpoint_action),
+        )
         .route(
             "/api/threads/{id}/git/{action}",
-            get(crate::worktrees::read_git),
+            get(crate::worktrees::read_git).post(crate::worktrees::write_git),
         )
         .route("/api/threads/{id}/summary", get(thread_summary))
         .route("/api/search", get(device_search))

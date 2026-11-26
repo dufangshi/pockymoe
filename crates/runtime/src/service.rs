@@ -10,9 +10,11 @@ mod harness_release;
 mod inbox_reminder;
 pub(crate) mod peer_work;
 mod reliability;
+mod rewind;
 mod search;
 mod session_resume;
 mod storage;
+pub mod text_generation;
 pub(crate) mod thread_summary;
 mod turn_selection;
 mod update;
@@ -519,6 +521,9 @@ impl Supervisor {
         }
         if let Err(error) = supervisor.reconcile_stale_turns(None, false) {
             tracing::warn!(%error, "failed to reconcile stale turns at startup");
+        }
+        if let Err(error) = supervisor.capture_recovery_checkpoints() {
+            tracing::warn!(%error,"checkpoint recovery unavailable");
         }
         if let Err(error) = supervisor.recover_automation_commands() {
             tracing::warn!(%error, "automation command recovery failed");
@@ -3275,6 +3280,8 @@ impl Supervisor {
         };
         let context_delivered = self.harness_context_delivered(&thread.id, &session_id);
         let bus = self.bus.for_turn(&thread.id, &turn_id);
+        self.capture_turn_checkpoints_async(&thread.id, &turn_id, "start")
+            .await;
         let result = runtime
             .start_turn(
                 StartTurnInput {
@@ -3296,6 +3303,8 @@ impl Supervisor {
                 bus.clone(),
                 cancel.clone(),
             )
+            .await;
+        self.capture_turn_checkpoints_async(&thread.id, &turn_id, "end")
             .await;
         bus.close_turn();
         let mut live = self.live.lock().await;
@@ -3849,6 +3858,7 @@ impl Supervisor {
         Ok(())
     }
     pub(crate) fn delete_thread_record(&self, id: &str) -> Result<()> {
+        self.prune_checkpoints(id, true)?;
         self.db.with(|conn| {
             conn.execute(
                 "DELETE FROM kv WHERE substr(key,1,length(?1))=?1",
