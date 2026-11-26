@@ -19,6 +19,18 @@
   font-size: 9px;
   line-height: 2.6;
 }
+/* What the agent said after a folded wake is an agent message too: the ● gutter. */
+:theme .thread-ui-shell .thread-peer-wake-reply { position: relative; padding-left: var(--term-gutter); }
+:theme .thread-ui-shell .thread-peer-wake-reply::before {
+  content: '●';
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--theme-fg-muted);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 2.6;
+}
 :theme .thread-ui-shell .thread-graph-message-stack.is-user { max-width: calc(100% - var(--term-gutter)); width: 100%; align-items: flex-start; }
 :theme .thread-ui-shell .thread-graph-message-stack.is-assistant { flex: 1; min-width: 0; }
 :theme .thread-ui-shell.thread-ui-shell .thread-graph-message-bubble.is-user {
@@ -40,8 +52,9 @@
 }
 :theme .thread-ui-shell .thread-graph-message-time-row { display: none; }
 /* The prompt spans its row, so its hover time and copy sit at the row's right end
-   (never over the ❯), fading into the page. */
-:theme .thread-ui-shell.thread-ui-shell .thread-graph-message-bubble.is-user { align-self: stretch; width: auto; --message-surface: var(--theme-bg); }
+   (never over the ❯), fading into the page. Its text starts after the ❯: the
+   shared bubble packs a prompt (and its failure mark) to the right. */
+:theme .thread-ui-shell.thread-ui-shell .thread-graph-message-bubble.is-user { align-self: stretch; width: auto; justify-content: flex-start; --message-surface: var(--theme-bg); }
 
 /* Inline code and code blocks: square, one hairline. */
 :theme .thread-ui-shell .thread-graph-markdown :not(pre) > code {

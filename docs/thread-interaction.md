@@ -475,13 +475,17 @@ label and bell icon; the row leads with its chevron. The collapsed row names
 the triggering delegates; expanding it lists each source as one row (name, a
 localized execution state and the first line of its closing report) that opens
 to the whole report, set at the size of a reply in every theme, then **Work after
-wake** above the receiving agent's execution history. What the agent answered
-after the wake stands outside the wake's fold, under its row: its first four lines
-with a fade, opening in place, so a folded wake never hides the answer. The last
-wake's answer is the task's closing answer below the wakes and shows once. What
-the reader sent into a wake turn while it worked (steers, added prompts) stands
-there too, in time order with that answer and drawn like a turn's added prompt;
-a folded task lists them under its work line. A steer just delivered into a
+wake** above the receiving agent's execution history. While the wake is folded,
+what the agent answered after it stands under its row: its first four lines with
+a fade, opening in place, so a folded wake never hides the answer. What the
+reader sent into a wake turn while it worked (steers, added prompts) stands there
+too, in time order with that answer and drawn like a turn's added prompt (marked
+with the time it was added). Opened, the wake shows both inside its work where
+they happened, like prompts added to any turn: a steer reads before the work it
+asked for, and nothing below the row repeats them. The last wake's answer of a
+finished task is the task's closing answer below the wakes and shows once; while
+the task works, it stays in its wake. A folded task lists the steers under its
+work line. A steer just delivered into a
 running wake turn shows there at once: the row adds the reader's messages the
 summary already has to the detail loaded for that turn, which does not hold them
 yet. Only the wake prompt the
