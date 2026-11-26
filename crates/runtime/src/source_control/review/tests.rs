@@ -1272,3 +1272,43 @@ fn rebase_stack_replays_layers_in_a_temporary_clone_and_leases_each_push() {
     assert_eq!(run(&local, &["rev-parse", "HEAD"]), before);
     assert_eq!(run(&local, &["status", "--porcelain"]), "");
 }
+
+#[tokio::test]
+async fn a_stacked_github_pr_joins_the_stack_below_or_starts_one() {
+    let repo = repo(HostKind::Github);
+    let host = FixtureHost::new(HostKind::Github).answer(
+        "GET",
+        "repos/o/r/stacks?pull_request=5",
+        json!([{"number":9}]),
+    );
+    stack::join_native(&host, &repo, 5, 6).await.unwrap();
+    let posted = host
+        .requests()
+        .into_iter()
+        .find(|(m, _, _)| m == "POST")
+        .unwrap();
+    assert_eq!(
+        (posted.1.as_str(), posted.2.unwrap()),
+        ("repos/o/r/stacks/9/add", json!({"pull_requests":[6]}))
+    );
+    let host = FixtureHost::new(HostKind::Github).answer(
+        "GET",
+        "repos/o/r/stacks?pull_request=5",
+        json!([]),
+    );
+    stack::join_native(&host, &repo, 5, 6).await.unwrap();
+    let posted = host
+        .requests()
+        .into_iter()
+        .find(|(m, _, _)| m == "POST")
+        .unwrap();
+    assert_eq!(
+        (posted.1.as_str(), posted.2.unwrap()),
+        ("repos/o/r/stacks", json!({"pull_requests":[5, 6]}))
+    );
+    assert!(
+        stack::join_native(&host, &repo_kind(HostKind::Gitlab), 5, 6)
+            .await
+            .is_err()
+    );
+}
