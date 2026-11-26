@@ -85,6 +85,13 @@ pub(crate) async fn command(
     Extension(caller): Extension<crate::auth::CliCaller>,
     Json(input): Json<Value>,
 ) -> Result<Json<Value>, ApiErr> {
+    if input["operation"] == "outsideMcp" {
+        return Ok(Json(
+            crate::mcp::local(&state, &input, caller.0.as_deref())
+                .await
+                .map_err(map_err)?,
+        ));
+    }
     let input = crate::treer::messages::prepare_send(&state, caller.0.as_deref(), input)
         .map_err(map_err)?;
     if let Some(reply) = crate::peer_send::intercept(&state, caller.0.as_deref(), &input)
@@ -102,6 +109,9 @@ pub(crate) async fn run(
     input: Value,
     caller: Option<String>,
 ) -> anyhow::Result<Value> {
+    if input["operation"] == "outsideMcp" {
+        return crate::mcp::local(state, &input, caller.as_deref()).await;
+    }
     let selected = caller.as_deref().or_else(|| input["threadId"].as_str());
     let _execution = match selected {
         Some(id) => Some(state.try_hold_execution(id)?),

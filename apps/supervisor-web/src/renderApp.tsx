@@ -7,6 +7,7 @@ import 'streamdown/styles.css';
 // Before `./app`: fixes the theme pack's place in the cascade (see the module).
 import './lib/themePacks/anchor';
 
+import { OutsideAgentConsent } from './components/OutsideAgents';
 import { App } from './app';
 import { SharingApprovalDialog } from './components/SharingApprovalDialog';
 import './index.css';
@@ -25,7 +26,7 @@ initializeI18n();
 void initializeThemePacks({ timeoutMs: 1500 }).finally(() => {
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
-      <I18nProvider><RenderErrorBoundary className="min-h-screen"><App /></RenderErrorBoundary><SharingApprovalDialog /></I18nProvider>
+      <I18nProvider><RenderErrorBoundary className="min-h-screen"><App /></RenderErrorBoundary><SharingApprovalDialog /><OutsideAgentConsent /></I18nProvider>
     </React.StrictMode>
   );
 });

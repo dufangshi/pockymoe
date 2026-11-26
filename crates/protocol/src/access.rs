@@ -162,6 +162,10 @@ fn workspace_threads_allowed(access: &EffectiveAccess, method: &str) -> bool {
 }
 
 pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool {
+    if access.kind == "mcp" {
+        return path.split('?').next() == Some("/mcp")
+            && matches!(method, "GET" | "POST" | "DELETE");
+    }
     if access.kind == "owner" {
         return true;
     }
