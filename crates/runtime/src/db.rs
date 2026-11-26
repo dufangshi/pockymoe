@@ -317,6 +317,22 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
         name: "turn_checkpoints",
         apply: crate::worktrees::checkpoints::migrate,
     },
+    Migration {
+        version: 27,
+        name: "harness_handoff",
+        apply: |conn| {
+            for column in ["provider", "agent_id"] {
+                if !table_columns(conn, "thread_turns")?.contains(column) {
+                    conn.execute(
+                        &format!("ALTER TABLE thread_turns ADD COLUMN {column} TEXT"),
+                        [],
+                    )?;
+                }
+            }
+            conn.execute_batch(include_str!("service/handoff.sql"))?;
+            Ok(())
+        },
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them

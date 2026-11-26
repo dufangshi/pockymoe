@@ -174,6 +174,14 @@ pub fn access_allows(access: &EffectiveAccess, method: &str, path: &str) -> bool
     if terminal_route(pathname) {
         return false;
     }
+    // Portable history and harness credentials stay owner-only, including previews.
+    if pathname.ends_with("/harness/switch")
+        || pathname.ends_with("/harness/preview")
+        || pathname.ends_with("/harness/fork")
+        || pathname == "/api/harness-handoff/settings"
+    {
+        return false;
+    }
     if shared_runtime_metadata_allowed(method, pathname) {
         return true;
     }
@@ -704,6 +712,35 @@ mod tests {
             thread_id: None,
             workspace_id: Some("ws".into()),
             ..shared("workspace", thread_access, workspace_access)
+        }
+    }
+
+    #[test]
+    fn harness_handoff_is_owner_only() {
+        for method in ["GET", "PUT"] {
+            assert!(access_allows(
+                &owner_access(),
+                method,
+                "/api/harness-handoff/settings"
+            ));
+            for scope in ["thread", "workspace", "device"] {
+                assert!(!access_allows(
+                    &shared(scope, "control", "write"),
+                    method,
+                    "/api/harness-handoff/settings"
+                ));
+            }
+        }
+        for suffix in ["switch", "preview", "fork"] {
+            let path = format!("/api/threads/root/harness/{suffix}");
+            assert!(access_allows(&owner_access(), "POST", &path));
+            for scope in ["thread", "workspace", "device"] {
+                assert!(!access_allows(
+                    &shared(scope, "control", "write"),
+                    "POST",
+                    &path
+                ));
+            }
         }
     }
 

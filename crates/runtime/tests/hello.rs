@@ -557,3 +557,144 @@ async fn acknowledged_input_survives_restart_before_dispatch() {
         .to_string()
         .contains("already used"));
 }
+
+#[tokio::test]
+async fn harness_handoff_round_trip_preserves_sessions_and_only_sends_delta() {
+    use pockymoe_runtime::service::HarnessSwitchInput;
+    let dir = tempdir().unwrap();
+    let mut config = test_config(dir.path());
+    config.enabled_providers = vec![Provider::Codex, Provider::Claude];
+    let db = Database::open(&config.database_url).unwrap();
+    let state = Arc::new(Supervisor::new(
+        config,
+        db,
+        vec![
+            Arc::new(
+                FakeRuntime::new(Provider::Codex)
+                    .with_slow_turn(std::time::Duration::from_millis(1)),
+            ),
+            Arc::new(
+                FakeRuntime::new(Provider::Claude)
+                    .with_slow_turn(std::time::Duration::from_millis(1)),
+            ),
+        ],
+    ));
+    let path = dir.path().join("project");
+    std::fs::create_dir(&path).unwrap();
+    let ws = state
+        .create_workspace(CreateWorkspaceInput {
+            abs_path: Some(path.to_string_lossy().into()),
+            git_url: None,
+            label: None,
+        })
+        .unwrap();
+    let thread = state
+        .create_thread(CreateThreadInput {
+            workspace_id: ws.id,
+            title: Some("handoff".into()),
+            provider: Some(Provider::Codex),
+            agent_id: Some("codex".into()),
+            model: "fake".into(),
+            reasoning_effort: None,
+            approval_mode: "guarded".into(),
+            parent_thread_id: None,
+        })
+        .await
+        .unwrap();
+    async fn send(state: &Arc<Supervisor>, id: &str, prompt: &str) {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            state.prompt(id, prompt_input(prompt)),
+        )
+        .await
+        .expect("prompt settled")
+        .unwrap();
+    }
+    state
+        .db
+        .set_kv(
+            &format!("cli:contract:{}", thread.id),
+            "delegate-contract-marker",
+        )
+        .unwrap();
+    state
+        .db
+        .set_kv(&format!("cli:role:{}", thread.id), "role-note-marker")
+        .unwrap();
+    send(&state, &thread.id, "first codex request emerald").await;
+    let codex_session = state.get_thread(&thread.id).unwrap().provider_session_id;
+    let target = |provider, agent: &str| HarnessSwitchInput {
+        provider,
+        agent_id: agent.into(),
+        model: Some("fake".into()),
+        reasoning_effort: None,
+    };
+    let preview = state
+        .preview_harness_switch(&thread.id, &target(Provider::Claude, "claude"))
+        .unwrap();
+    assert!(preview.text.contains("emerald"));
+    assert!(preview.text.contains("delegate-contract-marker"));
+    assert!(preview.text.contains("role-note-marker"));
+    assert!(state
+        .preview_harness_switch_prompt(
+            &thread.id,
+            &target(Provider::Claude, "claude"),
+            &"x".repeat(96_001)
+        )
+        .is_err());
+    assert!(state.set_handoff_token_cap(1023).is_err());
+    state.set_handoff_token_cap(1024).unwrap();
+    assert!(
+        state
+            .preview_harness_switch(&thread.id, &target(Provider::Claude, "claude"))
+            .unwrap()
+            .bytes
+            <= 1024
+    );
+    state.set_handoff_token_cap(16000).unwrap();
+    assert_eq!(preview.turns, 1);
+    state
+        .switch_thread_harness(&thread.id, target(Provider::Claude, "claude"))
+        .await
+        .unwrap();
+    send(&state, &thread.id, "claude delta sapphire").await;
+    let preview = state
+        .preview_harness_switch(&thread.id, &target(Provider::Codex, "codex"))
+        .unwrap();
+    assert!(preview.resumes_session);
+    assert_eq!(preview.turns, 1);
+    assert!(!preview.text.contains("first codex request emerald"));
+    assert!(preview.text.contains("sapphire"));
+    state
+        .switch_thread_harness(&thread.id, target(Provider::Codex, "codex"))
+        .await
+        .unwrap();
+    assert_eq!(
+        state.get_thread(&thread.id).unwrap().provider_session_id,
+        codex_session
+    );
+    send(&state, &thread.id, "return prompt remains intact").await;
+    let prompts = pockymoe_runtime::fake::model_prompts(&thread.id);
+    assert!(prompts
+        .last()
+        .unwrap()
+        .ends_with("return prompt remains intact"));
+    assert!(prompts.last().unwrap().contains("sapphire"));
+    let detail = state.get_thread_detail(&thread.id, None).await.unwrap();
+    assert_eq!(detail.turns[0].agent_id.as_deref(), Some("codex"));
+    assert_eq!(detail.turns[1].agent_id.as_deref(), Some("claude"));
+    let fork = state
+        .fork_thread_to_harness(
+            &thread.id,
+            Some(&detail.turns[0].id),
+            target(Provider::Claude, "claude"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fork.agent_id.as_deref(), Some("claude"));
+    assert!(state
+        .preview_harness_switch(&fork.id, &target(Provider::Claude, "claude"))
+        .unwrap()
+        .text
+        .contains("emerald"));
+}

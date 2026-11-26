@@ -1014,3 +1014,5 @@ the shared confirmation; native touch scrolling remains on the viewport. Paste i
 the key bar reads the clipboard; where the browser does not allow that (plain
 http, permission denied) it opens a field
 to paste into and edit before sending.
+
+See [Switching harnesses](harness-switching.md) for changing an existing thread’s agent with a preview and portable history.

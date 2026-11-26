@@ -160,6 +160,23 @@ async fn run_as(
     let all = input["all"] == true;
     let wait = clamp_wait(input["timeoutSeconds"].as_u64());
     match input.get("operation").and_then(Value::as_str).unwrap_or("") {
+        "harnessSwitch" | "harnessPreview" => {
+            anyhow::ensure!(
+                caller.is_none() && !peer,
+                "forbidden: harness switching requires the owner's machine CLI credential"
+            );
+            reach(id)?;
+            let target = serde_json::from_value(input["target"].clone())?;
+            if input["operation"] == "harnessPreview" {
+                Ok(serde_json::to_value(
+                    state.preview_harness_switch(id, &target)?,
+                )?)
+            } else {
+                Ok(serde_json::to_value(
+                    state.switch_thread_harness(id, target).await?,
+                )?)
+            }
+        }
         "environmentConnections"
         | "environmentRequest"
         | "environmentRequests"

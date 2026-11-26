@@ -50,7 +50,7 @@ fn level(name: &str) -> Option<u8> {
         | "pockymoe_git_turn_diff"
         | "pockymoe_events" => 0,
         "pockymoe_thread_launch" | "pockymoe_thread_send" | "pockymoe_thread_stop" => 1,
-        "pockymoe_thread_answer" => 2,
+        "pockymoe_thread_answer" | "pockymoe_thread_switch" => 2,
         _ => return None,
     })
 }
@@ -97,6 +97,12 @@ pub fn catalog() -> Value {
             vec!["threadId", "text"],
         ),
         (
+            "thread_switch",
+            "Switch an idle thread to another harness, preserving its history (full access)",
+            json!({"threadId":s(),"provider":{"type":"string","enum":["acp","codex","claude","opencode"]},"agentId":s(),"model":s(),"reasoningEffort":s(),"preview":{"type":"boolean"}}),
+            vec!["threadId", "agentId"],
+        ),
+        (
             "thread_stop",
             "Stop a thread",
             json!({"threadId":s(),"reason":s()}),
@@ -133,7 +139,7 @@ pub fn catalog() -> Value {
             vec![],
         ),
     ];
-    json!({"tools":defs.into_iter().map(|(n,d,p,r)| {let name=format!("pockymoe_{n}"); let l=level(&name).unwrap(); json!({"name":name,"description":d,"inputSchema":{"type":"object","properties":p,"required":r,"additionalProperties":false},"outputSchema":{"type":"object","additionalProperties":true},"annotations":{"readOnlyHint":l==0,"destructiveHint":l>0,"openWorldHint":false}})}).collect::<Vec<_>>()})
+    json!({"tools":defs.into_iter().map(|(n,d,p,r)| {let name=format!("pockymoe_{n}"); let l=level(&name).unwrap(); json!({"name":name,"description":d,"inputSchema":{"type":"object","properties":p,"required":r,"additionalProperties":false},"outputSchema":{"type":"object","additionalProperties":true},"annotations":{"readOnlyHint":l==0,"destructiveHint":l>0,"openWorldHint":l>0}})}).collect::<Vec<_>>()})
 }
 pub async fn call(
     state: &Arc<Supervisor>,
@@ -287,6 +293,16 @@ pub async fn call(
             let d = input["delivery"].as_str().unwrap_or("inbox");
             ensure!(matches!(d, "inbox" | "queue" | "steer"), "invalid delivery");
             Box::pin(crate::interaction::run(state, input, None)).await
+        }
+        "pockymoe_thread_switch" => {
+            let target: pockymoe_runtime::service::HarnessSwitchInput = serde_json::from_value(
+                json!({"provider":args["provider"].as_str().unwrap_or("acp"),"agentId":args["agentId"],"model":args["model"],"reasoningEffort":args["reasoningEffort"]}),
+            )?;
+            if args["preview"] == true {
+                Ok(json!({"preview":state.preview_harness_switch(id()?,&target)?}))
+            } else {
+                Ok(json!({"thread":state.switch_thread_harness(id()?,target).await?}))
+            }
         }
         "pockymoe_thread_stop" => Ok(json!({"thread":state.interrupt(id()?).await?})),
         "pockymoe_thread_answer" => Ok(

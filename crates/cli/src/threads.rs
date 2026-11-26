@@ -125,6 +125,21 @@ pub enum ThreadCommand {
         #[arg(long)]
         drop_queued: bool,
     },
+    /// Switch an idle thread's harness, preserving portable conversation history.
+    Switch {
+        id: String,
+        #[arg(long)]
+        agent: String,
+        #[arg(long, default_value = "acp")]
+        provider: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        reasoning_effort: Option<String>,
+        /// Show the exact history prefix without changing the thread.
+        #[arg(long)]
+        preview: bool,
+    },
     /// Current Pockymoe thread identity and status.
     #[command(name = "self")]
     SelfInfo,
@@ -743,6 +758,10 @@ impl Client {
     pub async fn thread(&self, command: ThreadCommand) -> Result<Value> {
         match command {
             ThreadCommand::Rewind{id,turn_id,restore_files,drop_queued}=>self.request(json!({"operation":"threadRewind","threadId":self.id(&id).await?,"turnId":turn_id,"restoreFiles":restore_files,"dropQueued":drop_queued,"fromThreadId":self.from})).await,
+            ThreadCommand::Switch { id,agent,provider,model,reasoning_effort,preview } => {
+                let id=self.id(&id).await?;
+                self.request(json!({"operation":if preview {"harnessPreview"} else {"harnessSwitch"},"threadId":id,"target":{"provider":provider,"agentId":agent,"model":model,"reasoningEffort":reasoning_effort}})).await
+            },
             ThreadCommand::SelfInfo => self.request(json!({"operation":"status","threadId":self.from.as_ref().context("Current thread is unknown; use --from ID")?})).await,
             ThreadCommand::List { device, workspace, limit, all, group } => {
                 let mut input = json!({"operation":"list","workspaceId":workspace,"limit":limit,"includeAgentThreads":all,"groupId":group});

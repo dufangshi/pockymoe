@@ -60,7 +60,7 @@ pub async fn protected(State(s): State<Arc<Supervisor>>) -> Json<Value> {
     )
 }
 pub async fn register(State(s): State<Arc<Supervisor>>, Json(v): Json<Value>) -> Response {
-    response(transaction(&s, |db| {
+    let mut r = response(transaction(&s, |db| {
         rate(db, &format!("register:{}", now() / 60), 30)?;
         let redirects = v["redirect_uris"]
             .as_array()
@@ -85,7 +85,11 @@ pub async fn register(State(s): State<Arc<Supervisor>>, Json(v): Json<Value>) ->
         let client = json!({"client_id":id,"client_name":name,"redirect_uris":redirects,"token_endpoint_auth_method":"none","grant_types":["authorization_code","refresh_token"],"response_types":["code"]});
         put(db, "client", &id, &client, 30 * 86400)?;
         Ok(client)
-    }))
+    }));
+    if r.status() == StatusCode::OK {
+        *r.status_mut() = StatusCode::CREATED;
+    }
+    r
 }
 pub async fn authorize(
     State(s): State<Arc<Supervisor>>,

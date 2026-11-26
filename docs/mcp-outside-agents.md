@@ -21,7 +21,7 @@ codex mcp add pockymoe -- pockymoe mcp serve
 
 `--access read` permits inspection, `supervised` additionally permits creating,
 sending to and stopping guarded threads, and `full` additionally permits yolo
-threads and answering approvals. The default is supervised. This is a ceiling;
+threads, answering approvals and switching harnesses. The default is supervised. This is a ceiling;
 tool arguments cannot widen it. Git tools only read status and diffs.
 
 `--device DEVICE` uses the existing cross-device CLI trust boundary. Remote
@@ -48,7 +48,8 @@ Access tokens expire after 15 minutes. Refresh tokens rotate on every use and
 expire after 30 days; replaying a used refresh token revokes its grant. Grants
 expire after 30 days. Tokens and authorization codes are stored as hashes in a
 separate `*.mcp.sqlite` database beside the Supervisor journal. Revoke a client
-in **Settings → Outside agents**. MCP tokens never authorize the general HTTP
+in **Settings → Outside agents**. Back up the sidecar to preserve grants;
+omitting it from a restore revokes those grants. MCP tokens never authorize the general HTTP
 API, WebSockets or local CLI bridge.
 
 The server supports MCP 2025-06-18 and 2025-11-25. Streamable HTTP uses JSON POST
@@ -63,7 +64,7 @@ call in that same session; cancelling a wait does not stop the agent.
 `tools/list` describes input/output schemas and read-only/destructive annotations.
 Tools cover device identity, workspaces, harnesses and models, thread search,
 thread/turn reading, bounded waits, launch, inbox/queue/steer, stop, approvals,
-Git status/diff, checkpoint turn diffs and milestone polling. `thread_wait` waits at most ten minutes
+Git status/diff, checkpoint turn diffs, harness switching with handoff preview and milestone polling. `thread_wait` waits at most ten minutes
 and returns status and the latest transcript, including the final reply.
 
 Workspace restrictions apply to both collections and individual targets.

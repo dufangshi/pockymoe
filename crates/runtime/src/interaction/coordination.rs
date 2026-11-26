@@ -330,7 +330,11 @@ impl Supervisor {
                         |r| r.get(0),
                     )
                     .optional()?;
-                if text.is_some() {
+                if let Some(saved) = &text {
+                    tx.execute(
+                        "INSERT OR REPLACE INTO kv(key,value) VALUES(?1,?2)",
+                        params![format!("handoff:contract:{thread}"), saved],
+                    )?;
                     tx.execute("DELETE FROM kv WHERE key=?1", [contract_key(thread)])?;
                     tx.execute(
                         "INSERT OR REPLACE INTO kv(key,value) VALUES(?1,?2)",
