@@ -317,7 +317,7 @@ Explicit full access selects Claude's advertised `bypassPermissions` mode. If
 project settings or the adapter disable that mode, the request fails explicitly
 instead of silently entering another permission mode. Guarded policies retain
 their existing permission mapping.
-The native protocols (Settings → Resources) run in environments with the same
+The native protocols (the default for Codex and Claude threads) run in environments with the same
 projection. Native Claude starts the image's `claude` stream-json CLI through
 the worker, requires Claude Code 2.1.318 and pins the same route as the ACP
 adapter in the process environment and the CLI's `--settings` tier. Native Codex

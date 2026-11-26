@@ -652,6 +652,9 @@ export type AcpAgentAvailabilityDto =
   | 'adapter_missing'
   | 'server_unavailable';
 
+/** How a Codex or Claude thread talks to its harness: the native protocol or the ACP adapter. */
+export type HarnessProtocolDto = 'native' | 'acp';
+
 export interface AcpAgentOptionMetadataDto {
   transport: 'native' | 'adapter' | 'custom';
   availability: AcpAgentAvailabilityDto;
@@ -664,6 +667,11 @@ export interface AcpAgentOptionMetadataDto {
   installCommand: string | null;
   busy: boolean;
   statusMessage: string;
+  /** `native` for the native Codex/Claude entries, `acp` for every ACP agent;
+      absent on runtimes from before native became the default. */
+  harnessProtocol?: HarnessProtocolDto;
+  /** The agent an ACP variant runs (`codex` for `acp:codex`). */
+  baseAgentId?: string;
 }
 
 export interface VersionDto {
@@ -1010,6 +1018,9 @@ export interface ThreadDto {
   workspaceId: string;
   provider: AgentBackendIdDto;
   agentId?: string | null;
+  /** `native` or `acp` for an agent with a native runtime (Codex, Claude), pinned at
+      creation; absent for ACP-only agents and on older runtimes. */
+  harnessProtocol?: HarnessProtocolDto;
   providerSessionId: string | null;
   source: ThreadSourceDto;
   title: string;
@@ -1118,7 +1129,7 @@ export interface MessageSenderDto {
 
 export interface ThreadHistoryItemDto {
   afterTurnId?: string | null;
-  harnessSwitch?: { fromAgentId?: string; fromModel?: string; agentId?: string; model?: string; turns: number };
+  harnessSwitch?: { fromAgentId?: string; fromModel?: string; fromHarnessProtocol?: HarnessProtocolDto; agentId?: string; model?: string; harnessProtocol?: HarnessProtocolDto; turns: number };
   /** Set when storage cleanup removed this command's output or this edit's diff. */
   outputPrunedAt?: string | null;
   outputPrunedBytes?: number | null;

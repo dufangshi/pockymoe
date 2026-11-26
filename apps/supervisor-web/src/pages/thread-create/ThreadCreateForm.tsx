@@ -1,6 +1,6 @@
 import { useHostScope } from '../../lib/hostCapabilities';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
-import { Select, ErrorMark, formatReasoningEffortLabel } from '@pockymoe/thread-ui';
+import { Select, ErrorMark, agentDisplayName, agentKeyBase, formatReasoningEffortLabel } from '@pockymoe/thread-ui';
 import type { FormEvent, ReactNode } from 'react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { seedThreadDraft } from '../useThreadDrafts';
@@ -82,6 +82,15 @@ class RunModeNotApplied extends Error {
 
 /** Creation succeeded. Retain that thread and retry only its environment startup. */
 class EnvironmentNotStarted extends Error {}
+
+/** Agents (and their ACP variants, `acp:codex`) an isolated environment runs. */
+const isolatedAgentIds = ['codex', 'claude'];
+
+/* Runtimes that list `harnessProtocol` run Codex and Claude natively by default: the
+   form offers them first and the ACP agents (ACP Codex and Claude among them) under
+   one "ACP agent" choice. Older runtimes list every agent flat, as before. */
+const ACP_GROUP = 'acp';
+const isNativeEntry = (entry: ModelOptionDto) => entry.acpAgent?.harnessProtocol === 'native';
 
 // The isolation contract supports these ACP agents without probing the Host.
 const isolatedAcpDefaults: ModelOptionDto[] = ['codex', 'claude'].map(id => ({
@@ -184,6 +193,10 @@ export function ThreadCreateForm({
   const [modelsAttempt, setModelsAttempt] = useState(0);
   const [adapterPrompt, setAdapterPrompt] = useState<{ entry: ModelOptionDto; createAfter: boolean } | null>(null);
   const [adapterError, setAdapterError] = useState<string | null>(null);
+  // The device lists Codex and Claude by protocol (native, or ACP under the ACP agent).
+  const [agentsByProtocol, setAgentsByProtocol] = useState(false);
+  // The ACP agent last chosen, restored when the "ACP agent" choice is picked again.
+  const lastAcpAgent = useRef('');
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
@@ -198,10 +211,16 @@ export function ThreadCreateForm({
   const isAcpAgentSelection =
     provider === 'acp' && visibleAgentOptions.some((entry) => entry.selectionKind === 'agent');
   const selectedAgent = visibleAgentOptions.find((entry) => entry.model === agentId) ?? null;
+  const protocolAware = visibleAgentOptions.some((entry) => Boolean(entry.acpAgent?.harnessProtocol));
+  const nativeAgents = protocolAware ? visibleAgentOptions.filter(isNativeEntry) : [];
+  const acpAgents = protocolAware ? visibleAgentOptions.filter((entry) => !isNativeEntry(entry)) : visibleAgentOptions;
+  const agentGroup = selectedAgent && isNativeEntry(selectedAgent) ? selectedAgent.model : ACP_GROUP;
+  // Only the ACP harness to choose from: the agent choice below says everything.
+  const backendChoiceHidden = (protocolAware || agentsByProtocol) && provider === 'acp';
   const backendCanStart = (backend: AgentBackendDto) => isolatedCreation ? backend.enabled : canStart(backend);
   const fieldsLocked = busy || Boolean(created);
   const environmentSupported = provider === 'codex' || provider === 'claude'
-    || (provider === 'acp' && (!agentId || ['codex', 'claude'].includes(agentId) || selectedAgent?.acpAgent?.transport === 'custom'));
+    || (provider === 'acp' && (!agentId || isolatedAgentIds.includes(agentKeyBase(agentId)) || selectedAgent?.acpAgent?.transport === 'custom'));
   const environmentUnavailable = sharedWorkspaceId ? environmentLabel('readOnly')
     : !environmentSupported ? environmentLabel('unsupportedHarness')
     : environmentConnectionId && !environmentConnections.some(connection => connection.id === environmentConnectionId && connection.configured) ? environmentLabel('setupHint') : null;
@@ -243,12 +262,21 @@ export function ThreadCreateForm({
         const record = await fetchWorkspace(sharedId);
         return [[record], await fetchAgentBackends(), sharedId];
       })
-      .then(([workspaceRecords, backendRecords, sharedId]) => {
+      .then(async ([workspaceRecords, backendRecords, sharedId]): Promise<[WorkspaceDto[], AgentBackendDto[], string | null, boolean]> => {
+        // A runtime whose ACP agent list names protocols runs Codex and Claude
+        // natively inside it; its single-agent backends (OpenAI Codex, Claude
+        // Agent, OpenCode) are the same agents, so the form offers the list only.
+        const acp = backendRecords.find((backend) => backend.provider === 'acp');
+        const agents = acp && canStart(acp) ? await fetchAgentBackendAgents('acp').catch(() => []) : [];
+        return [workspaceRecords, backendRecords, sharedId, agents.some((entry) => Boolean(entry.acpAgent?.harnessProtocol))];
+      })
+      .then(([workspaceRecords, backendRecords, sharedId, protocolAgents]) => {
         if (cancelled) {
           return;
         }
         setSharedWorkspaceId(sharedId);
-        setProvider(chooseProvider(backendRecords, defaultBackend));
+        setAgentsByProtocol(protocolAgents);
+        setProvider(protocolAgents ? 'acp' : chooseProvider(backendRecords, defaultBackend));
         setBackends(backendRecords);
         setWorkspaces(workspaceRecords);
         const requested = initialWorkspaceId ?? null;
@@ -347,7 +375,8 @@ export function ThreadCreateForm({
     setRunModes([]);
     setRunMode('');
     setError(null);
-    if (selectedAgent?.acpAgent?.availability === 'adapter_missing') return;
+    // Nothing to ask yet: the adapter (ACP) or the agent's own CLI (native) is missing.
+    if (selectedAgent?.acpAgent?.availability === 'adapter_missing' || selectedAgent?.acpAgent?.availability === 'base_missing') return;
     fetchAgentBackendModelsFor('acp', { agentId, cwd: selectedWorkspace.absPath, signal: controller.signal })
       .then((records) => {
         if (cancelled) return;
@@ -471,6 +500,17 @@ export function ThreadCreateForm({
     }
     onCreated(thread);
   }
+  function chooseAcpAgent(model: string) {
+    lastAcpAgent.current = model;
+    setAgentId(model);
+  }
+  function chooseAgentGroup(group: string) {
+    if (group !== ACP_GROUP) { setAgentId(group); return; }
+    const next = isolatedCreation
+      ? acpAgents.find((entry) => entry.model === lastAcpAgent.current) ?? acpAgents[0]
+      : pickReadyAgent(acpAgents, lastAcpAgent.current);
+    setAgentId(next?.model ?? '');
+  }
   function askAdapterInstall(entry: ModelOptionDto, createAfter: boolean) {
     setAdapterError(null);
     setAdapterPrompt({ entry, createAfter });
@@ -588,7 +628,7 @@ export function ThreadCreateForm({
           className={`${controlClass} min-h-[4.5rem] resize-y py-2 leading-6`}
         />
       </Field>
-      <fieldset>
+      {!backendChoiceHidden ? <fieldset>
         <legend className="host-form-label text-xs font-medium">{translate("workbench.backend")}</legend>
         {compact ? (
           <Select
@@ -667,7 +707,7 @@ export function ThreadCreateForm({
             {translate("workbench.to")} <code className="font-mono">POCKYMOE_ENABLED_AGENT_PROVIDERS</code>.
           </p>
         ) : null}
-      </fieldset>
+      </fieldset> : null}
 
       <Field id={`${formId}-thread-workspace`} label={translate("workbench.workspace")}>
         <Select
@@ -699,12 +739,36 @@ export function ThreadCreateForm({
       {isAcpAgentSelection ? (
         <fieldset>
           <legend className="host-form-label text-xs font-medium">{translate("workbench.agent")}</legend>
-          <div
+          {protocolAware ? (
+            <div className="mt-2 flex min-w-0 items-center gap-2">
+              <div aria-label={translate("workbench.agent")} className="product-segmented !grid min-w-0 flex-1 grid-cols-3 sm:!flex" role="radiogroup">
+                {[...nativeAgents.map((entry) => ({ value: entry.model, label: entry.displayName })), { value: ACP_GROUP, label: translate("workbench.acpAgentGroup") }].map((choice) => (
+                  <label className="product-segment relative min-w-0 flex-1 truncate" key={choice.value}>
+                    <input
+                      checked={agentGroup === choice.value}
+                      className="sr-only"
+                      disabled={fieldsLocked || installingAgentId !== null}
+                      name={`${formId}-agent-group`}
+                      onChange={() => chooseAgentGroup(choice.value)}
+                      type="radio"
+                      value={choice.value}
+                    />
+                    {choice.label}
+                  </label>
+                ))}
+              </div>
+              {/* A native agent needs only its own CLI; without it, say so here. */}
+              {!isolatedCreation && selectedAgent && isNativeEntry(selectedAgent) && selectedAgent.acpAgent?.availability !== 'ready'
+                ? <ErrorMark kind="unavailable" message={translate("workbench.baseAgentMissing")} detail={selectedAgent.acpAgent?.baseCommand || undefined} />
+                : null}
+            </div>
+          ) : null}
+          {agentGroup === ACP_GROUP ? <div
             className={`mt-2 ${compact ? 'max-h-32' : 'max-h-64'} divide-y divide-[var(--theme-border)] overflow-y-auto overscroll-contain rounded-lg border border-[var(--theme-border)] bg-[var(--theme-surface)]`}
             role="radiogroup"
-            aria-label={translate("workbench.agent")}
+            aria-label={translate(protocolAware ? "workbench.acpAgentGroup" : "workbench.agent")}
           >
-            {visibleAgentOptions.map((entry) => {
+            {acpAgents.map((entry) => {
               const meta = entry.acpAgent;
               const ready = isolatedCreation || meta?.availability === 'ready' || meta?.availability === 'adapter_missing';
               const adapterMissing = meta?.availability === 'adapter_missing';
@@ -735,12 +799,12 @@ export function ThreadCreateForm({
                       className="sr-only"
                       disabled={!ready || fieldsLocked || installingAgentId !== null}
                       name={`${formId}-agent`}
-                      onChange={() => setAgentId(entry.model)}
+                      onChange={() => chooseAcpAgent(entry.model)}
                       type="radio"
                       value={entry.model}
                     />
                     <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                      <span className="truncate font-medium">{entry.displayName}</span>
+                      <span className="truncate font-medium">{agentDisplayName(entry.model, entry.displayName)}</span>
                       <span className="host-pill rounded-full px-2 py-0.5 text-[0.68rem]">{statusLabel}</span>
                     </span>
                     {!isolatedCreation && <span className="mt-1 block truncate font-mono text-[0.68rem] text-[var(--theme-fg-muted)]">
@@ -760,7 +824,7 @@ export function ThreadCreateForm({
                 </div>
               );
             })}
-          </div>
+          </div> : null}
         </fieldset>
       ) : null}
 

@@ -46,6 +46,7 @@ import { ThreadSourceLinksControl } from '../components/git/pr/ThreadSourceLinks
 import { useThreadInspector } from '../components/ThreadInspector';
 import { requestThreadPageCatalog } from './threadPageCatalog';
 import { useModelPickerSource } from './useModelPickerSource';
+import { composerAgentLabel } from './threadAgentLabel';
 import { ThreadSubagentsControl } from '../components/ThreadSubagentsControl';
 import { PortMappingsControl } from '../components/PortMappingsControl';
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
@@ -93,6 +94,7 @@ import {
   type ThreadGraphWorkspaceFeatures,
 } from '@pockymoe/thread-ui';
 import {
+  threadAgentKey,
   threadStatusLabel,
 } from '@pockymoe/thread-ui';
 import { closeFilesPatch, usePlugins } from '@pockymoe/thread-ui';
@@ -1480,7 +1482,7 @@ export function ThreadDetailPage() {
   const capabilityRefreshRef = useRef(capabilityRefresh);
   capabilityRefreshRef.current = capabilityRefresh;
   const threadConnectionKey = detail?.thread.id === id && detail.thread.isLoaded
-    ? `${id}:${detail.thread.provider}:${detail.thread.agentId ?? ''}:${detail.thread.providerSessionId ?? ''}`
+    ? `${id}:${detail.thread.provider}:${threadAgentKey(detail.thread) ?? ''}:${detail.thread.providerSessionId ?? ''}`
     : null;
   const previousConnectionKeyRef = useRef<{ id: string; key: string | null } | null>(null);
   useEffect(() => {
@@ -1501,7 +1503,9 @@ export function ThreadDetailPage() {
       pageContextRequestIdRef.current = requestId;
       const provider =
         seedThread?.provider ?? detailRef.current?.thread.provider ?? 'codex';
-      const agentId = seedThread?.agentId ?? detailRef.current?.thread.agentId ?? null;
+      // The agent key: an ACP Codex thread reads the ACP adapter's models, not native Codex's.
+      const agentThread = seedThread ?? detailRef.current?.thread;
+      const agentId = agentThread ? threadAgentKey(agentThread) : null;
       const cwd = detailRef.current?.workspace.absPath ?? null;
       const threadId = seedThread?.id ?? detailRef.current?.thread.id;
       setModelOptions([]);
@@ -3785,7 +3789,7 @@ export function ThreadDetailPage() {
   useEffect(() => {
     const thread = detail?.thread;
     if (!thread) return;
-    const key = `${thread.id}\u0000${thread.provider}\u0000${thread.agentId ?? ''}`;
+    const key = `${thread.id}\u0000${thread.provider}\u0000${threadAgentKey(thread) ?? ''}`;
     const previous = contextAgentRef.current;
     contextAgentRef.current = key;
     if (previous && previous !== key && previous.startsWith(`${thread.id}\u0000`)) void loadPageContext({ seedThread: thread });
@@ -3873,9 +3877,7 @@ export function ThreadDetailPage() {
         settingsBusy,
         error: null,
         model: detail.thread.model,
-        agentLabel:
-          agentOptions.find((entry) => entry.model === detail.thread.agentId)?.displayName ??
-          detail.thread.agentId ?? null,
+        agentLabel: composerAgentLabel(detail.thread, agentOptions),
         reasoningEffort: detail.thread.reasoningEffort,
         fastMode: detail.thread.fastMode ?? false,
         collaborationMode: detail.thread.collaborationMode,

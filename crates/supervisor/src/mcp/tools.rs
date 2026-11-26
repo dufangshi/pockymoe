@@ -68,6 +68,7 @@ fn level(name: &str) -> Option<u8> {
 }
 pub fn catalog() -> Value {
     let s = || json!({"type":"string"});
+    let agent_key = || json!({"type":"string","description":"Harness from `agents`: codex and claude run natively; acp:codex and acp:claude use their ACP adapters; others are ACP agents"});
     let defs = vec![
         (
             "devices",
@@ -104,7 +105,7 @@ pub fn catalog() -> Value {
         (
             "thread_launch",
             "Create a thread and optionally queue its first prompt",
-            json!({"workspaceId":s(),"title":s(),"agentId":s(),"model":s(),"prompt":s(),"approvalMode":{"type":"string","enum":["guarded","yolo"]}}),
+            json!({"workspaceId":s(),"title":s(),"agentId":agent_key(),"model":s(),"prompt":s(),"approvalMode":{"type":"string","enum":["guarded","yolo"]}}),
             vec!["workspaceId"],
         ),
         (
@@ -116,7 +117,7 @@ pub fn catalog() -> Value {
         (
             "thread_switch",
             "Switch an idle thread to another harness, preserving its history (full access)",
-            json!({"threadId":s(),"provider":{"type":"string","enum":["acp","codex","claude","opencode"]},"agentId":s(),"model":s(),"reasoningEffort":s(),"preview":{"type":"boolean"}}),
+            json!({"threadId":s(),"provider":{"type":"string","enum":["acp","codex","claude","opencode"]},"agentId":agent_key(),"model":s(),"reasoningEffort":s(),"preview":{"type":"boolean"}}),
             vec!["threadId", "agentId"],
         ),
         (

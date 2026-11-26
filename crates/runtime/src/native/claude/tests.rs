@@ -786,15 +786,8 @@ async fn native_claude_router_delivers_permission_to_owning_backend() {
         .respond_permission("claude-native:unknown", true, None)
         .await
         .is_ok());
-    crate::native::ProtocolSettings {
-        claude: crate::native::HarnessProtocol::Native,
-        ..Default::default()
-    }
-    .save(&dir.path().join("protocol.json"))
-    .unwrap();
     let router = Arc::new(
-        crate::native::ProtocolRouter::new(acp, None, dir.path().join("protocol.json"))
-            .with_backend("claude", native.clone()),
+        crate::native::ProtocolRouter::new(acp, None, None).with_backend("claude", native.clone()),
     );
     router
         .resume_session(&id, Some(cwd), SessionSettings::default())
@@ -835,11 +828,7 @@ async fn native_claude_router_delivers_permission_to_owning_backend() {
         .unwrap();
     assert!(items.iter().any(|item| item.text == "allow"));
     assert!(router.pending_requests("thread").await.is_empty());
-    crate::native::ProtocolSettings::default()
-        .save(&dir.path().join("protocol.json"))
-        .unwrap();
-    // Stale/native-invalid requests must retain the native validation error,
-    // even after the device owner changes the selected protocol back to ACP.
+    // Stale/native-invalid requests must retain the native validation error.
     assert!(router
         .respond_permission(&request, true, None)
         .await

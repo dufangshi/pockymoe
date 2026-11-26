@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ModelOptionDto, ThreadDto } from '@pockymoe/shared';
-import { modelFactsFromCatalog, type ComposerModelPickerSource, type HandoffSummary } from '@pockymoe/thread-ui';
+import { agentDisplayName, modelFactsFromCatalog, threadAgentKey, type ComposerModelPickerSource, type HandoffSummary } from '@pockymoe/thread-ui';
 import { deviceRequest, interruptThread } from '../lib/api';
 import { fetchThreadEnvironment } from '../lib/environmentApi';
 import type { ModelPricingCatalog } from '../lib/modelPricingApi';
@@ -67,10 +67,12 @@ export function useModelPickerSource({ thread, deviceId, cwd, agentOptions, canS
   const canFork = Boolean(onForked);
 
   const threadId = thread?.id;
-  const currentAgentId = thread?.provider === 'acp' ? thread.agentId ?? null : null;
+  // The thread's agent key (`acp:codex` for ACP Codex), so the picker marks the
+  // entry it runs on and offers the other protocol of the same agent.
+  const currentAgentId = thread?.provider === 'acp' && thread ? threadAgentKey(thread) : null;
   const agentKey = knownAgents
     .filter((entry) => entry.acpAgent?.availability === 'ready' || entry.model === currentAgentId)
-    .map((entry) => `${entry.model}\u0000${entry.displayName}`)
+    .map((entry) => `${entry.model}\u0000${agentDisplayName(entry.model, entry.displayName)}`)
     .join('\u0001');
 
   return useMemo<ComposerModelPickerSource | undefined>(() => {

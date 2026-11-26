@@ -246,3 +246,95 @@ it('allows isolated creation when the supported ACP agent is missing on the Host
   expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'codex', environmentConnectionId: 'dokploy-local' }));
   expect(api.install).not.toHaveBeenCalled(); expect(api.models).not.toHaveBeenCalled();
 });
+
+// A runtime where Codex and Claude run natively by default lists `harnessProtocol`.
+const nativeEntry = (id: string, displayName: string, availability = 'ready') =>
+  ({ id, model: id, displayName, isDefault: id === 'codex', selectionKind: 'agent', acpAgent: { transport: 'native', harnessProtocol: 'native', availability, baseCommand: id, statusMessage: 'Ready' } });
+const acpEntry = (id: string, displayName: string, availability = 'ready', base?: string) =>
+  ({ id, model: id, displayName, isDefault: false, selectionKind: 'agent', acpAgent: { transport: 'adapter', harnessProtocol: 'acp', availability, serverCommand: `${id}-acp`, installCommand: 'npm install fixture', statusMessage: 'Ready', ...(base ? { baseAgentId: base } : {}) } });
+function protocolAgents(claude = 'ready', acpCodex = 'ready') {
+  api.agents.mockResolvedValue([
+    nativeEntry('codex', 'Codex'), nativeEntry('claude', 'Claude Code', claude),
+    acpEntry('acp:codex', 'Codex', acpCodex, 'codex'), acpEntry('acp:claude', 'Claude Code', 'ready', 'claude'), acpEntry('opencode', 'OpenCode'),
+  ]);
+}
+it('offers native Codex and Claude first and the ACP agents under one choice', async () => {
+  protocolAgents();
+  const created = mount();
+  const group = await screen.findByRole('radiogroup', { name: 'Agent' });
+  expect(within(group).getAllByRole('radio').map(radio => radio.closest('label')?.textContent)).toEqual(['Codex', 'Claude Code', 'ACP agent']);
+  expect(within(group).getByRole('radio', { name: 'Codex' })).toBeChecked();
+  // Only ACP to choose as the harness: no separate harness control.
+  expect(screen.queryByRole('radiogroup', { name: 'Backend' })).toBeNull();
+  expect(screen.queryByRole('radiogroup', { name: 'ACP agent' })).toBeNull();
+  await waitFor(() => expect(api.models).toHaveBeenCalledWith('acp', expect.objectContaining({ agentId: 'codex' })));
+  fireEvent.click(within(group).getByRole('radio', { name: 'ACP agent' }));
+  const list = screen.getByRole('radiogroup', { name: 'ACP agent' });
+  expect(within(list).getAllByRole('radio').map(radio => radio.closest('label')?.querySelector('.font-medium')?.textContent)).toEqual(['ACP · Codex', 'ACP · Claude Code', 'OpenCode']);
+  expect(within(list).getByRole('radio', { name: /ACP · Codex/ })).toBeChecked();
+  await waitFor(() => expect(api.models).toHaveBeenCalledWith('acp', expect.objectContaining({ agentId: 'acp:codex' })));
+  fireEvent.click(within(list).getByRole('radio', { name: /OpenCode/ }));
+  // Back to native and again to ACP: the ACP agent chosen last is kept.
+  fireEvent.click(within(group).getByRole('radio', { name: 'Claude Code' }));
+  expect(screen.queryByRole('radiogroup', { name: 'ACP agent' })).toBeNull();
+  fireEvent.click(within(group).getByRole('radio', { name: 'ACP agent' }));
+  expect(within(screen.getByRole('radiogroup', { name: 'ACP agent' })).getByRole('radio', { name: /OpenCode/ })).toBeChecked();
+  fireEvent.click(within(screen.getByRole('radiogroup', { name: 'ACP agent' })).getByRole('radio', { name: /ACP · Claude Code/ }));
+  const create = screen.getByRole('button', { name: /New thread/i });
+  await waitFor(() => expect(create).toBeEnabled()); fireEvent.click(create);
+  await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+  expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ provider: 'acp', agentId: 'acp:claude' }));
+});
+it('offers only the agent list when the single-agent backends are the same agents', async () => {
+  // The default device enables OpenAI Codex, Claude Agent and OpenCode beside ACP.
+  api.backends.mockResolvedValue(['codex', 'claude', 'opencode', 'acp'].map(provider => ({ provider, displayName: provider, enabled: true, capabilities: { sessions: { resume: true }, turns: { start: true } }, installation: { installed: true }, status: {} })));
+  protocolAgents();
+  const created = mount();
+  const group = await screen.findByRole('radiogroup', { name: 'Agent' });
+  expect(within(group).getByRole('radio', { name: 'Codex' })).toBeChecked();
+  expect(screen.queryByRole('radiogroup', { name: 'Backend' })).toBeNull();
+  const create = screen.getByRole('button', { name: /New thread/i });
+  await waitFor(() => expect(create).toBeEnabled()); fireEvent.click(create);
+  await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+  expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ provider: 'acp', agentId: 'codex' }));
+});
+it('creates native Codex by default and says why a native agent without its CLI cannot start', async () => {
+  protocolAgents('base_missing');
+  const created = mount();
+  const group = await screen.findByRole('radiogroup', { name: 'Agent' });
+  await waitFor(() => expect(api.models).toHaveBeenCalled());
+  const modelCalls = api.models.mock.calls.length;
+  fireEvent.click(within(group).getByRole('radio', { name: 'Claude Code' }));
+  expect(screen.getByRole('button', { name: /New thread/i })).toBeDisabled();
+  expect(api.models).toHaveBeenCalledTimes(modelCalls);
+  fireEvent.click(screen.getByRole('button', { name: 'Why it is unavailable' }));
+  expect(within(await screen.findByRole('dialog', { name: 'Why it is unavailable' })).getByText('Base agent missing')).toBeVisible();
+  fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+  fireEvent.click(within(group).getByRole('radio', { name: 'Codex' }));
+  const create = screen.getByRole('button', { name: /New thread/i });
+  await waitFor(() => expect(create).toBeEnabled()); fireEvent.click(create);
+  await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+  expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'codex' }));
+  expect(api.install).not.toHaveBeenCalled();
+});
+it('asks to install the adapter only for an ACP variant', async () => {
+  protocolAgents('ready', 'adapter_missing');
+  mount();
+  fireEvent.click(within(await screen.findByRole('radiogroup', { name: 'Agent' })).getByRole('radio', { name: 'ACP agent' }));
+  fireEvent.click(within(screen.getByRole('radiogroup', { name: 'ACP agent' })).getByRole('radio', { name: /ACP · Codex/ }));
+  const create = screen.getByRole('button', { name: /New thread/i });
+  await waitFor(() => expect(create).toBeEnabled()); fireEvent.click(create);
+  expect(await screen.findByRole('dialog')).toBeVisible();
+  expect(api.create).not.toHaveBeenCalled();
+});
+it('treats ACP Codex like Codex for isolated environments', async () => {
+  protocolAgents();
+  const created = mount();
+  fireEvent.click(within(await screen.findByRole('radiogroup', { name: 'Agent' })).getByRole('radio', { name: 'ACP agent' }));
+  await selectIsolation();
+  expect(within(screen.getByRole('radiogroup', { name: 'ACP agent' })).getByRole('radio', { name: /ACP · Codex/ })).toBeChecked();
+  const create = screen.getByRole('button', { name: /New thread/i });
+  await waitFor(() => expect(create).toBeEnabled()); fireEvent.click(create);
+  await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
+  expect(api.create).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'acp:codex', environmentConnectionId: 'dokploy-local' }));
+});

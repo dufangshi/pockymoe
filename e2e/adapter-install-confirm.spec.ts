@@ -20,7 +20,7 @@ test('missing ACP adapter asks for confirmation before installation and continue
   await page.route('**/api/threads/start', route => { created = route.request().postDataJSON(); return route.fulfill({ json: thread }); });
   await page.goto(`/threads/new?workspaceId=${workspace.id}`);
   await page.getByLabel('Title', { exact: true }).fill('Keep my title');
-  const create = page.getByRole('button', { name: /^Create thread$/i });
+  const create = page.getByRole('button', { name: /^New thread$/i });
   await expect(create).toBeEnabled();
   expect(installs).toBe(0);
   expect(modelLoads).toBe(0);

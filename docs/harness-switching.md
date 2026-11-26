@@ -12,6 +12,12 @@ is marked and **Stop and switch** interrupts the turn, waits for it to settle an
 switches. A refused switch (an active or paused goal must be cleared first)
 keeps the picker open with the reason on its mark.
 
+Codex and ACP Codex (or Claude and ACP Claude) are one agent on two protocols
+([native harness protocols](native-harnesses.md)): switching between them keeps
+the session, its history and every setting, hands nothing over and records the
+change in the timeline. The rest of this page is about switching to another
+agent.
+
 Plan, sandbox, fast mode and reasoning effort reset; the approval mode stays in
 effect. The new model's default effort applies. Harnesses unavailable in an
 isolated execution environment are refused. The rail lists only agents ready on
@@ -69,7 +75,8 @@ pockymoe thread switch THREAD --agent codex --model MODEL --reasoning-effort hig
 The provider defaults to `acp`. HTTP endpoints are owner-only:
 
 - `POST /api/threads/{id}/harness/preview` and `/harness/switch`, with
-  `{provider, agentId, model, reasoningEffort}`. The preview returns the exact
+  `{provider, agentId, model, reasoningEffort}`; `agentId` is an agent key
+  (`codex`, `acp:codex`, `opencode`). The preview returns the exact
   prefix, byte/token estimate, included turn count, omitted turn IDs and whether
   it resumes a session.
 - `POST /api/threads/{id}/harness/fork`, with `{target: {provider, agentId,

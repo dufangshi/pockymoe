@@ -27,3 +27,14 @@ it('resolves standalone switches before another prompt exists', async () => {
   const {result} = renderHook(() => useHandoffModelNames([], 'device-b', entries));
   await waitFor(() => expect(result.current('claude','haiku')).toBe('Haiku 5.5'));
 });
+
+it('reads an ACP side of a switch from the ACP adapter catalog, by agent key', async () => {
+  vi.mocked(deviceRequest).mockReset();
+  vi.mocked(deviceRequest).mockImplementation(async (_device, path) =>
+    String(path).includes('acp%3Acodex') ? [{id:'gpt-6.1-sol',model:'gpt-6.1-sol',displayName:'ACP 6.1 Sol'}] : [{id:'gpt-6.1-sol',model:'gpt-6.1-sol',displayName:'6.1 Sol'}]);
+  const entries = [{id:'switch',kind:'harnessSwitch' as const,text:'',harnessSwitch:{fromAgentId:'codex',fromHarnessProtocol:'native' as const,agentId:'codex',harnessProtocol:'acp' as const,turns:2}}];
+  const {result} = renderHook(() => useHandoffModelNames([], 'device-c', entries));
+  await waitFor(() => expect(result.current('acp:codex','gpt-6.1-sol')).toBe('ACP 6.1 Sol'));
+  expect(result.current('codex','gpt-6.1-sol')).toBe('6.1 Sol');
+  expect(deviceRequest).toHaveBeenCalledWith('device-c','api/agent-runtimes/acp/models?agentId=acp%3Acodex');
+});

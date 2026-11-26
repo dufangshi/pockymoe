@@ -1848,6 +1848,23 @@ impl Supervisor {
             self.ensure_agent_name_free(lineage.root.as_deref(), name)?;
         }
         let provider = input.provider.unwrap_or_else(|| self.default_provider());
+        // `acp:codex` picks Codex's ACP adapter; plain `codex` (and no agent,
+        // which means Codex) runs natively. The choice is pinned on the thread.
+        let (agent_id, harness_protocol) = match input.agent_id.as_deref() {
+            Some(key) => {
+                let (agent, protocol) = pockymoe_protocol::split_agent_key(key.trim());
+                (Some(agent.to_string()), protocol)
+            }
+            None if provider == Provider::Acp => (Some("codex".to_string()), Some("native")),
+            None => (
+                None,
+                matches!(provider, Provider::Codex | Provider::Claude).then_some("native"),
+            ),
+        };
+        let runtime_agent = agent_id
+            .as_deref()
+            .map(|agent| pockymoe_protocol::agent_key(agent, harness_protocol));
+        let input = CreateThreadInput { agent_id, ..input };
         let _maintenance = self
             .maintenance_gate
             .try_read()
@@ -1940,7 +1957,7 @@ impl Supervisor {
                     HarnessLoadReason::Create,
                     runtime.start_session(StartSessionInput {
                         cwd,
-                        agent_id: input.agent_id.clone(),
+                        agent_id: runtime_agent.clone(),
                         model: input.model.clone(),
                         reasoning_effort: input.reasoning_effort.clone(),
                         approval_mode: approval_mode.into(),
@@ -1973,8 +1990,8 @@ impl Supervisor {
             tx.execute(
                 "INSERT INTO threads(id, workspace_id, provider, agent_id, provider_session_id, source, title, model,
                     reasoning_effort, collaboration_mode, approval_mode, sandbox_mode, status, created_at, updated_at,
-                    parent_thread_id, root_thread_id, lineage_depth, agent_name, agent_role, worktree_path)
-                 VALUES (?1,?2,?3,?4,?5,'supervisor',?6,?7,?8,'default',?9,?10,'idle',?11,?11,?12,?13,?14,?15,?16,?17)",
+                    parent_thread_id, root_thread_id, lineage_depth, agent_name, agent_role, worktree_path, harness_protocol)
+                 VALUES (?1,?2,?3,?4,?5,'supervisor',?6,?7,?8,'default',?9,?10,'idle',?11,?11,?12,?13,?14,?15,?16,?17,?18)",
                 params![
                     id,
                     input.workspace_id,
@@ -1993,6 +2010,7 @@ impl Supervisor {
                     options.name,
                     options.role.as_ref().map(|r| &r.name),
                     worktree.as_ref().map(|w| w.path.to_string_lossy().into_owned()).or(inherited_cwd),
+                    harness_protocol,
                 ],
             )?;
             if let Some(role) = &options.role {
@@ -2126,9 +2144,14 @@ impl Supervisor {
         }
         let selected_provider = input.provider.unwrap_or_else(|| self.default_provider());
         let enabled: Vec<Provider> = self.runtimes.keys().copied().collect();
+        let (requested_agent, requested_protocol) = input
+            .agent_id
+            .as_deref()
+            .map(pockymoe_protocol::split_agent_key)
+            .map_or((None, None), |(agent, protocol)| (Some(agent), protocol));
         let (provider, agent_id) = bind_import_target(
             selected_provider,
-            input.agent_id.as_deref(),
+            requested_agent,
             parsed.agent_id.as_deref(),
             &enabled,
         );
@@ -2172,8 +2195,9 @@ impl Supervisor {
         self.db.with(|conn| {
             conn.execute(
                 "INSERT INTO threads(id, workspace_id, provider, agent_id, provider_session_id, source, title, model,
-                    reasoning_effort, collaboration_mode, approval_mode, status, summary_text, created_at, updated_at, is_connected)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,'default','yolo','idle',?9,?10,?10,0)",
+                    reasoning_effort, collaboration_mode, approval_mode, status, summary_text, created_at, updated_at, is_connected,
+                    harness_protocol)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,NULL,'default','yolo','idle',?9,?10,?10,0,?11)",
                 params![
                     thread_id,
                     workspace.id,
@@ -2184,7 +2208,8 @@ impl Supervisor {
                     title,
                     model,
                     summary,
-                    now
+                    now,
+                    requested_protocol.filter(|_| pockymoe_protocol::NATIVE_AGENTS.contains(&agent_id.as_str()))
                 ],
             )?;
             Ok(())
@@ -4209,8 +4234,9 @@ impl Supervisor {
         self.db.with(|conn| {
             conn.execute(
                 "INSERT INTO threads(id, workspace_id, provider, agent_id, provider_session_id, source, title, model,
-                    reasoning_effort, collaboration_mode, approval_mode, status, created_at, updated_at, sandbox_mode, fast_mode)
-                 VALUES (?1,?2,?3,?4,?5,'supervisor',?6,?7,?8,?11,?9,'idle',?10,?10,?12,?13)",
+                    reasoning_effort, collaboration_mode, approval_mode, status, created_at, updated_at, sandbox_mode, fast_mode,
+                    harness_protocol)
+                 VALUES (?1,?2,?3,?4,?5,'supervisor',?6,?7,?8,?11,?9,'idle',?10,?10,?12,?13,?14)",
                 params![
                     new_id,
                     detail.thread.workspace_id,
@@ -4224,7 +4250,8 @@ impl Supervisor {
                     now,
                     detail.thread.collaboration_mode,
                     detail.thread.sandbox_mode,
-                    detail.thread.fast_mode
+                    detail.thread.fast_mode,
+                    detail.thread.harness_protocol
                 ],
             )?;
             let mut copied_turns = HashMap::new();
@@ -4726,7 +4753,7 @@ impl Supervisor {
         let thread = self.get_thread(id)?;
         let runtime = self.runtime(thread.provider)?;
         let Some(session) = thread.provider_session_id.as_deref() else {
-            return runtime.capabilities(thread.agent_id.as_deref()).await;
+            return runtime.capabilities(thread.agent_key().as_deref()).await;
         };
         if !load {
             return runtime
@@ -4776,7 +4803,7 @@ impl Supervisor {
         let thread = self.get_thread(id)?;
         let runtime = self.runtime(thread.provider)?;
         if !runtime
-            .negotiated_caps(thread.agent_id.as_deref())
+            .negotiated_caps(thread.agent_key().as_deref())
             .management
             .mcp_status
         {
@@ -5071,7 +5098,7 @@ fn thread_from_row(row: &rusqlite::Row<'_>) -> ThreadDto {
         "acp" => Provider::Acp,
         _ => Provider::Codex,
     };
-    ThreadDto {
+    let mut thread = ThreadDto {
         id: row.get(0).unwrap_or_default(),
         workspace_id: row.get(1).unwrap_or_default(),
         provider,
@@ -5113,7 +5140,25 @@ fn thread_from_row(row: &rusqlite::Row<'_>) -> ThreadDto {
         agent_role: row.get(27).unwrap_or(None),
         worktree_path: row.get(28).unwrap_or(None),
         closed_at: row.get(29).unwrap_or(None),
-    }
+        harness_protocol: None,
+    };
+    thread.harness_protocol = harness_protocol(&thread, row.get(30).unwrap_or(None));
+    thread
+}
+
+/// A Codex or Claude thread's protocol; one created before threads recorded
+/// it (NULL) runs natively, the default.
+fn harness_protocol(thread: &ThreadDto, stored: Option<String>) -> Option<String> {
+    let agent = thread.agent_id.as_deref().or(match thread.provider {
+        Provider::Codex => Some("codex"),
+        Provider::Claude => Some("claude"),
+        _ => None,
+    })?;
+    pockymoe_protocol::NATIVE_AGENTS.contains(&agent).then(|| {
+        stored
+            .filter(|p| p == "acp")
+            .unwrap_or_else(|| "native".into())
+    })
 }
 
 // Native Codex stores image blocks separately while Pockymoe keeps PHOTO
@@ -5200,7 +5245,7 @@ pub fn bootstrap_runtimes(config: &RuntimeConfig) -> Vec<SharedRuntime> {
             let router = crate::native::ProtocolRouter::new(
                 acp.clone(),
                 bound,
-                crate::native::settings_path(&config.database_url),
+                Some(config.database_url.clone().into()),
             );
             let router = if matches!(provider, Provider::Acp | Provider::Codex) {
                 router.with_backend(
@@ -5303,5 +5348,5 @@ const THREAD_SELECT: &str = "SELECT t.id, t.workspace_id, t.provider, t.agent_id
                         t.summary_text, t.last_error, t.created_at, t.updated_at, t.last_turn_started_at, t.last_turn_completed_at,
                         t.is_pinned, t.context_usage_json, t.parent_thread_id, t.root_thread_id, t.lineage_depth,
                         (SELECT COUNT(*) FROM threads d WHERE d.root_thread_id = t.id),
-                        t.agent_name, t.agent_role, t.worktree_path, t.closed_at
+                        t.agent_name, t.agent_role, t.worktree_path, t.closed_at, t.harness_protocol
                  FROM threads t";

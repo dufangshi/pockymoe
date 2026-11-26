@@ -128,6 +128,7 @@ pub enum ThreadCommand {
     /// Switch an idle thread's harness, preserving portable conversation history.
     Switch {
         id: String,
+        /// `codex` ↔ `acp:codex` (or Claude) keeps the session; another agent hands off history.
         #[arg(long)]
         agent: String,
         #[arg(long, default_value = "acp")]
@@ -208,6 +209,8 @@ More: pockymoe guide delegate"#)]
         title: Option<String>,
         #[arg(long, default_value = "acp")]
         provider: String,
+        /// Harness: `codex` (default) and `claude` run natively; `acp:codex` and
+        /// `acp:claude` use their ACP adapters; other ACP agents by id (`opencode`, `gemini`, …).
         #[arg(long)]
         agent: Option<String>,
         #[arg(long, default_value = "default")]
