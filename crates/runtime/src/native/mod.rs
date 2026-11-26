@@ -168,26 +168,19 @@ impl ProtocolRouter {
             HarnessProtocol::Native
         }
     }
-    /// Native Codex and Claude first, then the ACP agents with the ACP Codex
-    /// and Claude adapters keyed `acp:codex` / `acp:claude`.
+    /// Native Codex and Claude first, then their ACP adapters keyed
+    /// `acp:codex` / `acp:claude`, then the other ACP agents.
     fn agent_list(&self, acp: Vec<ModelOptionDto>) -> Vec<ModelOptionDto> {
-        let mut native = Vec::new();
-        let mut out = Vec::with_capacity(acp.len() + 2);
+        let (mut native, mut adapters, mut others) = (Vec::new(), Vec::new(), Vec::new());
         for mut entry in acp {
             let agent = entry.model.clone();
-            if self.backends.contains_key(&agent) {
+            let adapter = self.backends.contains_key(&agent);
+            if adapter {
                 native.push(native_entry(&entry));
                 let key = pockymoe_protocol::agent_key(&agent, Some("acp"));
                 entry.id = key.clone();
                 entry.model = key;
                 entry.is_default = false;
-                if let Some(info) = entry
-                    .acp_agent
-                    .as_mut()
-                    .and_then(serde_json::Value::as_object_mut)
-                {
-                    info.insert("baseAgentId".into(), agent.into());
-                }
             }
             if let Some(info) = entry
                 .acp_agent
@@ -195,10 +188,19 @@ impl ProtocolRouter {
                 .and_then(serde_json::Value::as_object_mut)
             {
                 info.insert("harnessProtocol".into(), "acp".into());
+                if adapter {
+                    info.insert("baseAgentId".into(), agent.into());
+                }
             }
-            out.push(entry);
+            if adapter {
+                adapters.push(entry);
+            } else {
+                others.push(entry);
+            }
         }
-        native.extend(out);
+        // ACP Codex and ACP Claude lead the ACP agents.
+        native.extend(adapters);
+        native.extend(others);
         native
     }
 }
@@ -504,7 +506,8 @@ impl AgentRuntime for ProtocolRouter {
             .await
     }
     async fn install(&self, agent_id: Option<&str>) -> Result<AgentBackendDto> {
-        self.acp.install(agent_id).await
+        // Installing is for the ACP adapter, whichever key named it.
+        self.acp.install(plain(agent_id)).await
     }
     async fn list_import_sessions(&self, agent_id: Option<&str>) -> Result<Vec<ImportSessionMeta>> {
         let (backend, agent, _) = self.route(agent_id);
@@ -568,7 +571,7 @@ mod tests {
             anyhow::bail!("{} {}", self.name, agent.unwrap_or("-"))
         }
         async fn list_agents(&self) -> Result<Vec<ModelOptionDto>> {
-            Ok(["codex", "claude", "opencode"]
+            Ok(["opencode", "codex", "claude"]
                 .into_iter()
                 .map(|id| ModelOptionDto {
                     id: id.into(),

@@ -1,4 +1,3 @@
-import { HarnessProtocolSettings } from './HarnessProtocolSettings';
 import { translate, useI18n, type TranslationKey } from '@pockymoe/thread-ui/i18n';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
@@ -52,7 +51,6 @@ export function HarnessResourceSettings() {
   }
   return (
     <div className="pm-resources">
-      <HarnessProtocolSettings key={`protocol-${deviceId ?? 'local'}`} deviceId={deviceId} />
       <section className="pm-res-section" aria-labelledby="pm-res-memory">
         <h3 id="pm-res-memory" className="pm-res-heading">{translate('settings.resourcesMemory')}</h3>
         <DeviceResourceSettings key={deviceId ?? 'local'} deviceId={deviceId} />

@@ -1301,6 +1301,7 @@ impl Supervisor {
                 workspace_id: thread.workspace_id.clone(),
                 provider: thread.provider.as_str().into(),
                 agent_id: thread.agent_id.clone(),
+                harness_protocol: thread.harness_protocol.clone(),
                 load_reason: member.session.load_reason,
                 loaded_at: rfc3339(member.session.loaded_at),
                 last_activity_at: rfc3339(member.idle_since()),

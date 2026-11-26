@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ModelOptionDto, ThreadTurnDto } from '@pockymoe/shared';
+import { agentKeyOf } from '@pockymoe/thread-ui';
 import { deviceRequest } from '../lib/api';
 
 /** Read each historical harness's catalog on the thread's device, just as the model picker does. */
@@ -8,8 +9,10 @@ export function useHandoffModelNames(turns: ThreadTurnDto[] | undefined, deviceI
   for (const turn of [...(turns ?? []), {provider:'acp',items:switches}]) {
     for (const item of turn.items) {
       if (!item.harnessSwitch) continue;
-      for (const agent of [item.harnessSwitch.fromAgentId, item.harnessSwitch.agentId]) {
-        if (agent) harnesses.set(agent, turn.provider || 'acp');
+      // By agent key, as the divider asks: ACP Codex reads the ACP adapter's catalog.
+      const change = item.harnessSwitch;
+      for (const [agent, protocol] of [[change.fromAgentId, change.fromHarnessProtocol], [change.agentId, change.harnessProtocol]] as const) {
+        if (agent) harnesses.set(agentKeyOf(agent, protocol), turn.provider || 'acp');
       }
     }
   }

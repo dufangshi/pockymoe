@@ -42,6 +42,8 @@ export interface LoadedThreadDto {
   workspaceId: string;
   provider: string;
   agentId: string | null;
+  /** `native` or `acp` for Codex and Claude, as on ThreadDto; absent on older runtimes. */
+  harnessProtocol?: 'native' | 'acp';
   loadReason: HarnessLoadReason;
   loadedAt: string;
   lastActivityAt: string;

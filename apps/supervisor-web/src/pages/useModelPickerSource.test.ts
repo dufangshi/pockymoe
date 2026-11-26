@@ -41,6 +41,24 @@ describe('useModelPickerSource', () => {
     expect(api.deviceRequest).not.toHaveBeenCalled();
   });
 
+  it('marks an ACP Codex thread by its agent key and offers native Codex beside it', async () => {
+    const protocolAgents = [
+      { ...agent('codex', 'Codex', 'ready'), acpAgent: { availability: 'ready', harnessProtocol: 'native' } },
+      { ...agent('acp:codex', 'Codex', 'ready'), acpAgent: { availability: 'ready', harnessProtocol: 'acp', baseAgentId: 'codex' } },
+    ] as unknown as ModelOptionDto[];
+    const onSwitched = vi.fn();
+    const { result } = renderHook(() => useModelPickerSource({
+      thread: { ...thread, harnessProtocol: 'acp' }, deviceId: null, cwd: '/w', agentOptions: protocolAgents, canSwitch: true, onSwitched,
+    }));
+    await waitFor(() => expect(result.current?.switching).toBeDefined());
+    const switching = result.current!.switching!;
+    expect(switching.currentAgentId).toBe('acp:codex');
+    expect(switching.agents).toEqual([{ id: 'codex', name: 'Codex' }, { id: 'acp:codex', name: 'ACP · Codex' }]);
+    await switching.switchTo({ agentId: 'codex', model: 'gpt-6.1-sol', reasoningEffort: null, stop: false });
+    const body = JSON.parse(String(api.deviceRequest.mock.calls.find((call) => String(call[1]).endsWith('/switch'))![2].body));
+    expect(body).toEqual({ provider: 'acp', agentId: 'codex', model: 'gpt-6.1-sol', reasoningEffort: null });
+  });
+
   it('lists ready agents and reads models, history and facts on the thread device', async () => {
     const { result } = renderHook(() => useModelPickerSource({
       thread, deviceId: 'device-2', cwd: '/w', agentOptions: agents, canSwitch: true, onSwitched: vi.fn(), onForked: vi.fn(),

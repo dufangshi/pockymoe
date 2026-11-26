@@ -12,7 +12,10 @@ A thread's protocol is chosen when it is created and pinned on the thread:
 `harnessProtocol` (`native` or `acp`) beside `agentId` (`codex`, `claude`); it is
 absent for ACP-only agents. In the new-thread form, Codex and Claude are native;
 **ACP agent** reveals ACP Codex, ACP Claude and the other ACP agents, and threads
-on an adapter are labelled "ACP · Codex" / "ACP · Claude Code".
+on an adapter are labelled "ACP · Codex" / "ACP · Claude Code". The form then
+offers only this list: the single-agent backends a device may also enable
+(OpenAI Codex, Claude Agent, OpenCode) are the same agents, and their existing
+threads keep working.
 
 Clients name the choice with an agent key: `codex` and `claude` run natively,
 `acp:codex` and `acp:claude` use the adapters, any other id is an ACP agent. No
@@ -22,8 +25,10 @@ agent means native Codex. The key is accepted as `agentId` by
 --agent`, delegates and the MCP `thread_launch` and `thread_switch` tools.
 `GET /api/agent-runtimes/acp/agents` lists native `codex` and `claude` first
 (`acpAgent.harnessProtocol` `native`, `transport` `native`; ready when the base CLI
-is installed, no adapter needed), then the ACP agents, with the adapters keyed
-`acp:codex` / `acp:claude` (`acpAgent.baseAgentId`).
+is installed, no adapter needed), then their adapters keyed `acp:codex` /
+`acp:claude` (`acpAgent.baseAgentId`), then the other ACP agents. Installing an
+adapter accepts the same key. Loaded threads in `GET /api/device/processes`
+carry `harnessProtocol` too.
 
 The protocol stays with the thread across reloads, Supervisor restarts and
 forks. A loaded session keeps its runtime until it is released; an unloaded one

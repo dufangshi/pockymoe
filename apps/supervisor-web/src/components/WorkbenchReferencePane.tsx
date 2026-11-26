@@ -2,6 +2,7 @@ import { useHandoffModelNames } from '../pages/useHandoffModelNames';
 import { TurnNotification } from './TurnNotification';
 import { useMemo } from 'react';
 import { GraphChatThreadChatPanel, ThreadLoadingIndicator, createWorkspacePathResolver, type ThreadComposerProps, type ThreadContextInspector } from '@pockymoe/thread-ui';
+import { composerAgentLabel } from '../pages/threadAgentLabel';
 import { translate as t, useI18n } from '@pockymoe/thread-ui/i18n';
 import {
   buildThreadImageAssetUrl,
@@ -109,7 +110,7 @@ export function WorkbenchReferencePane({
               error: null,
               shellAvailable: false,
               model: detail.thread.model,
-              agentLabel: detail.thread.agentId ?? detail.thread.provider,
+              agentLabel: composerAgentLabel(detail.thread) ?? detail.thread.provider,
               reasoningEffort: detail.thread.reasoningEffort,
               collaborationMode: detail.thread.collaborationMode,
               fastMode: detail.thread.fastMode ?? false,
