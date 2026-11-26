@@ -338,6 +338,8 @@ fn load_codex_paginated_history(home: &Path, session_id: &str) -> Option<Vec<Thr
         turns
             .into_iter()
             .map(|(id, status, error, started)| ThreadTurnDto {
+                provider: None,
+                agent_id: None,
                 origin: None,
                 id: id.clone(),
                 started_at: int_to_rfc3339(started),
@@ -1071,6 +1073,8 @@ pub(crate) fn sanitize_codex_user_text(text: &str) -> Option<String> {
 
 fn empty_codex_turn(id: String, started_at: Option<String>) -> ThreadTurnDto {
     ThreadTurnDto {
+        provider: None,
+        agent_id: None,
         origin: None,
         id,
         started_at,
@@ -1214,6 +1218,8 @@ pub(crate) fn read_grok_usage_history(path: &Path) -> Option<Vec<ThreadTurnDto>>
                 if body["sessionUpdate"] == "user_message_chunk" {
                     let text = content_text(&body["content"]).unwrap_or_default();
                     current = Some(ThreadTurnDto {
+                        provider: None,
+                        agent_id: None,
                         origin: None,
                         id: String::new(),
                         started_at: timestamp_to_rfc3339(&entry["timestamp"]),
@@ -1290,6 +1296,8 @@ fn parse_grok_history(path: &Path) -> Vec<ThreadTurnDto> {
                     turns.len() + 1
                 );
                 current = Some(ThreadTurnDto {
+                    provider: None,
+                    agent_id: None,
                     origin: None,
                     id: id.clone(),
                     started_at: timestamp_to_rfc3339(&value["timestamp"]),
@@ -1463,6 +1471,8 @@ fn parse_claude_jsonl(path: &Path, with_history: bool) -> Option<ImportSessionMe
                 }
                 let id = format!("imported-{session_id}-{}", turns.len() + 1);
                 current = Some(ThreadTurnDto {
+                    provider: None,
+                    agent_id: None,
                     origin: None,
                     id: id.clone(),
                     started_at: value

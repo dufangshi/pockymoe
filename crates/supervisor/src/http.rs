@@ -465,7 +465,20 @@ pub(crate) fn router_with_treer(state: AppState, hub: Option<Arc<crate::treer::H
         )
         .route("/api/threads/{id}/fork-turns", get(thread_fork_turns))
         .route("/api/threads/{id}/capabilities", get(thread_capabilities))
+        .route(
+            "/api/harness-handoff/settings",
+            get(handoff_settings).put(update_handoff_settings),
+        )
+        .route("/api/threads/{id}/harness/fork", post(thread_harness_fork))
         .route("/api/threads/{id}/harness", post(thread_harness_action))
+        .route(
+            "/api/threads/{id}/harness/switch",
+            post(thread_harness_switch),
+        )
+        .route(
+            "/api/threads/{id}/harness/preview",
+            post(thread_harness_preview),
+        )
         .route("/api/threads/{id}/fork", post(thread_fork))
         .route("/api/threads/{id}/compact", post(thread_compact))
         .route(
@@ -3791,4 +3804,69 @@ mod fixture_tests {
             );
         }
     }
+}
+
+async fn thread_harness_switch(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(input): Json<pockymoe_runtime::service::HarnessSwitchInput>,
+) -> Result<Json<Value>, ApiErr> {
+    Ok(Json(
+        serde_json::to_value(
+            state
+                .switch_thread_harness(&id, input)
+                .await
+                .map_err(map_err)?,
+        )
+        .unwrap(),
+    ))
+}
+async fn thread_harness_preview(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiErr> {
+    let target: pockymoe_runtime::service::HarnessSwitchInput =
+        serde_json::from_value(input.get("target").unwrap_or(&input).clone())
+            .map_err(|e| err(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))?;
+    let preview = if input.get("target").is_some() {
+        state.preview_harness_fork(&id, &target, input["turnId"].as_str())
+    } else {
+        state.preview_harness_switch(&id, &target)
+    }
+    .map_err(map_err)?;
+    Ok(Json(serde_json::to_value(preview).unwrap()))
+}
+
+async fn handoff_settings(State(state): State<AppState>) -> Result<Json<Value>, ApiErr> {
+    Ok(Json(
+        json!({"tokenCap":state.handoff_token_cap().map_err(map_err)?}),
+    ))
+}
+async fn update_handoff_settings(
+    State(state): State<AppState>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiErr> {
+    let cap = input["tokenCap"].as_u64().ok_or_else(|| {
+        err(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "tokenCap is required",
+        )
+    })?;
+    state.set_handoff_token_cap(cap as usize).map_err(map_err)?;
+    handoff_settings(State(state)).await
+}
+async fn thread_harness_fork(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(input): Json<Value>,
+) -> Result<Json<Value>, ApiErr> {
+    let target = serde_json::from_value(input["target"].clone())
+        .map_err(|e| err(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))?;
+    let thread = state
+        .fork_thread_to_harness(&id, input["turnId"].as_str(), target)
+        .await
+        .map_err(map_err)?;
+    Ok(Json(serde_json::to_value(thread).unwrap()))
 }

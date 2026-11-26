@@ -119,3 +119,5 @@ order (subagents' calls are excluded). A turn with one run shows
 and tapping it lists the calls each model made. An effort changed mid-turn becomes
 the running turn's effort, since Claude's usage reports do not carry it. Turns
 recorded before `tokenUsage.models` existed show their single model.
+
+See [Switching harnesses](harness-switching.md) for changing an existing thread’s agent with a preview and portable history.
