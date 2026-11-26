@@ -248,6 +248,9 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
         const sample = await request<DeviceMetricsDto>('api/device/metrics', {
           signal: controller.signal,
         }, { deviceId });
+        // An answer without the readings (a proxy, an odd Supervisor) is no sample:
+        // it must not take down the page that shows it, such as a phone's device cards.
+        if (!sample?.cpu || !Array.isArray(sample.cpu.cores) || !sample.memory || !sample.swap || !sample.cpuPower || !Array.isArray(sample.gpus) || !Array.isArray(sample.hardwareNotes)) throw new Error('Malformed device metrics');
         if (!disposed) {
           setData(sample);
           setError(null);

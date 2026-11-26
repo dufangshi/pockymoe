@@ -5,6 +5,8 @@ import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { fetchRelaySession } from '../lib/api';
 import { useAppShellNav } from '../components/AppShellNavContext';
 import { DesktopIndexStore, DesktopStoreContext } from './data';
+import { MobileIndexContext } from './data/context';
+import { useHostSurface } from './surface';
 import DevicesPage from './devices';
 import { DesktopMapPage } from './MapPage';
 
@@ -20,10 +22,19 @@ export default function WebDevicesRoute() {
 function StandaloneWebDevicesRoute() {
   const shell = useAppShellNav();
   const location = useLocation();
-  const [store, setStore] = useState<DesktopIndexStore | null>(null);
+  // The mobile host already keeps the account's index; the page uses it.
+  const mobileIndex = useContext(MobileIndexContext);
+  const mobile = useHostSurface() === 'mobile';
+  const [ownStore, setStore] = useState<DesktopIndexStore | null>(null);
+  const store = mobile ? mobileIndex : ownStore;
   const [signedOut, setSignedOut] = useState(false);
   useEffect(() => {
     let cancelled = false, created: DesktopIndexStore | undefined;
+    if (mobile) {
+      // Signed out: the host's index never arrives; send the reader to sign in.
+      void fetchRelaySession().then(session => { if (!cancelled && (!session.authenticated || !session.user)) setSignedOut(true); }).catch(() => { if (!cancelled) setSignedOut(true); });
+      return () => { cancelled = true; };
+    }
     void (async () => {
       const session = await fetchRelaySession();
       if (!session.authenticated || !session.user) throw new Error('signed out');
@@ -32,7 +43,7 @@ function StandaloneWebDevicesRoute() {
       setStore(created); created.start();
     })().catch(() => { if (!cancelled) setSignedOut(true); });
     return () => { cancelled = true; created?.stop(); };
-  }, []);
+  }, [mobile]);
   if (signedOut) return <Navigate to={'/relay-portal?returnTo=' + encodeURIComponent(location.pathname + location.search)} replace />;
   if (!store) return null;
   return <DesktopStoreContext.Provider value={store}>
