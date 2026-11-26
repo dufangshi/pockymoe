@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { GitMerge, Layers, RefreshCcw } from 'lucide-react';
 import { Select, confirmAsync } from '@pockymoe/thread-ui';
 import { useI18n } from '@pockymoe/thread-ui/i18n';
@@ -19,13 +19,19 @@ export function StackBar({ stack, detail, busy, canRebase, onOpen, onAct }: {
 }) {
   useI18n();
   const [merging, setMerging] = useState(false);
+  const list = useRef<HTMLOListElement>(null);
+  // The open layer is centred in the scrolling row (phones show two or three).
+  useLayoutEffect(() => {
+    const row = list.current, current = row?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (row && current) row.scrollLeft = current.offsetLeft - row.offsetLeft - (row.clientWidth - current.offsetWidth) / 2;
+  }, [detail.number, stack.id]);
   const index = stack.layers.findIndex(layer => layer.number === detail.number);
   const below = stack.layers.slice(0, index + 1).filter(layer => layer.state !== 'merged');
   const open = stack.layers.filter(layer => layer.state === 'open');
   const canMerge = detail.state === 'open' && (detail.capabilities.merge || stack.native) && below.every(layer => layer.state === 'open' && !layer.draft);
   return <nav className="pr-stack" aria-label={`${rt('stack')} · ${rt(stack.native ? 'stackNative' : 'stackInferred')}`}>
-    <span className="pr-stack-label" title={rt(stack.native ? 'stackNative' : 'stackInferred')}><Layers aria-hidden="true" /><span>{rt('stackBase', { base: stack.base })}</span></span>
-    <ol className="pr-stack-layers">
+    <span className="pr-stack-label" title={`${rt(stack.native ? 'stackNative' : 'stackInferred')} · ${rt('stackBase', { base: stack.base })}`}><Layers aria-hidden="true" /><span>{rt('stackBase', { base: stack.base })}</span></span>
+    <ol ref={list} className="pr-stack-layers">
       {stack.layers.map((layer, position) => <li key={layer.number}>
         <button type="button" aria-current={layer.number === detail.number ? 'page' : undefined} disabled={layer.number === detail.number}
           title={`#${layer.number} ${layer.title}`} aria-label={`${rt('stackPosition', { i: position + 1, n: stack.layers.length })}: #${layer.number} ${layer.title}`} onClick={() => onOpen(layer)}>
@@ -34,11 +40,11 @@ export function StackBar({ stack, detail, busy, canRebase, onOpen, onAct }: {
       </li>)}
     </ol>
     <span className="pr-stack-actions">
-      {canMerge && <button type="button" className="pr-button" disabled={busy} onClick={() => setMerging(true)}><GitMerge aria-hidden="true" />{rt('mergeStack')}</button>}
+      {canMerge && <button type="button" className="pr-button" disabled={busy} aria-label={rt('mergeStack')} title={rt('mergeStack')} onClick={() => setMerging(true)}><GitMerge aria-hidden="true" /><span className="pr-stack-action-label">{rt('mergeStack')}</span></button>}
       {canRebase && open.length > 0 && <button type="button" className="pr-button" disabled={busy} onClick={() => {
         void confirmAsync({ title: rt('rebaseStackTitle', { base: stack.base }), description: rt('rebaseStackBody', { n: open.length }), confirmLabel: rt('rebaseStack'), tone: 'danger' })
           .then(ok => { if (ok) void onAct('rebaseStack', { expectedHeads: heads(stack.layers) }); });
-      }}><RefreshCcw aria-hidden="true" />{rt('rebaseStack')}</button>}
+      }} aria-label={rt('rebaseStack')} title={rt('rebaseStack')}><RefreshCcw aria-hidden="true" /><span className="pr-stack-action-label">{rt('rebaseStack')}</span></button>}
     </span>
     {merging && <MergeStackDialog stack={stack} layers={below} detail={detail} busy={busy} onClose={() => setMerging(false)}
       onMerge={async method => { const ok = await onAct('mergeStack', { method, expectedHeads: heads(below) }); if (ok) setMerging(false); }} />}
