@@ -238,7 +238,7 @@ it('opens the resources settings from the gear', async () => {
   const openSettingsSection = vi.fn();
   fireEvent.click(await openMonitor({ openSettingsSection }));
   fireEvent.click(await screen.findByRole('button', { name: 'Resource settings' }));
-  expect(openSettingsSection).toHaveBeenCalledWith('resources');
+  expect(openSettingsSection).toHaveBeenCalledWith('resources', undefined);
   await waitFor(() => expect(screen.queryByText('Supervisor 680 MiB')).toBeNull());
 });
 

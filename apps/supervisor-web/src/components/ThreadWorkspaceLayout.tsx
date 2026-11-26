@@ -13,7 +13,7 @@ import { TourLauncherButton } from './onboarding/TourProvider';
 import { relayDeviceIdFromPath } from '../lib/relayRoutes';
 
 import { useAppShellNav } from './AppShellNavContext';
-import { appSettingsSections } from './AppShellSettingsDialog';
+import { appSettingsSections, useAppSettingsChrome } from './AppShellSettingsDialog';
 import {
   currentNewThreadHref,
   currentThreadHref,
@@ -51,6 +51,7 @@ export function ThreadWorkspaceLayout({
   const effectiveTheme = props.effectiveTheme ?? shellNav?.effectiveTheme;
   const themeMode = props.themeMode ?? shellNav?.themeMode;
   const onThemeModeChange = props.onThemeModeChange ?? shellNav?.setThemeMode;
+  const settingsChrome = useAppSettingsChrome();
 
   return (
     <SharedThreadWorkspaceLayout
@@ -61,6 +62,8 @@ export function ThreadWorkspaceLayout({
       deviceMonitor={hostScope ? null : <><DeviceMonitor key={deviceId} /><TourLauncherButton /></>}
       workspaceReturnHref={appUrl(desktopSurface ? '/' : props.workspaceReturnHref ?? currentWorkspacesHref())}
       settingsSections={props.settingsSections ?? appSettingsSections()}
+      settingsTitle={props.settingsTitle ?? settingsChrome.title}
+      settingsExtraContent={props.settingsExtraContent ?? settingsChrome.extraContent}
       {...(effectiveTheme ? { effectiveTheme } : {})}
       {...(themeMode ? { themeMode } : {})}
       {...(onThemeModeChange ? { onThemeModeChange } : {})}

@@ -10,16 +10,17 @@ describe('device management stays in the client', () => {
       expect(readFileSync(new URL(file, import.meta.url), 'utf8'), file).not.toMatch(/\b(?:openExternal|window\.open)\s*\(/);
     }
   });
-  it('opens and starts work by navigating locally, and manages in place without leaving the page', () => {
+  it('opens, starts work and reaches settings by navigating locally, and manages the rest in place', () => {
     const navigate = vi.fn(), manage = vi.fn(), reveal = vi.fn(), external = vi.fn();
     window.pockymoeHost = { shell: { openExternal: external } } as never;
     const items = deviceActions({ id: 'offline', name: 'Offline', connected: false }, { navigate, manage, reveal, renameSupported: false });
     expect(items.map(item => item.id)).toEqual(['open', 'new', 'details', 'reveal', 'rename', 'share', 'isolate', 'settings', 'remove']);
     for (const item of items) item.onSelect();
     expect(external).not.toHaveBeenCalled();
-    // Only opening, a new thread and the device's page change the address; none carries ?action=.
-    expect(navigate.mock.calls.map(([path]) => path)).toEqual(['/devices/offline/workspaces', '/devices/offline/threads/new', '/desktop/devices/offline']);
-    expect(manage.mock.calls.map(([action]) => action)).toEqual(['rename', 'share', 'isolate', 'settings', 'remove']);
+    // Opening, a new thread, the device's page and its settings (the Settings tab of
+    // that page, issue #115) change the address; none carries ?action=.
+    expect(navigate.mock.calls.map(([path]) => path)).toEqual(['/devices/offline/workspaces', '/devices/offline/threads/new', '/desktop/devices/offline', '/desktop/devices/offline?tab=settings']);
+    expect(manage.mock.calls.map(([action]) => action)).toEqual(['rename', 'share', 'isolate', 'remove']);
     expect(reveal).toHaveBeenCalledOnce();
     expect(items.filter(item => item.disabled).map(item => item.id)).toEqual(['new', 'rename']);
     expect(items.filter(item => item.disabled).every(item => item.disabledReason)).toBe(true);

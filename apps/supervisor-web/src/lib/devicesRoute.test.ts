@@ -1,19 +1,14 @@
-import { afterEach, expect, it, vi } from 'vitest';
-const host = vi.hoisted(() => ({ mobile: false, desktop: false }));
-vi.mock('../desktop/surface', () => ({ hostSurface: () => host.desktop ? 'desktop' : host.mobile ? 'mobile' : 'browser' }));
-afterEach(() => vi.unstubAllGlobals());
-it.each([[false, false, '/desktop/devices'], [false, true, '/relay-devices'], [true, false, '/relay-devices'], [true, true, '/relay-devices']])('chooses once on load: mobile=%s phone=%s', async (mobile, phone, expected) => {
-  vi.resetModules(); host.mobile = mobile; host.desktop = false;
-  vi.stubGlobal('matchMedia', () => ({ matches: phone }));
-  const { devicesHref } = await import('./devicesRoute');
-  expect(devicesHref('?tab=shared&dir=out&shareDevice=d&action=share')).toBe(expected + '?tab=shared&dir=out&shareDevice=d&action=share');
-  vi.stubGlobal('matchMedia', () => ({ matches: !phone }));
-  expect(devicesHref()).toBe(expected);
+import { expect, it } from 'vitest';
+import { devicePageHref, devicesHref, deviceSettingsHref } from './devicesRoute';
+
+it('sends every surface to the one device center, keeping old query state', () => {
+  expect(devicesHref('?tab=shared&dir=out&shareDevice=d&action=share')).toBe('/desktop/devices?tab=shared&dir=out&shareDevice=d&action=share');
+  expect(devicesHref()).toBe('/desktop/devices');
 });
 
-it('keeps the desktop client on its Devices page even at phone width', async () => {
-  vi.resetModules(); host.mobile = false; host.desktop = true;
-  vi.stubGlobal('matchMedia', () => ({ matches: true }));
-  const { devicesHref } = await import('./devicesRoute');
-  expect(devicesHref()).toBe('/desktop/devices');
+it('names a device page tab and a settings section in the address', () => {
+  expect(devicePageHref('a b')).toBe('/desktop/devices/a%20b');
+  expect(devicePageHref('d', 'access')).toBe('/desktop/devices/d?tab=access');
+  expect(deviceSettingsHref('d')).toBe('/desktop/devices/d?tab=settings');
+  expect(deviceSettingsHref('d', 'upstreams')).toBe('/desktop/devices/d?tab=settings&section=upstreams');
 });

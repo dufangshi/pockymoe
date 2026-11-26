@@ -201,8 +201,8 @@ test('a signed workspace share waits for the safety code, then reaches its threa
     await expect(recipient.page.getByText('Signed thread 1').first()).toBeVisible();
 
     // Controlled by someone else now, the device names that share as why its
-    // agents cannot reach the owner's other devices.
-    await owner.page.goto(f.base + '/relay-devices');
+    // agents cannot reach the owner's other devices: on its own page (issue #115).
+    await owner.page.goto(f.base + `/desktop/devices/${d1.id}`);
     const controlMark = owner.page.getByRole('button', { name: 'Shared for control', exact: true });
     await controlMark.click();
     const reasons = owner.page.getByRole('dialog', { name: 'Shared for control' });

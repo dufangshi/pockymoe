@@ -72,10 +72,15 @@ for (const pack of ['classic', 'plum-pocket', 'terminal']) for (const dark of [f
       await expect(page.getByRole('dialog', { name: english ? 'Device monitor' : '设备监控', exact: true })).toBeVisible();
       await page.screenshot({ path: `${evidence}/${name}-monitor.png` });
       await page.keyboard.press('Escape');
+      // The update badge opens the device page's Settings tab, at its Supervisor (issue #115).
       await page.getByRole('button', { name: english ? 'Update 0.13.42' : '有更新 0.13.42', exact: true }).click();
-      await expect(page.getByRole('dialog', { name: english ? 'Device settings · Windows Studio' : '设备设置 · Windows Studio', exact: true })).toContainText(english ? 'Its Supervisor version and its connection to the relay.' : '这台设备的 Supervisor 版本，以及它与 Relay 的连接。');
+      await expect(page).toHaveURL(/\/desktop\/devices\/device-1\?tab=settings&section=device/);
+      await expect(page.getByRole('tab', { name: 'Supervisor', exact: true })).toHaveAttribute('aria-selected', 'true');
+      await expect(page.getByRole('tab', { name: english ? 'Settings' : '设置', exact: true })).toHaveAttribute('aria-selected', 'true');
       await page.screenshot({ path: `${evidence}/${name}-update.png` });
-      await page.keyboard.press('Escape');
+      await page.goBack();
+      await expect(page.getByRole('article', { name: 'Windows Studio', exact: true })).toBeVisible();
+      await page.locator('.pd-page').evaluate(element => { element.setAttribute('data-locale-preserved', 'yes'); });
       expect(await page.locator('.pd-page').evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
       expect(await page.locator('.pd-device-card').evaluateAll(cards => cards.every(card => card.scrollWidth <= card.clientWidth + 1))).toBe(true);
     }

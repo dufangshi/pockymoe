@@ -11,6 +11,9 @@ let chosen: string | null = null;
 const listeners = new Set<() => void>();
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 
+/** The device last chosen in the settings window on this page, if any. */
+export function chosenSettingsDevice() { return chosen; }
+
 export function chooseSettingsDevice(deviceId: string | null) {
   if (chosen === deviceId) return;
   chosen = deviceId;

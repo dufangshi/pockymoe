@@ -43,8 +43,8 @@ because the tour runs on a **sample device** answered inside the page.
   their own browser keys (suffix `:pockymoe-tour`), never the relay workbench.
 - On sample pages `relay/portal` is the sample device's, so the account's
   owned-device record is not rewritten.
-- The account's device list (`/relay-devices` on a phone, `/desktop/devices` on a
-  computer) never lists the sample device.
+- The account's device list (`/desktop/devices`, on a phone too) never lists the
+  sample device.
 - The sample device's workspace page keeps the plain Web layout, also in a
   signed-in PC browser: the desktop frame lists the account's own devices.
 

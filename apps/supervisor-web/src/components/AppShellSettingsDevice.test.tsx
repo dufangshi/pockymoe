@@ -3,13 +3,15 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { setLocale } from '@pockymoe/thread-ui/i18n';
 import { PluginProvider, SettingsDialog } from '@pockymoe/thread-ui';
-import { appSettingsSections } from './AppShellSettingsDialog';
+import { appSettingsSections, deviceSettingsSections } from './AppShellSettingsDialog';
 import { fetchRelayPortal } from '../lib/api';
 import { chooseSettingsDevice } from '../lib/settingsDevice';
 import { encryptedBrowserFetch } from '../lib/relayTransport';
 
 // Issue #112: the settings window read and saved the device remembered in
 // localStorage (device-1) while the reader was on another device's page.
+// Issue #115: in Relay mode a device's own tabs are its page's Settings tab
+// (deviceSettingsSections); the window keeps Plugins, still for one named device.
 vi.mock('../lib/relayTransport', async original => ({
   ...await original<typeof import('../lib/relayTransport')>(),
   encryptedBrowserFetch: vi.fn(),
@@ -20,7 +22,7 @@ vi.mock('../lib/api', async original => ({
   fetchRelayPortal: vi.fn(),
 }));
 
-const DEVICE_TABS = ['harnesses', 'upstreams', 'resources', 'environments', 'device', 'workspace', 'plugins'];
+const DEVICE_TABS = ['harnesses', 'upstreams', 'resources', 'environments', 'device', 'workspace'];
 const devices = [
   { id: 'device-0', name: 'MacBook Pro', connected: true },
   { id: 'device-1', name: 'Windows Studio', connected: false },
@@ -59,15 +61,22 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function open(path: string, section: string) {
+function open(path: string, section: string, sections = appSettingsSections()) {
   return render(<MemoryRouter initialEntries={[path]}><PluginProvider adapter={{ fetchPlugins: () => [] }} builtinPlugins={[]}>
-    <SettingsDialog open onOpenChange={() => {}} sections={appSettingsSections()} initialId={section} />
+    <SettingsDialog open onOpenChange={() => {}} sections={sections} initialId={section} />
   </PluginProvider></MemoryRouter>);
 }
+/** A device page's Settings tab, for `device`, opened on `path`. */
+const devicePage = (path: string, section: string, device = 'device-0') => open(path, section, deviceSettingsSections(device, null));
 const devicesAsked = () => [...new Set(deviceRequests.map(entry => entry.split(' ')[1]))];
 
+it('keeps the browser and the account in the window: a device\'s own tabs are on its page', () => {
+  open('/desktop/devices/device-0', 'preferences');
+  expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual(['Preferences', 'Notifications', 'Plugins']);
+});
+
 it('reads and saves workspace defaults on the device whose page is open, not the remembered one', async () => {
-  open('/desktop/devices/device-0', 'workspace');
+  devicePage('/desktop/devices/device-0', 'workspace');
   const field = await screen.findByLabelText('Dev home');
   await waitFor(() => expect(field).toHaveValue('/dev-of-device-0'));
   expect(deviceRequests).toEqual(['GET device-0 api/config/workspace-settings']);
@@ -75,35 +84,36 @@ it('reads and saves workspace defaults on the device whose page is open, not the
   fireEvent.click(screen.getByRole('button', { name: 'Save workspace defaults' }));
   await waitFor(() => expect(deviceRequests).toContain('PATCH device-0 api/config/workspace-settings'));
   expect(devicesAsked()).toEqual(['device-0']);
+  // The page names the device: no bar offers another.
+  expect(screen.queryByRole('group', { name: 'Device these settings apply to' })).toBeNull();
 });
 
-it('names the device and its connection state in the window', async () => {
-  open('/desktop/devices/device-0', 'workspace');
+it.each(DEVICE_TABS)('keeps the %s tab of a device page on that device', async section => {
+  devicePage('/desktop/devices/device-0', section);
+  await waitFor(() => expect(deviceRequests.length).toBeGreaterThan(0));
+  expect(devicesAsked()).toEqual(['device-0']);
+});
+
+it('names the device and its connection state beside its plugins', async () => {
+  open('/desktop/devices/device-0', 'plugins');
   const bar = await screen.findByRole('group', { name: 'Device these settings apply to' });
   expect(await within(bar).findByText('MacBook Pro')).toBeVisible();
   expect(within(bar).getByText('Online')).toBeVisible();
   // The page names the device: the window offers no other.
   expect(within(bar).queryByRole('combobox')).toBeNull();
+  await waitFor(() => expect(devicesAsked()).toEqual(['device-0']));
 });
 
-it.each(DEVICE_TABS)('keeps the %s tab on the device whose page is open', async section => {
-  open('/desktop/devices/device-0', section);
-  expect(await within(await screen.findByRole('group', { name: 'Device these settings apply to' })).findByText('MacBook Pro')).toBeVisible();
-  await waitFor(() => expect(deviceRequests.length).toBeGreaterThan(0));
-  expect(devicesAsked()).toEqual(['device-0']);
-});
-
-it.each(DEVICE_TABS)('keeps the %s tab on the routed device under /devices/:id', async section => {
-  open('/devices/device-0/workspaces', section);
+it('keeps the plugins tab on the routed device under /devices/:id', async () => {
+  open('/devices/device-0/workspaces', 'plugins');
   expect(await within(await screen.findByRole('group', { name: 'Device these settings apply to' })).findByText('MacBook Pro')).toBeVisible();
   // Plugins on a routed page are the page's own, already read by its provider.
-  if (section !== 'plugins') await waitFor(() => expect(deviceRequests.length).toBeGreaterThan(0));
   expect(devicesAsked().filter(device => device !== 'device-0')).toEqual([]);
 });
 
-// The map and the pet open Upstreams from a page that shows no single device.
-it.each(['/', '/desktop/devices', '/relay-account'])('asks which device on %s instead of a dead end, then acts on the chosen one', async path => {
-  open(path, 'upstreams');
+// The map and the account pages show no single device.
+it.each(['/', '/desktop/devices', '/relay-account'])('asks which device\'s plugins on %s instead of a dead end, then acts on the chosen one', async path => {
+  open(path, 'plugins');
   const bar = await screen.findByRole('group', { name: 'Device these settings apply to' });
   const choice = await within(bar).findByRole('combobox');
   expect(choice).toHaveTextContent('Choose device');
@@ -111,7 +121,7 @@ it.each(['/', '/desktop/devices', '/relay-account'])('asks which device on %s in
   expect(deviceRequests).toEqual([]);
   fireEvent.click(choice);
   fireEvent.click(await screen.findByRole('option', { name: 'MacBook Pro' }));
-  await waitFor(() => expect(deviceRequests).toContain('GET device-0 api/management/harnesses'));
+  await waitFor(() => expect(deviceRequests).toContain('GET device-0 api/plugins'));
   expect(devicesAsked()).toEqual(['device-0']);
   expect(within(bar).getByRole('combobox')).toHaveTextContent('MacBook Pro');
   expect(within(bar).getByText('Online')).toBeVisible();
@@ -119,8 +129,8 @@ it.each(['/', '/desktop/devices', '/relay-account'])('asks which device on %s in
 
 it('uses the account\'s only device without asking, and names it', async () => {
   portalDevices = [devices[1]!];
-  open('/desktop/devices', 'workspace');
-  await waitFor(() => expect(deviceRequests).toEqual(['GET device-1 api/config/workspace-settings']));
+  open('/desktop/devices', 'plugins');
+  await waitFor(() => expect(deviceRequests).toEqual(['GET device-1 api/plugins']));
   const bar = screen.getByRole('group', { name: 'Device these settings apply to' });
   expect(within(bar).getByRole('combobox')).toHaveTextContent('Windows Studio');
   expect(within(bar).getByText('Offline')).toBeVisible();

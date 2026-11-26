@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { ArrowRight } from 'lucide-react';
 import { ErrorMark, Select } from '@pockymoe/thread-ui';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import type { RelayPortalSummaryDto } from '@pockymoe/shared';
 import { fetchRelayPortal, relayModeActive } from '../lib/api';
-import { devicesHref } from '../lib/devicesRoute';
+import { devicesHref, deviceSettingsHref } from '../lib/devicesRoute';
 import { chooseSettingsDevice, useSettingsDevice } from '../lib/settingsDevice';
 import { DeviceStateMark } from './DeviceStateMark';
 
@@ -96,5 +97,32 @@ export function SettingsDeviceBar() {
       </div>
       {target.missing && sorted.length > 1 ? <p className="settings-note py-4 text-sm text-[var(--theme-fg-muted)]">{translate('settings.deviceScopeChoose')}</p> : null}
     </>
+  );
+}
+
+/**
+ * In Relay mode a device's own settings (Harness, upstreams, resources, isolated
+ * environments, Supervisor, workspace defaults) are the Settings tab of its page
+ * (issue #115). The settings window says where, in one line: the device of the
+ * page, or the only one; otherwise all devices, to choose from.
+ */
+export function DeviceSettingsLink({ onNavigate }: { onNavigate: () => void }) {
+  useI18n();
+  const target = useSettingsDevice();
+  const [devices, setDevices] = useState(lastDevices);
+  useEffect(() => {
+    let alive = true;
+    fetchRelayPortal().then(portal => { lastDevices = namedDevices(portal); if (alive) setDevices(lastDevices); }).catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
+  const owned = devices?.filter(device => device.owned) ?? [];
+  // A page of someone else's device has no settings of yours: the line lists yours.
+  const device = owned.find(entry => entry.id === target.deviceId) ?? (owned.length === 1 ? owned[0] : undefined);
+  return (
+    <Link className="settings-device-link" to={device ? deviceSettingsHref(device.id) : devicesHref()} onClick={onNavigate} data-testid="settings-device-link">
+      {device ? <DeviceStateMark showLabel={false} state={device.connected ? 'online' : 'offline'} /> : null}
+      <span className="settings-device-link-text">{translate('settings.deviceSettingsLink', { device: device?.name ?? translate('desktopDevices.allDevices') })}</span>
+      <ArrowRight aria-hidden="true" />
+    </Link>
   );
 }

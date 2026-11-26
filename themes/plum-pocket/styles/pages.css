@@ -301,7 +301,7 @@
 :theme [data-page='devices'] section[aria-live] h2 ~ p.text-xs:not(.uppercase) { display: none; }
 
 /* Shared access: pill tabs with counts, then plain lists. */
-:theme [data-page='devices'] .shared-access-tabs {
+:theme :is([data-page='devices'], .device-management-embedded) .shared-access-tabs {
   display: flex;
   gap: 6px;
   overflow-x: auto;
@@ -311,7 +311,7 @@
   border: 0;
   background: transparent;
 }
-:theme [data-page='devices'] .shared-access-tabs > [role='tab'] {
+:theme :is([data-page='devices'], .device-management-embedded) .shared-access-tabs > [role='tab'] {
   min-height: 36px !important;
   padding-inline: 14px 8px;
   border-radius: 999px;
@@ -321,9 +321,9 @@
   font-weight: 700;
   box-shadow: none;
 }
-:theme [data-page='devices'] .shared-access-tabs > [role='tab'][aria-selected='true'] { background: var(--plum-page-on); color: var(--plum-page-on-fg); }
-:theme [data-page='devices'] .shared-access-tabs > [role='tab'] > span { min-width: 22px; padding: 1px 7px; background: color-mix(in srgb, var(--theme-fg) 10%, transparent); color: inherit; font-weight: 800; text-align: center; }
-:theme [data-page='devices'] .shared-access-tabs > [role='tab'][aria-selected='true'] > span { background: var(--plum-page-on-count); color: var(--plum-page-on-count-fg); }
+:theme :is([data-page='devices'], .device-management-embedded) .shared-access-tabs > [role='tab'][aria-selected='true'] { background: var(--plum-page-on); color: var(--plum-page-on-fg); }
+:theme :is([data-page='devices'], .device-management-embedded) .shared-access-tabs > [role='tab'] > span { min-width: 22px; padding: 1px 7px; background: color-mix(in srgb, var(--theme-fg) 10%, transparent); color: inherit; font-weight: 800; text-align: center; }
+:theme :is([data-page='devices'], .device-management-embedded) .shared-access-tabs > [role='tab'][aria-selected='true'] > span { background: var(--plum-page-on-count); color: var(--plum-page-on-count-fg); }
 :theme [data-page='devices'] [role='tabpanel'] section { padding-top: 16px; }
 :theme [data-page='devices'] [role='tabpanel'] section h2 { font-size: 15px; font-family: var(--plum-font); font-weight: 800; }
 :theme [data-page='devices'] .product-empty.product-list { padding-top: 16px; }
@@ -622,7 +622,7 @@
   :theme [data-page='devices'] article.device-row > .device-row-name > .admin-device-state { top: 44px; }
   :theme [data-page='devices'] article.device-row .relay-button-primary { width: 44px; min-height: 44px; flex-grow: 0; padding: 0; gap: 0; border-radius: 14px; font-size: 0; }
   :theme [data-page='devices'] article.device-row .relay-button-primary svg { width: 19px; height: 19px; }
-  :theme [data-page='devices'] .shared-access-tabs { display: grid; overflow: visible; }
+  :theme :is([data-page='devices'], .device-management-embedded) .shared-access-tabs { display: grid; overflow: visible; }
   :theme [data-page='relay-home'] > div > section:first-of-type { grid-template-columns: 1fr; grid-template-areas: 'art' 'status' 'title' 'action'; padding-block: 24px 28px; }
   :theme [data-page='relay-home'] > div > section:first-of-type::after { justify-self: center; width: 200px; height: 140px; margin-bottom: 14px; }
   :theme [data-page='relay-home'] > div > section:first-of-type > h1 { font-size: 27px; }
@@ -649,7 +649,7 @@
   :theme [data-page='admin'] .admin-responsive-table tr { border: 0 !important; border-radius: 16px !important; background: color-mix(in srgb, var(--theme-hover) 45%, transparent) !important; }
   :theme [data-page='admin'] .admin-responsive-table td { border-bottom: 0; }
   :theme [data-page='admin'] .admin-responsive-table :is(.relay-button-secondary, .relay-button-primary) { min-height: 44px; }
-  :theme [data-page='devices'] .shared-access-tabs > [role='tab'] { min-height: 44px !important; }
+  :theme :is([data-page='devices'], .device-management-embedded) .shared-access-tabs > [role='tab'] { min-height: 44px !important; }
   :theme [data-page='devices'] button[aria-controls='add-device-form'] { min-height: 44px; }
   :theme [data-page='devices'] #add-device-form :is(.relay-button-primary, .relay-button-secondary) { min-height: 44px; }
 }

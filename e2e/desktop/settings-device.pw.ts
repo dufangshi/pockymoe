@@ -41,38 +41,39 @@ async function openSettings(page: Page) {
   return dialog;
 }
 
-test('settings on a device page read, name and save that device, not the remembered one', async ({ page }) => {
+test('a device page\'s settings read and save that device, not the remembered one', async ({ page }) => {
   await prepare(page);
-  await go(page, '/desktop/devices/device-0');
   const seen = deviceRequests(page);
+  // Issue #115: a device's own settings are its page's Settings tab.
+  await go(page, '/desktop/devices/device-0?tab=settings&section=workspace');
+  const content = page.getByTestId('desktop-devices');
+  const devHome = content.getByLabel('开发目录');
+  await expect(devHome).toHaveValue('/dev-of-device-0');
+  await devHome.fill('/elsewhere');
+  await content.getByRole('button', { name: '保存工作区默认设置', exact: true }).click();
+  await expect(content.getByText('已保存工作区默认设置。', { exact: true })).toBeVisible();
+  // Development renders effects twice; what matters is where each request went.
+  expect([...new Set(seen.filter(entry => entry.includes('workspace-settings')))]).toEqual(['GET device-0 config/workspace-settings', 'PATCH device-0 config/workspace-settings']);
+  for (const tab of ['Harness', '上游', '资源', '隔离环境', 'Supervisor']) {
+    await content.getByRole('tab', { name: tab, exact: true }).click();
+    await expect(content).not.toContainText('请打开设备');
+  }
+  // The window keeps the device's plugins, named.
   const dialog = await openSettings(page);
-  await dialog.getByRole('tab', { name: '工作区', exact: true }).click();
+  await dialog.getByRole('tab', { name: '插件', exact: true }).click();
   const bar = dialog.getByRole('group', { name: '这些设置作用的设备', exact: true });
   await expect(bar).toContainText('MacBook Pro');
   await expect(bar).toContainText('在线');
-  const devHome = dialog.getByLabel('开发目录');
-  await expect(devHome).toHaveValue('/dev-of-device-0');
-  await devHome.fill('/elsewhere');
-  await dialog.getByRole('button', { name: '保存工作区默认设置', exact: true }).click();
-  await expect(dialog.getByText('已保存工作区默认设置。', { exact: true })).toBeVisible();
-  // Development renders effects twice; what matters is where each request went.
-  expect([...new Set(seen.filter(entry => entry.includes('workspace-settings')))]).toEqual(['GET device-0 config/workspace-settings', 'PATCH device-0 config/workspace-settings']);
-  for (const tab of ['Harness', '上游', '资源', '隔离环境', '设备', '插件']) {
-    await dialog.getByRole('tab', { name: tab, exact: true }).click();
-    await expect(dialog.getByRole('group', { name: '这些设置作用的设备', exact: true })).toContainText('MacBook Pro');
-    await expect(dialog).not.toContainText('请打开设备');
-  }
-  // The last tab opened is Plugins: the device's own, not the page's remembered ones.
   await expect.poll(() => seen).toContain('GET device-0 plugins');
   expect(seen.some(entry => entry.includes('management/'))).toBe(true);
   expect([...new Set(seen.map(entry => entry.split(' ')[1]))]).toEqual(['device-0']);
 });
 
-test('settings on a page without a device ask which one instead of a dead end', async ({ page }) => {
+test('plugins on a page without a device ask which one instead of a dead end', async ({ page }) => {
   await prepare(page);
   const seen = deviceRequests(page);
   const dialog = await openSettings(page);
-  await dialog.getByRole('tab', { name: '上游', exact: true }).click();
+  await dialog.getByRole('tab', { name: '插件', exact: true }).click();
   const bar = dialog.getByRole('group', { name: '这些设置作用的设备', exact: true });
   const choice = bar.getByRole('combobox');
   await expect(choice).toHaveText('选择设备');
@@ -81,14 +82,12 @@ test('settings on a page without a device ask which one instead of a dead end', 
   await choice.click();
   await page.getByRole('option', { name: 'Windows Studio', exact: true }).click();
   await expect(choice).toHaveText('Windows Studio');
-  await expect.poll(() => seen).toContain('GET device-1 management/harnesses');
-  await dialog.getByRole('tab', { name: '工作区', exact: true }).click();
-  await expect(dialog.getByLabel('开发目录')).toHaveValue('/dev-of-device-1');
+  await expect.poll(() => seen).toContain('GET device-1 plugins');
   expect([...new Set(seen.map(entry => entry.split(' ')[1]))]).toEqual(['device-1']);
 });
 
-// One page per width: a seeded page keeps its host (addInitScript adds up), and a
-// phone is a plain browser whose pages are the workspace list and /relay-devices.
+// One page per width: a seeded page keeps its host (addInitScript adds up); a
+// phone is a plain browser on the same device pages.
 for (const width of [1440, 390]) test(`the device bar in every theme, light and dark, at ${width}px`, async ({ page }) => {
   test.setTimeout(240_000); page.setDefaultTimeout(15_000);
   mkdirSync(evidence, { recursive: true });
@@ -99,19 +98,18 @@ for (const width of [1440, 390]) test(`the device bar in every theme, light and 
     const name = `${pack}-${dark ? 'dark' : 'light'}-${width}`;
     await go(page, phone ? '/devices/device-0/workspaces' : '/desktop/devices/device-0');
     let dialog = await openSettings(page);
-    await dialog.getByRole('tab', { name: '工作区', exact: true }).click();
+    await dialog.getByRole('tab', { name: '插件', exact: true }).click();
     const bar = dialog.getByRole('group', { name: '这些设置作用的设备', exact: true });
     await expect(bar).toContainText('MacBook Pro');
-    await expect(dialog.getByLabel('开发目录')).toHaveValue('/dev-of-device-0');
     // The mark is drawn, not just named: a dot of its own size beside the state word.
     expect(await bar.locator('.admin-device-state-mark').evaluate(mark => mark.getBoundingClientRect().width)).toBeGreaterThan(6);
     const box = (await bar.boundingBox())!, panel = (await dialog.boundingBox())!;
     expect(box.x).toBeGreaterThanOrEqual(panel.x); expect(box.x + box.width).toBeLessThanOrEqual(panel.x + panel.width + 1);
     await page.screenshot({ path: `${evidence}/named-${name}.png` });
     await page.keyboard.press('Escape');
-    await go(page, phone ? '/relay-devices' : '/desktop/devices');
+    await go(page, '/desktop/devices');
     dialog = await openSettings(page);
-    await dialog.getByRole('tab', { name: '上游', exact: true }).click();
+    await dialog.getByRole('tab', { name: '插件', exact: true }).click();
     await expect(dialog.getByRole('group', { name: '这些设置作用的设备', exact: true }).getByRole('combobox')).toHaveText('选择设备');
     await page.screenshot({ path: `${evidence}/choose-${name}.png` });
     await page.keyboard.press('Escape');

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode, type Ref } from 'react';
 import { createPortal } from 'react-dom';
-import { Ellipsis } from 'lucide-react';
+import { Check, Ellipsis } from 'lucide-react';
 import { translate, useI18n } from '@pockymoe/thread-ui/i18n';
 import { ErrorMark, useLongPress, useMenuKeyboard, type MapDeviceMenuItem } from '@pockymoe/thread-ui';
 import './managed-object-menu.css';
@@ -13,6 +13,10 @@ import './managed-object-menu.css';
  */
 export interface ManagedAction extends MapDeviceMenuItem {
   icon?: ReactNode;
+  /** A short note after the label, such as "Shared" on a device someone else owns. */
+  detail?: ReactNode;
+  /** One of a set of choices (the device switcher): a radio item, checked when current. */
+  checked?: boolean;
 }
 
 export interface ManagedObjectMenuHandle {
@@ -33,13 +37,15 @@ function viewportBox() {
  * the visible viewport, the shared menu keyboard, and the same menu from a right
  * click or a long press on the object's row (`useManagedObjectMenu`).
  */
-export function ManagedObjectMenu({ name, items, ref, className = '' }: {
+export function ManagedObjectMenu({ name, items, ref, className = '', trigger: custom }: {
   /** The object's name, for the trigger's and the menu's accessible names. */
   name: string;
   items: readonly ManagedAction[];
   ref?: Ref<ManagedObjectMenuHandle>;
   /** The trigger's look where it sits (a card's small key, a row's icon button). */
   className?: string;
+  /** A trigger that shows what it switches (the device switcher) instead of ⋯; the menu opens under its start edge. */
+  trigger?: { content: ReactNode; label: string; menuLabel: string } | undefined;
 }) {
   useI18n();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -70,6 +76,8 @@ export function ManagedObjectMenu({ name, items, ref, className = '' }: {
     anchor.current = { x: x - box.left, y: y - box.top, alignEnd };
     setPosition(place() ?? { left: x, top: y });
   };
+  // ⋯ hangs its menu from its end edge; a switcher from its start edge, like a select.
+  const openFromTrigger = () => { const box = trigger.current!.getBoundingClientRect(); if (custom) show(box.left, box.bottom + 4, false); else show(box.right, box.bottom + 4, true); };
   useImperativeHandle(ref, () => ({ openAt: (x, y) => show(x, y, false) }));
   useMenuKeyboard(menu, Boolean(position), close);
   const open = Boolean(position);
@@ -94,17 +102,19 @@ export function ManagedObjectMenu({ name, items, ref, className = '' }: {
     };
   }, [close, open, place]);
   return <>
-    <button ref={trigger} type="button" className={`managed-menu-trigger ${className}`} aria-label={translate('devices.moreActionsFor', { value1: name })} aria-haspopup="menu" aria-expanded={open}
-      onClick={() => { if (open) { close(); return; } const box = trigger.current!.getBoundingClientRect(); show(box.right, box.bottom + 4, true); }}
-      onKeyDown={event => { if (!open && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) { event.preventDefault(); const box = trigger.current!.getBoundingClientRect(); show(box.right, box.bottom + 4, true); } }}>
-      <Ellipsis data-icon="more" aria-hidden="true" />
+    <button ref={trigger} type="button" className={`${custom ? 'managed-menu-switch' : 'managed-menu-trigger'} ${className}`} aria-label={custom?.label ?? translate('devices.moreActionsFor', { value1: name })} aria-haspopup="menu" aria-expanded={open}
+      onClick={() => { if (open) { close(); return; } openFromTrigger(); }}
+      onKeyDown={event => { if (!open && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) { event.preventDefault(); openFromTrigger(); } }}>
+      {custom ? custom.content : <Ellipsis data-icon="more" aria-hidden="true" />}
     </button>
-    {position && createPortal(<div ref={menu} className="managed-menu" role="menu" aria-label={translate('devices.actionsFor', { value1: name })} data-theme-effective={document.documentElement.dataset.themeEffective} style={position}>
+    {position && createPortal(<div ref={menu} className="managed-menu" role="menu" aria-label={custom?.menuLabel ?? translate('devices.actionsFor', { value1: name })} data-theme-effective={document.documentElement.dataset.themeEffective} style={position}>
       {items.map(item => <div key={item.id} className="managed-menu-row" role="none" data-separated={item.separator || undefined}>
         {item.separator ? <span role="separator" className="sr-only" /> : null}
-        <button type="button" role="menuitem" disabled={item.disabled} data-tone={item.tone} data-action={item.id} onClick={() => { close(true); item.onSelect(); }}>
+        <button type="button" role={item.checked === undefined ? 'menuitem' : 'menuitemradio'} aria-checked={item.checked} disabled={item.disabled} data-tone={item.tone} data-action={item.id} onClick={() => { close(true); item.onSelect(); }}>
           {item.icon ? <span className="managed-menu-icon" aria-hidden="true">{item.icon}</span> : null}
           <span className="managed-menu-label">{item.label}</span>
+          {item.detail ? <span className="managed-menu-detail">{item.detail}</span> : null}
+          {item.checked ? <Check className="managed-menu-check" aria-hidden="true" /> : null}
         </button>
         {/* An action this object cannot take now stays in its place, greyed, with the reason on a mark (§11). */}
         {item.disabledReason ? <ErrorMark kind="unavailable" message={item.disabledReason} /> : null}

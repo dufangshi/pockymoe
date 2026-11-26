@@ -1,8 +1,10 @@
 .pd-page { --pd-radius: 6px; container-type: inline-size; color: var(--theme-fg); padding: 0 16px 24px; width: 100%; max-width: 1600px; box-sizing: border-box; margin: 0 auto; font-size: 12px; line-height: 18px; font-variant-numeric: tabular-nums; }
 :root[data-theme-preset="terminal"] .pd-page { --pd-radius: 0px; }
-.pd-page h1, .pd-page h2, .pd-page h3, .pd-page p { margin: 0; }
-.pd-page button { font: inherit; cursor: pointer; color: inherit; }
-.pd-page button:disabled { opacity: .45; cursor: default; }
+/* The page's own compact resets stop at the panels it hosts (a device's settings
+   and access), which keep the look they have in the settings window. */
+.pd-page :is(h1, h2, h3, p):not(:where(.pd-device-settings, .device-management-embedded) *) { margin: 0; }
+.pd-page button:not(:where(.pd-device-settings, .device-management-embedded) *) { font: inherit; cursor: pointer; color: inherit; }
+.pd-page button:disabled:not(:where(.pd-device-settings, .device-management-embedded) *) { opacity: .45; cursor: default; }
 .pd-page button:focus-visible, .pd-page a:focus-visible, .pd-page svg g:focus-visible { outline: 2px solid var(--theme-accent-solid); outline-offset: 2px; }
 .pd-page-header { height: 40px; display: flex; align-items: center; gap: 10px; user-select: none; -webkit-app-region: drag; }
 .pd-page-header h1 { font-size: 13px; font-weight: 600; flex: none; }
@@ -197,3 +199,48 @@
 /* A narrow card keeps the device's name readable: the lock alone, still named "Isolated" and tapped for what it means (§13). */
 .pd-card-heading { container: pd-card-heading / inline-size; }
 @container pd-card-heading (max-width: 300px) { .isolation-mark-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; } }
+
+/* A device's own page (issue #115): back to all devices, its name and one menu,
+   its state, then the tabs Overview / Settings / Access. */
+.pd-breadcrumb { display: flex; align-items: center; min-height: 40px; }
+.pd-breadcrumb a { position: relative; display: inline-flex; align-items: center; gap: 5px; color: var(--theme-fg-muted); font-size: 12px; text-decoration: none; }
+.pd-breadcrumb a::after { content: ''; position: absolute; inset: -10px -6px; }
+@media (hover: hover) { .pd-breadcrumb a:hover { color: var(--theme-fg); } }
+.pd-device-page-header { display: flex; align-items: center; gap: 10px; min-height: 40px; min-width: 0; }
+.pd-device-page-header h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 18px; font-weight: 600; line-height: 26px; }
+.pd-device-page-header .pd-saved { flex: none; font-size: 11px; color: var(--theme-fg-muted); }
+.pd-device-page-header .pd-header-actions { flex: none; }
+.pd-page .pd-open-device { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; color: var(--theme-accent-solid-fg); text-decoration: none; font-size: 12px; font-weight: 600; }
+.pd-page .pd-device-menu.pd-icon-button { width: 32px; height: 32px; }
+.pd-page .pd-device-menu.managed-menu-trigger > svg { width: 18px; height: 18px; }
+.pd-device-page .device-status-line { min-height: 24px; margin-top: 2px; }
+.pd-page > .pd-device-tabs { width: auto; margin-block: 10px 14px; }
+.pd-page > .pd-device-tabs > [role='tab'] { padding: 0 2px; font-size: 13px; }
+.pd-page > .pd-device-tabs > [role='tab'][aria-selected='true'] { background: transparent; }
+.pd-device-panel { min-width: 0; }
+.pd-page .pd-device-card.is-bare { height: auto; min-height: 64px; }
+.pd-page .pd-device-grid.is-detail { grid-template-columns: minmax(0, 1fr); }
+/* The device's settings use the settings window's tabs and panels, on the page. */
+.pd-device-settings { overflow: hidden; border: 1px solid var(--theme-border); border-radius: var(--pd-radius); background: var(--theme-panel); font-size: 14px; line-height: 1.5; font-variant-numeric: normal; }
+.pd-device-panel > .device-management-embedded { font-size: 14px; line-height: 1.5; font-variant-numeric: normal; }
+.pd-device-settings .settings-workspace { overflow: visible; }
+.pd-device-settings .settings-panel { overflow: visible; }
+.pd-device-settings .settings-navigation { border-radius: var(--pd-radius) 0 0 var(--pd-radius); }
+.pd-stats-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; }
+.pd-stats-fold { margin-top: 14px; border-top: 1px solid var(--theme-border); }
+.pd-stats-fold > summary { min-height: 44px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.pd-stats-fold > .pd-stats-toolbar { margin-top: 4px; }
+@media (max-width: 639px) {
+  .pd-device-page-header h1 { font-size: 16px; }
+  .pd-page .pd-open-device { min-height: 40px; }
+  .pd-page .pd-device-menu.pd-icon-button { width: 40px; height: 40px; }
+  .pd-page > .pd-device-tabs { gap: 0; }
+  .pd-page > .pd-device-tabs > [role='tab'] { flex: 1; justify-content: center; }
+  .pd-device-settings { margin-inline: -10px; border-inline: 0; border-radius: 0; }
+  .pd-device-settings .settings-navigation { border-radius: 0; }
+  .pd-stats-toolbar .pd-segment { flex: 1; }
+  .pd-stats-toolbar .pd-segment button { flex: 1; min-height: 36px; }
+  .pd-stats-toolbar .pd-select { max-width: none; flex: 1 1 100%; height: 36px; }
+}
+:root[data-theme-preset='terminal'] .pd-device-settings { border-radius: 0; }
+

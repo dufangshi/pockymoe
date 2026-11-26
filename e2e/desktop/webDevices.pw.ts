@@ -25,8 +25,9 @@ for (const [pack, dark] of [['classic', false], ['classic', true], ['plum-pocket
     for (const width of [1440, 900, 390]) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 1100 });
       if (width === 390) {
+        // The old phone page leads to the same device center (issue #115), without the computer's frame.
         await page.goto('/relay-devices');
-        await expect(page).toHaveURL(/\/relay-devices$/);
+        await expect(page).toHaveURL(/\/desktop\/devices$/);
         await expect(page.locator('[data-navigation-shell], .matter-rail')).toHaveCount(0);
         await expect(page.locator('[data-page="devices"]')).toContainText('MacBook Pro');
       }
@@ -114,11 +115,11 @@ test('sidebar survives opening a thread, workspaces and returning without a seco
   expect(accountStreams).toHaveLength(2);
 });
 
-test('phone load keeps the original devices page', async ({ page }) => {
+test('a phone load uses the same device center, without the computer\'s frame', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await seedWeb(page);
   await page.goto('/relay-devices');
-  await expect(page).toHaveURL(/\/relay-devices$/);
+  await expect(page).toHaveURL(/\/desktop\/devices$/);
   await expect(page.locator('[data-navigation-shell], .matter-rail')).toHaveCount(0);
   await expect(page.locator('[data-page="devices"]')).toContainText('MacBook Pro');
   await page.screenshot({ path: `${evidence}/phone-devices-390.png`, animations: 'disabled' });

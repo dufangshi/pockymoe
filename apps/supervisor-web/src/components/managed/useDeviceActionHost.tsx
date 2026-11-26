@@ -8,7 +8,7 @@ export interface ListedDevice { id: string; name: string; connected: boolean }
 /**
  * Where a page that lists devices (the Devices page, the map) opens their
  * management windows: `manage(device, action)` shows the rename, share,
- * isolation, settings or removal window over the page the reader is on, and
+ * isolation or removal window over the page the reader is on, and
  * `windows` is the element to render for it. Pass `manage` to `deviceActions`.
  */
 export function useDeviceActionHost({ onRemoved, onRenamed, onClosed }: {
@@ -26,7 +26,6 @@ export function useDeviceActionHost({ onRemoved, onRenamed, onClosed }: {
   const windows = open ? (
     <DeviceManagement
       key={`${open.device?.id ?? ''}:${open.action}`}
-      embedded
       deviceId={open.device?.id}
       known={open.device}
       action={open.action}

@@ -13,9 +13,9 @@ import { ComposerShortcutSettings } from './ComposerShortcutSettings';
 import { TourSettingsEntry } from './onboarding/TourProvider';
 import { ThemePresetSettings } from './ThemePresetSettings';
 import { useThemeRegistry } from '../lib/themePacks';
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useHostScope } from '../lib/hostCapabilities';
-import { relayModeActive } from '../lib/api';
+import { fetchStorageOverview, relayModeActive } from '../lib/api';
 import { useSettingsDevice } from '../lib/settingsDevice';
 import {
   PhoneHandChoice,
@@ -26,7 +26,7 @@ import {
 import { useAppShellNav } from './AppShellNavContext';
 import { themeOptions } from './appShellNavigationModel';
 import { PluginsSettings } from './PluginsSettings';
-import { SettingsDeviceBar } from './SettingsDeviceBar';
+import { DeviceSettingsLink, SettingsDeviceBar } from './SettingsDeviceBar';
 import { WorkspaceDefaultsSettings } from './WorkspaceDefaultsSettings';
 
 /** The tabs that administer one device; the others belong to this browser or the account. */
@@ -71,6 +71,7 @@ export function AppShellSettingsDialog({
     });
   }, []);
   const effectiveTheme = shellNav?.effectiveTheme ?? 'dark';
+  const { title: settingsTitle, extraContent: settingsExtra } = useAppSettingsChrome();
   const [fontSize, setFontSize] = useFontSize();
   const autoCollapseCompletedTurns =
     shellNav?.autoCollapseCompletedTurns ?? true;
@@ -253,6 +254,8 @@ export function AppShellSettingsDialog({
   return <SettingsDialog open
     onOpenChange={(open) => { if (!open) closeSettings(); }}
     themeMode={selectedThemeMode} effectiveTheme={effectiveTheme}
+    title={settingsTitle}
+    extraContent={settingsExtra(closeSettings)}
     sections={appSettingsSections()}
     {...(shellNav?.settingsSection ? { initialId: shellNav.settingsSection } : {})}
     contentProps={{ 'data-testid': 'settingsDialog', onCloseAutoFocus: (event) => event.preventDefault() }}
@@ -260,10 +263,37 @@ export function AppShellSettingsDialog({
 
 }
 
+/** The tabs that administer one device and, in Relay mode, live on that device's
+ * own page (its Settings tab, issue #115), not in the settings window. */
+const DEVICE_PAGE_SECTIONS = ['device', 'harnesses', 'upstreams', 'resources', 'environments', 'workspace'];
+
 /** Plugin settings open from the gear on their row in Plugins, not as top-level tabs.
  * A host scope (Treer Agent UI) gets Preferences and Device, which there holds only
- * hub maintenance (Check/Update/Restart); the other tabs administer the device. */
+ * hub maintenance (Check/Update/Restart); the other tabs administer the device.
+ * In Relay mode the window keeps this browser's and the account's tabs (and the
+ * plugins of a chosen device); a device's own settings are on its page. */
 export function appSettingsSections({ scoped = false }: { scoped?: boolean } = {}): SettingsSection[] {
+  const relay = relayModeActive();
+  return settingsSectionList({ scoped }).filter(section => scoped || !relay || !DEVICE_PAGE_SECTIONS.includes(section.id)).map((section) => ({
+    ...section,
+    content: <AppShellSettingsDialog embedded section={section.id} />,
+  }));
+}
+
+/** The Settings tab of a device's page: the device's own settings, then the
+ * device-level tabs the settings window had, all acting on `deviceId`. */
+export function deviceSettingsSections(deviceId: string, general: ReactNode): SettingsSection[] {
+  const sections = settingsSectionList({ scoped: false });
+  const byId = (id: string) => sections.find(section => section.id === id)!;
+  return [
+    { id: 'general', label: translate('devices.settingsGeneral'), description: translate('devices.settingsGeneralDescription'), content: general },
+    // "Supervisor" here: on a device's page the device is already named.
+    { ...byId('device'), label: 'Supervisor', content: <AppShellSettingsDialog embedded section="device" deviceId={deviceId} /> },
+    ...['harnesses', 'upstreams', 'resources', 'environments', 'workspace'].map(id => ({ ...byId(id), content: <AppShellSettingsDialog embedded section={id} deviceId={deviceId} /> })),
+  ];
+}
+
+function settingsSectionList({ scoped }: { scoped: boolean }): Omit<SettingsSection, 'content'>[] {
   const sections = [
     {
       id: 'preferences',
@@ -316,8 +346,32 @@ export function appSettingsSections({ scoped = false }: { scoped?: boolean } = {
   return sections.filter((section) => !scoped || section.id === 'preferences' || section.id === 'device').map((section) => ({
     ...section,
     ...(scoped && section.id === 'device' ? { description: translate('settings.treerDeviceDescription') } : {}),
-  })).map((section) => ({
-    ...section,
-    content: <AppShellSettingsDialog embedded section={section.id} />,
   }));
+}
+
+// This Supervisor's name in local mode, read once for the window's title.
+let localName: string | null = null;
+let localNameRequest: Promise<string | null> | null = null;
+
+/**
+ * What the settings window shows around its tabs, for the app shell's window and
+ * the thread page's: in Relay mode one line to the device's own settings page;
+ * in local mode the title names this machine (issue #115).
+ */
+export function useAppSettingsChrome(): { title: string | undefined; extraContent: (close: () => void) => ReactNode } {
+  useI18n();
+  const relay = relayModeActive();
+  const hostScope = useHostScope();
+  const [name, setName] = useState(localName);
+  useEffect(() => {
+    if (relay || hostScope || localName) return;
+    let alive = true;
+    localNameRequest ??= fetchStorageOverview().then(overview => overview.deviceName || null).catch(() => { localNameRequest = null; return null; });
+    void localNameRequest.then(value => { localName = value; if (alive) setName(value); });
+    return () => { alive = false; };
+  }, [relay, hostScope]);
+  return {
+    title: !relay && !hostScope && name ? `${translate('files.settings')} · ${name}` : undefined,
+    extraContent: close => relay && !hostScope ? <DeviceSettingsLink onNavigate={close} /> : null,
+  };
 }

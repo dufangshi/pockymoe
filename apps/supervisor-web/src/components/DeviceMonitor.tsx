@@ -486,7 +486,7 @@ export function DeviceMonitor({ deviceId }: { deviceId?: string }) {
                         )}
                         {shellNav?.openSettingsSection && (
                           <button type="button" className="dm-harness-settings" title={translate('devices.harnessResourceSettings')} aria-label={translate('devices.harnessResourceSettings')}
-                            onClick={() => { setOpen(false); if (deviceId) chooseSettingsDevice(deviceId); shellNav.openSettingsSection?.('resources'); }}>
+                            onClick={() => { setOpen(false); if (deviceId) chooseSettingsDevice(deviceId); shellNav.openSettingsSection?.('resources', deviceId); }}>
                             <Settings aria-hidden />
                           </button>
                         )}

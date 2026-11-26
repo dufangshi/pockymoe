@@ -4,7 +4,7 @@ import type { ThreadMapProps } from '@pockymoe/thread-ui';
 import type { DesktopIndex } from './data/types';
 const fixture = vi.hoisted(() => ({ props: null as ThreadMapProps | null, index: null as DesktopIndex | null, navigate: vi.fn() }));
 vi.mock('@pockymoe/thread-ui', async original => ({ ...await original<typeof import('@pockymoe/thread-ui')>(), MatterWorkbench: ({ children }: { children: React.ReactNode }) => <>{children}</>, ThreadMap: (props: ThreadMapProps) => { fixture.props = props; return null; } }));
-vi.mock('react-router-dom', async original => ({ ...await original<typeof import('react-router-dom')>(), useNavigate: () => fixture.navigate }));
+vi.mock('react-router-dom', async original => ({ ...await original<typeof import('react-router-dom')>(), useNavigate: () => fixture.navigate, useLocation: () => ({ pathname: '/', search: '', hash: '', state: null, key: 'map' }) }));
 vi.mock('./data', async original => ({ ...await original<typeof import('./data')>(), useDesktopSelector: (select: (index: DesktopIndex) => unknown) => select(fixture.index!), useDesktopStore: () => ({}) }));
 vi.mock('../pages/useWorkbenchNavigation', async original => ({ ...await original<typeof import('../pages/useWorkbenchNavigation')>(), useWorkbenchNavigation: () => ({}) }));
 vi.mock('./context', () => ({ useDesktopWorkbench: () => ({ threads: [], notifications: [] }), useDesktopSurface: () => null }));

@@ -25,7 +25,7 @@ export function summary(range: StatsRange, device = 0): StatsSummary {
     longestThreads: ['Build device overview and statistics', 'Polish desktop navigation', 'Review transport security'].map((title, i) => ({ threadId: `t-${i}`, workspaceId: 'w-0', title, durationMs: 240000 - i * 60000 })), activeThreads: 3, runningTurns: 3 };
 }
 
-export async function seed(page: Page, pack = 'classic', dark = false, unsupported = false, realShape = false, host = true, usageShape = false) {
+export async function seed(page: Page, pack = 'classic', dark = false, unsupported = false, realShape = false, host = true, usageShape = false, portalExtras: Record<string, unknown> = {}) {
   const devices = (usageShape ? ['MacBook Pro', 'Windows Studio', 'Linux Server', ...Array.from({ length: 9 }, (_, i) => `Usage device ${i + 3}`)] : realShape ? ['MacBook Pro', 'Windows Studio', 'Linux Server', 'wsl', 'LuisMini2', 'Build Box', 'Studio Linux', 'Mac mini', 'Office Windows', 'Archive', 'Empty device'] : ['MacBook Pro', 'Windows Studio', 'Linux Server']).map((name, i) => ({ id: `device-${i}`, ownerUserId: account.id, name, connected: i !== 2 && i !== 9, lastHeartbeatAt: new Date(Date.now() - (i === 2 ? 3 * 3600000 : 0)).toISOString() }));
   await page.addInitScript(({ pack, dark, host }) => {
     localStorage.setItem('remote-codex-theme-mode', dark ? 'dark' : 'light'); localStorage.setItem('pockymoe-theme-preset', pack); localStorage.setItem('remote-codex.locale', 'zh-CN');
@@ -40,7 +40,7 @@ export async function seed(page: Page, pack = 'classic', dark = false, unsupport
   await page.route('**/api/auth/session', route => route.fulfill({ json: { authenticated: true, authRequired: false, username: 'Alex', mode: 'local' } }));
   await page.route('**/api/config/runtime', route => route.fulfill({ json: { defaultBackend: 'acp' } }));
   await page.route('**/relay/auth/session', route => route.fulfill({ json: { authenticated: true, user: account } }));
-  await page.route('**/relay/portal', route => route.fulfill({ json: { user: account, devices, sharedWithMe: [], sharedByMe: [] } }));
+  await page.route('**/relay/portal', route => route.fulfill({ json: { user: account, devices, sharedWithMe: [], sharedByMe: [], ...portalExtras } }));
   await page.route(/\/relay\/devices\/device-\d+$/, async route => {
     const device = devices.find(d => route.request().url().endsWith(`/${d.id}`))!;
     if (route.request().method() === 'PATCH') device.name = route.request().postDataJSON().name;

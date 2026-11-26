@@ -11,7 +11,6 @@ import {
   type SupervisorPlatform,
   type DeviceBindingFlags,
 } from '../lib/deviceSetupCommands';
-import { ProtectDevicesButton } from '../components/RemoteProtectionControls';
 import { DeviceProtectionBadge } from '../components/DeviceProtectionBadge';
 import { useDeviceProtection } from '../lib/useDeviceProtection';
 import { getTransportStatus } from '../lib/relayTransport';
@@ -21,28 +20,22 @@ import { Select, ErrorMark } from '@pockymoe/thread-ui';
 import { SharedAccessPanel } from '../components/sharedAccess/SharedAccessPanel';
 import { sharedItems, type ShareDirection, type SharedItem } from '../components/sharedAccess/model';
 import { useShareAttention } from '../components/sharedAccess/useShareAttention';
-import { MonitorSmartphone as DevicesTabIcon, Users as SharingTabIcon } from 'lucide-react';
 import { SecurityVerification } from '../components/RelaySecurity';
 import { securityRequest, type SecurityStatus } from '../lib/relaySecurity';
 import { request } from '../lib/api';
 import { DeviceEncryptionStatus } from '../components/DeviceEncryptionStatus';
-import { TourLauncherButton } from '../components/onboarding/TourProvider';
-import { ProductHeader } from '../components/ProductHeader';
 import { AnchoredPopover } from '../components/AnchoredPopover';
 import {
-  ArrowRight,
   Check,
   Copy,
   KeyRound,
   Link2Off,
+  Pencil,
   MonitorSmartphone,
-  Plus,
   Share2,
-  X,
 } from 'lucide-react';
 import {
   FormEvent,
-  KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
   useMemo,
@@ -51,12 +44,10 @@ import {
 } from 'react';
 import { FormDialog } from './FormDialog';
 import { RenameDialog } from './RenameDialog';
-import { RuntimeManagement } from './RuntimeManagement';
 import { DeviceStateMark } from './DeviceStateMark';
 import { IsolationMark } from './managed/IsolationMark';
-import { ManagedObjectMenu, useManagedObjectMenu, type ManagedAction } from './managed/ManagedObjectMenu';
-import { deviceActions, type DeviceManageAction } from './managed/deviceActions';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import type { DeviceManageAction } from './managed/deviceActions';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import type {
   RelayCreateDeviceResultDto,
@@ -91,7 +82,6 @@ import { SHARING_CHANGED_EVENT, sharePendingHref } from '../lib/sharePending';
 import { controlShares, SharedControlReasons, type ControlShare } from '../components/SharedControlReasons';
 
 const RELAY_PORTAL_REFRESH_INTERVAL_MS = 3000;
-type PageTab = 'devices' | 'shared';
 
 function errorMessage(caught: unknown, fallback: string) {
   return caught instanceof ApiError
@@ -219,7 +209,10 @@ export type DeviceManagementAction = 'add' | DeviceManageAction;
  * device card, the map and the rows here all open the same rename, share,
  * isolation, settings and removal windows (deviceActions).
  */
-export function DeviceManagement({ deviceId, action, known, embedded = false, sharingOnly = false, dialogsOnly = false, onClose, onRemoved, onRenamed, onRenameUnsupported }: { sharingOnly?: boolean; dialogsOnly?: boolean; onClose?: (() => void) | undefined; deviceId?: string | undefined; action?: DeviceManagementAction | undefined; embedded?: boolean;
+export function DeviceManagement({ deviceId, action, known, pane, sharingOnly = false, dialogsOnly = false, onClose, onRemoved, onRenamed, onRenameUnsupported }: { sharingOnly?: boolean; dialogsOnly?: boolean; onClose?: (() => void) | undefined; deviceId?: string | undefined; action?: DeviceManagementAction | undefined;
+  /** A tab of the device's page for `deviceId`: its own settings (name, connection,
+      isolation), or who it is shared with. */
+  pane?: 'settings' | 'access' | undefined;
   /** What the page that asked already shows of the device, so its window opens at once
       (and focus returns to the control that opened it) instead of after the account is read again. */
   known?: { id: string; name: string; connected: boolean } | undefined;
@@ -347,12 +340,13 @@ export function DeviceManagement({ deviceId, action, known, embedded = false, sh
   const [dialogError, setDialogError] = useState<string | null>(null);
   // The page's tab and the shares' direction live in the address, so a link
   // or a reload returns to them.
-  const pageTab: PageTab = sharingOnly || searchParams.get('tab') === 'shared' ? 'shared' : 'devices';
   const shareDirection: ShareDirection = searchParams.get('dir') === 'out' ? 'out' : 'in';
-  const setPageView = (tab: PageTab, direction: ShareDirection = shareDirection) => {
+  // On the Sharing tab of the devices page the tab is in the address too; a
+  // device page's Access tab keeps its own tab and changes only the direction.
+  const setShareDirection = (direction: ShareDirection) => {
     const next = new URLSearchParams(searchParams);
-    if (tab === 'shared') next.set('tab', 'shared'); else next.delete('tab');
-    if (tab === 'shared' && direction === 'out') next.set('dir', 'out'); else next.delete('dir');
+    if (!pane) next.set('tab', 'shared');
+    if (direction === 'out') next.set('dir', 'out'); else next.delete('dir');
     setSearchParams(next, { replace: true });
   };
   const [editingShare, setEditingShare] = useState<RelaySessionShareDto | null>(
@@ -373,15 +367,6 @@ export function DeviceManagement({ deviceId, action, known, embedded = false, sh
   );
   const [addDeviceOpen, setAddDeviceOpen] = useState(action === 'add');
   const [isolatingDevice, setIsolatingDevice] = useState<RelayDeviceDto | null>(null);
-  // What the isolation window last read or saved, so the device's row marks it at once.
-  const [isolation, setIsolation] = useState<Record<string, boolean>>({});
-  const isolatingId = useRef<string | null>(null);
-  isolatingId.current = isolatingDevice?.id ?? null;
-  const onIsolationChange = useCallback((isolated: boolean) => {
-    const id = isolatingId.current;
-    if (id) setIsolation(current => current[id] === isolated ? current : { ...current, [id]: isolated });
-  }, []);
-  const [settingsDevice, setSettingsDevice] = useState<RelayDeviceDto | null>(null);
   const [renamingDevice, setRenamingDevice] = useState<RelayDeviceDto | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [renameBusy, setRenameBusy] = useState(false);
@@ -395,7 +380,6 @@ export function DeviceManagement({ deviceId, action, known, embedded = false, sh
     if (next === 'rename') { setRenameDraft(device.name); setRenameError(null); setRenamingDevice(device); }
     if (next === 'share') setSharingDevice(device);
     if (next === 'isolate') setIsolatingDevice(device);
-    if (next === 'settings') setSettingsDevice(device);
     if (next === 'remove') setDeletingDevice(device);
   }
   // Until the account answers, the window shows what its page already knows of the device.
@@ -414,7 +398,6 @@ export function DeviceManagement({ deviceId, action, known, embedded = false, sh
   const hasLoadedPortalRef = useRef(false);
   const handledShareDeviceRequestRef = useRef<string | null>(null);
   const copiedResetTimeoutRef = useRef<number | null>(null);
-  const addDeviceButtonRef = useRef<HTMLButtonElement>(null);
 
   const load = useCallback(
     async (options?: { showLoading?: boolean; clearError?: boolean }) => {
@@ -647,13 +630,6 @@ export function DeviceManagement({ deviceId, action, known, embedded = false, sh
     }
   }
 
-  /** A device's primary action: its workspaces. An offline device opens too, and says it is offline there. */
-  function openDevice(device: RelayDeviceDto) {
-    setSelectedRelayDeviceId(device.id);
-    setSelectedRelayThreadId(null);
-    navigate(workspacesHref(device.id));
-  }
-
   function openSharedSession(share: RelaySessionShareDto) {
     if (share.deviceConnected !== true) return;
     setSelectedRelayDeviceId(share.deviceId);
@@ -862,7 +838,6 @@ export function DeviceManagement({ deviceId, action, known, embedded = false, sh
   }
 
   const outgoingItems = useMemo(() => sharedItems(portal, 'out'), [portal]);
-  const incomingCount = useMemo(() => sharedItems(portal, 'in').length, [portal]);
   const { attention, refresh: refreshAttention } = useShareAttention(outgoingItems);
   const shareActions = {
     onOpen: (item: SharedItem) => item.source.kind === 'share' ? openSharedSession(item.source.row) : openSharedGrant(item.source.row),
@@ -886,90 +861,26 @@ export function DeviceManagement({ deviceId, action, known, embedded = false, sh
   // (Not when this relay cannot rename at all: there is nothing to lose.)
   const renameClose = useManagementClose(Boolean(renamingDevice && renameSupported && renameDraft !== renamingDevice.name), closeRename);
   const closeManagement = useManagementClose(action === 'add' && Boolean(deviceName), () => onClose?.());
-  const pageTabs: Array<{ id: PageTab; label: string; count: number; Icon: typeof DevicesTabIcon; review?: number }> = [
-    { id: 'devices', label: translate('devices.devices'), count: portal?.devices.length ?? 0, Icon: DevicesTabIcon },
-    { id: 'shared', label: translate('sharing.tabSharing'), count: incomingCount + outgoingItems.length, Icon: SharingTabIcon, review: attention.size },
-  ];
-  function handlePageTabKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-    event.preventDefault();
-    const next: PageTab = event.key === 'Home' ? 'devices' : event.key === 'End' ? 'shared' : pageTab === 'devices' ? 'shared' : 'devices';
-    setPageView(next);
-    document.getElementById(`devices-page-tab-${next}`)?.focus();
-  }
+  const paneDevice = pane && deviceId ? portal?.devices.find(entry => entry.id === deviceId) ?? null : null;
+  const accessPanel = (
+    <SharedAccessPanel
+      portal={portal}
+      loading={loading}
+      direction={shareDirection}
+      onDirectionChange={setShareDirection}
+      attention={attention}
+      onAttentionRefresh={refreshAttention}
+      busyKey={busy}
+      actions={shareActions}
+      outgoingNotice={portal ? <><OrphanDeviceGrants portal={portal} kind="share" /><OrphanDeviceGrants portal={portal} kind="grant" /></> : null}
+    />
+  );
 
   const content = (
     <div>
-      <div hidden={dialogsOnly || Boolean(action && action !== 'add')} className={embedded || sharingOnly ? "space-y-6 device-management-embedded" : "product-page space-y-6"} data-page="devices">
-        {!embedded && !sharingOnly && <>
-        <ProductHeader title={translate("devices.devices")} backHref="/" backLabel={translate("devices.relayHome")} actions={<TourLauncherButton showLabel />} />
-
-        <section className="product-page-header">
-          <div>
-            <h1 className="product-title">
-              {translate("sharing.pageTabs")}</h1>
-          </div>
-          <Link className="product-page-link" to="/desktop/devices">{translate('desktopDevices.statistics')}</Link>
-        </section>
-
-        <div className="devices-page-tabs" role="tablist" aria-label={translate('sharing.pageTabs')}>
-          {pageTabs.map(({ id, label, count, Icon, review }) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              id={`devices-page-tab-${id}`}
-              aria-selected={pageTab === id}
-              aria-controls={`devices-page-panel-${id}`}
-              tabIndex={pageTab === id ? 0 : -1}
-              onClick={() => setPageView(id)}
-              onKeyDown={handlePageTabKeyDown}
-            >
-              <Icon size={16} aria-hidden="true" />
-              <span>{label}</span>
-              <span className="devices-page-tab-count">{count}</span>
-              {review ? <span className="devices-page-tab-review">{translate('sharing.toReview', { count: review })}</span> : null}
-            </button>
-          ))}
-        </div>
-
-        </>}
-        {!sharingOnly && (pageTab === 'devices' || embedded) ? (
-        <section aria-labelledby={action ? undefined : "devices-heading"} role={action ? undefined : "tabpanel"} id="devices-page-panel-devices">
-          {action !== 'add' && <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <h2
-                className="text-lg font-semibold text-[var(--theme-fg)]"
-                id="devices-heading"
-                tabIndex={-1}
-              >
-                {translate("devices.devices")}</h2>
-              <p className="mt-1 text-sm text-[var(--theme-fg-muted)]">
-                {translate("devices.yourRelaySupervisorsAndTheirCurrentAvailability")}</p>
-            </div>
-            <div className="flex flex-wrap justify-end gap-2">
-            <ProtectDevicesButton devices={portal?.devices ?? []} all />
-            {!embedded || !deviceId ? <button
-              aria-controls="add-device-form"
-              aria-expanded={addDeviceOpen}
-              className="relay-button-primary inline-flex min-h-11 shrink-0 items-center gap-2 px-3 sm:min-h-10"
-              onClick={() => {
-                setError(null);
-                if (addDeviceOpen) closeAdd.requestClose(); else setAddDeviceOpen(true);
-              }}
-              ref={addDeviceButtonRef}
-              type="button"
-            >
-              {addDeviceOpen ? (
-                <X className="h-4 w-4" />
-              ) : (
-                <Plus className="h-4 w-4" />
-              )}
-              {addDeviceOpen ? translate("devices.close") : translate("devices.addDevice")}
-            </button> : null}
-            </div>
-          </div>}
-          {addDeviceOpen && (!embedded || !deviceId) ? (
+      <div hidden={dialogsOnly || Boolean(action && action !== 'add')} className="space-y-6 device-management-embedded">
+        {action === 'add' ? <>
+          {addDeviceOpen ? (
             <AddDeviceForm
               busy={busy === 'create'}
               deviceName={deviceName}
@@ -979,88 +890,32 @@ export function DeviceManagement({ deviceId, action, known, embedded = false, sh
               onSubmit={addDevice}
             />
           ) : null}
-
           {createdDevice && createdBinding ? <DeviceTokenPanel result={createdDevice} binding={createdBinding} onOpen={onClose} /> : null}
-
-          {action !== 'add' && <div className="mt-4 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-panel)]">
-            <div className="hidden grid-cols-[minmax(14rem,1fr)_minmax(14rem,0.8fr)_auto] gap-5 border-b border-[var(--theme-border)] px-3 py-2 text-xs font-medium text-[var(--theme-fg-muted)] md:grid">
-              <span>{translate("devices.device")}</span>
-              <span>{translate("devices.activity")}</span>
-              <span className="text-right">{translate("devices.action")}</span>
-            </div>
-            {loading ? (
-              <LoadingRows label={translate("devices.loadingDevices")} />
-            ) : portal?.devices.length ? (
-              <div className="divide-y divide-[var(--theme-border)]">
-                {portal.devices.map((device) => (
-                  <DeviceRow
-                    device={device}
-                    controlShares={controlShares(portal, device.id)}
-                    isolatedKnown={isolation[device.id]}
-                    key={device.id}
-                    onOpen={() => openDevice(device)}
-                    menuItems={deviceActions(device, {
-                      navigate,
-                      manage: next => openAction(device, next),
-                      renameSupported,
-                      open: () => openDevice(device),
-                      // The row on a device's own page is already "Device details".
-                      details: !(embedded && deviceId),
-                    })}
-                  />
-                ))}
-              </div>
-            ) : error?.at === 'load' && !portal ? (
-              <div className="product-empty flex items-center justify-center gap-1.5">
-                {translate("devices.unavailable")}
-                <ErrorMark message={error.message} onRetry={() => void load()} />
-              </div>
-            ) : (
-              <div className="product-empty">
-                <p>{translate("devices.noDevicesYetAddADeviceTo")}</p>
-                {/* An empty list offers its first step, as the workspace list does. */}
-                {addDeviceOpen || (embedded && deviceId) ? null : (
-                  <button className="relay-button-primary mt-4 inline-flex min-h-11 items-center gap-2 px-3" onClick={() => { setError(null); setAddDeviceOpen(true); }} type="button">
-                    <Plus aria-hidden="true" className="h-4 w-4" />
-                    {translate("devices.addDevice")}
-                  </button>
-                )}
-              </div>
-            )}
-          </div>}
-        </section>
-        ) : (
-        <section role="tabpanel" id="devices-page-panel-shared" aria-labelledby="devices-page-tab-shared">
-          <SharedAccessPanel
-            portal={portal}
-            loading={loading}
-            direction={shareDirection}
-            onDirectionChange={direction => setPageView('shared', direction)}
-            attention={attention}
-            onAttentionRefresh={refreshAttention}
-            busyKey={busy}
-            actions={shareActions}
-            outgoingNotice={portal ? <><OrphanDeviceGrants portal={portal} kind="share" /><OrphanDeviceGrants portal={portal} kind="grant" /></> : null}
-          />
-        </section>
-        )}
-        {embedded && deviceId ? <section aria-label={translate('desktopDevices.access')}><h2 className="text-lg font-semibold mb-4">{translate('desktopDevices.access')}</h2><SharedAccessPanel portal={portal} loading={loading} direction={shareDirection} onDirectionChange={direction => setPageView('shared', direction)} attention={attention} onAttentionRefresh={refreshAttention} busyKey={busy} actions={shareActions} outgoingNotice={portal ? <><OrphanDeviceGrants portal={portal} kind="share" /><OrphanDeviceGrants portal={portal} kind="grant" /></> : null} /></section> : null}
+        </> : pane === 'access' ? (
+          // The device page's Access tab: who it is shared with, and what is shared from it.
+          <section aria-label={translate('desktopDevices.access')}>{accessPanel}</section>
+        ) : pane === 'settings' ? (
+          paneDevice ? (
+            <DeviceGeneralSettings
+              device={paneDevice}
+              controlShares={controlShares(portal, paneDevice.id)}
+              renameSupported={renameSupported}
+              onRename={() => openAction(paneDevice, 'rename')}
+              copied={copiedDeviceId === paneDevice.id}
+              copyError={deviceCopyError?.deviceId === paneDevice.id ? deviceCopyError.message : null}
+              onCopySetup={(platform) => void copySupervisorSetup(paneDevice, platform)}
+              onRotate={() => { setError(null); setRotatingDevice(paneDevice); }}
+            >
+              {createdDevice && createdBinding && createdDevice.device.id === paneDevice.id ? <DeviceTokenPanel result={createdDevice} binding={createdBinding} /> : null}
+              <ConfirmDialog open={Boolean(rotatingDevice) && !rotationVerification} title={translate("devices.replaceDeviceToken")} description={translate("devices.theCurrentConnectionWillCloseUpdateThe")} confirmLabel={translate("devices.replaceToken")} error={rotatingDevice && error?.at === 'rotate' ? error.message : null} onConfirm={() => { setError(null); void rotateDevice(); }} onCancel={() => { setRotatingDevice(null); setError(null); }} />
+            </DeviceGeneralSettings>
+          ) : loading ? <LoadingRows label={translate("devices.loadingDevices")} />
+            : <div className="product-empty flex items-center justify-center gap-1.5">{translate("devices.unavailable")}<ErrorMark message={error?.message ?? translate('desktopDevices.deviceMissing')} onRetry={() => void load()} /></div>
+        ) : sharingOnly ? (
+          <section role="tabpanel" id="devices-page-panel-shared" aria-labelledby="devices-page-tab-shared">{accessPanel}</section>
+        ) : null}
       </div>
-      {isolatingDevice ? <DeviceIsolationDialog device={current(isolatingDevice)} controlShares={controlShares(portal, isolatingDevice.id)} onChange={onIsolationChange} onClose={() => { setIsolatingDevice(null); if (action === 'isolate') onClose?.(); }} /> : null}
-      {settingsDevice ? (
-        <DeviceSettingsDialog
-          device={current(settingsDevice)}
-          copied={copiedDeviceId === settingsDevice.id}
-          copyError={deviceCopyError?.deviceId === settingsDevice.id ? deviceCopyError.message : null}
-          onCopySetup={(platform) => void copySupervisorSetup(settingsDevice, platform)}
-          onRotate={() => { setError(null); setRotatingDevice(settingsDevice); }}
-          onClose={() => { setSettingsDevice(null); if (action === 'settings') onClose?.(); }}
-        >
-          {createdDevice && createdBinding && createdDevice.device.id === settingsDevice.id ? <DeviceTokenPanel result={createdDevice} binding={createdBinding} /> : null}
-          {/* Inside the window that asked, so the confirmation is not left behind it. */}
-          <ConfirmDialog open={Boolean(rotatingDevice) && !rotationVerification} title={translate("devices.replaceDeviceToken")} description={translate("devices.theCurrentConnectionWillCloseUpdateThe")} confirmLabel={translate("devices.replaceToken")} error={rotatingDevice && error?.at === 'rotate' ? error.message : null} onConfirm={() => { setError(null); void rotateDevice(); }} onCancel={() => { setRotatingDevice(null); setError(null); }} />
-        </DeviceSettingsDialog>
-      ) : null}
+      {isolatingDevice ? <DeviceIsolationDialog device={current(isolatingDevice)} controlShares={controlShares(portal, isolatingDevice.id)} onClose={() => { setIsolatingDevice(null); if (action === 'isolate') onClose?.(); }} /> : null}
       <RenameDialog
         open={renamingDevice !== null}
         title={translate('desktopDevices.renameDevice')}
@@ -1720,48 +1575,35 @@ export function GrantPermissionsDialog({
   );
 }
 
-function DeviceRow({
-  device,
-  controlShares,
-  isolatedKnown,
-  menuItems,
-  onOpen,
-}: {
-  device: RelayDeviceDto;
-  /** My shares that keep this device's agents from my other devices. */
-  controlShares: ControlShare[];
-  /** What the isolation window last read or saved for this device, if it was opened. */
-  isolatedKnown: boolean | undefined;
-  /** The device's actions, the same as on its card and on the map (deviceActions). */
-  menuItems: ManagedAction[];
-  onOpen: () => void;
-}) {
-  const { locale: i18nLocale } = useI18n();
-  const [transportStatus, setTransportStatus] = useState(() =>
-    getTransportStatus(device.id),
-  );
-  const protection = useDeviceProtection(device.id, transportStatus);
+/** Whether the page holds a protected, encrypted connection to the device, read as it changes. */
+function useTransportStatus(deviceId: string) {
+  const [transportStatus, setTransportStatus] = useState(() => getTransportStatus(deviceId));
   useEffect(() => {
+    setTransportStatus(getTransportStatus(deviceId));
     const update = (event: Event) => {
       const status = (event as CustomEvent<NonNullable<typeof transportStatus>>).detail;
-      if (status.deviceId === device.id) setTransportStatus(status);
+      if (status.deviceId === deviceId) setTransportStatus(status);
     };
     window.addEventListener('remote-codex-transport', update);
     return () => window.removeEventListener('remote-codex-transport', update);
-  }, [device.id]);
-  // Known only once the device answered; the page does not connect to every device.
-  const [isolated, setIsolated] = useState<boolean | undefined>(undefined);
-  const encrypted = transportStatus?.state === 'encrypted';
-  useEffect(() => {
-    if (!device.connected || !encrypted) return;
-    let active = true;
-    void fetchAgentIsolation(device.id)
-      .then((value) => { if (active) setIsolated(value.device); })
-      .catch(() => undefined);
-    return () => { active = false; };
-  }, [device.id, device.connected, encrypted]);
-  // The same menu from the ⋯ key, a right click and a long press on the row (§3).
-  const menu = useManagedObjectMenu();
+  }, [deviceId]);
+  return transportStatus;
+}
+
+/**
+ * A device's state under its name on its own page: online since or last seen,
+ * the encrypted connection, its protection, and the isolation and shared-control
+ * marks (what the phone's device row used to show, issue #115).
+ */
+export function DeviceStatusLine({ device, portal, isolated }: {
+  device: RelayDeviceDto;
+  portal: RelayPortalSummaryDto | null;
+  /** Read by the page from the device while it is online. */
+  isolated: boolean;
+}) {
+  useI18n();
+  const transportStatus = useTransportStatus(device.id);
+  const protection = useDeviceProtection(device.id, transportStatus);
   const activityText = device.connected
     ? device.connectedAt
       ? translate('devices.onlineSince', { value1: formatRelayTimestamp(device.connectedAt) })
@@ -1769,56 +1611,34 @@ function DeviceRow({
     : device.lastHeartbeatAt
       ? translate('devices.lastSeen', { value1: formatRelayTimestamp(device.lastHeartbeatAt) })
       : translate("devices.noHeartbeatRecorded");
-
   return (
-    <article
-      aria-label={device.name}
-      className="device-row grid min-w-0 gap-3 px-3 py-4 transition hover:bg-[var(--theme-hover)] md:grid-cols-[minmax(14rem,1fr)_minmax(14rem,0.8fr)_auto] md:items-center md:gap-5"
-      {...menu.rowProps}
-    >
-      <div className="device-row-name flex min-w-0 items-center gap-2">
-        {/* The one online mark of a device, as on its card and in the device switcher (§6). */}
-        <DeviceStateMark showLabel={false} state={device.connected ? 'online' : 'offline'} />
-        <p className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--theme-fg)]">
-          {device.name}
-        </p>
-      </div>
-      <div className="device-meta flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--theme-fg-muted)]">
-        <p>{activityText}</p>
-        <DeviceEncryptionStatus deviceId={device.id} online={device.connected} />
-        <DeviceProtectionBadge device={device} protection={protection} />
-        {(isolatedKnown ?? isolated) ? <IsolationMark kind="device" /> : null}
-        {device.sharedControl ? <SharedControlMark shares={controlShares} /> : null}
-      </div>
-      <div className="device-row-actions flex min-w-0 items-center gap-2 md:justify-end">
-        {/* Opening is never refused: an offline device shows its workspaces page, which says it is offline. */}
-        <button
-          className="relay-button-primary inline-flex min-h-11 grow items-center justify-center gap-2 whitespace-nowrap md:grow-0 sm:min-h-10"
-          onClick={onOpen}
-          type="button"
-        >
-          <ArrowRight className="h-4 w-4" aria-hidden="true" />
-          {translate("devices.manageOpen")}
-        </button>
-        <ManagedObjectMenu ref={menu.ref} name={device.name} items={menuItems} className="product-icon-button" />
-      </div>
-    </article>
+    <div className="device-meta device-status-line flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--theme-fg-muted)]">
+      {/* The one online mark of a device, as on its card and in the device switcher (§6); the words follow it. */}
+      <DeviceStateMark showLabel={false} state={device.connected ? 'online' : 'offline'} />
+      <span>{activityText}</span>
+      <DeviceEncryptionStatus deviceId={device.id} online={device.connected} />
+      <DeviceProtectionBadge device={device} protection={protection} />
+      {isolated ? <IsolationMark kind="device" /> : null}
+      {device.sharedControl ? <SharedControlMark shares={controlShares(portal, device.id)} /> : null}
+    </div>
   );
 }
 
 /**
- * A device's own settings, in place: its connection to the relay (the setup
- * command and the token) and its Supervisor's version. Copying a command and
- * replacing the token are settings, not menu items of the device.
+ * The device's own part of its Settings tab: its name, its connection to the
+ * relay (the setup commands and the token) and its isolation. Copying a command
+ * and replacing the token are settings, not menu items of the device.
  */
-function DeviceSettingsDialog({ device, copied, copyError, onCopySetup, onRotate, onClose, children }: {
+function DeviceGeneralSettings({ device, controlShares, renameSupported, onRename, copied, copyError, onCopySetup, onRotate, children }: {
   device: RelayDeviceDto;
+  controlShares: ControlShare[];
+  renameSupported: boolean;
+  onRename: () => void;
   copied: boolean;
   copyError: string | null;
   onCopySetup: (platform: SupervisorPlatform) => void;
   onRotate: () => void;
-  onClose: () => void;
-  /** The new token's commands after a replacement, and the windows that confirm one. */
+  /** The new token's commands after a replacement, and the window that confirms one. */
   children?: React.ReactNode;
 }) {
   useI18n();
@@ -1832,10 +1652,19 @@ function DeviceSettingsDialog({ device, copied, copyError, onCopySetup, onRotate
     </button>
   );
   return (
-    <FormDialog className="device-management-dialog device-settings-dialog" title={`${translate('devices.settingsTitle')} · ${device.name}`} description={translate('devices.settingsDescription')} onClose={onClose}>
-      {/* Its version, update and restart: what the card's update badge opens this window for. */}
-      <RuntimeManagement deviceId={device.id} view="supervisor" />
-      <section aria-labelledby="device-settings-connection" className="mt-3 border-t border-[var(--theme-border)] pt-4">
+    <div className="device-settings-general divide-y divide-[var(--theme-border)]">
+      <section aria-labelledby="device-settings-name" className="py-5 first:pt-0">
+        <h3 className="text-sm font-semibold text-[var(--theme-fg)]" id="device-settings-name">{translate('devices.settingsName')}</h3>
+        <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
+          <span className="min-w-0 truncate text-sm text-[var(--theme-fg)]" title={device.name}>{device.name}</span>
+          <button className="relay-button-secondary inline-flex min-h-11 items-center gap-2 px-3 text-sm sm:min-h-10" disabled={!renameSupported} onClick={onRename} type="button">
+            <Pencil aria-hidden="true" className="h-4 w-4" />
+            {translate('devices.manageRename')}
+          </button>
+          {renameSupported ? null : <ErrorMark kind="unavailable" message={translate('desktopDevices.renameUnsupported')} />}
+        </div>
+      </section>
+      <section aria-labelledby="device-settings-connection" className="py-5">
         <h3 className="text-sm font-semibold text-[var(--theme-fg)]" id="device-settings-connection">{translate('devices.settingsConnection')}</h3>
         <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">{translate('devices.settingsConnectionHint')}</p>
         {device.tokenPreview ? (
@@ -1859,7 +1688,12 @@ function DeviceSettingsDialog({ device, copied, copyError, onCopySetup, onRotate
           </button>
         </div>
       </section>
-    </FormDialog>
+      <section aria-labelledby="device-settings-isolation" className="py-5">
+        <h3 className="text-sm font-semibold text-[var(--theme-fg)]" id="device-settings-isolation">{translate('devices.agentIsolation')}</h3>
+        <p className="settings-hint mt-1 text-xs leading-5 text-[var(--theme-fg-muted)]">{translate('devices.deviceIsolationDescription')}</p>
+        <DeviceIsolationControl device={device} controlShares={controlShares} />
+      </section>
+    </div>
   );
 }
 
@@ -1893,25 +1727,23 @@ function SharedControlMark({ shares }: { shares: ControlShare[] }) {
 }
 
 /** Whether agents on other devices may reach this one; the device decides and enforces it. */
-export function DeviceIsolationDialog({
-  device,
-  controlShares,
-  onChange,
-  onClose,
-}: {
+function DeviceIsolationControl({ device, controlShares, onChange, onBusy }: {
   device: RelayDeviceDto;
   controlShares: ControlShare[];
-  onChange: (isolated: boolean) => void;
-  onClose: () => void;
+  onChange?: ((isolated: boolean) => void) | undefined;
+  onBusy?: ((busy: boolean) => void) | undefined;
 }) {
   useI18n();
   const [isolated, setIsolated] = useState<boolean | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusyState] = useState(false);
+  const setBusy = (value: boolean) => { setBusyState(value); onBusy?.(value); };
   // Why the state could not be read, or why the toggle failed: marks after the toggle.
   const [error, setError] = useState<string | null>(null);
   const [toggleError, setToggleError] = useState<string | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const changed = useRef(onChange);
+  changed.current = onChange;
   useEffect(() => {
     if (!device.connected) return;
     let active = true;
@@ -1920,7 +1752,7 @@ export function DeviceIsolationDialog({
       .then((value) => {
         if (!active) return;
         setIsolated(value.device);
-        onChange(value.device);
+        changed.current?.(value.device);
       })
       .catch((caught) => {
         if (!active) return;
@@ -1928,7 +1760,7 @@ export function DeviceIsolationDialog({
         else setError(errorMessage(caught, translate('devices.deviceIsolationOffline')));
       });
     return () => { active = false; };
-  }, [device.id, device.connected, onChange, attempt]);
+  }, [device.id, device.connected, attempt]);
 
   async function toggle(next: boolean) {
     setBusy(true);
@@ -1936,7 +1768,7 @@ export function DeviceIsolationDialog({
     try {
       const value = await setDeviceIsolation(next, device.id);
       setIsolated(value.device);
-      onChange(value.device);
+      changed.current?.(value.device);
     } catch (caught) {
       setToggleError(errorMessage(caught, translate('devices.deviceIsolationOffline')));
     } finally {
@@ -1948,39 +1780,58 @@ export function DeviceIsolationDialog({
     : unsupported ? translate('devices.deviceIsolationUpdate') : null;
 
   return (
+    <div className="mt-4 text-sm">
+      {!reason && isolated === null && !error ? (
+        <p className="text-[var(--theme-fg-muted)]">{translate('devices.deviceIsolationLoading')}</p>
+      ) : (
+        <div className="flex items-center gap-2">
+          <label className={`flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-md border border-[var(--theme-border)] px-3 py-2 ${isolated === null ? 'opacity-60' : 'cursor-pointer'}`}>
+            <input
+              checked={isolated ?? false}
+              className="h-4 w-4"
+              disabled={busy || isolated === null}
+              onChange={(event) => void toggle(event.target.checked)}
+              type="checkbox"
+            />
+            <span className="font-medium text-[var(--theme-fg)]">{translate('devices.isolateDevice')}</span>
+          </label>
+          {reason ? <ErrorMark kind="unavailable" message={reason} />
+            : error && isolated === null ? <ErrorMark message={error} onRetry={() => setAttempt((value) => value + 1)} />
+            : toggleError ? <ErrorMark message={toggleError} /> : null}
+        </div>
+      )}
+      {device.sharedControl ? (
+        <div className="mt-3 flex items-start gap-2">
+          <Link2Off aria-hidden="true" className="mt-1 h-3.5 w-3.5 shrink-0 text-[var(--theme-fg-muted)]" />
+          <SharedControlReasons shares={controlShares} />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** The same isolation control in a window, opened from the device's ⋯ menu. */
+export function DeviceIsolationDialog({
+  device,
+  controlShares,
+  onChange,
+  onClose,
+}: {
+  device: RelayDeviceDto;
+  controlShares: ControlShare[];
+  onChange?: ((isolated: boolean) => void) | undefined;
+  onClose: () => void;
+}) {
+  useI18n();
+  const [busy, setBusy] = useState(false);
+  return (
     <RelayDialog
       busy={busy}
       description={translate('devices.deviceIsolationDescription')}
       onClose={onClose}
       title={`${translate('devices.agentIsolation')} · ${device.name}`}
     >
-      <div className="mt-4 text-sm">
-        {!reason && isolated === null && !error ? (
-          <p className="text-[var(--theme-fg-muted)]">{translate('devices.deviceIsolationLoading')}</p>
-        ) : (
-          <div className="flex items-center gap-2">
-            <label className={`flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-md border border-[var(--theme-border)] px-3 py-2 ${isolated === null ? 'opacity-60' : 'cursor-pointer'}`}>
-              <input
-                checked={isolated ?? false}
-                className="h-4 w-4"
-                disabled={busy || isolated === null}
-                onChange={(event) => void toggle(event.target.checked)}
-                type="checkbox"
-              />
-              <span className="font-medium text-[var(--theme-fg)]">{translate('devices.isolateDevice')}</span>
-            </label>
-            {reason ? <ErrorMark kind="unavailable" message={reason} />
-              : error && isolated === null ? <ErrorMark message={error} onRetry={() => setAttempt((value) => value + 1)} />
-              : toggleError ? <ErrorMark message={toggleError} /> : null}
-          </div>
-        )}
-        {device.sharedControl ? (
-          <div className="mt-3 flex items-start gap-2">
-            <Link2Off aria-hidden="true" className="mt-1 h-3.5 w-3.5 shrink-0 text-[var(--theme-fg-muted)]" />
-            <SharedControlReasons shares={controlShares} />
-          </div>
-        ) : null}
-      </div>
+      <DeviceIsolationControl device={device} controlShares={controlShares} onChange={onChange} onBusy={setBusy} />
     </RelayDialog>
   );
 }

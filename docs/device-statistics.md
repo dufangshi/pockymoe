@@ -262,15 +262,37 @@ connections. A focused transcript may still own its existing thread-specific
 stream, rather than another account-wide set of streams.
 
 The browser map remains its existing dialog over the workbench. Settings remains
-its existing settings window/full-screen route. Workspace/thread creation, import,
+its existing settings window/full-screen route for this browser and the account
+(preferences, notifications, plugins); a device's own settings are its page's
+Settings tab, and the window links there in one line. Workspace/thread creation, import,
 share review, relay landing/help, authentication and admin pages retain their
 separate flows; they do not use the Devices/workspaces/account route frame.
 
-Old `/relay-devices` links on PC use a replace redirect preserving the complete
-query, including `tab`, `dir`, `shareDevice` and `action`. Signed-out visitors go to
-the sign-in portal. Phone-width browsers (under 640px on document load) and mobile
-hosts retain the original `/relay-devices` page because phones have no dedicated
-device page. Resizing a mounted page does not change this routing decision.
+Old `/relay-devices` links (the phone's former device page, and links the native
+shells may open) use a replace redirect to `/desktop/devices` on every surface,
+preserving the complete query, including `tab`, `dir`, `shareDevice` and `action`.
+Signed-out visitors go to the sign-in portal. Phones and mobile hosts use the same
+pages as a computer (issue #115).
+
+### Device center
+
+`/desktop/devices/:id` is the one home of a device, with three tabs in the address
+(`?tab=`): Overview (the default: its readings and its statistics), Settings
+(`?tab=settings&section=`: its name, connection, setup commands and token,
+isolation, then Supervisor, Harnesses, upstreams, resources, isolated environments
+and workspace defaults, each acting on this device) and Access (who it is shared
+with). The header names the device, its state (online since or last seen, the
+encrypted connection, protection, isolation, shared for control), an Open button
+to its workspaces and its one ⋯ menu. The device's "Settings…" action opens the
+Settings tab; older `?action=settings` and `?action=update` links do too, and the
+parameter goes. On the overview, the statistics scope (`统计范围`: all devices or
+one) moves between the overview and a device's Overview. On a phone the overview
+lists the devices first and folds the statistics below them.
+
+A device switcher tops the sidebar of the thread, workspace and device pages in a
+computer's navigation shell: the account's devices, then those shared with it
+(marked with who shared them, read from the relay portal and not indexed), then
+"Manage this device…" (an owned device's Settings tab) and "All devices".
 
 The account usage list shows only devices with usage for the chosen metric, highest first, eight per page. A device without statistics for the range, because it is offline or its Supervisor is older than 0.13.42, is counted below the list and not shown as zero.
 

@@ -3,7 +3,7 @@ import { connectSupervisorEvents, deviceRequest, fetchRelayPortal, request } fro
 import { SupervisorHeartbeat } from '../../lib/supervisorHeartbeat';
 import { clearIndex, readIndex, writeIndex } from './cache';
 import { mergeRows } from './merge';
-import { entityKey, plainSummary, summarizeRequest, summarizeThread, type DesktopExtra, type DesktopIndex, type DesktopThread } from './types';
+import { entityKey, plainSummary, summarizeRequest, summarizeThread, type DesktopExtra, type DesktopIndex, type DesktopThread, type SharedDesktopDevice } from './types';
 
 const accepted = new Set(['thread.updated', 'thread.turn.started', 'thread.turn.completed', 'thread.turn.failed', 'thread.request.created', 'thread.request.resolved']);
 export const isIndexEvent = (type: string) => accepted.has(type);
@@ -21,6 +21,21 @@ const adapter: DesktopDataAdapter = {
   presence: (id, signal) => request(`relay/devices/${encodeURIComponent(id)}/presence`, { signal, cache: 'no-store' }),
   socket: (deviceId, receive) => connectSupervisorEvents(receive, { deviceId, threadId: null }),
 };
+
+/** What others shared with this account, one row per device: a device, workspace or
+ * thread share. Listed for choosing (the device switcher); the store does not index
+ * them, since a share may reach only part of the device. */
+export function sharedDevices(portal: RelayPortalSummaryDto, accountId: string, owned: ReadonlySet<string>): SharedDesktopDevice[] {
+  const rows = new Map<string, SharedDesktopDevice>();
+  const add = (id: string, name: string | null | undefined, connected: boolean | undefined, ownerName: string | null | undefined) => {
+    if (owned.has(id) || rows.has(id)) return;
+    rows.set(id, { id, name: name || id.slice(0, 8), connected: connected === true, ownerName: ownerName ?? '' });
+  };
+  for (const device of portal.devices) if (device.ownerUserId !== accountId) add(device.id, device.name, device.connected, '');
+  for (const grant of [...(portal.sharedDevicesWithMe ?? []), ...(portal.sharedThreadsWithMe ?? [])]) if (!grant.revokedAt && !grant.pending) add(grant.deviceId, grant.deviceName, grant.deviceConnected, grant.ownerUsername);
+  for (const share of portal.sharedWithMe ?? []) if (!share.revokedAt && !share.pending) add(share.deviceId, share.deviceName, share.deviceConnected, share.ownerUsername);
+  return [...rows.values()].sort((a, b) => Number(b.connected) - Number(a.connected) || a.name.localeCompare(b.name));
+}
 
 /** Account-wide summaries, not another thread-page polling loop. Budgets follow
  * docs/web-live-updates.md: lists 60s, event reads >=2s apart; activity is map-only. */
@@ -111,7 +126,7 @@ export class DesktopIndexStore {
     window.removeEventListener('pockymoe-account-logout', this.logout);
   }
   logout = () => {
-    this.publish({ devices: [], workspaces: [], threads: [], activity: {}, extras: {}, pulseKeys: [], syncedDeviceIds: [], recentThreadKeys: [] });
+    this.publish({ devices: [], sharedDevices: [], workspaces: [], threads: [], activity: {}, extras: {}, pulseKeys: [], syncedDeviceIds: [], recentThreadKeys: [] });
     this.stop(); this.details.clear(); this.detailRequests.clear();
     void this.persistence.then(() => clearIndex(this.accountId));
   };
@@ -158,7 +173,7 @@ export class DesktopIndexStore {
     for (const device of old.values()) if (!present.has(device.id) && !device.missingFromPortal) devices.push({ ...device, connected: false, missingFromPortal: true });
     const ids = new Set(devices.map(device => device.id));
     for (const id of old.keys()) if (!ids.has(id)) this.releaseDevice(id);
-    this.publish({ devices: mergeRows(this.state.devices, devices, row => row.id),
+    this.publish({ devices: mergeRows(this.state.devices, devices, row => row.id), sharedDevices: mergeRows(this.state.sharedDevices ?? [], sharedDevices(portal, this.accountId, ids), row => row.id),
       workspaces: this.state.workspaces.filter(row => ids.has(row.deviceId)), threads: this.state.threads.filter(row => ids.has(row.deviceId)) });
     for (const [id, { socket }] of this.sockets) if (!this.online(id)) { this.sockets.delete(id); socket.close(); }
     for (const device of devices) {
