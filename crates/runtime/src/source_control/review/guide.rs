@@ -3,7 +3,7 @@
 //! The result is checked against the real diff before it is stored: excerpts
 //! are clamped into hunks, notes must sit in an excerpt, and every changed file
 //! is placed exactly once (an "Other files" stop collects what the model missed).
-use super::service::{git, KnownRepository};
+use super::service::{fetch_review_refs, git, KnownRepository, ReviewRefs};
 use super::*;
 use crate::Supervisor;
 use std::{
@@ -96,115 +96,27 @@ pub fn start(
     state(s, key, &shown)
 }
 
-/// The PR ref every host serves for a PR head, or its source branch.
-fn head_ref(repo: &Repository, detail: &PullDetail) -> String {
-    let n = detail.summary.number;
-    match repo.kind {
-        HostKind::Github | HostKind::Forgejo => format!("refs/pull/{n}/head"),
-        HostKind::Gitlab => format!("refs/merge-requests/{n}/head"),
-        _ => format!("refs/heads/{}", detail.summary.head_ref),
-    }
-}
-
 struct Checkout {
-    root: std::path::PathBuf,
-    refs: Vec<String>,
+    _refs: ReviewRefs,
     _dir: tempfile::TempDir,
     path: std::path::PathBuf,
-}
-impl Drop for Checkout {
-    fn drop(&mut self) {
-        for reference in &self.refs {
-            let _ = git(&self.root, &["update-ref", "-d", reference]);
-        }
-    }
-}
-
-fn valid_ref_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('-')
-        && !name.contains("..")
-        && !name.contains(|c: char| {
-            c.is_whitespace() || matches!(c, ':' | '~' | '^' | '?' | '*' | '[' | '\\')
-        })
 }
 
 /// A shared clone of the local repository at the PR head: it borrows objects
 /// from the original (nothing copied, the original's worktrees untouched) and
 /// its files are read-only.
-async fn checkout(
-    s: &Supervisor,
+fn checkout(
     repo: &Repository,
     detail: &PullDetail,
     local: &KnownRepository,
 ) -> Result<(Checkout, String, String)> {
-    let root = local
-        .root
-        .clone()
-        .context("No local checkout of this repository")?;
     let run = uuid::Uuid::new_v4().simple().to_string();
-    let head_target = format!("refs/pockymoe/review-guide/{run}/head");
-    let base_target = format!("refs/pockymoe/review-guide/{run}/base");
+    let refs = fetch_review_refs(local, repo, detail, &format!("guide-{run}"))?;
     let dir = tempfile::Builder::new()
         .prefix("pockymoe-guide-")
         .tempdir()?;
     let path = dir.path().join("checkout");
-    let checkout = Checkout {
-        root: root.clone(),
-        refs: vec![head_target.clone(), base_target.clone()],
-        _dir: dir,
-        path: path.clone(),
-    };
-    let remote = local
-        .remote
-        .clone()
-        .unwrap_or_else(|| format!("https://{}/{}/{}.git", repo.host, repo.owner, repo.name));
-    let head_ref = head_ref(repo, detail);
-    let base = &detail.summary.base_ref;
-    ensure!(
-        valid_ref_name(base) && valid_ref_name(&head_ref),
-        "Unusual branch names; write the guide from a checkout instead"
-    );
-    if matches!(repo.kind, HostKind::Bitbucket | HostKind::Azure) {
-        // Fork sources: the same fetch "Work on PR" uses.
-        s.fetch_pull_request_ref(&root, repo, detail.summary.number, &head_target)
-            .await?;
-    } else {
-        git(
-            &root,
-            &[
-                "fetch",
-                "--no-tags",
-                "--quiet",
-                &remote,
-                &format!("+{head_ref}:{head_target}"),
-            ],
-        )?;
-    }
-    git(
-        &root,
-        &[
-            "fetch",
-            "--no-tags",
-            "--quiet",
-            &remote,
-            &format!("+refs/heads/{base}:{base_target}"),
-        ],
-    )?;
-    let head = git(
-        &root,
-        &[
-            "rev-parse",
-            "--verify",
-            &format!("{head_target}^{{commit}}"),
-        ],
-    )?
-    .trim()
-    .to_owned();
-    let base_sha = git(&root, &["merge-base", &base_target, &head_target])?
-        .trim()
-        .to_owned();
-    let source = root.to_string_lossy().into_owned();
+    let source = refs.root.to_string_lossy().into_owned();
     let target = path.to_string_lossy().into_owned();
     git(
         Path::new("/"),
@@ -218,9 +130,18 @@ async fn checkout(
             &target,
         ],
     )?;
-    git(&path, &["checkout", "--quiet", "--detach", &head])?;
+    git(&path, &["checkout", "--quiet", "--detach", &refs.head])?;
     read_only(&path);
-    Ok((checkout, head, base_sha))
+    let (head, base) = (refs.head.clone(), refs.base.clone());
+    Ok((
+        Checkout {
+            _refs: refs,
+            _dir: dir,
+            path,
+        },
+        head,
+        base,
+    ))
 }
 
 fn read_only(root: &Path) {
@@ -401,11 +322,15 @@ async fn run_harness(
             }
             command.arg(prompt);
         }
-        let (status, bytes, truncated) = crate::child_process::run_bounded(
+        let result = crate::child_process::run_bounded(
             &mut command,
             512 * 1024,
             Instant::now() + Duration::from_secs(15 * 60),
-        )?;
+        );
+        if program == "claude" {
+            forget_claude_project(&cwd);
+        }
+        let (status, bytes, truncated) = result?;
         ensure!(
             status.success() && !truncated,
             "The guide writer did not finish"
@@ -413,6 +338,32 @@ async fn run_harness(
         Ok(String::from_utf8_lossy(&bytes).trim().to_owned())
     })
     .await?
+}
+
+/// Claude Code makes a project folder for every working directory, even with
+/// `--no-session-persistence`. The checkout is temporary, so its folder (empty
+/// apart from directories) goes too; anything with files in it stays.
+fn forget_claude_project(cwd: &Path) {
+    let config = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".claude")));
+    let Some(config) = config else { return };
+    let name: String = cwd
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let folder = config.join("projects").join(name);
+    fn only_directories(path: &Path) -> bool {
+        std::fs::read_dir(path).is_ok_and(|entries| {
+            entries.flatten().all(|entry| {
+                entry.file_type().is_ok_and(|kind| kind.is_dir()) && only_directories(&entry.path())
+            })
+        })
+    }
+    if folder.is_dir() && only_directories(&folder) {
+        let _ = std::fs::remove_dir_all(&folder);
+    }
 }
 
 async fn write(
@@ -428,9 +379,9 @@ async fn write(
         .and_then(|w| settings.guide_workspace_instructions.get(w))
         .cloned()
         .unwrap_or(settings.guide_instructions.clone());
-    let (checkout, head, base) = checkout(s, repo, detail, local).await?;
+    let (checkout, head, base) = checkout(repo, detail, local)?;
     let diff = git(
-        &checkout.root,
+        &checkout.path,
         &[
             "diff",
             "--no-ext-diff",

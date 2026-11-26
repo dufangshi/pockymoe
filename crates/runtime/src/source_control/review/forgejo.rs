@@ -381,7 +381,8 @@ pub(super) fn map_detail(
             remove_credits: true,
         },
         merge_methods,
-        extra: Value::Null,
+        // The head branch's own repository: forks fetch from there.
+        extra: json!({"headClone": p["head"]["repo"]["clone_url"]}),
         summary,
     }
 }
@@ -601,6 +602,20 @@ pub(super) async fn merge(
         Some(body),
     )
     .await
+    .map_err(merge_error)
+}
+
+/// Forgejo answers 409 when the head moved and 405 while it is still checking
+/// mergeability after a push (or when branch rules block the merge).
+fn merge_error(error: anyhow::Error) -> anyhow::Error {
+    let text = error.to_string();
+    if text.contains("HTTP 409") {
+        anyhow::anyhow!("conflict: PR head moved; load new commits before merging")
+    } else if text.contains("HTTP 405") {
+        anyhow::anyhow!("Forgejo cannot merge this PR yet: it may still be checking the latest push, or a branch rule blocks it. Try again in a moment")
+    } else {
+        error
+    }
 }
 
 pub(super) async fn auto_merge(

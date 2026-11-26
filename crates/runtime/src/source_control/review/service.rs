@@ -289,6 +289,40 @@ impl Supervisor {
                 }))
             }
             "files" => {
+                // Raw-diff hosts refresh a PR's diff some time after a push; with
+                // a local checkout the diff is computed from the head itself.
+                if matches!(
+                    repo.kind,
+                    HostKind::Forgejo | HostKind::Bitbucket | HostKind::Azure
+                ) {
+                    if let Some(known) = self.known_repository(repo) {
+                        let detail = detail(host, repo, number).await?;
+                        let local =
+                            fetch_review_refs(&known, repo, &detail, &format!("files-{number}"))
+                                .and_then(|refs| {
+                                    let diff = git(
+                                        &refs.root,
+                                        &[
+                                            "diff",
+                                            "--no-ext-diff",
+                                            "--no-textconv",
+                                            "--full-index",
+                                            "-M",
+                                            &refs.base,
+                                            &refs.head,
+                                            "--",
+                                        ],
+                                    )?;
+                                    Ok((refs.head.clone(), files_from_diff(&diff)))
+                                });
+                        if let Ok((head, mut files)) = local {
+                            store::apply_viewed(&self.db, &key, &mut files)?;
+                            return Ok(
+                                json!({"headSha":head,"files":files,"viewedOnHost":false,"local":true}),
+                            );
+                        }
+                    }
+                }
                 let mut files = files(host, repo, number).await?;
                 if repo.kind != HostKind::Github {
                     store::apply_viewed(&self.db, &key, &mut files)?;
@@ -612,6 +646,117 @@ impl Supervisor {
     pub fn save_pull_request_views(&self, input: &Value) -> Result<Value> {
         Ok(json!({"views":store::save_views(&self.db, &input["views"])?}))
     }
+}
+
+/// A PR's head and merge base fetched into hidden refs of the local checkout;
+/// the refs go when this is dropped (the objects stay for the next fetch).
+pub(crate) struct ReviewRefs {
+    pub root: PathBuf,
+    pub head: String,
+    pub base: String,
+    refs: Vec<String>,
+}
+impl Drop for ReviewRefs {
+    fn drop(&mut self) {
+        for reference in &self.refs {
+            let _ = git(&self.root, &["update-ref", "-d", reference]);
+        }
+    }
+}
+
+pub(crate) fn valid_ref_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('-')
+        && !name.contains("..")
+        && !name.contains(|c: char| {
+            c.is_whitespace() || matches!(c, ':' | '~' | '^' | '?' | '*' | '[' | '\\')
+        })
+}
+
+/// Fetch the reviewed head and the base into the local checkout and check the
+/// head is the one the host reports. Hosts that refresh their PR refs after a
+/// push (Forgejo, Bitbucket, Azure) are read from the head branch itself, in
+/// its own repository for forks, so the diff is never a push behind.
+pub(crate) fn fetch_review_refs(
+    known: &KnownRepository,
+    repo: &Repository,
+    detail: &PullDetail,
+    tag: &str,
+) -> Result<ReviewRefs> {
+    let root = known
+        .root
+        .clone()
+        .context("No local checkout of this repository")?;
+    let remote = known
+        .remote
+        .clone()
+        .unwrap_or_else(|| format!("https://{}/{}/{}.git", repo.host, repo.owner, repo.name));
+    let s = &detail.summary;
+    let (head_source, head_ref) = match repo.kind {
+        HostKind::Github => (remote.clone(), format!("refs/pull/{}/head", s.number)),
+        HostKind::Gitlab => (
+            remote.clone(),
+            format!("refs/merge-requests/{}/head", s.number),
+        ),
+        _ => (
+            detail.extra["headClone"]
+                .as_str()
+                .filter(|url| Repository::parse(url).is_ok())
+                .map(str::to_owned)
+                .unwrap_or_else(|| remote.clone()),
+            format!("refs/heads/{}", s.head_ref),
+        ),
+    };
+    ensure!(
+        valid_ref_name(&head_ref) && valid_ref_name(&s.base_ref),
+        "Unusual branch names; review this PR on the host"
+    );
+    let head_target = format!("refs/pockymoe/review/{tag}/head");
+    let base_target = format!("refs/pockymoe/review/{tag}/base");
+    let mut refs = ReviewRefs {
+        root: root.clone(),
+        head: String::new(),
+        base: String::new(),
+        refs: vec![head_target.clone(), base_target.clone()],
+    };
+    git(
+        &root,
+        &[
+            "fetch",
+            "--no-tags",
+            "--quiet",
+            &head_source,
+            &format!("+{head_ref}:{head_target}"),
+        ],
+    )?;
+    git(
+        &root,
+        &[
+            "fetch",
+            "--no-tags",
+            "--quiet",
+            &remote,
+            &format!("+refs/heads/{}:{base_target}", s.base_ref),
+        ],
+    )?;
+    refs.head = git(
+        &root,
+        &[
+            "rev-parse",
+            "--verify",
+            &format!("{head_target}^{{commit}}"),
+        ],
+    )?
+    .trim()
+    .to_owned();
+    ensure!(
+        refs.head == s.head_sha,
+        "The host is still updating this PR after a push; try again in a moment"
+    );
+    refs.base = git(&root, &["merge-base", &base_target, &head_target])?
+        .trim()
+        .to_owned();
+    Ok(refs)
 }
 
 /// Git in a review checkout: same bounded, prompt-free runner as host commands.

@@ -283,7 +283,7 @@ pub(super) fn bitbucket_map(
             ..Default::default()
         },
         merge_methods: Vec::new(),
-        extra: Value::Null,
+        extra: json!({"headClone": p["source"]["repository"]["links"]["clone"].as_array().and_then(|a| a.iter().find(|v| v["name"] == "https")).map(|v| v["href"].clone()).unwrap_or(Value::Null)}),
         summary,
     }
 }
@@ -733,7 +733,7 @@ pub(super) fn azure_map(
             ..Default::default()
         },
         merge_methods: vec!["squash".into(), "merge".into(), "rebase".into()],
-        extra: json!({"viewerId": viewer["id"]}),
+        extra: json!({"viewerId": viewer["id"], "headClone": p["forkSource"]["repository"]["remoteUrl"]}),
         summary,
     }
 }
