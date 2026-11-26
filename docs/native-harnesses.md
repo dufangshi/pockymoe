@@ -131,7 +131,8 @@ original file, so line numbers and counts are exact), MultiEdit diffs, and a
 `Permission denied: <reason>` result. A subagent's own text stays inside its
 Agent result; its tool calls are attributed to it. A backgrounded Agent stays in
 the subagent list until its task ends. TodoWrite and the Task tools update the
-plan instead of adding rows. Compaction is a compaction item with Claude's
+plan instead of adding rows. An approved plan-mode plan becomes the turn's plan
+card, as on ACP (where claude-agent-acp sends it as an ACP `plan_update`). Compaction is a compaction item with Claude's
 summary, and the context meter drops to the retained size. API retries (the first and the last attempt), model
 refusal fallbacks, Claude warnings and MCP servers that failed to start appear
 as notices.

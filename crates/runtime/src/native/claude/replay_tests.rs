@@ -559,6 +559,9 @@ async fn replay_questions_and_plan_approval() {
         .as_deref()
         .unwrap()
         .contains("# Plan: Add a README"));
+    let card = t.of("plan");
+    assert_eq!(card.len(), 1, "the approved plan is the turn's plan card");
+    assert!(card[0].text.starts_with("# Plan: Add a README"));
     // The plan approval moved Claude to default; the next turn re-asserts plan.
     assert_eq!(
         *r.runtime

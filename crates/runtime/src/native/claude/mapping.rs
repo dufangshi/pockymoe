@@ -395,6 +395,17 @@ impl Mapper {
                     if self.stopping && update["status"] == "failed" {
                         update["status"] = json!("interrupted");
                     }
+                    // The approved plan becomes the turn's plan card, as
+                    // claude-agent-acp's plan-mode plan_update does.
+                    if update["name"] == "ExitPlanMode"
+                        && update["status"] == "completed"
+                        && parent.is_none()
+                    {
+                        if let Some(plan) = update["rawInput"]["plan"].as_str() {
+                            let plan = json!({"sessionUpdate":"plan_update","plan":{"type":"markdown","planId":"plan-mode","content":plan}});
+                            updates.push(self.inner.apply(&plan));
+                        }
+                    }
                     self.tools.insert(tool_id.into(), update.clone());
                     update
                 }
