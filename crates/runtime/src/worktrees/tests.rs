@@ -1179,3 +1179,136 @@ async fn stash_write_list_and_pop_roundtrip() {
     );
     assert!(f.repo.join("new-stash.txt").exists());
 }
+
+#[tokio::test]
+async fn rewind_selects_native_only_when_current_session_contains_the_journal() {
+    // Exercise the public operation, including its portable-session transaction.
+    for (case, expected) in [
+        ("legacy_session", "rollback"),
+        ("session_before_turn", "rollback"),
+        ("session_at_turn", "rollback"),
+        ("session_after_turn", "handoff"),
+        ("no_session", "handoff"),
+        ("foreign_provider", "handoff"),
+        ("foreign_agent", "handoff"),
+    ] {
+        let f = Fixture::new().await;
+        f.state
+            .fixture_event(crate::fake::FixtureEventInput {
+                r#type: "complete".into(),
+                thread_id: f.thread.clone(),
+                text: Some("done".into()),
+            })
+            .await
+            .unwrap();
+        let turn = f.state.list_fork_turn_options(&f.thread).unwrap()[0]
+            .turn_id
+            .clone();
+        f.state.db.with(|c| {
+            c.execute("DELETE FROM thread_harness_sessions WHERE thread_id=?1", [&f.thread])?;
+            c.execute("UPDATE thread_turns SET started_at='2026-01-02T00:00:00Z' WHERE id=?1", [&turn])?;
+            match case {
+                "no_session" => {c.execute("UPDATE threads SET provider_session_id=NULL WHERE id=?1", [&f.thread])?;},
+                "foreign_provider" => {c.execute("UPDATE thread_turns SET provider='acp' WHERE id=?1", [&turn])?;},
+                "foreign_agent" => {c.execute("UPDATE thread_turns SET agent_id='claude' WHERE id=?1", [&turn])?;},
+                "session_before_turn" | "session_at_turn" | "session_after_turn" => {
+                    let created = match case {
+                        "session_before_turn" => "2026-01-01T00:00:00Z",
+                        "session_at_turn" => "2026-01-02T00:00:00Z",
+                        _ => "2026-01-03T00:00:00Z",
+                    };
+                    c.execute("INSERT INTO thread_harness_sessions(thread_id,provider,agent_id,session_id,turns_seen,created_at,last_used_at) SELECT id,provider,COALESCE(agent_id,''),provider_session_id,0,?2,?2 FROM threads WHERE id=?1", params![f.thread,created])?;
+                },
+                _ => {},
+            }
+            Ok(())
+        }).unwrap();
+        let result = f
+            .state
+            .rewind_thread(&f.thread, &json!({"turnId":turn}))
+            .await
+            .unwrap();
+        assert_eq!(result["history"], expected, "{case}");
+        assert!(f
+            .state
+            .list_fork_turn_options(&f.thread)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            f.state
+                .get_thread(&f.thread)
+                .unwrap()
+                .provider_session_id
+                .is_none(),
+            expected == "handoff",
+            "{case}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn portable_rewind_transaction_failure_keeps_files_journal_and_session_state() {
+    let f = Fixture::new().await;
+    f.state
+        .fixture_event(crate::fake::FixtureEventInput {
+            r#type: "start".into(),
+            thread_id: f.thread.clone(),
+            text: None,
+        })
+        .await
+        .unwrap();
+    std::fs::write(f.repo.join("tracked.txt"), "keep after portable failure\n").unwrap();
+    f.state
+        .fixture_event(crate::fake::FixtureEventInput {
+            r#type: "complete".into(),
+            thread_id: f.thread.clone(),
+            text: Some("keep journal".into()),
+        })
+        .await
+        .unwrap();
+    let turn = f.state.list_fork_turn_options(&f.thread).unwrap()[0]
+        .turn_id
+        .clone();
+    f.state.db.with(|c| {
+        c.execute("UPDATE thread_turns SET agent_id='foreign' WHERE id=?1", [&turn])?;
+        c.execute_batch("CREATE TRIGGER refuse_portable_stage BEFORE INSERT ON kv WHEN NEW.key LIKE 'handoff:pending:%' BEGIN SELECT RAISE(ABORT,'injected portable failure'); END;")?;
+        Ok(())
+    }).unwrap();
+    let session = f.state.get_thread(&f.thread).unwrap().provider_session_id;
+    let error = f
+        .state
+        .rewind_thread(&f.thread, &json!({"turnId":turn,"restoreFiles":true}))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("injected portable failure"),
+        "{error:#}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("tracked.txt")).unwrap(),
+        "keep after portable failure\n"
+    );
+    assert_eq!(
+        f.state.get_thread(&f.thread).unwrap().provider_session_id,
+        session
+    );
+    assert_eq!(f.state.list_fork_turn_options(&f.thread).unwrap().len(), 1);
+    assert!(f
+        .state
+        .db
+        .get_kv(&format!("handoff:pending:{}", f.thread))
+        .unwrap()
+        .is_none());
+    f.state
+        .db
+        .with(|c| {
+            let archived: i64 = c.query_row(
+                "SELECT COUNT(*) FROM rewound_turn_accounting WHERE thread_id=?1",
+                [&f.thread],
+                |r| r.get(0),
+            )?;
+            assert_eq!(archived, 0);
+            Ok(())
+        })
+        .unwrap();
+}
