@@ -716,7 +716,9 @@ impl Adapter {
         );
         // Loopback hosts (throwaway local Forgejo or GitLab) speak plain HTTP.
         let scheme = if self.repo.host.split(':').next().is_some_and(|h| {
-            h == "localhost" || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+            h == "localhost"
+                || h.parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
         }) {
             "http"
         } else {

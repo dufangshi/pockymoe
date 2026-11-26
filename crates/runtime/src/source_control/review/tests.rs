@@ -865,3 +865,36 @@ fn guide_output_is_clamped_to_the_real_diff() {
     assert_eq!(stops[2]["files"][0]["path"], "Cargo.lock");
     assert!(guide::parse_json("no json here").is_err());
 }
+
+#[tokio::test]
+async fn github_rerun_and_revert_use_the_run_and_the_pr_node() {
+    let mut d = github_detail();
+    d.capabilities.rerun = true;
+    d.capabilities.revert = true;
+    d.check_runs[0].rerun = Some("run:42".into());
+    let host = FixtureHost::new(HostKind::Github).answer(
+        "GQL",
+        "revertPullRequest",
+        json!({"data":{"revertPullRequest":{"revertPullRequest":{"number":9,"url":"https://github.com/o/r/pull/9"}}}}),
+    );
+    rerun(&host, &repo(HostKind::Github), &d, "run:42")
+        .await
+        .unwrap();
+    assert!(
+        rerun(&host, &repo(HostKind::Github), &d, "run:7")
+            .await
+            .is_err(),
+        "only a token the PR offered"
+    );
+    let opened = revert(&host, &repo(HostKind::Github), &d).await.unwrap();
+    assert_eq!(opened["number"], 9);
+    let requests = host.requests();
+    assert_eq!(requests[0].1, "repos/o/r/actions/runs/42/rerun-failed-jobs");
+    assert_eq!(
+        requests[1].2.as_ref().unwrap()["variables"]["id"],
+        d.node_id.clone().unwrap()
+    );
+    // Open PRs cannot be reverted.
+    d.summary.state = "open".into();
+    assert!(revert(&host, &repo(HostKind::Github), &d).await.is_err());
+}
