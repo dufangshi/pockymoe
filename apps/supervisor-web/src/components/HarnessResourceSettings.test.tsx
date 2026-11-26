@@ -16,6 +16,7 @@ vi.mock('../lib/api', () => {
     }
   }
   return {
+    deviceRequest: vi.fn().mockResolvedValue({ codex: 'acp', claude: 'acp' }),
     ApiError, fetchHarnessResourceSettings: vi.fn(), updateHarnessResourceSettings: vi.fn(), relayModeActive: vi.fn(),
     fetchStorageOverview: vi.fn(), fetchStorageSettings: vi.fn(), updateStorageSettings: vi.fn(), scanStorage: vi.fn(),
     pruneStorage: vi.fn(), compactStorage: vi.fn(), cleanStorageThread: vi.fn(),

@@ -975,6 +975,20 @@ fn apply_file_changes(mapped: &mut ThreadHistoryItemDto, body: &Value) {
             continue;
         }
         let path = entry["path"].as_str().unwrap_or("unknown");
+        // The native app-server provides a unified patch instead of old/new text.
+        if let Some(patch) = entry["diff"].as_str() {
+            added += patch
+                .lines()
+                .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+                .count();
+            removed += patch
+                .lines()
+                .filter(|line| line.starts_with('-') && !line.starts_with("---"))
+                .count();
+            patches.push(patch.to_owned());
+            paths.push(path);
+            continue;
+        }
         let old = entry["oldText"].as_str().unwrap_or("");
         let new = entry["newText"].as_str().unwrap_or("");
         let diff = similar::TextDiff::from_lines(old, new);

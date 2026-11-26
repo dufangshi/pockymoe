@@ -219,7 +219,7 @@ fn process_session_id(live: &LiveSession) -> String {
     }
 }
 
-fn resume_session_identity(
+pub(crate) fn resume_session_identity(
     session: &str,
     default_agent: &str,
     environment: Option<(&str, u64)>,

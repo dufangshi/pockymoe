@@ -57,7 +57,7 @@ pub(super) fn claude_command(command: &str, root: &Path) -> Result<Option<String
     ])))
 }
 
-pub(super) fn observer(
+pub(crate) fn observer(
     reader: Arc<std::sync::Mutex<CodexTraceReader>>,
     state: Arc<InspectionState>,
     session: String,
@@ -86,7 +86,7 @@ pub(super) fn observer(
     stop
 }
 
-pub(super) fn native_usage(
+pub(crate) fn native_usage(
     reader: Option<&Arc<std::sync::Mutex<CodexTraceReader>>>,
     usage: &Value,
     state: Option<&Arc<InspectionState>>,
