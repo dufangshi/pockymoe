@@ -170,6 +170,12 @@ pub(crate) fn take_role(state: &Supervisor, thread: &str) -> Option<String> {
             let text: Option<String> = c
                 .query_row("SELECT value FROM kv WHERE key=?1", [&key], |r| r.get(0))
                 .optional()?;
+            if let Some(saved) = &text {
+                c.execute(
+                    "INSERT OR REPLACE INTO kv(key,value) VALUES(?1,?2)",
+                    params![format!("handoff:role:{thread}"), saved],
+                )?;
+            }
             c.execute("DELETE FROM kv WHERE key=?1", [&key])?;
             Ok(text)
         })

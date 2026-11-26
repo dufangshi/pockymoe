@@ -63,6 +63,7 @@ Maintained documentation for Pockymoe. For the product overview, start with the
 
 **Harnesses**
 
+- [Switching harnesses](harness-switching.md): portable history, saved sessions, CLI and API
 - [Harness lifecycle](harness-lifecycle.md): when harness processes load and are released, limits, memory
 - [Context inspection](context-inspection.md): optional Codex and Claude context categories, precision and APIs
 - [Model and reasoning effort](model-settings.md): effort levels per model, changes during a turn, the models a turn shows

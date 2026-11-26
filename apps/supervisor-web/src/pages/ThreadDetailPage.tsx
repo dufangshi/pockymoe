@@ -4271,6 +4271,8 @@ export function ThreadDetailPage() {
         void fetchThreadDetail(detail.thread.id, { limit: INITIAL_DETAIL_TURN_PAGE_SIZE }, relayRouteDeviceId).then(setDetail);
       }} />}{settingsDialogVisible && dialogDetail && <HarnessSettingsDialog
         key={`${dialogDevice}:${dialogDetail.thread.id}`} thread={dialogDetail.thread}
+        switchDeviceId={dialogDevice}
+        onForked={thread=>openThread(thread.id)}
         models={dialogUseReference ? referenceController.models : modelOptions}
         busy={dialogUseReference ? referenceController.busy : settingsBusy}
         readOnly={dialogUseReference ? !referenceController.canControl : !relayThreadCanControl}

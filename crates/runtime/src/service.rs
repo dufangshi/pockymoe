@@ -6,7 +6,9 @@ mod claude_reply_phases;
 mod context;
 mod environment_requests;
 mod generation;
+mod handoff;
 mod harness_release;
+pub use handoff::{HandoffPreview, HarnessSwitchInput};
 mod inbox_reminder;
 pub(crate) mod peer_work;
 mod reliability;
@@ -2663,10 +2665,13 @@ impl Supervisor {
                 .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                 .map(|t| t.timestamp_millis())
         };
-        for turn in turns
-            .iter_mut()
-            .filter(|turn| turn.status != "inProgress" && usage_needs_hydration(turn))
-        {
+        for turn in turns.iter_mut().filter(|turn| {
+            turn.status != "inProgress"
+                && usage_needs_hydration(turn)
+                && turn.agent_id.as_deref().is_none_or(|agent| {
+                    Some(agent) == thread.agent_id.as_deref() || agent == thread.provider.as_str()
+                })
+        }) {
             let source = history
                 .iter()
                 .find(|source| source.id == turn.id)
@@ -3063,10 +3068,7 @@ impl Supervisor {
         if current.status == "recovering" {
             bail!("conflict: Reconnect to confirm backend state before starting another turn");
         }
-        let thread = ThreadDto {
-            provider_session_id: current.provider_session_id,
-            ..thread
-        };
+        let thread = current;
         let provider = thread.provider;
         let _maintenance = self
             .maintenance_gate
@@ -3112,6 +3114,7 @@ impl Supervisor {
                 .stage_goal(&session_id, submission.goal.clone())
                 .await?;
         }
+        let handoff = self.pending_handoff(&thread, &prompt)?;
         let turn_id = Uuid::new_v4().to_string();
         let now = now_rfc3339();
         let turn_model = model.clone().or_else(|| thread.model.clone());
@@ -3184,6 +3187,12 @@ impl Supervisor {
                 extra: Default::default(),
             };
             let origin = pending_steer_id.map(|pending| thread_summary::prompt_origin(conn, pending)).transpose()?.flatten().unwrap_or("user");
+            if let Some(raw)=conn.query_row("SELECT value FROM kv WHERE key=?1",[format!("handoff:pending:{}",thread.id)],|r|r.get::<_,String>(0)).optional()? {
+                if let Ok(mut switch)=serde_json::from_str::<Value>(&raw) {if switch.is_object() {
+                    if let Some(prefix)=&handoff {switch["turns"]=json!(prefix.turns);}
+                    user_item.extra.insert("harnessSwitch".into(),switch);
+                }}
+            }
             user_item.extra.insert("origin".into(), json!(origin));
             if let Some(sender) = goal_submission.as_ref().and_then(|g| g.sender.as_ref()) {
                 user_item.extra.insert("sender".into(), serde_json::to_value(sender)?);
@@ -3277,6 +3286,11 @@ impl Supervisor {
         let prompt = match self.pending_mail_notice(&thread.id) {
             Some(notice) => format!("{notice}\n\n{prompt}"),
             None => prompt,
+        };
+        let prompt = if let Some(handoff) = handoff {
+            format!("{}\n\n{}", handoff.text, prompt)
+        } else {
+            prompt
         };
         let context_delivered = self.harness_context_delivered(&thread.id, &session_id);
         let bus = self.bus.for_turn(&thread.id, &turn_id);
@@ -3396,6 +3410,8 @@ impl Supervisor {
                 "UPDATE thread_turns SET status=?1, error=?2, completed_at=CASE WHEN ?1='recovering' THEN NULL ELSE ?3 END WHERE id=?4",
                 params![status, error, now, turn_id],
             )?;
+            // A failed start may never have delivered the history; keep it pending for retry.
+            if matches!(status,"completed"|"interrupted") {handoff::record_seen(conn, thread_id, now)?;}
             for item in items {
                 conn.execute(
                     "INSERT INTO thread_history_items(id, thread_id, turn_id, item_id, item_json, created_at, updated_at)
@@ -3873,6 +3889,12 @@ impl Supervisor {
                 "DELETE FROM thread_pending_steers WHERE thread_id=?1",
                 params![id],
             )?;
+            for kind in ["contract", "role", "pending"] {
+                conn.execute(
+                    "DELETE FROM kv WHERE key=?1",
+                    [format!("handoff:{kind}:{id}")],
+                )?;
+            }
             conn.execute("DELETE FROM threads WHERE id=?1", params![id])?;
             Ok(())
         })?;
@@ -4207,6 +4229,7 @@ impl Supervisor {
                         turn.id
                     ],
                 )?;
+                conn.execute("UPDATE thread_turns SET provider=?2,agent_id=?3 WHERE id=?1",params![new_turn_id,turn.provider.map(Provider::as_str),turn.agent_id])?;
                 upsert_legacy_turn_metadata(
                     conn,
                     &new_id,
@@ -4725,6 +4748,10 @@ fn turn_meta_row(row: &rusqlite::Row<'_>, catalog: &Value) -> rusqlite::Result<T
         )
     });
     Ok(ThreadTurnDto {
+        provider: row
+            .get::<_, Option<String>>(11)?
+            .and_then(|p| serde_json::from_value(json!(p)).ok()),
+        agent_id: row.get(12)?,
         origin: Some(row.get(10)?),
         id: row.get(0)?,
         started_at: row.get(6)?,
@@ -4746,7 +4773,7 @@ fn turn_meta_row(row: &rusqlite::Row<'_>, catalog: &Value) -> rusqlite::Result<T
 }
 
 /// Turn metadata columns read by [`turn_meta_row`].
-const TURN_META_COLUMNS: &str = "id, status, error, model, reasoning_effort, token_usage_json, started_at, completed_at, pricing_model_key, pricing_tier_key, origin";
+const TURN_META_COLUMNS: &str = "id, status, error, model, reasoning_effort, token_usage_json, started_at, completed_at, pricing_model_key, pricing_tier_key, origin, provider, agent_id";
 
 fn normalize_imported_turns(turns: &mut [ThreadTurnDto]) {
     for turn in turns {

@@ -1115,6 +1115,7 @@ export interface MessageSenderDto {
 }
 
 export interface ThreadHistoryItemDto {
+  harnessSwitch?: { fromAgentId?: string; fromModel?: string; agentId?: string; model?: string; turns: number };
   /** Set when storage cleanup removed this command's output or this edit's diff. */
   outputPrunedAt?: string | null;
   outputPrunedBytes?: number | null;
@@ -1377,6 +1378,8 @@ export interface ThreadTurnPriceEstimateDto {
 export type TurnStatusDto = 'completed' | 'interrupted' | 'failed' | 'inProgress' | 'recovering';
 
 export interface ThreadTurnDto {
+  provider?: string | null;
+  agentId?: string | null;
   id: string;
   startedAt: string | null;
   completedAt?: string | null;
