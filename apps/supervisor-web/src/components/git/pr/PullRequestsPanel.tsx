@@ -39,7 +39,7 @@ export function PullRequestsPanel({threadId,workingCopyId,deviceId}:{threadId:st
     <ul>{links.map(link=><li key={link.url}><button className="pr-item" type="button" onClick={()=>{void open(link);}}>{link.repository.owner}/{link.repository.name} · {link.kind==='issue'?t('issues'):'PR'} #{link.number}</button><a href={link.url} target="_blank" rel="noreferrer" aria-label={link.url}><ExternalLink size={14}/></a><button type="button" disabled={busy} aria-label={`${t('unlink')} #${link.number}`} onClick={()=>{void run('unlink',{url:link.url});}}><X size={14}/></button></li>)}</ul>
     {selected&&<div className="pr-form"><div className="pr-toolbar"><strong>#{selected.number} {detail&&string(detail.title)}</strong><button type="button" aria-label={t('close')} onClick={()=>{setSelected(null);setExtra(null);}}><X size={16}/></button></div>
       {!detail?<p>{t('loading')}</p>:<>
-        <p>{t('state')}: {stateLabel(detail.state||detail.status)} {watching&&` · ${t('watching')}`}</p>
+        <p>{t('state')}: {stateLabel(detail.merged===true?'merged':detail.state||detail.status)} {watching&&` · ${t('watching')}`}</p>
         {selected.kind==='pr'&&(detail.mergeable===false||detail.has_conflicts===true||detail.mergeStatus==='conflicts'?<p>{t('conflicts')}</p>:detail.mergeable===true||detail.mergeStatus==='succeeded'?<p>{t('mergeable')}</p>:null)}
         <label>{t('prTitle')}<input value={title} onChange={e=>setTitle(e.target.value)}/></label><label>{t('body')}<textarea value={body} onChange={e=>setBody(e.target.value)}/></label>
         <div className="pr-toolbar"><button disabled={busy} onClick={()=>{void run('update',{...itemInput(),title,body});}}>{t('update')}</button>
