@@ -49,7 +49,9 @@ use crate::import_id::{
     bind_import_target, parse_session_ref, scoped_session_id, session_ids_match,
 };
 use crate::local_sessions::{find_local_session, list_local_sessions, LocalSessionHomes};
-pub use harness_release::{DisplayChange, HarnessViewer, InvalidSettings, MAX_VIEWED_THREADS};
+pub use harness_release::{
+    DisplayChange, HarnessViewer, InvalidSettings, PortListener, MAX_VIEWED_THREADS,
+};
 use pockymoe_protocol::HarnessLoadReason;
 pub use storage::{StorageBusy, STORAGE_PAGE_LIMIT};
 pub use turn_selection::{ExportTurnOption, NumberedTurn, SelectedTurns, TurnSelection};

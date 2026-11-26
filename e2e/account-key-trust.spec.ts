@@ -114,6 +114,28 @@ test('preview leases authorize bound Web, CLI and thread-recipient previews whil
       'PREVIEW_CLI_QUERY_STRIPPED: relay must strip lease while preserving the application query; blocked launch also fails this check').toBe(true);
     f.events.push(`preview CLI openStatus=${cliOpenStatus} usedOwnLease=${cliOpenedWithOwnLease} browserLeaseRequests=${cliLeaseRequests} upstreamRequests=${cliRequests.length}`);
 
+    // A live link whose web service is gone (for example, the agent thread that
+    // started it was closed) says so at once, in the gateway's own words: not
+    // the data-channel deadline, and not a 502 a CDN would replace with its page.
+    const stopped = await f.cli(['--cli-config', bound.cli, 'preview', 'create', '--port', '16277', '--path', '/stopped']);
+    expect(stopped.code, 'CLI reserves a preview for a port without a service').toBe(0);
+    f.secrets.push(stopped.data.leaseId);
+    const stoppedPage = await owner.context.newPage();
+    let stoppedGateway: string | undefined;
+    stoppedPage.on('response', response => {
+      if (new URL(response.url()).hostname === `p-${stopped.data.id}.preview.localhost`) stoppedGateway = response.headers()['x-pockymoe-gateway'];
+    });
+    const stoppedAt = Date.now();
+    const stoppedStatus = await navigate(stoppedPage, stopped.data.openUrl);
+    expect.soft(stoppedStatus, 'PREVIEW_SERVICE_STOPPED_STATUS: a stopped service is 503, never a 502/504').toBe(503);
+    expect.soft(stoppedGateway, 'PREVIEW_SERVICE_STOPPED_REASON: the device reported why').toBe('service-not-running');
+    await expect.soft(stoppedPage.getByRole('heading', { name: 'Nothing is running on this port', exact: true }),
+      'PREVIEW_SERVICE_STOPPED_PAGE: the browser shows what happened and what to do').toBeVisible({ timeout: 5_000 });
+    await expect.soft(stoppedPage.getByText('127.0.0.1:16277'), 'PREVIEW_SERVICE_STOPPED_PORT: the page names the port').toBeVisible();
+    expect.soft(Date.now() - stoppedAt < 8_000, 'PREVIEW_SERVICE_STOPPED_PROMPT: answered before the 10-second data-channel deadline').toBe(true);
+    f.events.push(`preview stopped service status=${stoppedStatus} gateway=${stoppedGateway} ms=${Date.now() - stoppedAt}`);
+    await stoppedPage.close();
+
     // Bypass all browser signing and call only the relay's preview-open API.
     const missing = await f.api(openPath, 'POST', { path: '/missing-lease' }, owner.cookie);
     expect.soft(missing.status, 'PREVIEW_MISSING_LEASE: relay-only request cannot open a strict-device mapping without a lease').toBe(403);

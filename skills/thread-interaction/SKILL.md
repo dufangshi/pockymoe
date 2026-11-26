@@ -65,6 +65,8 @@ Collaborating:
 - Blocked on a decision another thread must make: `thread ask parent --subject S --text
   T` waits for the answer; do not guess or stop. On a timeout, wait again for the same
   question (`inbox wait --in-reply-to ID`) instead of asking again.
+- Closing a delegate ends every process it started. A web service behind a preview link
+  must run in a thread that stays open; `thread close` refuses a delegate that serves one.
 - A settled delegate finished executing, which is not success. Check `outcome` and the
   evidence (files, commit, exact test command and result) before merging or closing. A
   `stalled` delegate cannot start its work: fix the cause or withdraw it. A delegate

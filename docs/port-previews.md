@@ -332,6 +332,50 @@ A Relay whose Web UI is on a separate origin
 ([self-hosting](self-host-relay.md#separate-web-origin)) still accepts the device
 data channel at `/supervisor/port-stream/{ticket}`, so previews work there too.
 
+## The service behind a mapping
+
+A mapping is an address for a loopback port. It does not start, own or watch
+the web service, and the two have different lifetimes: the mapping persists,
+while a service an agent started is a process in that thread's harness tree
+and ends when the thread is closed, deleted or released
+([harness lifecycle](harness-lifecycle.md)). Re-creating the port from another
+thread moves the mapping, not the process.
+
+Two things keep a live link from pointing at a service that was just ended:
+
+- `pockymoe thread close` and `thread delete` look for processes of the target
+  thread that listen on a port with an enabled host mapping (Linux: `/proc`;
+  macOS: `lsof`; Windows: `netstat`). They refuse with 409, naming port and
+  process, unless `--stop-preview-servers` is given; the receipt then lists
+  `stoppedPreviewServers`. The check is best effort: when the process table
+  cannot be read the thread closes as before. Mappings of an isolated
+  environment are not checked. A process shared with another thread stays, so
+  it does not count.
+- The device says why it will not serve a connection. For a `preview.open` it
+  cannot serve, it sends `{"type":"preview.refused","ticket","mappingId","reason"}`
+  on its control channel and logs one `info` line per mapping and reason a
+  minute. It tries the local port before opening the data channel, so a stopped
+  service is reported at once. The Relay answers the waiting request with:
+
+| `reason` | Meaning | Status | `x-pockymoe-gateway` |
+| --- | --- | --- | --- |
+| `serviceNotRunning` | Nothing accepts connections on the loopback port | 503 | `service-not-running` |
+| `leaseRequired` | Bound device, no live lease for this mapping | 403 | `lease-required` |
+| `mappingStopped` | The mapping no longer exists on the device | 404 | `mapping-stopped` |
+| `environmentUnavailable` | The thread's environment was stopped or replaced | 503 | `environment-unavailable` |
+| `busy` | The mapping serves its stream limit (`Retry-After: 1`) | 503 | `busy` |
+| `previewsDisabled` | The device's host mode has previews off | 404 | `previews-disabled` |
+| none within 10 s, an unknown reason, or a stream that failed | Device offline, or a Supervisor that predates `preview.refused` | 503 | `device-unavailable` |
+| (Relay) no mapping with this address | Stopped with `preview stop` or Web **Stop**, or its device offline | 404 | `not-mapped` |
+
+A browser navigation gets a small self-contained page with the explanation, the
+port and a "Try again" link; scripts, assets and WebSocket upgrades get the same
+status with one line of text. The gateway never answers 502 or 504 itself: a CDN
+in front of the Relay replaces those with its own error page (Cloudflare does by
+default, and passing the origin's page through is an Enterprise setting), which
+hid the explanation and read as a broken Relay. A Relay that does not know
+`preview.refused` ignores the frame and keeps its 10-second deadline.
+
 ## Compatibility and limits
 
 The same Rust loopback transport works on macOS, Windows and Linux. On WSL or
@@ -385,14 +429,20 @@ for framework-specific controls.
 processes plus a local HTTP/WebSocket service. It covers encrypted management,
 owner isolation, binary POST/GET, redirects, cookie filtering, streamed responses,
 WebSocket echo and stopping a live socket, plus confirmation/cancellation of
-chat-localhost links. `preview::tests` covers origin/config validation, header
+chat-localhost links. It still registers accounts with a password and has not
+run since registration moved to account keys; until it is ported to
+`e2e/helpers/account-key.ts`, the preview-lease case below is the maintained
+browser coverage. `preview::tests` covers origin/config validation, header
 rewrites, reconnect cancellation, failed-upgrade resource cleanup and which
 recipients open a thread's mapping until their access ends. Web unit tests
 cover local link parsing, confirmation and unavailable configuration.
 `e2e/account-key-trust.spec.ts` (preview leases) opens Web and CLI links on a
 bound device, the no-lease path on an unbound one, and, on both, a thread
 recipient's CLI link for a mapping that thread's agent made, before and after
-the share.
+the share. It also opens a link whose service was stopped and expects the
+gateway's page at once. `ports::tests` and `preview::tests` cover each refusal
+reason and its status; `port_listeners` and `harness_release` tests cover
+finding a thread's listening processes.
 
 ## References
 
@@ -425,7 +475,10 @@ requires a token/subprotocol, so do not diagnose it as a broken Relay by itself.
 Use `preview list` to recover addresses and `preview stop PORT_OR_ID` to revoke
 one. Stop does not terminate the application process. Through the Relay, a
 mapping opens for the device owner and, when a thread's agent created it, for
-that thread's recipients. The CLI acts with the device's local authority: an
-agent in a thread that a share recipient controls can create, list and stop any
-mapping and its local lease like any local user.
+that thread's recipients. A thread's credential lists, checks and stops the
+mappings that thread holds; for a port another thread holds, `check` and `stop`
+answer 409 naming the holder instead of "not found". Any thread can take an
+enabled port over by creating it again, which keeps the address: an agent in a
+thread that a share recipient controls can therefore still reach every mapping
+and its local lease, like any local user. The machine credential sees them all.
 The embedded `pockymoe skill` documents the required agent workflow.

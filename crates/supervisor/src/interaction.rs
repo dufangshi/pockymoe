@@ -263,7 +263,17 @@ async fn run_as(
                 "forbidden: --from cannot override the authenticated parent for deletion"
             );
             reach(id)?;
-            state.delete_child_thread(&caller, id).await
+            let served = crate::ports::served_by_thread(state, id).await;
+            anyhow::ensure!(
+                served.is_empty() || input["stopPreviewServers"] == true,
+                "{}",
+                crate::ports::serving_previews_refusal("delete", &served)
+            );
+            let mut deleted = state.delete_child_thread(&caller, id).await?;
+            if !served.is_empty() {
+                deleted["stoppedPreviewServers"] = json!(served);
+            }
+            Ok(deleted)
         }
         "send" => {
             reach(id)?;
@@ -405,13 +415,25 @@ async fn run_as(
                 "forbidden: --from cannot override the authenticated caller for close"
             );
             reach(id)?;
-            state
+            // Closing ends the delegate's whole process tree, including a dev
+            // server whose preview link the caller may be about to hand over.
+            let served = crate::ports::served_by_thread(state, id).await;
+            anyhow::ensure!(
+                served.is_empty() || input["stopPreviewServers"] == true,
+                "{}",
+                crate::ports::serving_previews_refusal("close", &served)
+            );
+            let mut closed = state
                 .close_agent_thread_releasing(
                     caller.as_deref().or(from),
                     id,
                     input["removeWorktree"] == true,
                 )
-                .await
+                .await?;
+            if !served.is_empty() {
+                closed["stoppedPreviewServers"] = json!(served);
+            }
+            Ok(closed)
         }
         "roles" => Ok(list_roles(Path::new(&caller_cwd(state, from)?))),
         "inboxWait" | "inboxWake" => {

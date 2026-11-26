@@ -21,9 +21,19 @@ pockymoe preview stop 4013
 
 - Creation reserves a mapping, **not a running server**. Repeating it for an
   enabled port keeps the same address. Stop then recreate gets a new address;
-  update exact-host configuration accordingly. Avoid stopping another task's
-  mapping; mappings are device-wide, not thread-local. Creating an enabled port
-  from this thread makes this thread decide who else can open it.
+  update exact-host configuration accordingly. A port has one mapping on the
+  device, held by the thread that created it last: `list`, `check` and `stop`
+  act on the mappings your thread holds, and name the holder when a port is
+  another thread's. Creating an enabled port from this thread moves the mapping
+  here (same address) and makes this thread decide who else can open it. Do not
+  take over or stop another task's mapping without a reason.
+- **Start the service from the thread that hands the link to the user and stays
+  open.** A service runs in the process tree of the thread whose agent started
+  it and ends when that thread is closed, deleted or released, while the mapping
+  and its link stay. A delegate that started the service must not be closed
+  before the service is restarted elsewhere: `thread close` refuses and names
+  the port, and `--stop-preview-servers` ends the service on purpose. Before you
+  give the user a link, and after closing any delegate, run `preview check PORT`.
 - Bind to loopback in the Supervisor's own network namespace. For Vite use a
   fixed port (`--strictPort`) so automatic port fallback cannot break the mapping.
 - If the installed framework requires a host/origin allowlist, add only the
@@ -40,6 +50,9 @@ pockymoe preview stop 4013
   redirect checks) then rejects POSTs or WebSockets that work on localhost:
   create the mapping with `--origin preserve` and allow the returned `origin`.
   A 403 the gateway itself returns carries `x-pockymoe-gateway`.
+- When the service is down, the user's browser shows the gateway's own page
+  ("Nothing is running on this port", header `x-pockymoe-gateway`), not the
+  application. That is a stopped service, not a Relay fault: start it again.
 - Diagnose before changing configuration: `serviceNotRunning` means check the
   process/port/bind address; `hostRejected` means inspect the precise rejection;
   `httpError` alone does not prove an allowlist problem. A successful HTTP check
