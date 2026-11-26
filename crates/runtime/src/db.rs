@@ -312,6 +312,11 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    Migration {
+        version: 26,
+        name: "turn_checkpoints",
+        apply: crate::worktrees::checkpoints::migrate,
+    },
 ];
 
 /// The Node Supervisor's migrations, in the order its migrator applied them

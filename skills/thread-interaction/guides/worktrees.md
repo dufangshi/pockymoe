@@ -86,3 +86,16 @@ separate from removing a checkout.
 `thread create --worktree` remains the shortcut for starting a new delegate in
 an isolated checkout. It creates the checkout before the new harness starts;
 see `guide delegate`.
+
+## Turn changes
+
+`pockymoe checkpoint list` lists turn snapshots; `checkpoint diff TURN_ID` reads
+what changed. `checkpoint restore TURN_ID --phase start --preview` previews a
+restore; omit `--preview` to apply it and keep the returned undo ID.
+`checkpoint undo UNDO_ID` restores the safety snapshot. Restores require an idle
+checkout and refuse other running or loaded threads using it.
+
+`pockymoe thread rewind self --turn-id TURN_ID --restore-files` removes that
+message and later turns, restores its start checkpoint and returns the prompt.
+Omit `--restore-files` to keep files. Queued prompts require `--drop-queued`.
+External actions (pushes, messages, delegates) remain. See `docs/git.md`.

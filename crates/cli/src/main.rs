@@ -1,6 +1,7 @@
 mod allocator;
 mod attach;
 mod automations;
+mod checkpoints;
 mod environments;
 mod legacy_env;
 mod models;
@@ -498,6 +499,8 @@ enum Commands {
     },
     /// Manage a thread's Git worktrees and inspect its actual working directory.
     Worktree(worktrees::WorktreeArgs),
+    /// Inspect and restore turn snapshots; restores require an idle checkout.
+    Checkpoint(checkpoints::CheckpointArgs),
     /// Create, contact, and inspect local threads or same-owner device peers.
     #[command(
         after_long_help = r#"Rules for delivery and collaboration: pockymoe skill
@@ -862,6 +865,12 @@ async fn run() -> Result<()> {
                 Err(_) => pockymoe_protocol::THREAD_INTERACTION_SKILL.to_owned(),
             };
             println!("{text}");
+        }
+        Commands::Checkpoint(args) => {
+            let value = threads::Client::new(cli.connection)?
+                .checkpoint(args)
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
         }
         Commands::Worktree(args) => {
             let value = threads::Client::new(cli.connection)?.worktree(args).await?;
