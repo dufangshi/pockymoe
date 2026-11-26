@@ -1,6 +1,7 @@
 //! Supervisor glue: which repositories this device knows, the device-wide PR
 //! list, and the review actions the Web, the CLI and agents call.
 use super::*;
+use crate::source_control::hosts::Host;
 use crate::Supervisor;
 use futures_util::{stream, StreamExt};
 use std::{
@@ -289,48 +290,8 @@ impl Supervisor {
                 }))
             }
             "files" => {
-                // Raw-diff hosts refresh a PR's diff some time after a push; with
-                // a local checkout the diff is computed from the head itself.
-                if matches!(
-                    repo.kind,
-                    HostKind::Forgejo | HostKind::Bitbucket | HostKind::Azure
-                ) {
-                    if let Some(known) = self.known_repository(repo) {
-                        let detail = detail(host, repo, number).await?;
-                        let local =
-                            fetch_review_refs(&known, repo, &detail, &format!("files-{number}"))
-                                .and_then(|refs| {
-                                    let diff = git(
-                                        &refs.root,
-                                        &[
-                                            "diff",
-                                            "--no-ext-diff",
-                                            "--no-textconv",
-                                            "--full-index",
-                                            "-M",
-                                            &refs.base,
-                                            &refs.head,
-                                            "--",
-                                        ],
-                                    )?;
-                                    Ok((refs.head.clone(), files_from_diff(&diff)))
-                                });
-                        if let Ok((head, mut files)) = local {
-                            store::apply_viewed(&self.db, &key, &mut files)?;
-                            return Ok(
-                                json!({"headSha":head,"files":files,"viewedOnHost":false,"local":true}),
-                            );
-                        }
-                    }
-                }
-                let mut files = files(host, repo, number).await?;
-                if repo.kind != HostKind::Github {
-                    store::apply_viewed(&self.db, &key, &mut files)?;
-                }
-                let head = head(host, repo, number).await.unwrap_or_default();
-                Ok(
-                    json!({"headSha":head,"files":files,"viewedOnHost":repo.kind == HostKind::Github}),
-                )
+                let (head, files, on_host) = self.review_files(host, repo, number, &key).await?;
+                Ok(json!({"headSha":head,"files":files,"viewedOnHost":on_host}))
             }
             "viewed" => {
                 let paths: Vec<String> = input["paths"]
@@ -356,7 +317,7 @@ impl Supervisor {
                     // Agents and the CLI may name files without revisions: take
                     // each file's current one, so a later push shows it changed.
                     let current = if viewed && !input["revisions"].is_object() {
-                        files(host, repo, number).await?
+                        self.review_files(host, repo, number, &key).await?.1
                     } else {
                         Vec::new()
                     };
@@ -515,6 +476,55 @@ impl Supervisor {
             }
             _ => bail!("Unknown pull request action"),
         }
+    }
+
+    /// The changed files with viewed state, and the head they belong to. Raw-diff
+    /// hosts refresh a PR's diff some time after a push; with a local checkout
+    /// the diff is computed from the head itself. Revisions here are the ones
+    /// viewed marks are stored with, whichever path produced them.
+    async fn review_files(
+        &self,
+        host: &dyn Host,
+        repo: &Repository,
+        number: u64,
+        key: &str,
+    ) -> Result<(String, Vec<PullFile>, bool)> {
+        if matches!(
+            repo.kind,
+            HostKind::Forgejo | HostKind::Bitbucket | HostKind::Azure
+        ) {
+            if let Some(known) = self.known_repository(repo) {
+                let detail = detail(host, repo, number).await?;
+                let local = fetch_review_refs(&known, repo, &detail, &format!("files-{number}"))
+                    .and_then(|refs| {
+                        let diff = git(
+                            &refs.root,
+                            &[
+                                "diff",
+                                "--no-ext-diff",
+                                "--no-textconv",
+                                "--full-index",
+                                "-M",
+                                &refs.base,
+                                &refs.head,
+                                "--",
+                            ],
+                        )?;
+                        Ok((refs.head.clone(), files_from_diff(&diff)))
+                    });
+                if let Ok((head, mut files)) = local {
+                    store::apply_viewed(&self.db, key, &mut files)?;
+                    return Ok((head, files, false));
+                }
+            }
+        }
+        let mut files = files(host, repo, number).await?;
+        let on_host = repo.kind == HostKind::Github;
+        if !on_host {
+            store::apply_viewed(&self.db, key, &mut files)?;
+        }
+        let head = head(host, repo, number).await.unwrap_or_default();
+        Ok((head, files, on_host))
     }
 
     /// "Work on PR" from the Pull requests page: a new idle thread in the

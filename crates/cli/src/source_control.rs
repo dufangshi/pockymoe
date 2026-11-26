@@ -379,6 +379,13 @@ impl Command {
         }
     }
 }
+/// PR or issue for item commands. Review actions use `kind` for the draft kind
+/// (line, file, summary), so it is left as the command set it.
+fn item_kind(input: &mut Value, issue: bool) {
+    if input["action"] != "review" {
+        input["kind"] = json!(if issue { "issue" } else { "pr" });
+    }
+}
 impl crate::threads::Client {
     pub async fn source_control(&self, args: SourceControlArgs, issue: bool) -> Result<Value> {
         let mut input = args.command.request();
@@ -389,7 +396,7 @@ impl crate::threads::Client {
         }
         input["threadId"] = json!(self.id(&args.thread).await?);
         input["fromThreadId"] = json!(self.from);
-        input["kind"] = json!(if issue { "issue" } else { "pr" });
+        item_kind(&mut input, issue);
         self.request(input).await
     }
 }
@@ -435,7 +442,15 @@ mod tests {
         }
         .request();
         assert_eq!(v["reviewAction"], "draftSave");
-        assert_eq!(v["kind"], "line");
+        let mut v = v;
+        item_kind(&mut v, false);
+        assert_eq!(
+            v["kind"], "line",
+            "the draft kind survives the item scoping"
+        );
+        let mut show = Command::Show { number: 1 }.request();
+        item_kind(&mut show, true);
+        assert_eq!(show["kind"], "issue");
         assert_eq!(v["startLine"], 10);
     }
 }
