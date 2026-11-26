@@ -523,10 +523,12 @@ commands and their outputs continue to load on demand.
 
 A working turn reads open and stays short: the run of operations it is in shows
 its rows and its first small edits, and each earlier run folds into one line of
-counts and duration once narration or another run follows. A run holds only
-finished operations: one still running stands on its own line after it (a command
-the harness reports twice before it settles shows once) and joins the run when it
-finishes. When the turn ends,
+counts and duration once narration or another run follows. An operation joins
+its run when it starts and stays its last row while it runs, so finishing it
+changes only its mark and the transcript does not move (a command the harness
+reports twice before it settles shows once). A run being worked in shows its last
+eight rows and never merges reads or wakes into one row; folded by the reader, it
+keeps the operations still running in sight under its line. When the turn ends,
 its work folds into the work line ("Worked for 10s · ✓4 ✕1 · edited 1 file +2 −1";
 counts are icons with numbers, explained after the pointer rests on one for a
 moment, or in place on a tap on a touch screen, where the tap does not fold the
