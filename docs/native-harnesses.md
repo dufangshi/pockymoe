@@ -151,13 +151,15 @@ evidence kept with the release notes. Status as of 2026-11-26:
 | Shared session store: ACP → native → ACP on one thread, same session ID, history recalled | pass | pass |
 | Tool use, file edit with diff, guarded approval, interrupt, steering, resume after a Supervisor restart | pass | pass |
 | Rewind (native rollback or fork-swap) and Git turn checkpoints | pass | pass |
-| Isolated environment: API broker, approved native file login, restart, switch protocol on the same thread, no host credentials or homes | pass with API broker; file login gated, not run (no ChatGPT file login on the lab host) | pass with the native file login; API broker route unit-tested only |
+| Isolated environment: API broker, restart and resume, rewind, guarded approval, protocol switch on one thread, no host credentials or homes | pass (scripted upstream through the real broker) | pass (real model with a native file login; scripted upstream through the real broker) |
+| Isolated environment with an approved native file login | gated, not run (no ChatGPT file login on the lab host) | pass |
 | Turn lifecycle events identical to ACP (`thread.turn.started` / `completed`) | pass | pass |
-| Token usage, context, cost and plan allowance identical to ACP for the same prompts, allowance live during a turn | pass (scripted upstream, real CLI) | not compared side by side |
-| Plan and performance modes reach the model | pass (fast service tier checked) | pass (plan) |
-| Extended items render as on ACP (MCP, web search, images, review, hooks, notices) | pass (mapping tests; no real MCP or image run) | not applicable |
-| SDK callback hooks and SDK-hosted MCP | not applicable | partial: Write preview hook only; no SDK MCP |
-| Background work outside a prompt, AskUserQuestion and compaction in a real lab | idle compaction waits for completion (scripted) | not run |
+| Token usage, context, cost and plan allowance identical to ACP for the same prompts; allowance live during a turn | pass (scripted upstream, real CLI) | not compared side by side |
+| Plan and performance modes reach the model | pass (Codex Plan Mode instructions, fast service tier) | pass (plan) |
+| Extended items render as on ACP (MCP, web search, images, review, hooks, notices) | pass in mapping tests; no real MCP, image or review run | not applicable |
+| AskUserQuestion, explicit compaction, Write diffs in a real lab | compaction waits for completion (scripted) | pass |
+| SDK callback hooks and SDK-hosted MCP | not applicable | partial: Write preview hook; no SDK MCP |
+| Background work outside a prompt | not run | not qualified |
 | A full release matrix (macOS, Windows/WSL, mobile hosts) | not run | not run |
 
 A failing or unrun row keeps ACP the default. Re-run the isolated rows whenever
