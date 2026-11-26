@@ -311,6 +311,7 @@ async fn execute(
         result=child.wait()=>result?.code().unwrap_or(128),
         _=transport=>130,
         _=stopped=>130,
+        never=reap_adopted(pid)=>match never {},
     };
     // A subreaper retains double-forked / setsid descendants. The worker lives
     // until its entire descendant tree is killed, rather than just the CLI pipe.
@@ -340,6 +341,86 @@ fn process_start(pid: u32) -> Result<String> {
         .nth(19)
         .context("missing process start time")?
         .into())
+}
+/// `(parent, state)` from `/proc/<pid>/stat`.
+#[cfg(target_os = "linux")]
+fn parent_and_state(pid: u32) -> Option<(u32, char)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let mut fields = stat.rsplit_once(") ")?.1.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    Some((fields.next()?.parse().ok()?, state))
+}
+/// Reaps exited children the subreaper adopted, never `direct`: Tokio's
+/// `Child::wait` owns that PID and its exit code. `waitpid(-1)` could take it,
+/// so each zombie is waited for by its own PID. A zombie's PID cannot be reused
+/// until it is reaped, and nothing else in the worker reaps adopted children.
+#[cfg(target_os = "linux")]
+fn reap_adopted_zombies(direct: u32) -> usize {
+    let self_pid = std::process::id();
+    // Each thread's `children` lists the children it parents; an orphan can be
+    // reparented to any worker thread. Scan procfs where that file is absent.
+    let mut candidates = Vec::new();
+    let mut listed = false;
+    if let Ok(tasks) = std::fs::read_dir("/proc/self/task") {
+        for task in tasks.flatten() {
+            if let Ok(children) = std::fs::read_to_string(task.path().join("children")) {
+                listed = true;
+                candidates.extend(
+                    children
+                        .split_whitespace()
+                        .filter_map(|p| p.parse::<u32>().ok()),
+                );
+            }
+        }
+    }
+    if !listed {
+        if let Ok(entries) = std::fs::read_dir("/proc") {
+            candidates.extend(
+                entries
+                    .flatten()
+                    .filter_map(|e| e.file_name().to_str().and_then(|n| n.parse::<u32>().ok())),
+            );
+        }
+    }
+    let mut reaped = 0;
+    for pid in candidates {
+        if pid == direct || parent_and_state(pid) != Some((self_pid, 'Z')) {
+            continue;
+        }
+        if unsafe { libc::waitpid(pid as i32, std::ptr::null_mut(), libc::WNOHANG) } == pid as i32 {
+            reaped += 1;
+        }
+    }
+    reaped
+}
+/// Runs for the worker's lifetime: shell commands orphan their programs to this
+/// subreaper, and each would stay a zombie until shutdown. Reaps on SIGCHLD,
+/// coalescing bursts, and on a slow interval in case a signal was missed.
+async fn reap_adopted(direct: u32) -> std::convert::Infallible {
+    #[cfg(target_os = "linux")]
+    {
+        let mut exited = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child()).ok();
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            match exited.as_mut() {
+                Some(signal) => tokio::select! {
+                    received = signal.recv() => if received.is_none() { exited = None },
+                    _ = interval.tick() => {},
+                },
+                None => {
+                    interval.tick().await;
+                }
+            }
+            reap_adopted_zombies(direct);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = direct;
+        std::future::pending().await
+    }
 }
 async fn terminate_descendants(parent: u32) -> Result<()> {
     #[cfg(target_os = "linux")]

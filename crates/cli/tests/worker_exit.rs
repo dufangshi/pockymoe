@@ -109,6 +109,66 @@ fn a_stopped_guardian_exits_while_its_parent_still_holds_its_stdin() {
     assert!(stopped(&waiting));
 }
 
+/// `(pid, state)` of each process whose parent is `parent`.
+fn children(parent: u32) -> Vec<(u32, char)> {
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        let Some((_, fields)) = stat.rsplit_once(") ") else {
+            continue;
+        };
+        let mut fields = fields.split_whitespace();
+        let state = fields.next().and_then(|s| s.chars().next());
+        let ppid = fields.next().and_then(|p| p.parse::<u32>().ok());
+        if let (Some(state), Some(ppid)) = (state, ppid) {
+            if ppid == parent {
+                found.push((pid, state));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn a_running_guardian_reaps_adopted_orphans_and_keeps_its_exit_code() {
+    // The inner shell exits at once and orphans two sleeps, which the
+    // subreaper guardian adopts; the command itself runs on for a while.
+    let mut running = guardian(Some(&[
+        "sh",
+        "-c",
+        "sh -c 'sleep 0.2 & sleep 0.2 & exit 0'; sleep 3; exit 7",
+    ]));
+    let pid = running.child.id();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut adopted = false;
+    while !adopted && Instant::now() < deadline {
+        adopted = children(pid).len() >= 3;
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(adopted, "guardian never adopted the orphans");
+    // The orphans exit after 0.2 seconds; the command runs for 3.
+    std::thread::sleep(Duration::from_millis(1500));
+    let left = children(pid);
+    assert!(
+        left.iter().any(|(_, state)| *state != 'Z'),
+        "command ended early: {left:?}"
+    );
+    let zombies = left.iter().filter(|(_, state)| *state == 'Z').count();
+    assert_eq!(zombies, 0, "unreaped adopted children: {left:?}");
+    assert!(exits(&mut running));
+    assert_eq!(running.child.try_wait().unwrap().unwrap().code(), Some(7));
+    assert!(stopped(&running));
+}
+
 #[test]
 fn a_guardian_exits_when_its_command_ends_or_cannot_start() {
     let mut finished = guardian(Some(&["true"]));
