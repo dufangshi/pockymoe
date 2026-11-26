@@ -1,3 +1,4 @@
+import { RestoreNotice } from '../components/git/RestoreNotice';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import type { QuoteScope } from '@pockymoe/thread-ui';
 import { fetchCheckpoints, type TurnCheckpoint } from '../lib/gitApi';
@@ -1003,6 +1004,7 @@ export function ThreadDetailPage() {
   const gitQuoteScope = useRef<QuoteScope | null>(null);
   const registerGitQuoteScope = useCallback((scope: QuoteScope | null) => { gitQuoteScope.current = scope; }, []);
   const [gitCheckpoints, setGitCheckpoints] = useState<TurnCheckpoint[]>([]);
+  const [rewindUndo, setRewindUndo] = useState<{ threadId: string; undoId: string; deviceId?: string | null } | null>(null);
   const [rewindTurnId, setRewindTurnId] = useState<string | null>(null);
   useEffect(() => {
     if (!detail || !relayThreadReadsLinkedFiles) return;
@@ -4009,7 +4011,7 @@ export function ThreadDetailPage() {
       renderTurnChanges: (turnId: string) => {
         const turn = gitCheckpoints.find(value => value.turnId === turnId);
         const totals = turn?.workingCopies.filter(copy => copy.available).reduce((sum, copy) => ({ files: sum.files + copy.files, additions: sum.additions + copy.additions, deletions: sum.deletions + copy.deletions }), { files: 0, additions: 0, deletions: 0 });
-        return totals?.files ? <button className="thread-git-turn-chip" onClick={() => threadInspector.openTurn(turnId)}>{totals.files} {getLocale() === 'zh-CN' ? '个文件' : 'files'} +{totals.additions} −{totals.deletions}</button> : null;
+        return totals?.files ? <button className="thread-git-turn-chip" onClick={() => threadInspector.openTurn(turnId)}>{totals.files} {getLocale() === 'zh-CN' ? '个文件' : totals.files === 1 ? 'file' : 'files'} +{totals.additions} −{totals.deletions}</button> : null;
       },
       getThreadHref,
       describeThread,
@@ -4264,7 +4266,7 @@ export function ThreadDetailPage() {
         <div className="host-muted flex flex-1 items-center justify-center px-6 py-12 text-center">
           {translate("workbench.unableToResolveThisThread")}</div>
       )}
-      dialogs={<>{dialogs}{rewindTurnId && detail && <RewindDialog threadId={detail.thread.id} turnId={rewindTurnId} deviceId={relayRouteDeviceId} onClose={() => setRewindTurnId(null)} onRestored={prompt => {
+      dialogs={<>{dialogs}{rewindUndo && <RestoreNotice {...rewindUndo} onClose={() => setRewindUndo(null)} />}{rewindTurnId && detail && <RewindDialog hasDraft={!!chatDraft.prompt || !!chatDraft.attachments.length} hasQueuedPrompts={!!detail.pendingSteers?.length} threadId={detail.thread.id} turnId={rewindTurnId} deviceId={relayRouteDeviceId} onUndoAvailable={undoId => setRewindUndo({ threadId: detail.thread.id, undoId, deviceId: relayRouteDeviceId })} onClose={() => setRewindTurnId(null)} onRestored={prompt => {
         setChatDraft({ prompt: prompt.text, attachments: prompt.attachments });
         void fetchThreadDetail(detail.thread.id, { limit: INITIAL_DETAIL_TURN_PAGE_SIZE }, relayRouteDeviceId).then(setDetail);
       }} />}{settingsDialogVisible && dialogDetail && <HarnessSettingsDialog

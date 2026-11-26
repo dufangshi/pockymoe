@@ -77,6 +77,6 @@ export function ReviewPatch({ patch, parsed, split, collapsed, area, write, busy
         })}</pre>}
       </section>;
     })}
-    {commenting && selection && <FormDialog title={gt('addComment')} onClose={() => setCommenting(false)}><PathChip path={`${selection.path}:${selection.startLine}–${selection.endLine}`} /><blockquote>{selection.text}</blockquote><textarea aria-label={gt('comment')} value={comment} onChange={event => setComment(event.target.value)} /><div className="form-dialog-actions"><button onClick={() => setCommenting(false)}>{gt('cancel')}</button><button disabled={!comment.trim()} onClick={() => { if (onReviewQuote?.({ ...selection, comment: comment.trim() })) { setComment(''); setSelection(null); setCommenting(false); } }}>{gt('addComment')}</button></div></FormDialog>}
+    {commenting && selection && <FormDialog secondary title={gt('addComment')} onClose={() => setCommenting(false)}><PathChip path={`${selection.path}:${selection.startLine}–${selection.endLine}`} /><blockquote>{selection.text}</blockquote><textarea aria-label={gt('comment')} value={comment} onChange={event => setComment(event.target.value)} /><div className="form-dialog-actions"><button onClick={() => setCommenting(false)}>{gt('cancel')}</button><button className="relay-button-primary" disabled={!comment.trim()} onClick={() => { if (onReviewQuote?.({ ...selection, comment: comment.trim() })) { setComment(''); setSelection(null); setCommenting(false); } }}>{gt('addComment')}</button></div></FormDialog>}
   </div>;
 }

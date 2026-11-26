@@ -229,9 +229,9 @@ it('opens turn diffs and stages only the selected file through owner controls', 
   vi.mocked(git.gitWrite).mockResolvedValue({ status: { workingCopyId: 'a', branch: 'main', head: 'abc', files: [], truncated: false } });
   render(<ThreadGitPanel threadId="thread" canWrite />);
   await screen.findByRole('button', { name: 'View diff for src/app.rs' });
-  fireEvent.click(screen.getByRole('button', { name: 'Stage', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Stage' }));
   await waitFor(() => expect(git.gitWrite).toHaveBeenCalledWith('thread', 'git/stage', { workingCopyId: 'a', paths: ['src/app.rs'], confirmRunning: false }, undefined));
-  fireEvent.click(screen.getByRole('button', { name: 'Turn', exact: true }));
+  fireEvent.click(screen.getByRole('button', { name: 'Turn' }));
   await waitFor(() => expect(git.fetchThreadGitDiff).toHaveBeenLastCalledWith('thread', 'a', { area: 'turn', turnId: 'turn-1' }, undefined, expect.any(AbortSignal)));
   expect(screen.getByRole('button', { name: 'Restore before' })).toBeEnabled();
 });

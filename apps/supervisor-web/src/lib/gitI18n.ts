@@ -2,6 +2,7 @@ import { getLocale } from '@pockymoe/thread-ui/i18n';
 
 // Web-owned additions to the shared `workbench.git*` copy, following the shared locale.
 const messages = {
+  closeNotice: ['关闭提示', 'Dismiss notice'],
   turn: ['轮次', 'Turn'],
   restoreBefore: ['恢复到本轮之前', 'Restore before'],
   restoreAfter: ['恢复到本轮之后', 'Restore after'],

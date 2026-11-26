@@ -263,3 +263,5 @@
 @media (max-width: 639px) { .thread-git-actions button, .thread-git-turn-chip { min-height: 40px; } }
 .thread-git-actions button:has(> svg) { display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-width: 32px; }
 .thread-git-actions button > svg { width: 15px; height: 15px; }
+.thread-git-restore-notice { position: fixed; z-index: 150; bottom: calc(16px + env(safe-area-inset-bottom)); right: 16px; max-width: calc(100vw - 32px); border: 1px solid var(--theme-border); border-radius: 8px; background: var(--theme-surface); color: var(--theme-fg); box-shadow: 0 4px 18px #0003; }
+.thread-git-rewind .host-secondary-window-body > label { display: flex; align-items: center; gap: 8px; min-height: 40px; }

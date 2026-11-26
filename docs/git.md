@@ -54,7 +54,9 @@ controls sit beside the location. Shares retain read-only inspection.
 Turn view offers before/after restore with a preview list, confirmation and Undo.
 A completed turn's file-count chip opens this view. Edit from here under a user
 message rewinds the conversation, optionally restoring files, then returns the
-prompt to the composer. External effects remain. A restore refusal disables the
+prompt and downloadable attachments to the composer. Replacing an existing draft
+asks first; queued messages require an explicit discard choice. A file rewind
+returns an Undo notice. External effects remain. A restore refusal disables the
 file option and explains why.
 
 Diff preferences (unified/split, ignore whitespace, and default file folding) are

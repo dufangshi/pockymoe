@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 const base = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 19110}`;
-const shots = '/home/ubuntu/dev/remoteCodex/.scratch/2026-11-26-git-parity/git-ui/screenshots';
+const shots = process.env.E2E_GIT_SCREENSHOTS ?? 'test-results/git-parity-shots';
 const patch = 'diff --git a/src/main.rs b/src/main.rs\nindex abc..def 100644\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    old();\n+    new();\n }\n';
 test('Git parity controls and themes', async ({ page, request }) => {
-  const root = `/home/ubuntu/dev/remoteCodex/.scratch/2026-11-26-git-parity/git-ui/fixture-${randomUUID()}`;
+  const root = path.resolve(process.env.E2E_WORKSPACE_ROOT ?? '.local/e2e-playwright', `git-parity-${randomUUID()}`);
   await mkdir(root, { recursive: true }); await mkdir(shots, { recursive: true });
   const workspace = await (await request.post(`${base}/api/workspaces`, { data: { absPath: root, label: 'Git parity' } })).json();
   const started = await (await request.post(`${base}/api/threads/start`, { data: { workspaceId: workspace.id, provider: 'acp', agentId: 'codex', model: 'ios-e2e-stream', approvalMode: 'yolo' } })).json();
@@ -50,5 +51,14 @@ test('Git parity controls and themes', async ({ page, request }) => {
     await dock.getByRole('textbox', { name: 'Commit message' }).fill('Fix parser');
     await dock.getByRole('button', { name: 'Commit', exact: true }).click();
     await expect.poll(() => writes.filter(path => path.endsWith('/git/commit')).length).toBeGreaterThan(0);
+    if (theme === 'terminal' && mode === 'dark' && width === 1440) {
+      const line = dock.locator('[data-kind="add"]').first();
+      await line.evaluate(node => { const selection = window.getSelection()!; const range = document.createRange(); range.selectNodeContents(node); selection.removeAllRanges(); selection.addRange(range); });
+      await line.dispatchEvent('mouseup');
+      await dock.getByRole('button', { name: 'Comment', exact: true }).click();
+      await page.getByRole('textbox', { name: 'Comment', exact: true }).fill('Review this change');
+      await page.getByRole('button', { name: 'Add comment', exact: true }).click();
+      await expect(page.getByRole('dialog')).toHaveCount(0);
+    }
   }
 });
