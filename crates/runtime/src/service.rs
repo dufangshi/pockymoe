@@ -4769,6 +4769,36 @@ impl Supervisor {
         runtime.harness_action(&session, action).await
     }
 
+    /// The thread harness's live MCP servers (owner only; see access.rs).
+    /// Loads the session for viewing when it is not loaded, like the harness
+    /// panel; a harness that cannot report gives an empty list.
+    pub async fn thread_mcp_servers(&self, id: &str) -> Result<serde_json::Value> {
+        let thread = self.get_thread(id)?;
+        let runtime = self.runtime(thread.provider)?;
+        if !runtime
+            .negotiated_caps(thread.agent_id.as_deref())
+            .management
+            .mcp_status
+        {
+            return Ok(serde_json::json!({ "servers": [] }));
+        }
+        let _harness = self.hold_harness(id).await;
+        let session = self.ensure_thread_session(&thread).await?;
+        let cwd = self.session_cwd(&thread);
+        let session = self
+            .resume_thread_session(
+                &thread,
+                session.as_str(),
+                cwd.as_deref(),
+                HarnessLoadReason::View,
+            )
+            .await?;
+        Ok(runtime
+            .mcp_servers(&session)
+            .await?
+            .unwrap_or_else(|| serde_json::json!({ "servers": [] })))
+    }
+
     pub async fn install(
         &self,
         provider: Provider,

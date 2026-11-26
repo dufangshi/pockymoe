@@ -33,4 +33,9 @@ machine's own CLI credential can list or change it; a thread's agent or a peer
 device cannot. Servers that need an OAuth login need a token obtained outside
 Pockymoe, passed as a header.
 
+To see whether a thread's servers actually started, open `/mcp` in the
+composer. Native Claude reports each server's live state there (see
+[native harness protocols](native-harnesses.md#claude-code)); other harnesses
+show no list.
+
 For clients calling Pockymoe as a server, see [Outside agents over MCP](mcp-outside-agents.md).

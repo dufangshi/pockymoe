@@ -143,6 +143,11 @@ idle. Background work therefore holds the turn, shows one waiting row, and the
 task's notification and Claude's follow-up answer stay in the same turn, as on
 ACP. A task left running after a turn keeps the session busy for release.
 
+Steering sends the message into the running turn with priority `now`, or
+`later` while a question or permission card is open, as claude-agent-acp does;
+an error-shaped result from the cycle the steer interrupted does not fail the
+turn.
+
 Stop sends `interrupt` and keeps the process: the turn ends `interrupted` when
 Claude settles it, and only a stop that does not settle within 10 seconds ends
 the process. Tools refused by the stop are `interrupted`, not failed. An error
@@ -159,8 +164,9 @@ original file, so line numbers and counts are exact), MultiEdit diffs, and a
 `Permission denied: <reason>` result. A subagent's own text stays inside its
 Agent result; its tool calls are attributed to it. A backgrounded Agent stays in
 the subagent list until its task ends. TodoWrite and the Task tools update the
-plan instead of adding rows. Compaction is a compaction item with Claude's
-summary, and the context meter drops to the retained size. API retries, model
+plan instead of adding rows. An approved plan-mode plan becomes the turn's plan
+card, as on ACP (where claude-agent-acp sends it as an ACP `plan_update`). Compaction is a compaction item with Claude's
+summary, and the context meter drops to the retained size. API retries (the first and the last attempt), model
 refusal fallbacks, Claude warnings and MCP servers that failed to start appear
 as notices.
 
@@ -213,6 +219,14 @@ enabled, asks Claude itself (`get_context_usage`) after each model request and
 at turn end, on the host and in environments; ACP needs its Node bridge and
 works on the host only.
 
+The composer's `/mcp` panel lists the MCP servers Claude itself is running for
+the thread (`GET /api/threads/{id}/mcp-servers`, from Claude's `mcp_status`),
+with each server's live state: failed (with Claude's error), sign-in needed,
+starting or off. Server configurations (URLs, headers, commands, environment)
+are never returned, and shares cannot read the list, because it names the
+owner's MCP servers and account connectors. ACP reports no MCP state, so the
+panel stays empty there.
+
 Plan allowance also updates live during a turn: each `rate_limit_event` from
 the API (5-hour and 7-day utilization and reset) feeds the shared subscription
 cache and refreshes the composer meter, which ACP drops.
@@ -264,7 +278,8 @@ Measured against the ACP path as Pockymoe runs it (claude-agent-acp 0.106.0):
 command exit status; exact whole-file diffs for Edit, Write and MultiEdit; API
 retry, model fallback and Claude warning notices (ACP drops the retries); live
 plan allowance during a turn; the reason a permission was denied; context
-inspection without a Node bridge, also inside environments; permission cards in
+inspection without a Node bridge, also inside environments; live MCP server
+state in the `/mcp` panel; permission cards in
 Claude's own words with its reason; no
 Node adapter process per session. ACP still has two things native does not
 offer: the plan-approval "clear context" restart and a bypass choice inside the

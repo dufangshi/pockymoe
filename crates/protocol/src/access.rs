@@ -385,7 +385,8 @@ pub fn shared_thread_path_allowed(
                 | "/assets/image"
                 | "/goal"
                 | "/skills"
-                | "/mcp-servers"
+                // "/mcp-servers" is owner only: it lists the owner's MCP
+                // servers and account connectors by name.
                 | "/hooks"
                 | "/models"
                 | "/group"
@@ -886,6 +887,21 @@ mod tests {
             "GET",
             list
         ));
+    }
+
+    #[test]
+    fn shares_never_list_the_owners_mcp_servers() {
+        for access in [
+            shared("thread", "read", "none"),
+            shared("thread", "control", "none"),
+        ] {
+            assert!(!access_allows(
+                &access,
+                "GET",
+                "/api/threads/root/mcp-servers"
+            ));
+            assert!(access_allows(&access, "GET", "/api/threads/root/skills"));
+        }
     }
 
     #[test]

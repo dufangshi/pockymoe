@@ -395,6 +395,17 @@ impl Mapper {
                     if self.stopping && update["status"] == "failed" {
                         update["status"] = json!("interrupted");
                     }
+                    // The approved plan becomes the turn's plan card, as
+                    // claude-agent-acp's plan-mode plan_update does.
+                    if update["name"] == "ExitPlanMode"
+                        && update["status"] == "completed"
+                        && parent.is_none()
+                    {
+                        if let Some(plan) = update["rawInput"]["plan"].as_str() {
+                            let plan = json!({"sessionUpdate":"plan_update","plan":{"type":"markdown","planId":"plan-mode","content":plan}});
+                            updates.push(self.inner.apply(&plan));
+                        }
+                    }
                     self.tools.insert(tool_id.into(), update.clone());
                     update
                 }
@@ -514,6 +525,10 @@ impl Mapper {
             Some("api_retry") => {
                 let attempt = message["attempt"].as_u64().unwrap_or(0);
                 let max = message["max_retries"].as_u64().unwrap_or(0);
+                // The first retry and the last one, not a row per attempt.
+                if attempt > 1 && attempt < max {
+                    return;
+                }
                 let status = message["error_status"].as_u64();
                 let title = if status.is_none() {
                     format!("Reconnecting to Claude, attempt {attempt} of {max}")

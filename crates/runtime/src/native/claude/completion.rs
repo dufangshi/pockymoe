@@ -26,6 +26,8 @@ pub(super) struct Completion {
     result: bool,
     /// That result reported an error (API error, refusal, max turns, abort).
     error: Option<Value>,
+    /// Steering messages no result has answered yet.
+    steers: HashSet<String>,
 }
 
 impl Completion {
@@ -34,10 +36,17 @@ impl Completion {
         self.prompts.insert(prompt.into());
         self.result = false;
         self.error = None;
+        self.steers.clear();
     }
 
     pub fn add_prompt(&mut self, prompt: &str) {
         self.prompts.insert(prompt.into());
+        self.steers.insert(prompt.into());
+    }
+
+    /// A stop cancels queued steering: their results never come.
+    pub fn stop(&mut self) {
+        self.steers.clear();
     }
 
     pub fn record(&mut self, message: &Value) {
@@ -53,11 +62,27 @@ impl Completion {
                         .as_str()
                         .map_or(message["origin"].is_null(), |id| self.prompts.contains(id)),
                 };
-                if ours && !self.result {
-                    self.result = true;
-                    if message["is_error"] == true {
-                        self.error = Some(message.clone());
+                for id in message["user_message_uuids"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(id) = id.as_str() {
+                        self.steers.remove(id);
                     }
+                }
+                // A steer sent with priority "now" can end the cycle it
+                // interrupted with an error-shaped result; the steer's own
+                // result decides the turn (as claude-agent-acp's steer lane).
+                let preempted = message["is_error"] == true && !self.steers.is_empty();
+                if ours && !preempted {
+                    if !self.result && message["is_error"] == true {
+                        self.error = Some(message.clone());
+                    } else if message["is_error"] != true {
+                        // A later successful answer (the steer's) clears an error.
+                        self.error = None;
+                    }
+                    self.result = true;
                 }
             }
             Some("system") => match message["subtype"].as_str() {

@@ -559,6 +559,9 @@ async fn replay_questions_and_plan_approval() {
         .as_deref()
         .unwrap()
         .contains("# Plan: Add a README"));
+    let card = t.of("plan");
+    assert_eq!(card.len(), 1, "the approved plan is the turn's plan card");
+    assert!(card[0].text.starts_with("# Plan: Add a README"));
     // The plan approval moved Claude to default; the next turn re-asserts plan.
     assert_eq!(
         *r.runtime
@@ -670,5 +673,107 @@ async fn replay_mcp_elicitation_is_a_question_answered_as_an_mcp_result() {
     assert_eq!(
         reply["response"]["response"],
         json!({"action":"accept","content":{"priority":"high"}})
+    );
+}
+
+#[test]
+fn mcp_status_becomes_the_panel_list_without_configs() {
+    let status = json!({"mcpServers":[
+        {"name":"docs","status":"connected","config":{"type":"claudeai-proxy","url":"https://secret.example/mcp","id":"x"},
+         "scope":"claudeai","tools":[{"name":"read","annotations":{"readOnly":true,"title":"Read doc"}}]},
+        {"name":"tickets","status":"failed","error":"spawn ENOENT","config":{"type":"stdio","command":"/opt/tickets","env":{"TOKEN":"t"}}},
+        {"name":"calendar","status":"needs-auth","config":{"type":"http","url":"https://c.example","headers":{"Authorization":"Bearer z"}}}]});
+    let list = super::mcp_servers(&status);
+    let servers = list["servers"].as_array().unwrap();
+    assert_eq!(servers[0]["authStatus"], "oAuth");
+    assert_eq!(servers[0]["status"], "connected");
+    assert_eq!(servers[0]["tools"][0]["title"], "Read doc");
+    assert_eq!(servers[1]["status"], "failed");
+    assert_eq!(servers[1]["error"], "spawn ENOENT");
+    assert_eq!(servers[2]["authStatus"], "notLoggedIn");
+    assert_eq!(servers[2]["status"], "needsAuth");
+    let text = list.to_string();
+    for secret in ["secret.example", "/opt/tickets", "TOKEN", "Bearer"] {
+        assert!(!text.contains(secret), "{secret} leaked");
+    }
+}
+
+#[tokio::test]
+async fn replay_steering_now_answers_in_the_same_turn() {
+    let r = replay("steernow", "guarded").await;
+    let t = run(
+        &r,
+        "now",
+        "story",
+        |runtime: Arc<ClaudeRuntime>, session: String, event: ThreadEventEnvelope| async move {
+            if event.event_type == "thread.output.delta"
+                && event.payload["delta"]
+                    .as_str()
+                    .is_some_and(|d| !d.is_empty())
+            {
+                let _ = runtime
+                    .send_input(
+                        &session,
+                        "now",
+                        "Stop the story now and reply only with the word STEERED42.",
+                    )
+                    .await;
+            }
+        },
+    )
+    .await;
+    assert!(t.result.is_ok());
+    assert!(t.text().ends_with("STEERED42"), "{}", t.text());
+    let steer = r
+        .inputs()
+        .into_iter()
+        .filter(|v| v["type"] == "user")
+        .nth(1)
+        .unwrap();
+    assert_eq!(steer["priority"], "now");
+}
+
+#[test]
+fn a_preempted_cycle_error_does_not_fail_the_steered_turn() {
+    let mut c = completion::Completion::default();
+    c.begin_turn("p");
+    c.record(&json!({"type":"system","subtype":"session_state_changed","state":"running"}));
+    c.add_prompt("s");
+    // The interrupted cycle ends with an error-shaped result for the prompt.
+    c.record(&json!({"type":"result","is_error":true,"subtype":"error_during_execution","user_message_uuids":["p"]}));
+    assert!(c.error().is_none());
+    c.record(
+        &json!({"type":"result","is_error":false,"subtype":"success","user_message_uuids":["s"]}),
+    );
+    c.record(&json!({"type":"system","subtype":"session_state_changed","state":"idle"}));
+    assert!(c.complete() && c.error().is_none());
+    // A stop cancels queued steering, so the stop's error result settles it.
+    let mut c = completion::Completion::default();
+    c.begin_turn("p");
+    c.add_prompt("s");
+    c.stop();
+    c.record(&json!({"type":"result","is_error":true,"user_message_uuids":["p"]}));
+    assert!(c.complete());
+}
+
+#[test]
+fn api_retries_and_fallbacks_are_notices_without_a_row_per_attempt() {
+    let mut m = mapping::Mapper::new("turn");
+    let mut rows = 0;
+    for attempt in 1..=10 {
+        let updates = m.apply(&json!({"type":"system","subtype":"api_retry","attempt":attempt,"max_retries":10,"retry_delay_ms":2000,"error_status":529,"error":"overloaded"}));
+        rows += updates.iter().map(|u| u.items.len()).sum::<usize>();
+    }
+    assert_eq!(rows, 2);
+    let fallback = m.apply(&json!({"type":"system","subtype":"model_refusal_fallback","direction":"retry","original_model":"opus","fallback_model":"sonnet","api_refusal_explanation":"policy"}));
+    assert!(fallback[0].items[0].text.contains("retried with sonnet"));
+    let items = m.finish(false);
+    assert!(items.iter().all(|i| i.extra["origin"] == "sessionNotice"));
+    assert!(items[0]
+        .text
+        .starts_with("Retrying Claude, attempt 1 of 10"));
+    assert_eq!(
+        items[0].detail_text.as_deref(),
+        Some("overloaded (HTTP 529); next try in 2s")
     );
 }

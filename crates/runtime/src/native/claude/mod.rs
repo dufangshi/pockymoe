@@ -892,6 +892,15 @@ impl AgentRuntime for ClaudeRuntime {
         }
         Ok(snapshot)
     }
+    async fn mcp_servers(&self, id: &str) -> Result<Option<Value>> {
+        let s = self.session(id).await?;
+        let status = tokio::time::timeout(
+            Duration::from_secs(10),
+            s.process.request(json!({"subtype":"mcp_status"})),
+        )
+        .await??;
+        Ok(Some(mcp_servers(&status)))
+    }
     fn configure_context_inspection(&self, state: Arc<crate::context_inspection::InspectionState>) {
         *self.inspection.write().unwrap() = Some(state);
     }
@@ -1086,6 +1095,7 @@ impl AgentRuntime for ClaudeRuntime {
                         // Stop the turn, keep the process: Claude settles the
                         // interrupted prompt with a result and returns to idle.
                         s.interrupting.store(true, Ordering::SeqCst);
+                        s.completion.lock().unwrap().stop();
                         stopping = Some(tokio::time::Instant::now() + STOP_GRACE);
                         if tokio::time::timeout(Duration::from_secs(3), s.process.request(json!({"subtype":"interrupt"}))).await.is_err() {
                             s.process.stop().await;
@@ -1277,6 +1287,7 @@ impl AgentRuntime for ClaudeRuntime {
             "Claude turn is no longer active"
         );
         s.interrupting.store(true, Ordering::SeqCst);
+        s.completion.lock().unwrap().stop();
         s.process
             .request(json!({"subtype":"interrupt","cancel_queued_messages":true}))
             .await?;
@@ -1294,7 +1305,11 @@ impl AgentRuntime for ClaudeRuntime {
         );
         let uuid = uuid::Uuid::new_v4().to_string();
         s.completion.lock().unwrap().add_prompt(&uuid);
-        s.process.write(json!({"type":"user","uuid":uuid,"session_id":s.raw,"parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"text","text":prompt}]}})).await
+        // Like claude-agent-acp's steering: into the running turn now, or after
+        // an open question or permission so its card is not withdrawn.
+        let waiting = self.pending.lock().await.values().any(|p| p.session == id);
+        let priority = if waiting { "later" } else { "now" };
+        s.process.write(json!({"type":"user","uuid":uuid,"session_id":s.raw,"parent_tool_use_id":null,"priority":priority,"message":{"role":"user","content":[{"type":"text","text":prompt}]}})).await
     }
     async fn active_subagents(&self, id: &str) -> Vec<ThreadSubagentDto> {
         match self.session(id).await {
@@ -1503,8 +1518,47 @@ fn caps(
     caps.branching.fork_at = true;
     caps.branching.resume_at = true;
     caps.sessions.import_local = true;
+    // Live MCP server state from Claude itself (`mcp_status`); ACP has none.
+    caps.management.mcp_status = true;
     crate::acp::runtime::isolated_capabilities::restrict(&mut caps, isolated);
     caps
+}
+
+/// Claude's `mcp_status` as `ThreadMcpServersDto`, plus each server's live
+/// state, which ACP never reports. Configs (URLs, headers, commands) stay out.
+fn mcp_servers(status: &Value) -> Value {
+    let servers: Vec<Value> = status["mcpServers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|server| {
+            let state = server["status"].as_str().unwrap_or("pending");
+            let auth = match (state, server["config"]["type"].as_str()) {
+                ("needs-auth", _) => "notLoggedIn",
+                (_, Some("claudeai-proxy")) => "oAuth",
+                (_, Some("http" | "sse")) if server["config"]["headers"].is_object() => {
+                    "bearerToken"
+                }
+                _ => "unsupported",
+            };
+            json!({
+                "name": server["name"],
+                "authStatus": auth,
+                "status": match state { "needs-auth" => "needsAuth", other => other },
+                "error": server["error"],
+                "scope": server["scope"],
+                "tools": server["tools"].as_array().into_iter().flatten().map(|t| json!({
+                    "name": t["name"],
+                    "title": t["annotations"]["title"],
+                    "description": t["description"],
+                })).collect::<Vec<_>>(),
+                // Claude does not count resources.
+                "resourceCount": null,
+                "resourceTemplateCount": null,
+            })
+        })
+        .collect();
+    json!({ "servers": servers })
 }
 
 /// The toolbox: product actions plus Claude's slash commands and skills.
