@@ -42,46 +42,108 @@ impl Supervisor {
             Ok(json!({"text":text,"attachments":attachments}))
         })?;
         let runtime = self.runtime(thread.provider)?;
-
-        let session = thread
-            .provider_session_id
-            .as_deref()
-            .context("unsupported_rewind: no session")?;
-        let session = self
-            .resume_thread_session(
-                &thread,
-                session,
-                Some(&detail.workspace.abs_path),
-                HarnessLoadReason::Fork,
-            )
-            .await?;
-        let rollback = runtime.rewind_session(&session, count).await;
-        if let Err(error) = &rollback {
-            ensure!(error.to_string().contains("unsupported_rewind"), "{error}");
-        }
-        let (history, replacement) = if rollback.is_ok() {
-            ("rollback", None)
-        } else {
-            let reply = selected
-                .checked_sub(1)
-                .and_then(|i| fork_reply(&detail.turns, &options[i].turn_id));
-            let fork = runtime
-                .fork_session_at(
-                    &session,
-                    &crate::actor::ForkPoint {
-                        rollback_count: count,
-                        reply,
-                    },
-                )
-                .await
-                .map_err(|e| anyhow!("unsupported_rewind: {e}"))?;
-            ("fork", Some(fork.session.provider_session_id))
+        // Native rollback and fork count turns of the current harness session.
+        // It holds the turns natively only when every turn ran on this harness
+        // and the session already existed when the selected turn started. A
+        // switched thread, a session started by an earlier portable handoff, or
+        // a switched harness that has not run yet rebuild the kept history from
+        // the journal instead.
+        let native = match thread.provider_session_id.as_deref() {
+            None => false,
+            Some(_) => self.db.with(|c| {
+                Ok(c.query_row(
+                    "SELECT NOT EXISTS(SELECT 1 FROM thread_turns t JOIN threads h ON h.id=t.thread_id
+                        WHERE t.thread_id=?1 AND (COALESCE(t.provider,'')<>h.provider
+                        OR COALESCE(t.agent_id,'')<>COALESCE(h.agent_id,'')))
+                     AND COALESCE((SELECT s.created_at<=t.started_at FROM thread_harness_sessions s
+                        JOIN threads h ON h.id=s.thread_id JOIN thread_turns t ON t.id=?2
+                        WHERE s.thread_id=?1 AND s.provider=h.provider AND s.agent_id=COALESCE(h.agent_id,'')),1)",
+                    params![id, turn],
+                    |r| r.get(0),
+                )?)
+            })?,
         };
-        if replacement.is_some() {
-            runtime
-                .release_loaded(&session, crate::actor::ReleaseScope::Process, None)
+        let (history, replacement) = if native {
+            let session = thread
+                .provider_session_id
+                .as_deref()
+                .context("unsupported_rewind: no session")?;
+            let session = self
+                .resume_thread_session(
+                    &thread,
+                    session,
+                    Some(&detail.workspace.abs_path),
+                    HarnessLoadReason::Fork,
+                )
                 .await?;
-        }
+            let rollback = runtime.rewind_session(&session, count).await;
+            if let Err(error) = &rollback {
+                ensure!(error.to_string().contains("unsupported_rewind"), "{error}");
+            }
+            let (history, replacement) = if rollback.is_ok() {
+                ("rollback", None)
+            } else {
+                let reply = selected
+                    .checked_sub(1)
+                    .and_then(|i| fork_reply(&detail.turns, &options[i].turn_id));
+                let fork = runtime
+                    .fork_session_at(
+                        &session,
+                        &crate::actor::ForkPoint {
+                            rollback_count: count,
+                            reply,
+                        },
+                    )
+                    .await;
+                match fork {
+                    Ok(fork) => ("fork", Some(fork.session.provider_session_id)),
+                    Err(error) => {
+                        let message = error.to_string();
+                        // Only an unsupported capability selects portable history.
+                        // Transport, permission and busy errors leave history intact.
+                        ensure!(
+                            message.starts_with("unsupported_")
+                                || message == "fork is not supported by this harness"
+                                || message == "this harness does not support session/fork"
+                                || message
+                                    == "conflict: This backend supports latest-session fork only.",
+                            "{error}"
+                        );
+                        ("handoff", None)
+                    }
+                }
+            };
+            if replacement.is_some() || history == "handoff" {
+                let scope = if history == "handoff" {
+                    crate::actor::ReleaseScope::Session
+                } else {
+                    crate::actor::ReleaseScope::Process
+                };
+                let released = runtime.release_loaded(&session, scope, None).await?;
+                self.forget_released(&released);
+            }
+            (history, replacement)
+        } else {
+            // This thread's claim is held, so release through the runtime rather
+            // than release_thread_harness, which waits to claim it.
+            if let Some(session) = thread.provider_session_id.as_deref() {
+                match runtime
+                    .release_loaded(session, crate::actor::ReleaseScope::Session, None)
+                    .await
+                {
+                    Ok(released) => {
+                        self.forget_released(&released);
+                        if !released.is_empty() {
+                            self.emit_released(id, crate::actor::ReleaseReason::Explicit);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, thread = id, "could not release a rewound thread's harness")
+                    }
+                }
+            }
+            ("handoff", None)
+        };
         let restored =
             if input["restoreFiles"] == true {
                 Some(self.checkpoint_restore_inner(
@@ -108,6 +170,11 @@ impl Supervisor {
             tx.execute("DELETE FROM thread_turns WHERE thread_id=?1 AND ordinal>=?2",params![id,ordinal])?;
             tx.execute("DELETE FROM thread_pending_steers WHERE thread_id=?1",[id])?;
             tx.execute("UPDATE threads SET provider_session_id=COALESCE(?2,provider_session_id),status='idle',last_error=NULL,updated_at=?3 WHERE id=?1",params![id,replacement,now_rfc3339()])?;
+            if history == "handoff" {
+                // Keep the exclusive claim: journal and fresh-session state
+                // commit atomically, without a prompt entering between them.
+                handoff::stage_portable_session(&tx, id, selected)?;
+            }
             tx.commit()?;Ok(())
         });
         if let Err(error) = saved {

@@ -1100,7 +1100,7 @@ impl Supervisor {
         Ok(forgotten)
     }
 
-    fn forget_released(&self, released: &[LoadedSession]) {
+    pub(super) fn forget_released(&self, released: &[LoadedSession]) {
         if let Err(error) = self.forget_unsaved_sessions(
             released
                 .iter()
