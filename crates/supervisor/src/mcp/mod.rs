@@ -254,7 +254,7 @@ fn unauthorized(s: &Supervisor, presented: bool) -> Response {
         oauth::issuer(s),
         // RFC 6750 §3.1: a presented token that no longer works is invalid.
         if presented {
-            ", error=\"invalid_token\", error_description=\"The access token expired or its grant was revoked\""
+            ", error=\"invalid_token\", error_description=\"The access token is not valid here: it expired, its grant was revoked, or it was issued for another address\""
         } else {
             ""
         }
