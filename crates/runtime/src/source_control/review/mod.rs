@@ -12,7 +12,6 @@ mod forgejo;
 mod github;
 mod gitlab;
 pub mod guide;
-mod other;
 mod service;
 pub mod stack;
 pub mod store;
@@ -209,7 +208,7 @@ pub struct PullDetail {
     pub viewer: Option<String>,
     pub merge_methods: Vec<String>,
     pub capabilities: Capabilities,
-    /// Host data later writes need (GitLab diff refs, Azure reviewer id).
+    /// Host data later writes need (GitLab diff refs, a fork's clone URL).
     #[serde(skip)]
     pub extra: Value,
 }
@@ -427,8 +426,6 @@ pub async fn list(host: &dyn Host, repo: &Repository, state: &str) -> Result<Vec
         HostKind::Github => github::list(host, repo, state).await,
         HostKind::Gitlab => gitlab::list(host, repo, state).await,
         HostKind::Forgejo => forgejo::list(host, repo, state).await,
-        HostKind::Bitbucket => other::bitbucket_list(host, repo, state).await,
-        HostKind::Azure => other::azure_list(host, repo, state).await,
     }
 }
 
@@ -438,8 +435,6 @@ pub async fn detail(host: &dyn Host, repo: &Repository, number: u64) -> Result<P
         HostKind::Github => github::detail(host, repo, number).await,
         HostKind::Gitlab => gitlab::detail(host, repo, number).await,
         HostKind::Forgejo => forgejo::detail(host, repo, number).await,
-        HostKind::Bitbucket => other::bitbucket_detail(host, repo, number).await,
-        HostKind::Azure => other::azure_detail(host, repo, number).await,
     }
 }
 
@@ -473,8 +468,6 @@ pub async fn files(host: &dyn Host, repo: &Repository, number: u64) -> Result<Ve
         }
         HostKind::Gitlab => gitlab::files(host, repo, number).await,
         HostKind::Forgejo => forgejo::files(host, repo, number).await,
-        HostKind::Bitbucket => other::bitbucket_files(host, repo, number).await,
-        HostKind::Azure => other::azure_files(host, repo, number).await,
     }
 }
 
@@ -500,8 +493,6 @@ pub async fn submit(
         HostKind::Github => github::submit(host, repo, detail, input).await,
         HostKind::Gitlab => gitlab::submit(host, repo, detail, input).await,
         HostKind::Forgejo => forgejo::submit(host, repo, detail, input).await,
-        HostKind::Bitbucket => other::bitbucket_submit(host, repo, detail, input).await,
-        HostKind::Azure => other::azure_submit(host, repo, detail, input).await,
     }
 }
 
@@ -526,12 +517,6 @@ pub async fn reply(
         HostKind::Github => github::reply(host, thread, body).await,
         HostKind::Gitlab => gitlab::reply(host, repo, detail.summary.number, thread, body).await,
         HostKind::Forgejo => forgejo::reply(host, repo, detail, target, body).await,
-        HostKind::Bitbucket => {
-            other::bitbucket_reply(host, repo, detail.summary.number, target, body).await
-        }
-        HostKind::Azure => {
-            other::azure_reply(host, repo, detail.summary.number, target, body).await
-        }
     }
 }
 
@@ -556,12 +541,6 @@ pub async fn resolve(
         HostKind::Github => github::resolve(host, thread, resolved).await,
         HostKind::Gitlab => {
             gitlab::resolve(host, repo, detail.summary.number, thread, resolved).await
-        }
-        HostKind::Bitbucket => {
-            other::bitbucket_resolve(host, repo, detail.summary.number, target, resolved).await
-        }
-        HostKind::Azure => {
-            other::azure_resolve(host, repo, detail.summary.number, thread, resolved).await
         }
         HostKind::Forgejo => bail!("Forgejo has no API to resolve conversations"),
     }
@@ -595,7 +574,6 @@ pub async fn reviewers(
         HostKind::Forgejo => {
             forgejo::reviewers(host, repo, detail.summary.number, add, remove).await
         }
-        _ => bail!("This host cannot request reviewers here"),
     }
 }
 
@@ -619,8 +597,6 @@ pub async fn set_state(
         HostKind::Github => github::set_state(host, repo, detail, state).await,
         HostKind::Gitlab => gitlab::set_state(host, repo, detail, state).await,
         HostKind::Forgejo => forgejo::set_state(host, repo, detail, state).await,
-        HostKind::Bitbucket => other::bitbucket_state(host, repo, detail, state).await,
-        HostKind::Azure => other::azure_state(host, repo, detail, state).await,
     }
 }
 
@@ -691,10 +667,6 @@ pub async fn merge(
         HostKind::Github => github::merge(host, repo, detail, input, message).await,
         HostKind::Gitlab => gitlab::merge(host, repo, detail, input, message).await,
         HostKind::Forgejo => forgejo::merge(host, repo, detail, input, message).await,
-        HostKind::Azure => other::azure_merge(host, repo, detail, input, message).await,
-        HostKind::Bitbucket => {
-            bail!("Bitbucket does not provide an atomic head guard; merge on the host")
-        }
     }
 }
 
@@ -721,7 +693,6 @@ pub async fn auto_merge(
         HostKind::Github => github::auto_merge(host, detail, input, enable, message).await,
         HostKind::Gitlab => gitlab::auto_merge(host, repo, detail, input, enable).await,
         HostKind::Forgejo => forgejo::auto_merge(host, repo, detail, input, enable).await,
-        _ => bail!("This host cannot auto-merge here"),
     }
 }
 

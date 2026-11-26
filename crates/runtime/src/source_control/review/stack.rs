@@ -240,18 +240,12 @@ async fn native(host: &dyn Host, repo: &Repository, number: u64) -> Option<Stack
 }
 
 /// The stack around a PR: the host's own (GitHub), else inferred from the
-/// repository's open PRs. Bitbucket and Azure have no stack support here.
+/// repository's open PRs.
 pub async fn read(host: &dyn Host, repo: &Repository, number: u64) -> Result<Option<Stack>> {
     if repo.kind == HostKind::Github && repo.host == "github.com" {
         if let Some(stack) = native(host, repo, number).await {
             return Ok(Some(stack));
         }
-    }
-    if !matches!(
-        repo.kind,
-        HostKind::Github | HostKind::Gitlab | HostKind::Forgejo
-    ) {
-        return Ok(None);
     }
     let open = list(host, repo, "open").await?;
     let Some(mut stack) = inferred(&open, number) else {
@@ -314,7 +308,6 @@ async fn retarget(host: &dyn Host, repo: &Repository, number: u64, base: &str) -
             ),
             json!({"target_branch":base}),
         ),
-        _ => bail!("Stacks are unavailable for this host"),
     };
     host.request(method, &path, Some(body)).await?;
     Ok(())
@@ -513,13 +506,6 @@ pub async fn merge_stack(
             json!({"merged": range.iter().map(|l| l.number).collect::<Vec<_>>(), "result": result}),
         );
     }
-    ensure!(
-        matches!(
-            repo.kind,
-            HostKind::Github | HostKind::Gitlab | HostKind::Forgejo
-        ),
-        "Stacks are unavailable for this host"
-    );
     let restack = input.method != "merge" && range.len() > 1;
     ensure!(
         !restack || input.local.is_some(),

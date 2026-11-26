@@ -1,6 +1,6 @@
 //! Review behaviour against recorded host responses (GitHub recordings are
 //! read-only captures of a public PR with logins and e-mail replaced) and hand
-//! shaped GitLab/Forgejo/Bitbucket/Azure responses from their API references.
+//! shaped GitLab/Forgejo responses from their API references.
 use super::*;
 use crate::source_control::hosts::Operation;
 use async_trait::async_trait;
@@ -109,16 +109,10 @@ fn repo(kind: HostKind) -> Repository {
         host: match kind {
             HostKind::Github => "github.com",
             HostKind::Gitlab => "gitlab.com",
-            HostKind::Bitbucket => "bitbucket.org",
-            HostKind::Azure => "dev.azure.com",
             HostKind::Forgejo => "127.0.0.1:19173",
         }
         .into(),
-        owner: if kind == HostKind::Azure {
-            "org/project/_git".into()
-        } else {
-            "o".into()
-        },
+        owner: "o".into(),
         name: "r".into(),
         kind,
     }
@@ -652,53 +646,6 @@ async fn gitlab_submit_posts_positions_then_approves_with_the_reviewed_sha() {
     .await
     .is_err());
     assert!(host.writes().is_empty());
-}
-
-#[test]
-fn bitbucket_and_azure_read_threads_and_votes() {
-    let pr = json!({"id":4,"title":"Docs","state":"OPEN","author":{"nickname":"dee"},"source":{"branch":{"name":"docs"},"commit":{"hash":"bb1"}},"destination":{"branch":{"name":"main"},"commit":{"hash":"bb0"}},"links":{"html":{"href":"https://bitbucket.org/o/r/pull-requests/4"}},"participants":[{"user":{"nickname":"eve"},"role":"REVIEWER","approved":true,"state":"approved"}]});
-    let comments = json!([
-        {"id":1,"content":{"raw":"Typo"},"user":{"nickname":"eve"},"inline":{"path":"README.md","to":3}},
-        {"id":2,"content":{"raw":"Fixed"},"user":{"nickname":"dee"},"parent":{"id":1}},
-        {"id":3,"content":{"raw":"Thanks"},"user":{"nickname":"eve"}}
-    ]);
-    let d = other::bitbucket_map(
-        &repo(HostKind::Bitbucket),
-        &pr,
-        &comments,
-        &json!([]),
-        &json!([{"key":"ci","state":"FAILED"}]),
-        None,
-    );
-    assert_eq!(d.threads.len(), 1);
-    assert_eq!(d.threads[0].comments.len(), 2);
-    assert_eq!(d.timeline.len(), 1);
-    assert_eq!(d.summary.review_decision.as_deref(), Some("approved"));
-    assert!(!d.capabilities.merge, "no atomic head guard on Bitbucket");
-    let az = json!({"pullRequestId":8,"title":"Az","status":"active","createdBy":{"uniqueName":"fay@example.com"},"sourceRefName":"refs/heads/az","targetRefName":"refs/heads/main","lastMergeSourceCommit":{"commitId":"a1"},"reviewers":[{"uniqueName":"gus@example.com","vote":-5}]});
-    let threads = json!([{"id":10,"status":"active","threadContext":{"filePath":"/src/x.cs","rightFileStart":{"line":4},"rightFileEnd":{"line":6}},"comments":[{"id":1,"content":"Nit","author":{"uniqueName":"gus@example.com"},"commentType":"text"}]},{"id":11,"status":"active","comments":[{"id":1,"content":"System","commentType":"system"}]}]);
-    let d = other::azure_map(
-        &repo(HostKind::Azure),
-        &az,
-        &threads,
-        &json!([]),
-        &json!([]),
-        &json!({"id":"me"}),
-    );
-    assert_eq!(d.threads.len(), 1);
-    assert_eq!(
-        (d.threads[0].start_line, d.threads[0].line),
-        (Some(4), Some(6))
-    );
-    assert_eq!(d.threads[0].path, "src/x.cs");
-    assert_eq!(
-        d.summary.review_decision.as_deref(),
-        Some("changesRequested")
-    );
-    assert_eq!(
-        d.summary.url,
-        "https://dev.azure.com/org/project/_git/r/pullrequest/8"
-    );
 }
 
 #[test]
