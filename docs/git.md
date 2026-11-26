@@ -109,7 +109,8 @@ interactive credential prompts and use a 120-second deadline; local commands
 use 15 seconds and cap output at 512 KiB. Hunk writes require current patch context.
 
 Status includes upstream, ahead/behind, conflicted paths, the current operation
-and stash count. `GET .../git/branches` lists local and remote branches.
+and stash count. `GET .../git/branches` lists local and remote branches;
+`GET .../git/stashes` lists stash entries for the owner.
 
 `POST .../git/commitMessage` returns `{message,status}` from a one-shot generator.
 It uses staged changes, or a disposable index when `all: true` and nothing is

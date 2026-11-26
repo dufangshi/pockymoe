@@ -36,6 +36,7 @@ pub(crate) async fn read_git(
 ) -> Result<Json<Value>, ApiErr> {
     pockymoe_runtime::execution::spawn_blocking(move || match action.as_str() {
         "status" => state.worktree_git_status(&id, query.working_copy_id.as_deref()),
+        "stashes" => state.worktree_git_stashes(&id, query.working_copy_id.as_deref()),
         "textSettings" => state.text_generation_settings(),
         "branches" => state.worktree_git_branches(&id, query.working_copy_id.as_deref()),
         "diff" if query.area.as_deref() == Some("turn") => state.checkpoint_diff(

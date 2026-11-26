@@ -88,7 +88,12 @@ fn git_options_input(
         .args(["-c", "core.fsmonitor=false", "-c", "core.pager=cat"])
         .arg("-c")
         .arg(format!("core.hooksPath={}", hooks.path().display()))
-        .arg("--literal-pathspecs")
+        // stash uses internal wildcard pathspecs to remove saved untracked files.
+        .args(if args.first() == Some(&"stash") {
+            Vec::<&str>::new()
+        } else {
+            vec!["--literal-pathspecs"]
+        })
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")

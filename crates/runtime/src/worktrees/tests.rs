@@ -1150,3 +1150,32 @@ async fn restore_keeps_unchanged_file_mtime_and_checkpoint_counts_are_cached() {
     let list = f.state.checkpoints_list(&f.thread).unwrap();
     assert_eq!(list["turns"][0]["workingCopies"][0]["files"], 0);
 }
+#[tokio::test]
+async fn stash_write_list_and_pop_roundtrip() {
+    let f = Fixture::new().await;
+    std::fs::write(f.repo.join("tracked.txt"), "stash change\n").unwrap();
+    std::fs::write(f.repo.join("new-stash.txt"), "untracked\n").unwrap();
+    let result = f
+        .state
+        .worktree_git_write(
+            &f.thread,
+            "stashPush",
+            &json!({"message":"保留 working changes"}),
+        )
+        .unwrap();
+    assert_eq!(result["status"]["stashCount"], 1);
+    let stashes = f.state.worktree_git_stashes(&f.thread, None).unwrap();
+    assert_eq!(stashes["stashes"].as_array().unwrap().len(), 1);
+    assert!(stashes["stashes"][0]["subject"]
+        .as_str()
+        .unwrap()
+        .contains("保留"));
+    f.state
+        .worktree_git_write(&f.thread, "stashPop", &json!({"index":0}))
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(f.repo.join("tracked.txt")).unwrap(),
+        "stash change\n"
+    );
+    assert!(f.repo.join("new-stash.txt").exists());
+}

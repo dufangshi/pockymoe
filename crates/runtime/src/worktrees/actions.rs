@@ -74,6 +74,16 @@ impl Supervisor {
         );
         Ok(())
     }
+    pub fn worktree_git_stashes(&self, thread: &str, id: Option<&str>) -> Result<Value> {
+        let copy = self.selected_copy(thread, id)?;
+        let out = git(
+            Path::new(&copy.path),
+            &["stash", "list", "-z", "--format=%H%x00%gd%x00%gs%x00%cI"],
+        )?;
+        let fields: Vec<_> = out.bytes.split(|b| *b == 0).collect();
+        let stashes:Vec<_>=fields.chunks(4).filter(|r|r.len()==4&&!r[0].is_empty()).map(|r|json!({"oid":String::from_utf8_lossy(r[0]),"name":String::from_utf8_lossy(r[1]),"subject":String::from_utf8_lossy(r[2]),"createdAt":String::from_utf8_lossy(r[3])})).collect();
+        Ok(json!({"workingCopyId":copy.id,"stashes":stashes,"truncated":out.truncated}))
+    }
     pub fn worktree_git_branches(&self, thread: &str, id: Option<&str>) -> Result<Value> {
         let copy = self.selected_copy(thread, id)?;
         let out = git_text(Path::new(&copy.path), &["for-each-ref", "--format=%(refname:short)%09%(upstream:short)%09%(committerdate:iso-strict)%09%(refname)", "refs/heads", "refs/remotes"])?;

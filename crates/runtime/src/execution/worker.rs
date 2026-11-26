@@ -676,8 +676,12 @@ fn operation(input: Value) -> Result<Value> {
                     "core.pager=cat",
                     "-c",
                     "core.hooksPath=/dev/null",
-                    "--literal-pathspecs",
                 ])
+                .args(if args.first().map(String::as_str) == Some("stash") {
+                    Vec::<&str>::new()
+                } else {
+                    vec!["--literal-pathspecs"]
+                })
                 .args(args)
                 .env_clear()
                 .env("PATH", "/usr/local/bin:/usr/bin:/bin")

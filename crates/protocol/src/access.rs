@@ -1088,6 +1088,7 @@ mod tests {
             "/api/threads/root/checkpoints/undo",
             "/api/threads/root/rewind",
             "/api/threads/root/git/textSettings",
+            "/api/threads/root/git/stashes",
         ] {
             for method in ["GET", "POST"] {
                 assert!(access_allows(&owner_access(), method, path));
