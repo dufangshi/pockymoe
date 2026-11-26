@@ -185,7 +185,7 @@ impl SessionTail {
 /// any depth. A sub-agent's requests never reach the parent session's counter,
 /// so a turn that delegates (the `ultra` effort does by itself) was reported
 /// with the parent's share only.
-pub(super) struct CodexUsageReader {
+pub(crate) struct CodexUsageReader {
     home: PathBuf,
     start_time: String,
     /// The parent first, then sub-agents in the order they were started.
@@ -198,7 +198,7 @@ pub(super) struct CodexUsageReader {
 }
 
 impl CodexUsageReader {
-    pub(super) fn new(session_id: &str) -> Self {
+    pub(crate) fn new(session_id: &str) -> Self {
         Self::at(
             LocalSessionHomes::from_env().codex_home,
             session_id,
@@ -237,11 +237,11 @@ impl CodexUsageReader {
         reader
     }
 
-    pub(super) fn poll(&mut self) -> Vec<Value> {
+    pub(crate) fn poll(&mut self) -> Vec<Value> {
         self.read()
     }
 
-    pub(super) fn poll_final(&mut self) -> Vec<Value> {
+    pub(crate) fn poll_final(&mut self) -> Vec<Value> {
         // A short first turn, or a sub-agent that just started, can finish
         // before the periodic missing-file retry.
         for session in &mut self.sessions {

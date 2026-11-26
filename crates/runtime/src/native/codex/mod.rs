@@ -25,6 +25,11 @@ struct Session {
     cwd: String,
     loaded: RwLock<LoadedSession>,
     active: RwLock<Option<String>>,
+    operation: Mutex<()>,
+    subagents: RwLock<Vec<ThreadSubagentDto>>,
+    context_delivered: std::sync::atomic::AtomicBool,
+    goal_active: std::sync::atomic::AtomicBool,
+    context_reader: Option<Arc<std::sync::Mutex<crate::context_inspection::CodexTraceReader>>>,
 }
 struct Pending {
     process: Arc<AcpProcess>,
@@ -32,6 +37,8 @@ struct Pending {
     method: String,
     thread: String,
     dto: ThreadActionRequestDto,
+    params: Value,
+    bus: EventBus,
 }
 pub struct CodexRuntime {
     provider: Provider,
@@ -41,6 +48,7 @@ pub struct CodexRuntime {
     sessions: RwLock<HashMap<String, Arc<Session>>>,
     pending: Mutex<HashMap<String, Pending>>,
     events: broadcast::Sender<SessionLifecycle>,
+    inspection: RwLock<Option<Arc<crate::context_inspection::InspectionState>>>,
 }
 impl CodexRuntime {
     pub fn new(provider: Provider, fallback: SharedRuntime, upstreams: PathBuf) -> Self {
@@ -53,6 +61,7 @@ impl CodexRuntime {
             sessions: RwLock::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             events,
+            inspection: RwLock::new(None),
         }
     }
     fn session(&self, id: &str) -> Result<Arc<Session>> {
@@ -80,13 +89,35 @@ impl CodexRuntime {
                 .or_else(|| std::env::var("CODEX_COMMAND").ok())
                 .unwrap_or_else(|| "codex".into())
         };
-        let env = if isolated {
+        let mut env = if isolated {
             crate::execution::isolated_harness_environment("codex")?
         } else if crate::upstreams::native::oauth_selected(&self.upstreams, "codex") {
             vec![(crate::upstreams::native::CLEAN_OAUTH_ENV, "codex".into())]
         } else {
             vec![]
         };
+        if let Some(state) = self
+            .inspection
+            .read()
+            .unwrap()
+            .as_ref()
+            .filter(|s| s.enabled() && !isolated)
+        {
+            let root = state
+                .root
+                .join("traces")
+                .join(uuid::Uuid::new_v4().to_string());
+            std::fs::create_dir_all(&root)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+            }
+            env.push((
+                "CODEX_ROLLOUT_TRACE_ROOT",
+                root.to_string_lossy().into_owned(),
+            ));
+        }
         let (process, updates, requests) =
             AcpProcess::spawn(&format!("{command} app-server"), cwd, &env).await?;
         let process = Arc::new(process);
@@ -121,7 +152,13 @@ impl CodexRuntime {
         let raw = response["thread"]["id"]
             .as_str()
             .context("Codex thread id missing")?;
-        let id = crate::import_id::scoped_session_id("codex", raw);
+        let id = match &process.execution {
+            Some(context) => format!(
+                "codex::env/{}/{}/{raw}",
+                context.environment_id, context.generation
+            ),
+            None => crate::import_id::scoped_session_id("codex", raw),
+        };
         let now = chrono::Utc::now();
         let intent = load_intent();
         let loaded = LoadedSession {
@@ -146,6 +183,11 @@ impl CodexRuntime {
             reason: loaded.load_reason,
             requested_at: loaded.requested_at,
         });
+        let context_reader = process.context_trace_root.as_ref().map(|root| {
+            Arc::new(std::sync::Mutex::new(
+                crate::context_inspection::CodexTraceReader::new(root.clone(), raw.into()),
+            ))
+        });
         self.sessions.write().unwrap().insert(
             id.clone(),
             Arc::new(Session {
@@ -156,6 +198,11 @@ impl CodexRuntime {
                 cwd: cwd.into(),
                 loaded: RwLock::new(loaded),
                 active: RwLock::new(None),
+                operation: Mutex::new(()),
+                subagents: RwLock::new(vec![]),
+                context_delivered: std::sync::atomic::AtomicBool::new(false),
+                goal_active: std::sync::atomic::AtomicBool::new(false),
+                context_reader,
             }),
         );
         Ok(StartSessionResult {
@@ -186,6 +233,18 @@ fn event(bus: &EventBus, input: &StartTurnInput, kind: &str, mut payload: Value)
 }
 #[async_trait]
 impl AgentRuntime for CodexRuntime {
+    fn configure_context_inspection(&self, state: Arc<crate::context_inspection::InspectionState>) {
+        *self.inspection.write().unwrap() = Some(state);
+    }
+    async fn inspect_context(&self, id: &str, _detail: &str) -> Result<Option<Value>> {
+        Ok(self
+            .inspection
+            .read()
+            .unwrap()
+            .as_ref()
+            .filter(|s| s.enabled())
+            .and_then(|s| s.cached(id)))
+    }
     fn provider(&self) -> Provider {
         self.provider
     }
@@ -198,11 +257,38 @@ impl AgentRuntime for CodexRuntime {
     async fn list_agents(&self) -> Result<Vec<ModelOptionDto>> {
         self.fallback.list_agents().await
     }
-    async fn capabilities(&self, agent: Option<&str>) -> Result<AgentCapabilitySnapshotDto> {
-        self.fallback.capabilities(agent).await
+    async fn capabilities(&self, _agent: Option<&str>) -> Result<AgentCapabilitySnapshotDto> {
+        let isolated = crate::execution::current().is_some();
+        let command = self
+            .command
+            .clone()
+            .or_else(|| std::env::var("CODEX_COMMAND").ok())
+            .unwrap_or_else(|| "codex".into());
+        let available = isolated || crate::acp::command_available(&command);
+        let caps = self.negotiated_caps(Some("codex"));
+        Ok(AgentCapabilitySnapshotDto {
+            provider: self.provider,
+            agent_id: "codex".into(),
+            availability: if available { "ready" } else { "base_missing" }.into(),
+            negotiated: Some(json!({"protocol":"codex-app-server","experimental":true})),
+            effective_capabilities: available.then_some(caps.clone()),
+            toolbox_items: toolbox_from_capabilities(&caps),
+        })
     }
-    fn negotiated_caps(&self, agent: Option<&str>) -> AgentProviderCapabilitiesDto {
-        self.fallback.negotiated_caps(agent)
+    fn negotiated_caps(&self, _agent: Option<&str>) -> AgentProviderCapabilitiesDto {
+        let mut caps = AgentProviderCapabilitiesDto::conversational();
+        caps.sessions.import_local = true;
+        caps.turns.steer = true;
+        caps.turns.compact = true;
+        caps.branching.fork = true;
+        caps.branching.fork_at = true;
+        caps.branching.hard_rollback = true;
+        caps.controls.performance_mode = true;
+        caps.controls.goals = true;
+        caps
+    }
+    fn toolbox(&self, agent: Option<&str>) -> Vec<ToolboxItemDto> {
+        toolbox_from_capabilities(&self.negotiated_caps(agent))
     }
     async fn list_models(
         &self,
@@ -243,6 +329,14 @@ impl AgentRuntime for CodexRuntime {
         cwd: Option<&str>,
         settings: SessionSettings,
     ) -> Result<StartSessionResult> {
+        let context = crate::execution::current();
+        let (_, raw, _canonical) = crate::acp::resume_session_identity(
+            id,
+            "codex",
+            context
+                .as_ref()
+                .map(|c| (c.environment_id.as_str(), c.generation)),
+        )?;
         if let Ok(session) = self.session(id) {
             if session.process.connection_open().await {
                 return Ok(StartSessionResult {
@@ -253,13 +347,8 @@ impl AgentRuntime for CodexRuntime {
             }
             self.release_session(id).await?;
         }
-        self.load(
-            "thread/resume",
-            Some(crate::import_id::raw_session_id(id)),
-            cwd.unwrap_or("."),
-            settings,
-        )
-        .await
+        self.load("thread/resume", Some(&raw), cwd.unwrap_or("."), settings)
+            .await
     }
     async fn start_turn(
         &self,
@@ -273,6 +362,10 @@ impl AgentRuntime for CodexRuntime {
             .try_lock()
             .map_err(|_| anyhow!("conflict: session busy"))?;
         let mut requests = session.requests.lock().await;
+        let _operation = session
+            .operation
+            .try_lock()
+            .map_err(|_| anyhow!("conflict: session busy"))?;
         self.apply_session_settings(
             &input.provider_session_id,
             SessionSettings {
@@ -287,43 +380,142 @@ impl AgentRuntime for CodexRuntime {
         .await?;
         let settings = session.settings.read().unwrap().clone();
         let policy = policy(&settings);
+        let include_context = !input.context_delivered
+            && !input.hidden
+            && !session.process.cli_env.is_empty()
+            && !session
+                .context_delivered
+                .load(std::sync::atomic::Ordering::SeqCst);
+        let prompt = if include_context {
+            format!("{}\n\n{}", crate::acp::prompt::THREAD_CONTEXT, input.prompt)
+        } else {
+            input.prompt.clone()
+        };
         let blocks = crate::acp::prompt::build_prompt_blocks(
-            &input.prompt,
+            &prompt,
             std::path::Path::new(&session.cwd),
             true,
             &input.images,
         )?;
         let content:Vec<Value>=blocks.into_iter().map(|v|match v["type"].as_str(){Some("image")=>json!({"type":"image","url":format!("data:{};base64,{}",v["mimeType"].as_str().unwrap_or("image/png"),v["data"].as_str().unwrap_or(""))}),Some("text")=>json!({"type":"text","text":v["text"]}),_=>json!({"type":"text","text":format!("{}",v["uri"].as_str().unwrap_or(""))})}).collect();
-        let mut params = json!({"threadId":crate::import_id::raw_session_id(&input.provider_session_id),"input":content,"model":settings.model,"effort":settings.effort,"approvalPolicy":policy["approvalPolicy"],"sandboxPolicy":policy["sandboxPolicy"]});
+        let mut params = json!({"threadId":native_raw(&input.provider_session_id),"input":content,"model":settings.model,"effort":settings.effort,"approvalPolicy":policy["approvalPolicy"],"sandboxPolicy":policy["sandboxPolicy"]});
         if let Some(mode) = settings.collaboration_mode {
             params["collaborationMode"] = json!({"mode":mode,"settings":{"model":settings.model,"reasoning_effort":settings.effort,"developer_instructions":null}});
         }
+        // The rollout reader also accounts for requests made by Codex subagents,
+        // which are absent from the parent's app-server token counter.
+        let mut usage_reader = session
+            .process
+            .execution
+            .is_none()
+            .then(|| crate::acp::CodexUsageReader::new(native_raw(&input.provider_session_id)));
+        let mut usage_tick = tokio::time::interval(Duration::from_millis(250));
+        let inspection = self
+            .inspection
+            .read()
+            .unwrap()
+            .clone()
+            .filter(|_| !input.hidden);
         let response = session.process.request("turn/start", params).await?;
         let turn = response["turn"]["id"]
             .as_str()
             .context("Codex turn id missing")?
             .to_owned();
+        let context_observer = session
+            .context_reader
+            .as_ref()
+            .zip(inspection.as_ref())
+            .map(|(reader, state)| {
+                crate::acp::context::observer(
+                    reader.clone(),
+                    state.clone(),
+                    input.provider_session_id.clone(),
+                    input.thread_id.clone(),
+                    bus.clone(),
+                )
+            });
+        if include_context {
+            session
+                .context_delivered
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         *session.active.write().unwrap() = Some(turn.clone());
         session.loaded.write().unwrap().prompted = true;
         let mut mapper = TurnMapper::new(&input.turn_id);
         let mut interrupted = false;
+        let mut interrupt_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         let result=async {loop {tokio::select! {
-            _=cancel.cancelled(), if !interrupted => {interrupted=true;self.interrupt(&input.provider_session_id,&turn).await?;},
+            _=usage_tick.tick(), if usage_reader.is_some() => {
+                if let Some(reader)=usage_reader.as_mut() {for usage in reader.poll() {
+                    crate::acp::context::native_usage(session.context_reader.as_ref(), &usage, inspection.as_ref(), &input.provider_session_id, &input.thread_id, &bus);
+                    crate::acp::emit_mapped(&bus,&input.thread_id,&input.turn_id,crate::acp::mapper::MappedUpdate{usage:Some(usage),..Default::default()},input.hidden);
+                }}
+            },
+            _=cancel.cancelled(), if !interrupted => {interrupted=true;interrupt_deadline=tokio::time::Instant::now()+Duration::from_secs(15);self.interrupt(&input.provider_session_id,&turn).await?;},
+            _=tokio::time::sleep_until(interrupt_deadline), if interrupted => {return Err(ExecutionUncertain("Codex did not confirm interruption".into()).into());},
             request=requests.recv()=>{let Some((rpc_id,method,params))=request else {return Err(ExecutionUncertain("app-server request stream closed".into()).into());};
+                if method=="currentTime/read" {
+                    session.process.respond(rpc_id,json!({"currentTimeAt":chrono::Utc::now().timestamp()})).await?;
+                    continue;
+                }
+                if !matches!(method.as_str(),"item/commandExecution/requestApproval"|"item/fileChange/requestApproval"|"item/permissions/requestApproval"|"item/tool/requestUserInput"|"mcpServer/elicitation/request"|"execCommandApproval"|"applyPatchApproval") {
+                    session.process.respond_error(rpc_id,"Unsupported native Codex callback").await?;
+                    continue;
+                }
                 let id=format!("native-codex:{}:{rpc_id}",session.process.id);
-                let dto=ThreadActionRequestDto{id:id.clone(),kind:if method.contains("requestUserInput") {"requestUserInput"}else{"permission"}.into(),title:params["command"].as_str().unwrap_or(&method).into(),description:params["reason"].as_str().map(str::to_owned),turn_id:Some(input.turn_id.clone()),item_id:params["itemId"].as_str().map(str::to_owned),created_at:now_rfc3339(),questions:params["questions"].as_array().cloned().unwrap_or_default()};
-                self.pending.lock().await.insert(id,Pending{process:session.process.clone(),rpc_id,method,thread:input.thread_id.clone(),dto:dto.clone()});event(&bus,&input,"thread.request.created",json!({"request":dto}));
+                let description=if method=="item/permissions/requestApproval" {Some(format!("{}\n{}",params["reason"].as_str().unwrap_or(""),serde_json::to_string_pretty(&params["permissions"])?))} else {params["reason"].as_str().map(str::to_owned)};
+                let dto=ThreadActionRequestDto{id:id.clone(),kind:if method.contains("requestUserInput") || method.contains("elicitation") {"requestUserInput"}else{"permissionRequest"}.into(),title:params["command"].as_str().unwrap_or(&method).into(),description,turn_id:Some(input.turn_id.clone()),item_id:params["itemId"].as_str().map(str::to_owned),created_at:now_rfc3339(),questions:if method.contains("requestUserInput") || method.contains("elicitation") {crate::acp::elicitation::questions(&params,method.contains("requestUserInput"))?} else {vec![]}};
+                self.pending.lock().await.insert(id,Pending{process:session.process.clone(),rpc_id,method,thread:input.thread_id.clone(),dto:dto.clone(),params,bus:bus.clone()});event(&bus,&input,"thread.request.created",json!({"request":dto}));
             },
             update=updates.recv()=>{let Some(update)=update else {return Err(ExecutionUncertain("app-server notification stream closed".into()).into());};
                 let update=json!({"method":update["_remoteMethod"],"params":update});
-                let params=&update["params"];if params["threadId"].as_str().is_some_and(|id|id!=crate::import_id::raw_session_id(&input.provider_session_id)){continue;}
+                let params=&update["params"];if params["threadId"].as_str().is_some_and(|id|id!=native_raw(&input.provider_session_id)){continue;}
                 if update["method"]=="turn/completed" && params["turn"]["id"]==turn {
                     if params["turn"]["status"]=="failed" {bail!("Codex turn failed: {}",params["turn"]["error"]);}
                     interrupted |= params["turn"]["status"]=="interrupted";break;
                 }
-                for mapped in mapping::apply(&mut mapper,&update) {for item in mapped.items {event(&bus,&input,"thread.item.started",json!({"item":item}));}for (id,delta,sequence) in mapped.deltas {event(&bus,&input,"thread.output.delta",json!({"itemId":id,"delta":delta,"sequence":sequence}));}if let Some(usage)=mapped.usage {event(&bus,&input,"runtime.usage.updated",json!({"usage":usage}));}}
+                for mut mapped in mapping::apply(&mut mapper,&update) {
+                    if let Some(goal)=&mapped.goal {
+                        session.goal_active.store(goal.as_ref().is_some_and(|g|g.status=="active"),std::sync::atomic::Ordering::SeqCst);
+                    }
+                    if let Some(usage)=mapped.usage.as_ref() {
+                        crate::acp::context::native_usage(session.context_reader.as_ref(), usage, inspection.as_ref(), &input.provider_session_id, &input.thread_id, &bus);
+                    }
+                    if usage_reader.is_some() {if let Some(usage)=mapped.usage.as_mut() {
+                        // Keep native context occupancy, but bill the complete
+                        // per-request rollout report rather than both counters.
+                        usage.as_object_mut().map(|v| v.remove("tokenUsage"));
+                    }}
+                    if let Some(agents)=&mapped.active_subagents {*session.subagents.write().unwrap()=agents.clone();}
+                    crate::acp::emit_mapped(&bus,&input.thread_id,&input.turn_id,mapped,input.hidden);
+                }
             }
         }} Ok(())}.await;
+        if let Some(reader) = usage_reader.as_mut() {
+            for usage in reader.poll_final() {
+                crate::acp::context::native_usage(
+                    session.context_reader.as_ref(),
+                    &usage,
+                    inspection.as_ref(),
+                    &input.provider_session_id,
+                    &input.thread_id,
+                    &bus,
+                );
+                crate::acp::emit_mapped(
+                    &bus,
+                    &input.thread_id,
+                    &input.turn_id,
+                    crate::acp::mapper::MappedUpdate {
+                        usage: Some(usage),
+                        ..Default::default()
+                    },
+                    input.hidden,
+                );
+            }
+        }
+        if let Some(stop) = context_observer {
+            stop.cancel();
+        }
         *session.active.write().unwrap() = None;
         session.loaded.write().unwrap().last_activity_at = chrono::Utc::now();
         self.pending
@@ -334,13 +526,20 @@ impl AgentRuntime for CodexRuntime {
         Ok(mapper.finish(interrupted))
     }
     async fn interrupt(&self, id: &str, turn: &str) -> Result<()> {
-        self.session(id)?
+        let session = self.session(id)?;
+        let native = session
+            .active
+            .read()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| turn.into());
+        session
             .process
             .request(
                 "turn/interrupt",
                 serde_json::to_value(wire::TurnInterruptParams {
-                    thread_id: crate::import_id::raw_session_id(id).into(),
-                    turn_id: turn.into(),
+                    thread_id: native_raw(id).into(),
+                    turn_id: native,
                 })?,
             )
             .await?;
@@ -349,39 +548,63 @@ impl AgentRuntime for CodexRuntime {
     async fn send_input(&self, id: &str, _turn: &str, prompt: &str) -> Result<()> {
         let s = self.session(id)?;
         let turn = s.active.read().unwrap().clone().context("No active turn")?;
-        s.process.request("turn/steer",json!({"threadId":crate::import_id::raw_session_id(id),"expectedTurnId":turn,"input":[{"type":"text","text":prompt}]})).await?;
+        s.process.request("turn/steer",json!({"threadId":native_raw(id),"expectedTurnId":turn,"input":[{"type":"text","text":prompt}]})).await?;
         Ok(())
     }
     async fn apply_session_settings(&self, id: &str, settings: SessionSettings) -> Result<()> {
         let s = self.session(id)?;
-        let mut current = s.settings.write().unwrap();
-        macro_rules! merge {($($key:ident),*)=>{$(if settings.$key.is_some(){current.$key=settings.$key;})*}}
-        merge!(
-            model,
-            effort,
-            sandbox_mode,
-            approval_mode,
-            collaboration_mode,
-            performance_mode
-        );
+        let merged = {
+            let mut current = s.settings.write().unwrap();
+            macro_rules! merge {($($key:ident),*)=>{$(if settings.$key.is_some(){current.$key=settings.$key;})*}}
+            merge!(
+                model,
+                effort,
+                sandbox_mode,
+                approval_mode,
+                collaboration_mode,
+                performance_mode
+            );
+            current.clone()
+        };
+        let policy = policy(&merged);
+        s.process.request("thread/settings/update",json!({"threadId":native_raw(id),"model":merged.model,"effort":merged.effort,"sandboxPolicy":policy["sandboxPolicy"],"approvalPolicy":policy["approvalPolicy"],"serviceTier":if merged.performance_mode==Some(true){json!("fast")}else{Value::Null}})).await?;
         Ok(())
     }
     async fn respond_permission(&self, id: &str, allow: bool, answer: Option<&str>) -> Result<()> {
-        let p = self
-            .pending
-            .lock()
-            .await
-            .remove(id)
-            .context("Native Codex request not found")?;
-        let response = if p.method.contains("requestUserInput") {
-            json!({"answers":serde_json::from_str::<Value>(answer.unwrap_or("{}"))?})
-        } else if p.method.contains("elicitation") {
-            json!({"action":if allow{"accept"}else{"decline"},"content":answer.and_then(|v|serde_json::from_str::<Value>(v).ok())})
+        let mut pending = self.pending.lock().await;
+        let p = pending.get(id).context("Native Codex request not found")?;
+        let response = if p.method.contains("requestUserInput") || p.method.contains("elicitation")
+        {
+            crate::acp::elicitation::response(
+                &p.params,
+                p.method.contains("requestUserInput"),
+                allow,
+                answer,
+            )?
+        } else if p.method == "item/permissions/requestApproval" {
+            json!({"permissions":if allow{p.params["permissions"].clone()}else{json!({})},"scope":"turn"})
+        } else if matches!(
+            p.method.as_str(),
+            "execCommandApproval" | "applyPatchApproval"
+        ) {
+            json!({"decision":if allow{"approved"}else{"denied"}})
         } else {
             json!({"decision":if allow{"accept"}else{"decline"}})
         };
-        p.process.respond(p.rpc_id, response).await
+        p.process.respond(p.rpc_id, response).await?;
+        let p = pending
+            .remove(id)
+            .expect("request was held while responding");
+        drop(pending);
+        p.bus.emit(ThreadEventEnvelope {
+            event_type: ThreadEventType::ThreadRequestResolved,
+            thread_id: p.thread,
+            timestamp: now_rfc3339(),
+            payload: json!({"requestId":id}),
+        });
+        Ok(())
     }
+
     async fn pending_requests(&self, thread: &str) -> Vec<ThreadActionRequestDto> {
         self.pending
             .lock()
@@ -397,7 +620,7 @@ impl AgentRuntime for CodexRuntime {
             .request(
                 "thread/compact/start",
                 serde_json::to_value(wire::ThreadCompactStartParams {
-                    thread_id: crate::import_id::raw_session_id(id).into(),
+                    thread_id: native_raw(id).into(),
                 })?,
             )
             .await?;
@@ -406,13 +629,8 @@ impl AgentRuntime for CodexRuntime {
     async fn fork_session(&self, id: &str) -> Result<StartSessionResult> {
         let s = self.session(id)?;
         let settings = s.settings.read().unwrap().clone();
-        self.load(
-            "thread/fork",
-            Some(crate::import_id::raw_session_id(id)),
-            &s.cwd,
-            settings,
-        )
-        .await
+        self.load("thread/fork", Some(native_raw(id)), &s.cwd, settings)
+            .await
     }
     async fn fork_session_at(&self, id: &str, point: &ForkPoint) -> Result<ForkResult> {
         let fork = self.fork_session(id).await?;
@@ -430,7 +648,7 @@ impl AgentRuntime for CodexRuntime {
         if s.active.read().unwrap().is_some() {
             bail!("conflict: turn running");
         }
-        let raw = crate::import_id::raw_session_id(id);
+        let raw = native_raw(id);
         let mut remaining = count;
         let mut cursor = Value::Null;
         let mut visited = std::collections::HashSet::new();
@@ -483,6 +701,12 @@ impl AgentRuntime for CodexRuntime {
                 if s.active.read().unwrap().is_some() {
                     loaded.busy.push(HarnessBusyReason::Turn);
                 }
+                if !s.subagents.read().unwrap().is_empty() {
+                    loaded.busy.push(HarnessBusyReason::Subagent);
+                }
+                if s.goal_active.load(std::sync::atomic::Ordering::SeqCst) {
+                    loaded.busy.push(HarnessBusyReason::Goal);
+                }
                 loaded
             })
             .collect()
@@ -492,11 +716,20 @@ impl AgentRuntime for CodexRuntime {
     }
     async fn release_session(&self, id: &str) -> Result<()> {
         let s = self.session(id)?;
+        let _operation = s.operation.try_lock().map_err(|_| TurnRunning)?;
         if s.active.read().unwrap().is_some() {
             return Err(TurnRunning.into());
         }
         s.process.terminate(Duration::from_secs(2)).await?;
         self.sessions.write().unwrap().remove(id);
+        let loaded = s.loaded.read().unwrap();
+        let _ = self.events.send(SessionLifecycle::Released {
+            session_id: id.into(),
+            thread_id: loaded.thread_id.clone(),
+            reason: ReleaseReason::Explicit,
+            load_reason: loaded.load_reason,
+            prompted: loaded.prompted,
+        });
         Ok(())
     }
     async fn release_loaded(
@@ -539,11 +772,16 @@ impl AgentRuntime for CodexRuntime {
             .request(
                 "thread/goal/get",
                 serde_json::to_value(wire::ThreadGoalGetParams {
-                    thread_id: crate::import_id::raw_session_id(id).into(),
+                    thread_id: native_raw(id).into(),
                 })?,
             )
             .await?;
-        Ok(goal(&response["goal"]))
+        let goal = goal(&response["goal"]);
+        self.session(id)?.goal_active.store(
+            goal.as_ref().is_some_and(|g| g.status == "active"),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        Ok(goal)
     }
     async fn set_goal(
         &self,
@@ -557,7 +795,7 @@ impl AgentRuntime for CodexRuntime {
             .request(
                 "thread/goal/set",
                 serde_json::to_value(wire::ThreadGoalSetParams {
-                    thread_id: crate::import_id::raw_session_id(id).into(),
+                    thread_id: native_raw(id).into(),
                     objective,
                     status: status.map(Value::String),
                     origin: Some(json!("user")),
@@ -565,7 +803,12 @@ impl AgentRuntime for CodexRuntime {
                 })?,
             )
             .await?;
-        Ok(goal(&response["goal"]))
+        let goal = goal(&response["goal"]);
+        self.session(id)?.goal_active.store(
+            goal.as_ref().is_some_and(|g| g.status == "active"),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        Ok(goal)
     }
     async fn restart(&self, _agent: &str) -> Result<usize> {
         let sessions: Vec<_> = self.sessions.read().unwrap().keys().cloned().collect();
@@ -583,6 +826,11 @@ impl AgentRuntime for CodexRuntime {
         if let Ok(session) = self.session(id) {
             session.loaded.write().unwrap().last_activity_at = chrono::Utc::now();
         }
+    }
+    async fn active_subagents(&self, id: &str) -> Vec<ThreadSubagentDto> {
+        self.session(id)
+            .map(|s| s.subagents.read().unwrap().clone())
+            .unwrap_or_default()
     }
     async fn list_import_sessions(&self, agent: Option<&str>) -> Result<Vec<ImportSessionMeta>> {
         self.fallback.list_import_sessions(agent).await
@@ -609,3 +857,10 @@ fn goal(value: &Value) -> Option<GoalState> {
 
 #[cfg(test)]
 mod tests;
+
+fn native_raw(id: &str) -> &str {
+    let raw = crate::import_id::raw_session_id(id);
+    raw.strip_prefix("env/")
+        .and_then(|s| s.splitn(3, '/').nth(2))
+        .unwrap_or(raw)
+}

@@ -262,18 +262,26 @@ impl AgentRuntime for ProtocolRouter {
         allow: bool,
         answer: Option<&str>,
     ) -> Result<()> {
-        let mut last = self.acp.respond_permission(request_id, allow, answer).await;
-        if last.is_ok() {
-            return last;
+        // Native requests carry a backend prefix. ACP tolerates unknown ids,
+        // so broadcasting responses would silently swallow native approvals.
+        let agent = if request_id.starts_with("native-codex:") {
+            Some("codex")
+        } else if request_id.starts_with("claude-native:") {
+            Some("claude")
+        } else {
+            None
+        };
+        if let Some(agent) = agent {
+            return self
+                .backends
+                .get(agent)
+                .ok_or_else(|| anyhow::anyhow!("Native approval backend unavailable"))?
+                .respond_permission(request_id, allow, answer)
+                .await;
         }
-        for backend in self.backends.values() {
-            last = backend.respond_permission(request_id, allow, answer).await;
-            if last.is_ok() {
-                break;
-            }
-        }
-        last
+        self.acp.respond_permission(request_id, allow, answer).await
     }
+
     async fn pending_requests(&self, thread_id: &str) -> Vec<ThreadActionRequestDto> {
         let mut out = self.acp.pending_requests(thread_id).await;
         for backend in self.backends.values() {
@@ -450,8 +458,11 @@ mod tests {
         async fn interrupt(&self, _: &str, _: &str) -> Result<()> {
             Ok(())
         }
-        async fn respond_permission(&self, _: &str, _: bool, _: Option<&str>) -> Result<()> {
-            anyhow::bail!("unknown request")
+        async fn respond_permission(&self, id: &str, _: bool, _: Option<&str>) -> Result<()> {
+            if self.name == "acp" || id == "native-codex:valid" {
+                return Ok(());
+            }
+            anyhow::bail!("invalid native answer")
         }
         async fn release_session(&self, id: &str) -> Result<()> {
             self.loaded.write().unwrap().retain(|v| v != id);
@@ -541,6 +552,31 @@ mod tests {
                 Some("acp")
             );
         }
+    }
+    #[tokio::test]
+    async fn native_approval_errors_are_never_swallowed_by_acp() {
+        let acp = Arc::new(Backend {
+            name: "acp",
+            loaded: Default::default(),
+        });
+        let native = Arc::new(Backend {
+            name: "native",
+            loaded: Default::default(),
+        });
+        let router =
+            ProtocolRouter::new(acp, None, PathBuf::from("missing")).with_backend("codex", native);
+        assert!(router
+            .respond_permission("native-codex:valid", true, None)
+            .await
+            .is_ok());
+        assert!(router
+            .respond_permission("native-codex:invalid", true, None)
+            .await
+            .is_err());
+        assert!(router
+            .respond_permission("acp-request", true, None)
+            .await
+            .is_ok());
     }
     #[test]
     fn settings_reject_typo_and_default_to_acp() {
