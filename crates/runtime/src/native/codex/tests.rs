@@ -506,3 +506,24 @@ fn approval_titles_match_the_command_row() {
         "Edit files"
     );
 }
+
+#[tokio::test]
+async fn codex_warnings_reach_the_native_transcript() {
+    let (_dir, r) = runtime();
+    let id = r.start_session(input()).await.unwrap().provider_session_id;
+    let items = r
+        .start_turn(
+            turn(&id, "notices"),
+            EventBus::new(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        items
+            .iter()
+            .any(|i| i.kind == "generic" && i.text.contains("Model metadata")),
+        "{items:?}"
+    );
+    r.release_session(&id).await.unwrap();
+}

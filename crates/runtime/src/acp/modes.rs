@@ -44,7 +44,11 @@ impl ProductSessionPolicy {
 ///
 /// ACP `session/new` returns `modes.availableModes` and the client switches
 /// with `session/set_mode`. IDs are harness-defined:
-/// - Codex ACP: `read-only`, `agent` / `auto`, `agent-full-access` / `full-access`, optional `plan`
+/// - Codex ACP: `read-only`, `workspace-write`, `agent` / `auto`, `agent-full-access` /
+///   `full-access`. codex-acp 2.7's `agent` is "Auto review": Codex's Guardian
+///   model answers escalations instead of the user, so guarded selects
+///   `workspace-write` (user reviewer). Plan is its separate
+///   `collaboration_mode` config option, not a mode.
 /// - Claude ACP: `default`, `acceptEdits`, `plan`, optional `auto` and
 ///   `bypassPermissions`. Its own default is `auto`, so full access must name
 ///   `bypassPermissions` or the session keeps Claude's classifier on.
@@ -67,8 +71,64 @@ pub fn preferred_mode_ids(policy: &ProductSessionPolicy) -> Vec<&'static str> {
     } else if matches!(policy.sandbox_mode.as_deref(), Some("read-only")) {
         vec!["read-only", "readonly", "ask"]
     } else {
-        vec!["agent", "code", "build", "auto", "default"]
+        vec![
+            "workspace-write",
+            "agent",
+            "code",
+            "build",
+            "auto",
+            "default",
+        ]
     }
+}
+
+/// A harness that keeps plan/default collaboration as its own config option
+/// (codex-acp's `collaboration_mode`): the value the product wants, when it
+/// differs from the current one.
+pub fn resolve_collaboration_config_value(
+    config_options: &Value,
+    policy: &ProductSessionPolicy,
+) -> Option<(String, String)> {
+    let option = collaboration_option(config_options)?;
+    let wanted = if matches!(policy.collaboration_mode.as_deref(), Some("plan"))
+        && !policy.allows_writes_outside_workspace()
+    {
+        "plan"
+    } else {
+        "default"
+    };
+    let offered = collect_select_options(option)
+        .iter()
+        .any(|entry| entry.get("value").and_then(Value::as_str) == Some(wanted));
+    (offered && option.get("currentValue").and_then(Value::as_str) != Some(wanted)).then(|| {
+        (
+            option["id"]
+                .as_str()
+                .unwrap_or("collaboration_mode")
+                .to_string(),
+            wanted.to_string(),
+        )
+    })
+}
+
+/// Whether a harness's collaboration option currently selects Plan.
+pub fn collaboration_is_plan(config_options: &Value) -> bool {
+    collaboration_option(config_options)
+        .and_then(|option| option.get("currentValue"))
+        .and_then(Value::as_str)
+        == Some("plan")
+}
+
+pub fn has_collaboration_option(config_options: &Value) -> bool {
+    collaboration_option(config_options).is_some()
+}
+
+fn collaboration_option(config_options: &Value) -> Option<&Value> {
+    config_options.as_array()?.iter().find(|entry| {
+        let id = entry.get("id").and_then(Value::as_str).unwrap_or("");
+        let category = entry.get("category").and_then(Value::as_str).unwrap_or("");
+        ids_match(id, "collaboration_mode") || ids_match(category, "collaboration_mode")
+    })
 }
 
 pub fn resolve_mode(available: &[SessionMode], policy: &ProductSessionPolicy) -> Option<String> {
@@ -232,10 +292,13 @@ pub fn resolve_mode_config_value(
     config_options: &Value,
     policy: &ProductSessionPolicy,
 ) -> Option<(String, String)> {
+    let collaboration = collaboration_option(config_options);
     let option = config_options.as_array()?.iter().find(|entry| {
         let id = entry.get("id").and_then(Value::as_str).unwrap_or("");
         let category = entry.get("category").and_then(Value::as_str).unwrap_or("");
-        ids_match(id, "mode") || ids_match(category, "mode")
+        // Plan is not a permission mode, even if a harness files it as one.
+        !collaboration.is_some_and(|option| std::ptr::eq(option, *entry))
+            && (ids_match(id, "mode") || ids_match(category, "mode"))
     })?;
     let config_id = option.get("id").and_then(Value::as_str)?.to_string();
     let select_options = collect_select_options(option);
@@ -286,6 +349,80 @@ fn normalize_id(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// codex-acp 2.7's modes and collaboration option, as `session/new` lists them.
+    fn codex_acp() -> (Vec<SessionMode>, Value) {
+        let modes = [
+            ("read-only", "Read-only"),
+            ("workspace-write", "Workspace access"),
+            ("agent", "Auto review"),
+            ("agent-full-access", "Full access"),
+        ]
+        .into_iter()
+        .map(|(id, name)| SessionMode {
+            id: id.into(),
+            name: Some(name.into()),
+        })
+        .collect();
+        let config = serde_json::json!([{"id":"collaboration_mode","category":"collaboration_mode","type":"select","currentValue":"default",
+            "options":[{"value":"default","name":"Default"},{"value":"plan","name":"Plan"}]}]);
+        (modes, config)
+    }
+
+    #[test]
+    fn codex_acp_guarded_asks_the_user_and_plan_uses_its_collaboration_option() {
+        let (modes, config) = codex_acp();
+        // Guarded must never pick "Auto review" (Codex Guardian answers instead of the owner).
+        assert_eq!(
+            resolve_mode(&modes, &policy(Some("workspace-write"), "guarded")).as_deref(),
+            Some("workspace-write")
+        );
+        assert_eq!(
+            resolve_mode(&modes, &policy(None, "guarded")).as_deref(),
+            Some("workspace-write")
+        );
+        assert_eq!(
+            resolve_mode(&modes, &policy(Some("read-only"), "guarded")).as_deref(),
+            Some("read-only")
+        );
+        assert_eq!(
+            resolve_mode(&modes, &policy(None, "yolo")).as_deref(),
+            Some("agent-full-access")
+        );
+        let mut plan = policy(Some("workspace-write"), "guarded");
+        plan.collaboration_mode = Some("plan".into());
+        assert!(has_collaboration_option(&config));
+        assert_eq!(
+            resolve_collaboration_config_value(&config, &plan),
+            Some(("collaboration_mode".into(), "plan".into()))
+        );
+        // Back to default only when it is not already default; full access is never planned.
+        assert_eq!(
+            resolve_collaboration_config_value(&config, &policy(None, "guarded")),
+            None
+        );
+        let mut planned = config.clone();
+        planned[0]["currentValue"] = serde_json::json!("plan");
+        assert_eq!(
+            resolve_collaboration_config_value(&planned, &policy(None, "guarded")),
+            Some(("collaboration_mode".into(), "default".into()))
+        );
+        let mut full = policy(None, "yolo");
+        full.collaboration_mode = Some("plan".into());
+        assert_eq!(
+            resolve_collaboration_config_value(&planned, &full),
+            Some(("collaboration_mode".into(), "default".into()))
+        );
+        assert!(!has_collaboration_option(&serde_json::json!([])));
+        assert!(collaboration_is_plan(&planned) && !collaboration_is_plan(&config));
+        // Filed under "mode", Plan still never stands in for the permission mode.
+        let filed = serde_json::json!([{"id":"collaboration_mode","category":"mode","currentValue":"plan",
+            "options":[{"value":"default"},{"value":"plan"}]}]);
+        assert_eq!(
+            resolve_mode_config_value(&filed, &policy(Some("workspace-write"), "guarded")),
+            None
+        );
+    }
 
     fn claude_modes() -> Vec<SessionMode> {
         [

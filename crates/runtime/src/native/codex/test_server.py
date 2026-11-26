@@ -43,6 +43,10 @@ for line in sys.stdin:
         elif text=='approval-permissions':
             approval='permissions'
             send({'id':900,'method':'item/permissions/requestApproval','params':{'threadId':'shared','reason':'Need network','permissions':{'network':{'enabled':True}}}})
+        elif text=='notices':
+            send({'method':'warning','params':{'threadId':'shared','message':'Model metadata for x not found.'}})
+            send({'method':'remoteControl/status/changed','params':{'status':'disabled'}})
+            done()
         elif text=='settled':
             # Codex settles its own callback (e.g. superseded); the card must go.
             import time
