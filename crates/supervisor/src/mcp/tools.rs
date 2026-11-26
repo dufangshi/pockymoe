@@ -47,6 +47,7 @@ fn level(name: &str) -> Option<u8> {
         | "pockymoe_thread_wait"
         | "pockymoe_git_status"
         | "pockymoe_git_diff"
+        | "pockymoe_git_turn_diff"
         | "pockymoe_events" => 0,
         "pockymoe_thread_launch" | "pockymoe_thread_send" | "pockymoe_thread_stop" => 1,
         "pockymoe_thread_answer" => 2,
@@ -118,6 +119,12 @@ pub fn catalog() -> Value {
             "Working copy Git diff",
             json!({"threadId":s(),"workingCopyId":s(),"area":{"type":"string","enum":["worktree","index","branch","commit"]},"reference":s(),"path":s()}),
             vec!["threadId"],
+        ),
+        (
+            "git_turn_diff",
+            "Diff the before/after checkpoints of one turn",
+            json!({"threadId":s(),"turnId":s(),"workingCopyId":s(),"path":s(),"ignoreWhitespace":{"type":"boolean"}}),
+            vec!["threadId", "turnId"],
         ),
         (
             "events",
@@ -284,6 +291,13 @@ pub async fn call(
         "pockymoe_thread_stop" => Ok(json!({"thread":state.interrupt(id()?).await?})),
         "pockymoe_thread_answer" => Ok(
             json!({"thread":state.respond_request(id()?,args["requestId"].as_str().context("requestId required")?,args["allow"].as_bool().context("allow required")?,args["answer"].as_str()).await?}),
+        ),
+        "pockymoe_git_turn_diff" => state.checkpoint_diff(
+            id()?,
+            args["workingCopyId"].as_str(),
+            args["turnId"].as_str().context("turnId required")?,
+            args["path"].as_str(),
+            args["ignoreWhitespace"] == true,
         ),
         "pockymoe_git_status" => state.worktree_git_status(id()?, args["workingCopyId"].as_str()),
         "pockymoe_git_diff" => state.worktree_git_diff(

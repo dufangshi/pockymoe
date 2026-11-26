@@ -157,6 +157,13 @@ async fn mcp_oauth_pkce_rotation_reuse_and_audience() {
             .0,
         StatusCode::BAD_REQUEST
     );
+    let mut wrong_resource = token_args(&verifier);
+    wrong_resource.retain(|(k, _)| *k != "resource");
+    wrong_resource.push(("resource", "https://wrong.example/mcp"));
+    assert_eq!(
+        form(s, "/oauth/mcp/token", &wrong_resource).await.0,
+        StatusCode::BAD_REQUEST
+    );
     let (status, tokens) = form(s, "/oauth/mcp/token", &token_args(&verifier)).await;
     assert_eq!(status, StatusCode::OK, "{tokens}");
     let bearer = format!("Bearer {}", tokens["access_token"].as_str().unwrap());
@@ -461,4 +468,92 @@ fn mcp_acl_is_an_exclusive_audience_and_management_is_owner_only() {
             assert!(!access_allows(&shared, method, path), "{method} {path}");
         }
     }
+}
+
+#[tokio::test]
+async fn mcp_launch_wait_reads_the_completed_queued_prompt() {
+    let f = crate::isolation_tests::setup().await;
+    // This fixture enables Codex rather than ACP; create through the fixture and
+    // exercise the MCP send/wait/read boundary against the deterministic runtime.
+    let id = crate::isolation_tests::thread(&f.state, &f.open).await;
+    let grant = Grant {
+        client: "lab".into(),
+        access: "supervised".into(),
+        workspaces: Some(vec![f.open]),
+        device: None,
+    };
+    tools::call(
+        &f.state,
+        &grant,
+        "pockymoe_thread_send",
+        &json!({"threadId":id,"text":"hello","delivery":"queue"}),
+    )
+    .await
+    .unwrap();
+    let reply = tools::call(
+        &f.state,
+        &grant,
+        "pockymoe_thread_wait",
+        &json!({"threadId":id,"timeoutSeconds":10}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply["status"]["queuedCount"], 0);
+    assert!(
+        !reply["thread"]["turns"].as_array().unwrap().is_empty(),
+        "{reply}"
+    );
+    assert_eq!(reply["status"]["outcome"]["kind"], "completed");
+    let transcript = tools::call(
+        &f.state,
+        &grant,
+        "pockymoe_thread_read",
+        &json!({"threadId":id,"view":"summary"}),
+    )
+    .await
+    .unwrap();
+    assert!(transcript.get("transcript").is_some());
+}
+
+#[tokio::test]
+async fn mcp_revoke_and_event_allowlist_are_enforced() {
+    let f = crate::isolation_tests::setup().await;
+    let allowed = crate::isolation_tests::thread(&f.state, &f.open).await;
+    let denied = crate::isolation_tests::thread(&f.state, &f.isolated).await;
+    let token = store::secret();
+    store::transaction(&f.state,|db|{
+        store::put(db,"grant","g",&json!({"createdAt":store::now(),"clientId":"client","access":"full","workspaces":null}),900)?;
+        store::put(db,"access",&store::hash(&token),&json!({"grant":"g","clientId":"client","resource":oauth::resource(&f.state),"expiresAt":store::now()+900}),900)?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS milestones(id INTEGER PRIMARY KEY AUTOINCREMENT,thread TEXT NOT NULL,value TEXT NOT NULL)")?;
+        for thread in [&allowed,&denied] {db.execute("INSERT INTO milestones(thread,value) VALUES(?,?)",rusqlite::params![thread,json!({"threadId":thread,"type":"thread.turn.completed"}).to_string()])?;}Ok(())
+    }).unwrap();
+    let grant = Grant {
+        client: "client".into(),
+        access: "read".into(),
+        workspaces: Some(vec![f.open]),
+        device: None,
+    };
+    let events = events::poll(&f.state, &grant, "").unwrap();
+    assert_eq!(events["events"].as_array().unwrap().len(), 1);
+    assert_eq!(events["events"][0]["threadId"], allowed);
+    assert!(
+        events::poll(&f.state, &grant, events["cursor"].as_str().unwrap()).unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        form(
+            &f.state,
+            "/oauth/mcp/revoke",
+            &[("token", &token), ("client_id", "client")]
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let bearer = format!("Bearer {token}");
+    let headers =
+        HeaderMap::from_iter([("authorization".parse().unwrap(), bearer.parse().unwrap())]);
+    assert!(oauth::authenticate(&f.state, &headers).is_err());
 }

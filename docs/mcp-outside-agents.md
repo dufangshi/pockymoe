@@ -63,7 +63,7 @@ call in that same session; cancelling a wait does not stop the agent.
 `tools/list` describes input/output schemas and read-only/destructive annotations.
 Tools cover device identity, workspaces, harnesses and models, thread search,
 thread/turn reading, bounded waits, launch, inbox/queue/steer, stop, approvals,
-Git status/diff and milestone polling. `thread_wait` waits at most ten minutes
+Git status/diff, checkpoint turn diffs and milestone polling. `thread_wait` waits at most ten minutes
 and returns status and the latest transcript, including the final reply.
 
 Workspace restrictions apply to both collections and individual targets.
@@ -76,3 +76,7 @@ Settings shows setup commands, connected grants, last use, revocation and recent
 calls. Audit records contain client, tool, target, timestamp and success/error;
 they omit prompts, replies and tokens. Retention is 30 days and at most 1,000
 calls. No MCP credential is returned by the settings API.
+
+The Rust server implements the JSON-RPC boundary directly, reusing the existing
+Supervisor services and CLI trust boundary rather than introducing a second
+SDK dispatcher. The supported JSON response transport needs no SSE SDK state.

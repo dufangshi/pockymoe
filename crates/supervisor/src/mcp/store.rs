@@ -32,10 +32,7 @@ pub fn transaction<T>(state: &Supervisor, f: impl FnOnce(&Connection) -> Result<
     db.busy_timeout(std::time::Duration::from_secs(5))?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS entries(kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, expires INTEGER NOT NULL, PRIMARY KEY(kind,key));")?;
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    tx.execute(
-        "DELETE FROM entries WHERE expires < ? AND kind != 'refresh'",
-        [now()],
-    )?;
+    tx.execute("DELETE FROM entries WHERE expires < ?", [now()])?;
     let result = f(&tx)?;
     tx.commit()?;
     Ok(result)
