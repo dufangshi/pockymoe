@@ -279,12 +279,19 @@ for (const preset of ['classic', 'plum-pocket'] as const) test(`${preset} model 
       lastBottom: last.bottom,
       rowHeights: [...element.querySelectorAll('[role=menuitemradio]')].map(button => button.getBoundingClientRect().height) };
   });
-  expect(geometry.height, JSON.stringify(geometry)).toBeLessThanOrEqual(340);
-  expect(geometry.top).toBeGreaterThanOrEqual(8);
-  expect(geometry.left).toBeGreaterThanOrEqual(8);
-  expect(geometry.right).toBeLessThanOrEqual(page.viewportSize()!.width - 8);
   expect(geometry.lastBottom).toBeLessThanOrEqual(geometry.bottom);
-  expect(Math.max(...geometry.rowHeights)).toBeLessThanOrEqual(32);
+  if (info.project.name === 'mobile-chromium') {
+    // Phones get a bottom sheet with finger-sized rows (docs/ui-principles.md §4, §10).
+    expect(Math.min(...geometry.rowHeights)).toBeGreaterThanOrEqual(44);
+    expect(geometry.bottom).toBeLessThanOrEqual(page.viewportSize()!.height + 1);
+  } else {
+    // Six models, the labelled Context / price header and the effort slider.
+    expect(geometry.height, JSON.stringify(geometry)).toBeLessThanOrEqual(360);
+    expect(geometry.top).toBeGreaterThanOrEqual(8);
+    expect(geometry.left).toBeGreaterThanOrEqual(8);
+    expect(geometry.right).toBeLessThanOrEqual(page.viewportSize()!.width - 8);
+    expect(Math.max(...geometry.rowHeights)).toBeLessThanOrEqual(32);
+  }
   await page.screenshot({ path: info.outputPath(`model-menu-${preset}.png`), scale: 'css' });
   await menu.getByRole('slider').focus();
   await page.keyboard.press('Home');

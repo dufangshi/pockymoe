@@ -1,11 +1,28 @@
 # Model and reasoning effort
 
-A thread's model and reasoning effort are chosen in the composer's model menu.
-Model menu → Harness settings opens the harness plugin snapshot and DSH panel
-on desktop and phone, including Treer scoped surfaces. It has no access-level
-control or capability notice.
+A thread's model and reasoning effort are chosen in the composer's model picker,
+opened from the model key (a popover on desktop, a bottom sheet on phones):
+
+- A search box (when there are agents to switch to or more than eight models),
+  then the models of the agent in view under a header with the
+  agent's mark and name. Rows show the model's context window and its price per
+  million input and output tokens from the device's pricing catalog
+  (`GET /api/config/model-pricing`, matched like the cost estimate); a model the
+  catalog does not know leaves those cells empty. The current model is checked
+  and scrolled into view.
+- The current model's effort slider below the list.
+- For the thread's owner, a rail of the device's ready agents on the left, the
+  current one first and marked with a dot; ←/→ move between agents. Picking a
+  model of another agent moves the thread to it (see
+  [Switching harnesses](harness-switching.md)). Typing in the search lists
+  matching models of every agent, grouped by agent.
+- Harness settings at the foot opens the harness plugin snapshot and DSH panel
+  on desktop and phone, including Treer scoped surfaces. It has no access-level
+  control or capability notice.
+
 Both model selectors use `GET /api/threads/{id}/models` and write through
-`PATCH /api/threads/{id}/settings`.
+`PATCH /api/threads/{id}/settings`; other agents' models come from
+`GET /api/agent-runtimes/acp/models?agentId=…&cwd=…`.
 
 ## Model discovery and refresh
 
@@ -74,7 +91,7 @@ Haiku has none). The runtime therefore learns each model's levels:
   from a probe anyway.
 
 A model not learned yet keeps the current model's levels. The Web fetches the
-list again when the model menu or Harness settings opens and after a switch,
+list again when the model picker or Harness settings opens and after a switch,
 so learned levels show up there.
 
 DSH's ACP model values are opaque `[provider, model]` tuples. The provider is
@@ -112,7 +129,7 @@ the live session at once. When it takes effect depends on the harness, reported 
   an isolated environment, applies from the next turn.
 - **Others** (Codex through ACP and the rest): the harness keeps the choice for the next turn.
 
-While a turn runs, the model menu and Settings say which applies.
+While a turn runs, the model picker and Settings say which applies.
 
 ## What a turn shows
 

@@ -60,20 +60,22 @@
   --theme-border: oklch(0.83 0.008 145);
   --theme-border-strong: oklch(0.76 0.009 145);
   --theme-border-contrast: #828a92;
-  --theme-accent-solid: #008b53;
-  --theme-accent-solid-hover: #007849;
-  --theme-accent-solid-fg: oklch(0.98 0.005 145);
+  /* WCAG 4.5:1 for white on the fill and for accent text on bg, panel and
+     surface; the same values as the shared UI and the native app. */
+  --theme-accent-solid: #008650;
+  --theme-accent-solid-hover: #007244;
+  --theme-accent-solid-fg: #fff;
   --theme-accent-soft: #e5f8f0;
-  --theme-accent-strong: #007849;
+  --theme-accent-strong: #007244;
   --theme-accent-border: #a4cdbb;
   --matter-chrome: oklch(0.885 0.008 145);
   --theme-shadow: 0 14px 36px oklch(0.25 0.012 155 / 14%);
 }
 
-/* Classic's near-white primary labels need its existing stronger green for AA. */
+/* Classic's primary buttons use the accent fill, which now passes AA itself. */
 :root:root:root[data-theme-effective='light'][data-theme-preset='classic'] {
-  --action-primary-bg: var(--theme-accent-strong);
-  --action-primary-bg-hover: color-mix(in srgb, var(--theme-accent-strong) 90%, #000);
+  --action-primary-bg: var(--theme-accent-solid);
+  --action-primary-bg-hover: var(--theme-accent-solid-hover);
 }
 
 /* Dialogs portal outside the workbench (the new-thread dialog and others). The
