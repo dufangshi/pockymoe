@@ -67,7 +67,7 @@ export function PullRequestsPage() {
     {!desktopLayout && <ProductHeader title={rt('page')} {...(selected ? { backHref: `${location.pathname}${listSearch}`, backLabel: rt('back') } : { backHref: currentWorkspacesHref(), backLabel: rt('page') })} />}
     <div className="pr-split" data-detail={selected ? true : undefined}>
       <PullRequestList page={page} loading={loading} error={error} query={query} onQuery={setQuery} views={views} onViews={updateViews} selected={selected} onOpen={pull => open(pull.url)} onRefresh={() => setRevision(value => value + 1)} />
-      {selected && <PullRequestReview key={selected} url={selected} deviceId={deviceId} tab={tab} onTab={next => open(selected, next)} onBack={() => open(null)} onChanged={() => setRevision(value => value + 1)} />}
+      {selected && <PullRequestReview key={selected} url={selected} deviceId={deviceId} tab={tab} onTab={next => open(selected, next)} onBack={() => open(null)} onChanged={() => setRevision(value => value + 1)} onOpenPull={next => open(next)} />}
     </div>
   </div>;
   return desktopLayout ? <WorkspacesFrame deviceId={deviceId} sharedOnly={false}>{content}</WorkspacesFrame> : content;

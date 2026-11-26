@@ -5,7 +5,7 @@ import { useI18n } from '@pockymoe/thread-ui/i18n';
 import { FormDialog } from '../../../FormDialog';
 import { activeFilters, DEFAULT_QUERY, filterPulls, matchingView } from './listModel';
 import type { ListQuery, PageResponse, PullSummary, SavedView } from './reviewApi';
-import { Ago, ChecksMark, DecisionMark, MenuButton, PullStateMark, Stat } from './parts';
+import { Ago, ChecksMark, DecisionMark, MenuButton, PullStateMark, StackChip, Stat } from './parts';
 import { rt } from './reviewText';
 
 export interface PullRequestListProps {
@@ -78,6 +78,7 @@ export function PullRequestList({ page, loading, error, query, onQuery, views, o
             <span className="pr-row-title"><span className="pr-row-title-text">{pull.title}</span><ChecksMark checks={pull.checks} /><DecisionMark decision={pull.reviewDecision} /></span>
             <span className="pr-row-meta">
               <span>{repositories.length > 1 ? `${pull.repository.name} ` : ''}#{pull.number}</span>
+              <StackChip stack={pull.stack} />
               {pull.author && <span>{pull.author.login}</span>}
               <Ago value={pull.updatedAt} />
               <Stat additions={pull.additions} deletions={pull.deletions} />

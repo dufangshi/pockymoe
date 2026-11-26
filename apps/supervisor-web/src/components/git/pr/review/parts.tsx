@@ -2,10 +2,10 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 're
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { CircleCheck, CircleDashed, CircleDot, CircleX, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, MessageSquareWarning, ThumbsUp } from 'lucide-react';
+import { CircleCheck, CircleDashed, CircleDot, CircleX, Layers, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, MessageSquareWarning, ThumbsUp } from 'lucide-react';
 import { formatShortTimestamp, useMenuKeyboard } from '@pockymoe/thread-ui';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
-import type { ChecksState, PullState, ReviewDecision } from './reviewApi';
+import type { ChecksState, PullState, ReviewDecision, StackRef } from './reviewApi';
 import { rt } from './reviewText';
 
 /** A PR's state by shape: open, draft, merged and closed differ without colour. */
@@ -89,4 +89,11 @@ export function MenuButton({ label, icon, items, className = '', text }: { label
 export function Body({ text, empty }: { text: string; empty?: string }) {
   if (!text.trim()) return empty ? <p className="pr-dim">{empty}</p> : null;
   return <div className="pr-body"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a> }}>{text}</ReactMarkdown></div>;
+}
+
+/** "2/3" with a layers icon: the PR's place in its stack. */
+export function StackChip({ stack }: { stack: StackRef | null | undefined }) {
+  if (!stack) return null;
+  const label = `${rt('stackPosition', { i: stack.position, n: stack.size })} · ${rt(stack.native ? 'stackNative' : 'stackInferred')}`;
+  return <span className="pr-stack-chip" role="img" aria-label={label} title={label}><Layers aria-hidden="true" />{stack.position}/{stack.size}</span>;
 }

@@ -75,3 +75,25 @@ it('reruns failed checks and resolves threads through the host capabilities', as
   fireEvent.click(await screen.findByRole('button', { name: 'Rerun failed jobs' }));
   await waitFor(() => expect(calls.find(call => call.action === 'rerun')?.input).toEqual({ token: 'run:1' }));
 });
+
+it('shows the stack, opens a layer and merges or rebases it with the loaded heads', async () => {
+  const layer = (number: number, state: 'open' | 'merged', head: string, base: string) => ({ number, url: `https://github.com/fixture/parser/pull/${number}`, title: `Layer ${number}`, state, draft: false, headRef: `l${number}`, headSha: head, baseRef: base });
+  current = { ...detail(), stack: { id: 's', native: false, base: 'main', layers: [layer(5, 'merged', 'h5', 'main'), layer(6, 'open', 'h6', 'l5'), layer(7, 'open', 'head-7', 'l6'), layer(8, 'open', 'h8', 'l7')] } };
+  const opened: string[] = [];
+  render(<MemoryRouter><PullRequestReview url="https://github.com/fixture/parser/pull/7" onOpenPull={next => opened.push(next)} /></MemoryRouter>);
+  const bar = await screen.findByRole('navigation', { name: /Stack/ });
+  expect(within(bar).getByRole('button', { name: /#7/ }).getAttribute('aria-current')).toBe('page');
+  fireEvent.click(within(bar).getByRole('button', { name: /#8/ }));
+  expect(opened).toEqual(['https://github.com/fixture/parser/pull/8']);
+  fireEvent.click(within(bar).getByRole('button', { name: 'Merge stack' }));
+  const dialog = await screen.findByRole('dialog');
+  expect(within(dialog).getByText('#6')).toBeTruthy();
+  expect(within(dialog).queryByText('#8')).toBeNull();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Merge 2 PRs' }));
+  await waitFor(() => expect(calls.find(call => call.action === 'mergeStack')?.input).toEqual({ method: 'merge', expectedHeads: [{ number: 6, headSha: 'h6' }, { number: 7, headSha: 'head-7' }] }));
+  fireEvent.click(within(bar).getByRole('button', { name: 'Rebase stack' }));
+  const confirm = await screen.findByRole('dialog');
+  expect(within(confirm).getByText(/force-pushes/)).toBeTruthy();
+  fireEvent.click(within(confirm).getByRole('button', { name: 'Rebase stack' }));
+  await waitFor(() => expect(calls.find(call => call.action === 'rebaseStack')?.input).toEqual({ expectedHeads: [{ number: 6, headSha: 'h6' }, { number: 7, headSha: 'head-7' }, { number: 8, headSha: 'h8' }] }));
+});
