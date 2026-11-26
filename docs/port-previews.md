@@ -366,6 +366,7 @@ Two things keep a live link from pointing at a service that was just ended:
 | `busy` | The mapping serves its stream limit (`Retry-After: 1`) | 503 | `busy` |
 | `previewsDisabled` | The device's host mode has previews off | 404 | `previews-disabled` |
 | none within 10 s, an unknown reason, or a stream that failed | Device offline, or a Supervisor that predates `preview.refused` | 503 | `device-unavailable` |
+| (Relay) no mapping with this address | Stopped with `preview stop` or Web **Stop**, or its device offline | 404 | `not-mapped` |
 
 A browser navigation gets a small self-contained page with the explanation, the
 port and a "Try again" link; scripts, assets and WebSocket upgrades get the same

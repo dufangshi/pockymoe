@@ -39,6 +39,9 @@ enum Refusal {
     Busy,
     PreviewsDisabled,
     Unanswered,
+    /// The Relay itself has no such mapping: the preview was stopped, or its
+    /// device is offline or no longer reports it. The port is not known here.
+    NotMapped,
 }
 impl Refusal {
     fn parse(reason: &str) -> Self {
@@ -62,6 +65,7 @@ impl Refusal {
             Self::Busy => "busy",
             Self::PreviewsDisabled => "previews-disabled",
             Self::Unanswered => "device-unavailable",
+            Self::NotMapped => "not-mapped",
         }
     }
     /// Never 502 or 504: a CDN in front of the Relay (Cloudflare by default)
@@ -70,7 +74,9 @@ impl Refusal {
     fn status(self) -> StatusCode {
         match self {
             Self::LeaseRequired => StatusCode::FORBIDDEN,
-            Self::MappingStopped | Self::PreviewsDisabled => StatusCode::NOT_FOUND,
+            Self::MappingStopped | Self::PreviewsDisabled | Self::NotMapped => {
+                StatusCode::NOT_FOUND
+            }
             _ => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
@@ -83,6 +89,7 @@ impl Refusal {
             Self::Busy => "This preview is busy",
             Self::PreviewsDisabled => "Previews are turned off on this device",
             Self::Unanswered => "The device did not answer",
+            Self::NotMapped => "This preview is not available",
         }
     }
     fn explanation(self, port: u16) -> String {
@@ -111,11 +118,15 @@ impl Refusal {
                 "The device did not open a connection to port {port} in time. Check that its Supervisor is online \
                  and up to date, and that the service on 127.0.0.1:{port} is running."
             ),
+            Self::NotMapped => "This address does not lead to a running preview: it was stopped, or its device \
+                 is offline. Check the device in Pockymoe, and open the port again from there or have the agent \
+                 run `pockymoe preview create` for a fresh link. A stopped preview gets a new address."
+                .into(),
         }
     }
     /// A page for a browser navigation; one line for scripts, assets and tools.
-    fn response(self, port: u16, document: bool) -> Response {
-        let (title, explanation) = (self.title(), self.explanation(port));
+    fn response(self, port: Option<u16>, document: bool) -> Response {
+        let (title, explanation) = (self.title(), self.explanation(port.unwrap_or_default()));
         let mut response = if document {
             let escape = |text: &str| {
                 text.replace('&', "&amp;")
@@ -130,9 +141,10 @@ impl Refusal {
                  main{{max-width:34rem}}h1{{font-size:1.25rem;margin:0 0 .75rem}}p{{margin:0 0 1rem}}\
                  small{{opacity:.7}}a{{color:inherit}}</style></head><body><main>\
                  <h1>{title}</h1><p>{explanation}</p><p><a href=\"\">Try again</a></p>\
-                 <small>Pockymoe preview gateway · port {port} · {code}</small></main></body></html>",
+                 <small>Pockymoe preview gateway{port} · {code}</small></main></body></html>",
                 title = escape(title),
                 explanation = escape(&explanation),
+                port = port.map(|port| format!(" · port {port}")).unwrap_or_default(),
                 code = self.code(),
             );
             (
@@ -1028,6 +1040,20 @@ pub(super) fn update(
     });
 }
 
+/// A browser loading a page in a tab, as opposed to a script, asset or tool.
+fn navigation(request: &Request) -> bool {
+    matches!(*request.method(), Method::GET | Method::HEAD)
+        && request
+            .headers()
+            .get("sec-fetch-mode")
+            .is_some_and(|v| v == "navigate")
+        && request
+            .headers()
+            .get(header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("text/html"))
+}
+
 /// `preview.refused` from a device: the waiting request gets the reason now
 /// instead of the data-channel deadline. Only the connection that was asked
 /// can answer, and only before it opened the stream.
@@ -1157,7 +1183,8 @@ pub(super) async fn middleware(
         return next.run(request).await;
     };
     let Some(mapping) = state.preview.mappings.lock().unwrap().get(&id).cloned() else {
-        return StatusCode::NOT_FOUND.into_response();
+        // Stopped or offline: still say so, in the gateway's words.
+        return Refusal::NotMapped.response(None, navigation(&request));
     };
     let Some(origin) = state.preview.origin(&id) else {
         return StatusCode::NOT_FOUND.into_response();
@@ -1255,17 +1282,7 @@ pub(super) async fn middleware(
         .is_some_and(|s| s.as_bytes().eq_ignore_ascii_case(b"websocket"));
     // A person looking at a tab gets a page that says what to do; scripts,
     // assets and WebSockets get the status and one line.
-    let document = !websocket
-        && matches!(*request.method(), Method::GET | Method::HEAD)
-        && request
-            .headers()
-            .get("sec-fetch-mode")
-            .is_some_and(|v| v == "navigate")
-        && request
-            .headers()
-            .get(header::ACCEPT)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.contains("text/html"));
+    let document = !websocket && navigation(&request);
     let browser_upgrade = websocket.then(|| hyper::upgrade::on(&mut request));
     let query = app_query(request.uri().query().unwrap_or(""));
     let target = if query.is_empty() {
@@ -1323,7 +1340,7 @@ pub(super) async fn middleware(
             .downcast_ref::<Refusal>()
             .copied()
             .unwrap_or(Refusal::Unanswered);
-        refusal.response(mapping.port, document)
+        refusal.response(Some(mapping.port), document)
     })
 }
 
@@ -4176,6 +4193,23 @@ mod tests {
             // A CDN replaces an origin 502 or 504 with its own error page.
             assert!(!matches!(response.status().as_u16(), 502 | 504), "{answer}");
         }
+        // After `preview stop` the Relay no longer knows the mapping: the link
+        // still explains itself instead of an empty 404.
+        update(&state, "device", connection, &json!([]), None);
+        let stopped = request("/docs")
+            .header("sec-fetch-mode", "navigate")
+            .header(header::ACCEPT, "text/html")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(stopped.status(), StatusCode::NOT_FOUND);
+        assert_eq!(stopped.headers()["x-pockymoe-gateway"], "not-mapped");
+        let body = stopped.text().await.unwrap();
+        assert!(body.contains("This preview is not available"), "{body}");
+        assert!(!body.contains("port 0"), "{body}");
+        let asset = request("/app.js").send().await.unwrap();
+        assert_eq!(asset.status(), StatusCode::NOT_FOUND);
+        assert_eq!(asset.headers()["x-pockymoe-gateway"], "not-mapped");
         relay.abort();
         device.abort();
         drop(state);
@@ -4192,16 +4226,17 @@ mod tests {
             Refusal::Busy,
             Refusal::PreviewsDisabled,
             Refusal::Unanswered,
+            Refusal::NotMapped,
         ] {
             assert!(!matches!(refusal.status().as_u16(), 502 | 504), "{refusal}");
             assert!(!refusal.explanation(4013).contains('<'), "{refusal}");
             assert_eq!(
-                refusal.response(4013, true).headers()["x-pockymoe-gateway"],
+                refusal.response(Some(4013), true).headers()["x-pockymoe-gateway"],
                 refusal.code()
             );
         }
         assert_eq!(
-            Refusal::Busy.response(4013, false).headers()[header::RETRY_AFTER],
+            Refusal::Busy.response(Some(4013), false).headers()[header::RETRY_AFTER],
             "1"
         );
     }
