@@ -14,6 +14,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) mod actions;
+pub(crate) mod checkpoints;
+
 const OUTPUT_LIMIT: usize = 512 * 1024;
 static MUTATION: Mutex<()> = Mutex::new(());
 
@@ -49,7 +52,20 @@ fn git(root: &Path, args: &[&str]) -> Result<GitOutput> {
     git_within(root, args, Duration::from_secs(15))
 }
 fn git_within(root: &Path, args: &[&str], timeout: Duration) -> Result<GitOutput> {
-    if let Some(value) = crate::execution::file_request("git", root, "", json!({"args":args}))? {
+    git_options(root, args, timeout, &[])
+}
+fn git_options(
+    root: &Path,
+    args: &[&str],
+    timeout: Duration,
+    env: &[(&str, &str)],
+) -> Result<GitOutput> {
+    if let Some(value) = crate::execution::file_request(
+        "git",
+        root,
+        "",
+        json!({"args":args,"timeoutSecs":timeout.as_secs(),"env":env}),
+    )? {
         use base64::Engine;
         return Ok(GitOutput {
             bytes: base64::engine::general_purpose::STANDARD
@@ -67,6 +83,9 @@ fn git_within(root: &Path, args: &[&str], timeout: Duration) -> Result<GitOutput
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_ASKPASS", "")
+        .env("SSH_ASKPASS", "")
+        .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -85,6 +104,9 @@ fn git_within(root: &Path, args: &[&str], timeout: Duration) -> Result<GitOutput
         "GIT_CONFIG_PARAMETERS",
     ] {
         cmd.env_remove(key);
+    }
+    for (key, value) in env {
+        cmd.env(key, value);
     }
     let process_id = uuid::Uuid::new_v4().to_string();
     let host = crate::execution::host_process::enabled_context();
@@ -517,6 +539,9 @@ impl Supervisor {
             c.execute("INSERT OR REPLACE INTO working_copy_observations(thread_id,copy_id,cwd,source,tool_id,agent_id,observed_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![thread,copy.id,cwd,source,tool,agent,now_rfc3339()])?;
             c.execute("DELETE FROM working_copy_observations WHERE thread_id=?1 AND rowid NOT IN (SELECT rowid FROM working_copy_observations WHERE thread_id=?1 ORDER BY observed_at DESC LIMIT 256)",[thread])?; Ok(())
         })?;
+        self.db.with(|c|{
+            c.execute("INSERT OR IGNORE INTO turn_checkpoints(thread_id,turn_id,copy_id,phase,status,error,created_at) SELECT ?1,id,?2,'start','unavailable','Working copy first observed after the turn started',?3 FROM thread_turns WHERE thread_id=?1 AND status IN ('inProgress','recovering')",params![thread,copy.id,now_rfc3339()])?;Ok(())
+        })?;
         drop(_guard);
         if !associated {
             self.emit_worktree_changed(thread);
@@ -649,9 +674,9 @@ impl Supervisor {
             };
             files.push(json!({"path":path,"indexStatus":x.to_string(),"worktreeStatus":y.to_string(),"originalPath":old}));
         }
-        Ok(
-            json!({"workingCopyId":copy.id,"branch":copy.branch,"head":copy.head,"files":files,"truncated":out.truncated}),
-        )
+        let mut status = json!({"workingCopyId":copy.id,"branch":copy.branch,"head":copy.head,"files":files,"truncated":out.truncated});
+        self.extend_git_status(&copy, &mut status)?;
+        Ok(status)
     }
     pub fn worktree_git_diff(
         &self,
@@ -660,6 +685,18 @@ impl Supervisor {
         area: &str,
         base: Option<&str>,
         path: Option<&str>,
+    ) -> Result<Value> {
+        self.worktree_git_diff_options(thread, id, area, base, path, false)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn worktree_git_diff_options(
+        &self,
+        thread: &str,
+        id: Option<&str>,
+        area: &str,
+        base: Option<&str>,
+        path: Option<&str>,
+        ignore_whitespace: bool,
     ) -> Result<Value> {
         let copy = self.selected_copy(thread, id)?;
         let root = Path::new(&copy.path);
@@ -706,6 +743,9 @@ impl Supervisor {
                 ];
             }
             _ => bail!("invalid diff area"),
+        }
+        if ignore_whitespace {
+            args.push("--ignore-all-space");
         }
         args.push("--");
         if let Some(path) = path {

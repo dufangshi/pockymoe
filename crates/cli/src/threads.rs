@@ -114,6 +114,17 @@ More: pockymoe guide preview"#)]
 
 #[derive(Subcommand)]
 pub enum ThreadCommand {
+    /// Remove this user turn and later turns from an idle thread. External effects remain.
+    Rewind {
+        #[arg(default_value = "self")]
+        id: String,
+        #[arg(long)]
+        turn_id: String,
+        #[arg(long)]
+        restore_files: bool,
+        #[arg(long)]
+        drop_queued: bool,
+    },
     /// Current Pockymoe thread identity and status.
     #[command(name = "self")]
     SelfInfo,
@@ -731,6 +742,7 @@ impl Client {
     }
     pub async fn thread(&self, command: ThreadCommand) -> Result<Value> {
         match command {
+            ThreadCommand::Rewind{id,turn_id,restore_files,drop_queued}=>self.request(json!({"operation":"threadRewind","threadId":self.id(&id).await?,"turnId":turn_id,"restoreFiles":restore_files,"dropQueued":drop_queued,"fromThreadId":self.from})).await,
             ThreadCommand::SelfInfo => self.request(json!({"operation":"status","threadId":self.from.as_ref().context("Current thread is unknown; use --from ID")?})).await,
             ThreadCommand::List { device, workspace, limit, all, group } => {
                 let mut input = json!({"operation":"list","workspaceId":workspace,"limit":limit,"includeAgentThreads":all,"groupId":group});

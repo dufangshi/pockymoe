@@ -550,6 +550,9 @@ pub trait AgentRuntime: Send + Sync {
     ) -> Result<()> {
         anyhow::bail!("compact is not supported by this harness");
     }
+    async fn rewind_session(&self, _session_id: &str, _turns: u32) -> Result<()> {
+        anyhow::bail!("unsupported_rewind")
+    }
     async fn fork_session(&self, _session_id: &str) -> Result<StartSessionResult> {
         anyhow::bail!("fork is not supported by this harness");
     }

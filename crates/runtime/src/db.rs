@@ -314,6 +314,11 @@ const RUNTIME_MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 26,
+        name: "turn_checkpoints",
+        apply: crate::worktrees::checkpoints::migrate,
+    },
+    Migration {
+        version: 27,
         name: "thread_source_links",
         apply: crate::source_control::migrate,
     },

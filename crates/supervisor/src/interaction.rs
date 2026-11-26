@@ -181,8 +181,9 @@ async fn run_as(
                 .context("source-control action required")?;
             state.source_control_action(id, action, input.clone()).await
         }
-        "worktreeCreate" | "worktreeList" | "worktreeCurrent" | "worktreeShow"
-        | "worktreeAdopt" | "worktreeUse" | "worktreeRemove" => {
+        "checkpointList" | "checkpointDiff" | "checkpointRestore" | "checkpointUndo"
+        | "threadRewind" | "worktreeCreate" | "worktreeList" | "worktreeCurrent"
+        | "worktreeShow" | "worktreeAdopt" | "worktreeUse" | "worktreeRemove" => {
             anyhow::ensure!(
                 !peer,
                 "forbidden: worktree management requires a local credential"
@@ -190,7 +191,11 @@ async fn run_as(
             reach(id)?;
             if let Some(caller) = caller.as_deref() {
                 anyhow::ensure!(
-                    caller == id && from.is_none_or(|from| from == caller),
+                    (matches!(
+                        input["operation"].as_str(),
+                        Some("checkpointList" | "checkpointDiff")
+                    ) || caller == id)
+                        && from.is_none_or(|from| from == caller),
                     "forbidden: worktree operation must use the authenticated thread"
                 );
             }
