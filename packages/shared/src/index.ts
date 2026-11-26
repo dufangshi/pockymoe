@@ -1987,6 +1987,8 @@ export interface ThreadEventPayloadMap {
   'thread.collaboration.updated': { turnId: string; collaborationMode: CollaborationModeDto };
   'thread.context.delivered': { providerSessionId: string };
   'runtime.usage.updated': { turnId: string; usage: unknown };
+  /** A harness reported fresher account allowance; re-read subscription usage. */
+  'runtime.subscription.updated': { provider: string };
   'device.ports.changed': { reason: string };
   'thread.updated': {
     pendingSteers?: ThreadDetailDto['pendingSteers'];

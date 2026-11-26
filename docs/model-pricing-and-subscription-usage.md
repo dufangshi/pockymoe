@@ -134,6 +134,16 @@ credentials or rejected OAuth credentials clear the cache. The response includes
 
 - Codex: read-only `account/read` and `account/rateLimits/read` on an independent
   app-server process. No thread is opened and no conversation writer is acquired.
+  While a Codex turn runs, the harness itself also reports the allowance: the
+  native app-server pushes `account/rateLimits/updated`, and both protocols
+  record `rate_limits` in the session rollout's token counts (the ACP adapter
+  does not forward the push, so ACP reads the rollout). Only the account's own
+  `codex` limit is used; per-model alias limits are ignored. A report merges
+  into the device cache window by window (a sparse update keeps the other
+  window), is shown within about five seconds through
+  `runtime.subscription.updated`, and wins over an older account read for
+  thirty minutes. It also covers a device whose own Codex login is an API key
+  while the harness's upstream reports ChatGPT plan windows.
 - Grok: read-only ACP `_x.ai/billing`; a weekly allowance is shown as 7d, without
   inventing a 5h limit.
 - Claude: verify OAuth authentication with `claude auth status`, then read the

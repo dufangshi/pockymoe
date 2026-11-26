@@ -4,7 +4,7 @@ import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentBackendIdDto, AgentSubscriptionUsageDto } from '../../../../packages/shared/src/index';
 import { fetchAgentSubscriptionUsage } from '../lib/api';
-import { useSubscriptionUsage } from './useSubscriptionUsage';
+import { refreshSubscriptionUsage, useSubscriptionUsage } from './useSubscriptionUsage';
 
 vi.mock('../lib/api', () => ({ fetchAgentSubscriptionUsage: vi.fn() }));
 const FIVE_MINUTES = 300_000;
@@ -41,6 +41,27 @@ describe('subscription usage caching', () => {
     await act(() => vi.advanceTimersByTimeAsync(FIVE_MINUTES - 60_000 - 1));
     expect(fetchAgentSubscriptionUsage).toHaveBeenCalledTimes(1);
     await act(() => vi.advanceTimersByTimeAsync(1));
+    expect(fetchAgentSubscriptionUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-reads soon after a harness reports fresher allowance, collapsing bursts', async () => {
+    const initialProps = { ...props(), provider: 'acp' as AgentBackendIdDto, agentId: 'codex' };
+    const { result } = renderHook(useSubscriptionUsage, { initialProps });
+    await settle();
+    expect(fetchAgentSubscriptionUsage).toHaveBeenCalledTimes(1);
+    const later: AgentSubscriptionUsageDto = { ...usage(), provider: 'codex', windows: [{ ...usage().windows[0]!, usedPercent: 75 }] };
+    vi.mocked(fetchAgentSubscriptionUsage).mockResolvedValue({ usage: later });
+    refreshSubscriptionUsage(initialProps.deviceId, 'other-provider');
+    refreshSubscriptionUsage(initialProps.deviceId, 'codex');
+    refreshSubscriptionUsage(initialProps.deviceId, 'codex');
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    expect(fetchAgentSubscriptionUsage).toHaveBeenCalledTimes(1);
+    refreshSubscriptionUsage(initialProps.deviceId, 'codex');
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(fetchAgentSubscriptionUsage).toHaveBeenCalledTimes(2);
+    expect(result.current?.windows[0]?.usedPercent).toBe(75);
+    // The regular five-minute cadence resumes after the live read.
+    await act(() => vi.advanceTimersByTimeAsync(FIVE_MINUTES - 1));
     expect(fetchAgentSubscriptionUsage).toHaveBeenCalledTimes(2);
   });
 

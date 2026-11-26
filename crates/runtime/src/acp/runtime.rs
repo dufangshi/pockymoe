@@ -70,10 +70,10 @@ mod model_probe_tests;
 mod effort_tests;
 
 #[path = "isolated_claude.rs"]
-mod isolated_claude;
+pub(crate) mod isolated_claude;
 
 #[path = "isolated_capabilities.rs"]
-mod isolated_capabilities;
+pub(crate) mod isolated_capabilities;
 
 /// How often a turn polls native transcripts (usage, background tasks and
 /// completed queued commands). Every loop wake re-arms the turn's 250 ms
@@ -2933,6 +2933,7 @@ impl AgentRuntime for AcpRuntime {
                                     super::context::native_usage(context_reader.as_ref(),&usage,inspection.as_ref(),&input.provider_session_id,&input.thread_id,&bus);
                                     emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden);
                                 }
+                                if let Some(limits) = reader.take_rate_limits() { crate::subscription::announce(&bus, &input.thread_id, "codex", limits, input.hidden); }
                             }
                             if let Some(reader) = claude_usage_reader.as_mut() {
                                 for usage in reader.poll_final() { emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden); }
@@ -2993,6 +2994,7 @@ impl AgentRuntime for AcpRuntime {
                             super::context::native_usage(context_reader.as_ref(),&usage,inspection.as_ref(),&input.provider_session_id,&input.thread_id,&bus);
                             emit_usage(&bus, &input.thread_id, &input.turn_id, usage, input.hidden);
                         }
+                        if let Some(limits) = reader.take_rate_limits() { crate::subscription::announce(&bus, &input.thread_id, "codex", limits, input.hidden); }
                     }
                     if let Some(reader) = claude_usage_reader.as_mut() {
                         let mut reported = false;
