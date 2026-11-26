@@ -57,7 +57,7 @@ export function PullRequestsPanel({threadId,workingCopyId,deviceId}:{threadId:st
 function ResultDetails({value,onLink,onRemove}:{value:unknown;onLink:(url:string)=>void;onRemove:(id:string)=>void}) {
   if (!value || typeof value !== 'object') return <p>{string(value)||t('result')}</p>;
   const data=value as Data;
-  if(data.workingCopy) {const copy=data.workingCopy as Data;return <div><p>{t('result')}</p><PathChip path={string(copy.path)}/></div>;}
+  if(data.workingCopy) {const copy=data.workingCopy as Data;const setup=data.setup as Data|undefined;return <div><p>{setup?.completed===false?t('setupFailed'):setup?.completed===true?t('setupComplete'):t('result')}</p><PathChip path={string(copy.path)}/>{typeof setup?.error==='string'&&<ErrorMark message={setup.error}/>}{Array.isArray(setup?.output)&&<pre>{setup.output.filter((line):line is string=>typeof line==='string').join('\n')}</pre>}</div>;}
   if(data.authenticated!==undefined) return <p>{data.authenticated?t('signedIn'):t('signedOut')}</p>;
   if(Array.isArray(data.suggestions))return <ul>{(data.suggestions as Data[]).map(copy=><li key={string(copy.workingCopyId)}><PathChip path={string(copy.path)}/><button className="pr-danger" onClick={()=>onRemove(string(copy.workingCopyId))}>{t('removeWorktree')}</button></li>)}</ul>;
   const rows=Array.isArray(value)?value: data.check_runs||data.statuses||data.values||data.items||data.value||data.reviewers||data.participants||data.approved_by||data.changeEntries||[value];

@@ -426,7 +426,7 @@ impl Supervisor {
             &format!("source-worktree:{}", copy.id),
             &serde_json::to_string(&hosts::parse_link(&url)?)?,
         )?;
-        Ok(json!({"thread":self.get_thread(&new.id)?,"workingCopy":copy}))
+        Ok(json!({"thread":self.get_thread(&new.id)?,"workingCopy":copy,"setup":created["setup"]}))
     }
 }
 
