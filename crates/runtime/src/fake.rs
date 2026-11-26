@@ -821,6 +821,12 @@ impl AgentRuntime for FakeRuntime {
         Ok(())
     }
 
+    async fn rewind_session(&self, session_id: &str, _turns: u32) -> Result<()> {
+        if !self.sessions.lock().unwrap().contains_key(session_id) {
+            bail!("session not found");
+        }
+        Ok(())
+    }
     async fn fork_session(&self, session_id: &str) -> Result<StartSessionResult> {
         if !self.caps().branching.fork {
             bail!("this harness does not support session/fork");

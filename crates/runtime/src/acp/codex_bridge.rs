@@ -77,6 +77,30 @@ impl CodexBridge {
         }).await.context("Codex permission synchronization timed out")?
     }
 
+    pub async fn rewind(&self, session: &str, count: u32) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(30),async {
+            let mut guard=self.stream.lock().await;
+            let stream=guard.as_mut().context("unsupported_rewind: Codex bridge not connected")?;
+            let mut remaining=count;
+            let mut cursor=Value::Null;
+            let mut visited=HashSet::new();
+            let mut before=None;
+            while remaining>0 {
+                anyhow::ensure!(visited.insert(cursor.to_string()),"Codex rewind cursor repeated");
+                let page=request(stream,"thread/turns/list",json!({"threadId":session,"cursor":cursor,"limit":remaining.min(100),"sortDirection":"desc","itemsView":"summary"})).await?;
+                for turn in page["data"].as_array().context("Codex turn history missing")? {
+                    before=turn["id"].as_str().map(str::to_owned);remaining-=1;if remaining==0{break;}
+                }
+                cursor=page["nextCursor"].clone();if cursor.is_null(){break;}
+            }
+            anyhow::ensure!(remaining==0,"Codex history has fewer turns than requested");
+            if let Some(before)=before {
+                request(stream,"thread/revert",json!({"threadId":session,"beforeTurnId":before})).await?;
+            }
+            Ok(())
+        }).await.context("Codex rewind timed out")?
+    }
+
     pub async fn fork(
         &self,
         source: &str,
@@ -238,6 +262,19 @@ pub async fn run() -> Result<()> {
 }
 
 fn allowed_control(message: &Value) -> bool {
+    if let Some(params) = message["params"].as_object() {
+        let keys = match message["method"].as_str() {
+            Some("thread/turns/list") => {
+                Some(&["threadId", "cursor", "limit", "sortDirection", "itemsView"][..])
+            }
+            Some("thread/revert") => Some(&["threadId", "beforeTurnId"][..]),
+            _ => None,
+        };
+        if let Some(keys) = keys {
+            return params.keys().all(|key| keys.contains(&key.as_str()))
+                && params.get("threadId").is_some_and(Value::is_string);
+        }
+    }
     message["method"] == "thread/settings/update"
         && message["params"].as_object().is_some_and(|params| {
             params.keys().all(|key| {
