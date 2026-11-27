@@ -2,7 +2,7 @@ import { useHostScope } from '../lib/hostCapabilities';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   AgentProviderCapabilitiesDto, ModelOptionDto, RelayEffectiveAccessDto,
-  ThreadDetailDto, ThreadEventEnvelope, UpdateThreadSettingsInput,
+  RespondThreadActionRequestInput, ThreadDetailDto, ThreadEventEnvelope, UpdateThreadSettingsInput,
 } from '@pockymoe/shared';
 import {
   isInvisibleThreadError, connectSupervisorEvents, cancelPendingSteer, fetchRelayAccess, fetchThreadCapabilitySnapshot,
@@ -211,7 +211,7 @@ export function useWorkbenchReference(device: string, threadId: string | null, h
     cancelQueued: (queueId: string) => mutate(() => cancelPendingSteer(threadId!, queueId, device)),
     steerQueued: (queueId: string) => mutate(() => steerPendingPrompt(threadId!, queueId, device)),
     updateSettings: (input: UpdateThreadSettingsInput) => mutate(() => updateThreadSettings(threadId!, input, device)),
-    respond: async (requestId: string, input: { answers: Record<string, { answers: string[] }> }) => {
+    respond: async (requestId: string, input: RespondThreadActionRequestInput) => {
       setRespondingRequestId(requestId);
       try { await mutate(() => respondToThreadRequest(threadId!, requestId, input, device)); }
       finally { setRespondingRequestId(null); }

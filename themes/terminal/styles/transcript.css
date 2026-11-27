@@ -72,6 +72,9 @@
 }
 :theme .thread-ui-shell .thread-graph-markdown :is(ul, ol) { padding-left: 2ch; }
 :theme .thread-ui-shell .thread-graph-markdown ul { list-style: '- '; }
+/* Numbered lists keep their numbers, terminal style "1." (a theme may not hide meaning). */
+:theme .thread-ui-shell .thread-graph-markdown ol { padding-left: 3ch; list-style: decimal; }
+:theme .thread-ui-shell .thread-graph-markdown li:has(> input[type='checkbox']) { list-style: none; }
 :theme .thread-ui-shell .thread-graph-markdown table { border-radius: 0; }
 
 /* Work summary: "› Worked for 51s · …" in the gutter column, then a dashed rule. */

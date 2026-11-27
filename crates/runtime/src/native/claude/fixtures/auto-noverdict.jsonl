@@ -1,0 +1,17 @@
+{"_dir": "in", "type": "control_request", "request_id": "init", "request": {"subtype": "initialize"}}
+{"type": "control_response", "response": {"subtype": "success", "request_id": "init", "response": {"commands": [], "current_permission_mode": "default", "models": [{"value": "haiku", "displayName": "Haiku", "supportedEffortLevels": ["low"], "supportsAutoMode": true}]}}}
+{"_dir": "in", "type": "user", "uuid": "p1", "message": {"role": "user", "content": [{"type": "text", "text": "plan"}]}}
+{"type": "system", "subtype": "session_state_changed", "state": "running"}
+{"type": "assistant", "uuid": "a1", "message": {"id": "m1", "model": "claude-haiku-5-5", "content": [{"type": "tool_use", "id": "t1", "name": "ExitPlanMode", "input": {"plan": "# Plan\n1. echo hello > notes.txt"}}], "usage": {"input_tokens": 5, "output_tokens": 2}}}
+{"type": "control_request", "request_id": "c1", "request": {"subtype": "can_use_tool", "tool_name": "ExitPlanMode", "display_name": "ExitPlanMode", "input": {"plan": "# Plan\n1. echo hello > notes.txt"}, "tool_use_id": "t1"}}
+{"_dir": "in", "type": "control_response", "response": {"subtype": "success", "request_id": "c1", "response": {}}}
+{"type": "system", "subtype": "status", "status": null, "permissionMode": "auto"}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "User has approved your plan."}]}}
+{"type": "assistant", "uuid": "a2", "message": {"id": "m2", "model": "claude-haiku-5-5", "content": [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "echo hello > notes.txt"}}], "usage": {"input_tokens": 5, "output_tokens": 2}}}
+{"type": "system", "subtype": "permission_denied", "tool_name": "Bash", "tool_use_id": "t2", "decision_reason_type": "classifier", "decision_reason": "Auto mode classifier gave no verdict for Bash", "message": "did not run"}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "is_error": true, "content": "Bash did not run. The automatic safety check gave no verdict on this call."}]}}
+{"_dir": "in", "type": "control_request", "request_id": "setmode", "request": {"subtype": "set_permission_mode"}}
+{"type": "control_response", "response": {"subtype": "success", "request_id": "setmode", "response": {"mode": "default"}}}
+{"type": "assistant", "uuid": "a3", "message": {"id": "m3", "model": "claude-haiku-5-5", "content": [{"type": "text", "text": "Blocked; please approve."}], "usage": {"input_tokens": 5, "output_tokens": 2}}}
+{"type": "result", "subtype": "success", "is_error": false, "user_message_uuids": ["p1"], "modelUsage": {}}
+{"type": "system", "subtype": "session_state_changed", "state": "idle"}
