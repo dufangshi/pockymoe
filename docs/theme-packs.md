@@ -20,6 +20,13 @@ short request/loading indicators use the explicit `request-spin` and
 `request-pulse` classes; these honour reduced motion. The allowed animations and
 request uses are enforced by `statusAnimation.test.ts`.
 
+Answers and Markdown previews keep their structure: headings stay larger and
+bolder than body text (the shared UI sets h1 1.25em, h2 1.125em, h3 1.0625em,
+h4 1em semibold, h5/h6 0.9375em muted) and lists keep their markers. A pack may
+redraw markers (Terminal uses `- ` and `1.`, Plum Pocket draws its own bullets
+and numbers), but one that hides a list's markers must draw its own; Web's
+`themeMarkdownMarkers.test.ts` checks this.
+
 The terminal cursor is steady even when terminal output requests a blink.
 Mermaid embeds static edge styling in its SVG, including expanded images.
 
