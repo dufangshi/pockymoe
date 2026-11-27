@@ -85,6 +85,7 @@
   pointer-events: none;
 }
 :theme .thread-ui-shell .model-picker-effort-blocks > i { flex: 1; background: color-mix(in oklab, var(--theme-fg) 14%, transparent); }
-:theme .thread-ui-shell .model-picker-effort-blocks > i[data-on] { background: var(--effort-accent); }
+/* Each lit block takes its own level's colour, so the blocks read as a heat scale. */
+:theme .thread-ui-shell .model-picker-effort-blocks > i[data-on] { background: var(--block-color, var(--effort-accent)); }
 :theme .thread-ui-shell .model-picker-effort-thumb { box-shadow: 0 0 0 2px var(--effort-thumb-ring); }
 :theme .thread-ui-shell .model-picker-effort-thumb:focus-visible { box-shadow: 0 0 0 2px var(--effort-thumb-ring), 0 0 0 4px var(--theme-fg); }

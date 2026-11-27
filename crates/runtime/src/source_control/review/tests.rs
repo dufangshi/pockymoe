@@ -1259,3 +1259,41 @@ async fn a_stacked_github_pr_joins_the_stack_below_or_starts_one() {
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn forgejo_list_reads_the_review_decision_of_open_pulls() {
+    let pull = |n: u64, state: &str| json!({"number":n,"title":"P","html_url":"u","state":state,"merged":false,"user":{"login":"alice"},"head":{"ref":"f","sha":format!("h{n}")},"base":{"ref":"main","sha":"b"},"requested_reviewers":[]});
+    let host = FixtureHost::new(HostKind::Forgejo)
+        .answer("GET", "repos/o/r/pulls?", json!([pull(1, "open"), pull(2, "open"), pull(3, "closed")]))
+        .answer("GET", "repos/o/r/commits/", json!({"state":"success","statuses":[]}))
+        // PR 1: approved, then a plain comment by the same reviewer.
+        .answer("GET", "repos/o/r/pulls/1/reviews", json!([
+            {"id":1,"user":{"login":"bob"},"state":"APPROVED","body":""},
+            {"id":2,"user":{"login":"bob"},"state":"COMMENT","body":"nit"},
+        ]))
+        // PR 2: changes requested, later dismissed.
+        .answer("GET", "repos/o/r/pulls/2/reviews", json!([
+            {"id":3,"user":{"login":"carol"},"state":"REQUEST_CHANGES","body":"no","dismissed":true},
+        ]));
+    let pulls = forgejo::list(&host, &repo(HostKind::Forgejo), "all")
+        .await
+        .unwrap();
+    let decision = |n: u64| {
+        pulls
+            .iter()
+            .find(|p| p.number == n)
+            .unwrap()
+            .review_decision
+            .clone()
+    };
+    assert_eq!(decision(1).as_deref(), Some("approved"));
+    assert_eq!(decision(2), None);
+    assert_eq!(decision(3), None);
+    assert!(
+        !host
+            .requests()
+            .iter()
+            .any(|(_, p, _)| p == "repos/o/r/pulls/3/reviews"),
+        "closed PRs are not read"
+    );
+}

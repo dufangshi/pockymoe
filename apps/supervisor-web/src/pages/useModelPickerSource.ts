@@ -46,7 +46,13 @@ export function useModelPickerSource({ thread, deviceId, cwd, agentOptions, canS
   // host: an isolated thread's environment cannot run the host's agents.
   const [ownAgents, setOwnAgents] = useState<{ key: string; agents: ModelOptionDto[] }>();
   const ownKey = `${deviceId ?? 'local'}\u0000${thread?.id ?? ''}`;
-  const readOwn = canSwitch && agentOptions === undefined && Boolean(thread?.id) && thread?.provider === 'acp';
+  // ACP threads, and threads from before 0.14 that were created on the Codex or
+  // Claude provider itself: both can move to any of the device's agents.
+  const switchable = thread?.provider === 'acp' || thread?.provider === 'codex' || thread?.provider === 'claude';
+  // The page loads agents for an ACP thread only; for a legacy provider thread
+  // its list is empty, so the hook reads the device's agents itself.
+  const pageAgents = thread?.provider === 'acp' ? agentOptions : undefined;
+  const readOwn = canSwitch && pageAgents === undefined && Boolean(thread?.id) && switchable;
   useEffect(() => {
     if (!readOwn || !thread?.id) return;
     let active = true;
@@ -59,7 +65,7 @@ export function useModelPickerSource({ thread, deviceId, cwd, agentOptions, canS
       .then((agents) => { if (active) setOwnAgents({ key: ownKey, agents }); });
     return () => { active = false; };
   }, [readOwn, ownKey, thread?.id, deviceId]);
-  const knownAgents = agentOptions ?? (ownAgents?.key === ownKey ? ownAgents.agents : []);
+  const knownAgents = pageAgents ?? (ownAgents?.key === ownKey ? ownAgents.agents : []);
 
   const models = useRef(new Map<string, { at: number; request: Promise<ModelOptionDto[]> }>());
   const callbacks = useRef({ onSwitched, onForked });
@@ -67,9 +73,10 @@ export function useModelPickerSource({ thread, deviceId, cwd, agentOptions, canS
   const canFork = Boolean(onForked);
 
   const threadId = thread?.id;
-  // The thread's agent key (`acp:codex` for ACP Codex), so the picker marks the
-  // entry it runs on and offers the other protocol of the same agent.
-  const currentAgentId = thread?.provider === 'acp' && thread ? threadAgentKey(thread) : null;
+  // The thread's agent key (`acp:codex` for ACP Codex; `claude` for a legacy
+  // Claude-provider thread), so the picker marks the entry it runs on and offers
+  // the other protocol of the same agent.
+  const currentAgentId = switchable && thread ? threadAgentKey(thread) : null;
   const agentKey = knownAgents
     .filter((entry) => entry.acpAgent?.availability === 'ready' || entry.model === currentAgentId)
     .map((entry) => `${entry.model}\u0000${agentDisplayName(entry.model, entry.displayName)}`)

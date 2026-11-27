@@ -441,15 +441,20 @@ impl Supervisor {
         );
         let (session, _) = self.target_seen(id, &target)?;
         let now = now_rfc3339();
+        // A thread from before 0.14 has no agent id; its Codex/Claude provider names it.
+        let from_agent = before.agent_id.clone().or_else(|| {
+            matches!(before.provider, Provider::Codex | Provider::Claude)
+                .then(|| before.provider.as_str().to_string())
+        });
         self.db.with(|c| {
             let tx=c.unchecked_transaction()?;
             // Preserve an existing watermark; an unused session must not claim turns it never saw.
             tx.execute("INSERT INTO thread_harness_sessions(thread_id,provider,agent_id,session_id,model,turns_seen,created_at,last_used_at) VALUES(?1,?2,?3,?4,?5,0,?6,?6) ON CONFLICT(thread_id,provider,agent_id) DO UPDATE SET session_id=excluded.session_id,model=excluded.model,last_used_at=excluded.last_used_at",params![id,current.provider.as_str(),current.agent_id.clone().unwrap_or_default(),current.provider_session_id,current.model,now])?;
             tx.execute("UPDATE threads SET source='supervisor',provider=?2,agent_id=?3,provider_session_id=?4,model=?5,reasoning_effort=?6,collaboration_mode='default',sandbox_mode=NULL,fast_mode=0,context_usage_json=NULL,last_error=NULL,status='idle',updated_at=?7,harness_protocol=?8 WHERE id=?1",params![id,target.provider.as_str(),target.agent_id,session,target.model,target.reasoning_effort,now,protocol])?;
-            let switch=json!({"fromAgentId":before.agent_id,"fromModel":before.model,"fromHarnessProtocol":before.harness_protocol,"agentId":target.agent_id,"model":target.model,"harnessProtocol":protocol,"turns":preview.turns,"recorded":true});
+            let switch=json!({"fromAgentId":from_agent,"fromModel":before.model,"fromHarnessProtocol":before.harness_protocol,"agentId":target.agent_id,"model":target.model,"harnessProtocol":protocol,"turns":preview.turns,"recorded":true});
             let after: Option<String> = tx.query_row("SELECT id FROM thread_turns WHERE thread_id=?1 ORDER BY ordinal DESC LIMIT 1", [id], |r| r.get(0)).optional()?;
             let entry_id = format!("harness-switch:{}", Uuid::new_v4());
-            let entry = json!({"id":entry_id,"kind":"harnessSwitch","text":format!("{} → {}",before.agent_id.as_deref().unwrap_or("unknown"),target.agent_id),"createdAt":now,"afterTurnId":after,"harnessSwitch":switch});
+            let entry = json!({"id":entry_id,"kind":"harnessSwitch","text":format!("{} → {}",from_agent.as_deref().unwrap_or("unknown"),target.agent_id),"createdAt":now,"afterTurnId":after,"harnessSwitch":switch});
             tx.execute("INSERT INTO thread_history_items(id,thread_id,turn_id,item_id,item_json,created_at,updated_at) VALUES(?1,?2,'',?1,?3,?4,?4)",params![entry_id,id,entry.to_string(),now])?;
             tx.execute("INSERT OR REPLACE INTO kv(key,value) VALUES(?1,?2)",params![format!("handoff:pending:{id}"),switch.to_string()])?;
             tx.execute("DELETE FROM kv WHERE key=?1",[harness_context_key(id)])?;
@@ -460,7 +465,7 @@ impl Supervisor {
             self.runtime(target.provider)?
                 .set_session_route(session, &key);
         }
-        self.bus.emit(pockymoe_protocol::ThreadEventEnvelope{event_type:pockymoe_protocol::ThreadEventType::ThreadUpdated,thread_id:id.into(),timestamp:now,payload:json!({"reason":"harnessSwitched","fromAgentId":before.agent_id,"agentId":target.agent_id,"turns":preview.turns,"settingsNote":SETTINGS_NOTE})});
+        self.bus.emit(pockymoe_protocol::ThreadEventEnvelope{event_type:pockymoe_protocol::ThreadEventType::ThreadUpdated,thread_id:id.into(),timestamp:now,payload:json!({"reason":"harnessSwitched","fromAgentId":from_agent,"agentId":target.agent_id,"turns":preview.turns,"settingsNote":SETTINGS_NOTE})});
         self.get_thread(id)
     }
 

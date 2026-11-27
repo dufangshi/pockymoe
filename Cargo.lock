@@ -2440,7 +2440,7 @@ dependencies = [
 
 [[package]]
 name = "pockymoe"
-version = "0.14.2"
+version = "0.14.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -2461,7 +2461,7 @@ dependencies = [
 
 [[package]]
 name = "pockymoe-protocol"
-version = "0.14.2"
+version = "0.14.3"
 dependencies = [
  "chrono",
  "serde",
@@ -2471,7 +2471,7 @@ dependencies = [
 
 [[package]]
 name = "pockymoe-relay"
-version = "0.14.2"
+version = "0.14.3"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -2511,7 +2511,7 @@ dependencies = [
 
 [[package]]
 name = "pockymoe-runtime"
-version = "0.14.2"
+version = "0.14.3"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -2556,7 +2556,7 @@ dependencies = [
 
 [[package]]
 name = "pockymoe-supervisor"
-version = "0.14.2"
+version = "0.14.3"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",
@@ -2602,7 +2602,7 @@ dependencies = [
 
 [[package]]
 name = "pockymoe-treer"
-version = "0.14.2"
+version = "0.14.3"
 dependencies = [
  "anyhow",
  "pockymoe-protocol",

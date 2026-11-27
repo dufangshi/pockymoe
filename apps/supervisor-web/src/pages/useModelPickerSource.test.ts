@@ -129,4 +129,21 @@ describe('useModelPickerSource', () => {
     await waitFor(() => expect(environments.fetchThreadEnvironment).toHaveBeenCalledWith('isolated', 'device-3'));
     await waitFor(() => expect(result.current?.switching).toBeUndefined());
   });
+
+  it('offers switching on a legacy Claude-provider thread from before 0.14', async () => {
+    const onSwitched = vi.fn();
+    // The page lists agents for ACP threads only, so it passes an empty list here.
+    const { result } = renderHook(() => useModelPickerSource({
+      thread: { id: 'legacy', provider: 'claude', agentId: null, status: 'idle' } as unknown as ThreadDto,
+      deviceId: null, cwd: '/w', agentOptions: [], canSwitch: true, onSwitched,
+    }));
+    await waitFor(() => expect(result.current?.switching).toBeDefined());
+    const switching = result.current!.switching!;
+    expect(switching.currentAgentId).toBe('claude');
+    expect(switching.agents.map((entry) => entry.id)).toEqual(['codex', 'claude']);
+    await switching.switchTo({ agentId: 'codex', model: 'gpt-6.1-sol', reasoningEffort: null, stop: false });
+    const call = api.deviceRequest.mock.calls.find((entry) => String(entry[1]).endsWith('/switch'))!;
+    expect(call[1]).toBe('api/threads/legacy/harness/switch');
+    expect(JSON.parse(call[2].body)).toEqual({ provider: 'acp', agentId: 'codex', model: 'gpt-6.1-sol', reasoningEffort: null });
+  });
 });
