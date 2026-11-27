@@ -24,6 +24,31 @@ pub struct Pending {
 struct RpcState {
     pending: HashMap<i64, Pending>,
     closed_reason: Option<String>,
+    /// Requests from the agent whose JSON-RPC id is not a non-negative
+    /// integer (JSON-RPC 2.0 allows strings; `agy acp` sends `"id": "1"`).
+    /// Callers see a negative handle and `respond` echoes the original id.
+    foreign_ids: HashMap<i64, Value>,
+    next_foreign_id: i64,
+}
+
+impl RpcState {
+    /// The id callers use for an incoming request: the agent's own id when it
+    /// is a non-negative integer, otherwise a fresh negative handle that maps
+    /// back to the id as the agent sent it.
+    fn incoming_id(&mut self, id: &Value) -> i64 {
+        if let Some(id) = id.as_i64().filter(|id| *id >= 0) {
+            return id;
+        }
+        self.next_foreign_id -= 1;
+        let handle = self.next_foreign_id;
+        self.foreign_ids.insert(handle, id.clone());
+        handle
+    }
+
+    /// The id to answer with: the original for a handle, else the number.
+    fn outgoing_id(&mut self, id: i64) -> Value {
+        self.foreign_ids.remove(&id).unwrap_or_else(|| json!(id))
+    }
 }
 
 struct PendingGuard {
@@ -465,11 +490,13 @@ impl AcpProcess {
     }
 
     pub async fn respond(&self, id: i64, result: Value) -> Result<()> {
+        let id = self.state.lock().await.outgoing_id(id);
         self.send(&json!({ "jsonrpc": "2.0", "id": id, "result": result }))
             .await
     }
 
     pub async fn respond_error(&self, id: i64, message: &str) -> Result<()> {
+        let id = self.state.lock().await.outgoing_id(id);
         self.send(&json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -618,17 +645,20 @@ async fn dispatch(
     requests: &mpsc::Sender<(i64, String, Value)>,
 ) -> Result<()> {
     let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
+    // A request from the agent: any JSON-RPC id (number or string).
+    if let (Some(id), false) = (msg.get("id").filter(|id| !id.is_null()), method.is_empty()) {
+        let id = state.lock().await.incoming_id(id);
+        requests
+            .try_send((
+                id,
+                method.to_string(),
+                msg.get("params").cloned().unwrap_or(json!({})),
+            ))
+            .map_err(|_| anyhow!("ACP callback queue exceeds transport limit"))?;
+        return Ok(());
+    }
+    // A response to one of our requests: we only ever send integer ids.
     if let Some(id) = msg.get("id").and_then(Value::as_i64) {
-        if !method.is_empty() {
-            requests
-                .try_send((
-                    id,
-                    method.to_string(),
-                    msg.get("params").cloned().unwrap_or(json!({})),
-                ))
-                .map_err(|_| anyhow!("ACP callback queue exceeds transport limit"))?;
-            return Ok(());
-        }
         if let Some(pending) = state.lock().await.pending.remove(&id) {
             if let Some(error) = msg.get("error") {
                 let _ = pending.tx.send(Err(anyhow!("{error}")));
@@ -896,6 +926,41 @@ mod tests {
             forwarded.push(update["_remoteMethod"].as_str().unwrap().to_owned());
         }
         assert_eq!(forwarded, methods[..7]);
+    }
+
+    #[tokio::test]
+    async fn an_agent_request_with_a_string_id_is_delivered_and_answered_with_that_id() {
+        // `agy acp` (Antigravity) sends `"id": "1"`; JSON-RPC 2.0 allows it.
+        // Dropping it left the agent waiting for its permission answer forever.
+        let state = Arc::new(Mutex::new(RpcState::default()));
+        let (updates, _updates_rx) = mpsc::channel(4);
+        let (requests, mut received) = mpsc::channel(4);
+        for id in [json!("1"), json!(7), json!("abc"), json!(-3)] {
+            dispatch(
+                json!({"jsonrpc":"2.0","id":id,"method":"session/request_permission","params":{"x":1}}),
+                &state,
+                &updates,
+                &requests,
+            )
+            .await
+            .unwrap();
+        }
+        let mut handles = vec![];
+        while let Ok((id, method, params)) = received.try_recv() {
+            assert_eq!(method, "session/request_permission");
+            assert_eq!(params["x"], 1);
+            handles.push(id);
+        }
+        assert_eq!(handles.len(), 4, "every request reaches the runtime");
+        assert_eq!(handles[1], 7, "a plain integer id is passed through");
+        let mut state = state.lock().await;
+        assert_eq!(state.outgoing_id(handles[0]), json!("1"));
+        assert_eq!(state.outgoing_id(handles[1]), json!(7));
+        assert_eq!(state.outgoing_id(handles[2]), json!("abc"));
+        assert_eq!(state.outgoing_id(handles[3]), json!(-3));
+        assert_ne!(handles[0], handles[2], "each string id gets its own handle");
+        // A handle is answered once and then forgotten.
+        assert!(state.foreign_ids.is_empty());
     }
 
     #[tokio::test]
