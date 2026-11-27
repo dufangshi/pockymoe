@@ -41,7 +41,7 @@ its selectors; it does not maintain a static model table.
 | DeepSeek Harness | DSH's own ACP config options and harness info, preserving provider/model tuples |
 | Cursor | ACP config options, or `cursor/list_available_models` |
 | Grok, OpenCode | ACP session options/model state, with `grok models` / `opencode models` as command fallbacks |
-| Gemini, Copilot, custom ACP | ACP session options/model state |
+| Gemini, Google Antigravity, Copilot, custom ACP | ACP session options/model state (Antigravity: its model and thinking-level options; `agy models` needs a signed-in account and is not used) |
 
 A live session's model snapshot lasts for that session. Without one, discovery
 opens and closes a prompt-free ACP probe when a cwd is supplied. Learned Claude

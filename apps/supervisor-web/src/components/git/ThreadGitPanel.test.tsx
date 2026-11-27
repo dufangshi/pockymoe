@@ -28,7 +28,9 @@ beforeEach(() => {
 describe('thread Git inspection', () => {
   it('loads for its thread and keeps the working-copy facts on one line, with details on request', async () => {
     render(<ThreadGitPanel threadId="thread" deviceId="device" />);
-    await screen.findByRole('button', { name: 'View diff for src/app.rs' });
+    // The row appears after three loads in sequence (context, status, diff);
+    // on a busy CI runner that passed Testing Library's 1 s default (#182).
+    await screen.findByRole('button', { name: 'View diff for src/app.rs' }, { timeout: 5000 });
     expect(git.fetchThreadGitStatus).toHaveBeenCalledWith('thread', 'a', 'device', expect.any(AbortSignal));
     // The branch shows once (in the switch), HEAD short with a copy of the full ID.
     expect(screen.getAllByText('feature/a')).toHaveLength(1);

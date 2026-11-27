@@ -82,7 +82,8 @@ folder and start a conversation with any installed agent. That's it.
 
 > [!TIP]
 > Missing an agent? Install or update Codex, Claude Code, Gemini CLI, Grok Build,
-> Cursor, Copilot and OpenCode from **Settings → Harnesses**, right in the browser.
+> Cursor, Google Antigravity, Copilot and OpenCode from **Settings → Harnesses**,
+> right in the browser.
 
 ### Only this computer?
 
@@ -160,6 +161,7 @@ files, and search across all your conversations.
 | Gemini CLI | ✓ |
 | Grok Build | ✓ |
 | Cursor Agent | ✓ |
+| Google Antigravity | ✓ |
 | GitHub Copilot CLI | ✓ |
 | OpenCode | ✓ |
 | DeepSeek Harness | |

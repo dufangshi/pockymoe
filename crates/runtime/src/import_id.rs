@@ -17,6 +17,8 @@ const AGENT_SCHEMES: &[(&str, &str)] = &[
     ("cursor", "cursor"),
     ("cursor-agent", "cursor"),
     ("gemini", "gemini"),
+    ("antigravity", "antigravity"),
+    ("agy", "antigravity"),
     ("copilot", "copilot"),
     ("github-copilot", "copilot"),
     ("opencode", "opencode"),
@@ -27,7 +29,16 @@ const AGENT_SCHEMES: &[(&str, &str)] = &[
 ];
 
 const KNOWN_AGENTS: &[&str] = &[
-    "codex", "claude", "grok", "cursor", "gemini", "copilot", "opencode", "deepseek", "acp",
+    "codex",
+    "claude",
+    "grok",
+    "cursor",
+    "gemini",
+    "antigravity",
+    "copilot",
+    "opencode",
+    "deepseek",
+    "acp",
 ];
 
 /// Extract a harness session id from a pasted value.
@@ -185,4 +196,29 @@ fn canonical_agent(value: &str) -> &str {
         .find(|(name, _)| *name == value)
         .map(|(_, agent)| *agent)
         .unwrap_or(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn antigravity_session_refs_name_the_antigravity_agent() {
+        for input in [
+            "antigravity::0d7c6a52-9f3e-4c1a-a2c4-2a8b3c4d5e6f",
+            "agy::0d7c6a52-9f3e-4c1a-a2c4-2a8b3c4d5e6f",
+            "agy://conversations/0d7c6a52-9f3e-4c1a-a2c4-2a8b3c4d5e6f",
+        ] {
+            let parsed = parse_session_ref(input);
+            assert_eq!(
+                parsed.raw_id, "0d7c6a52-9f3e-4c1a-a2c4-2a8b3c4d5e6f",
+                "{input}"
+            );
+            assert_eq!(parsed.agent_id.as_deref(), Some("antigravity"), "{input}");
+        }
+        assert_eq!(
+            provider_for_agent("antigravity", &[Provider::Codex, Provider::Acp]),
+            Some(Provider::Acp)
+        );
+    }
 }

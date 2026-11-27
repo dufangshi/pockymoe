@@ -70,7 +70,7 @@ Relay 就是你登录的那个网站，它把浏览器和你的电脑连接起�
 这条命令会把 Pockymoe 安装成后台服务并连接到 Relay。稍等片刻，设备会显示 **在线**。点击 **连接**，选择一个项目文件夹，就可以和任意已安装的 agent 开始对话了。
 
 > [!TIP]
-> 还没装某个 agent？在 **设置 → Harness** 里可以直接在浏览器中安装或更新 Codex、Claude Code、Gemini CLI、Grok Build、Cursor、Copilot 和 OpenCode。
+> 还没装某个 agent？在 **设置 → Harness** 里可以直接在浏览器中安装或更新 Codex、Claude Code、Gemini CLI、Grok Build、Cursor、Google Antigravity、Copilot 和 OpenCode。
 
 ### 只在这台电脑上用？
 
@@ -140,6 +140,7 @@ Windows、局域网里的手机访问、访问口令和其他选项见[本机模
 | Gemini CLI | ✓ |
 | Grok Build | ✓ |
 | Cursor Agent | ✓ |
+| Google Antigravity | ✓ |
 | GitHub Copilot CLI | ✓ |
 | OpenCode | ✓ |
 | DeepSeek Harness | |

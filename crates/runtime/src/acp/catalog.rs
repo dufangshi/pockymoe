@@ -84,6 +84,18 @@ fn builtin_agents_with_commands(
             None,
         ),
         def(
+            "antigravity",
+            "Google Antigravity",
+            "native",
+            "agy",
+            "agy acp",
+            Some(ANTIGRAVITY_INSTALL),
+            // `agy models` needs a signed-in account and prints no `* `/`- `
+            // list the command parser could be checked against; the ACP
+            // session's model option is the source instead.
+            None,
+        ),
+        def(
             "copilot",
             "GitHub Copilot CLI",
             "native",
@@ -133,6 +145,11 @@ fn builtin_agents_with_commands(
     agents
 }
 
+/// Antigravity's official installer: `agy` goes to `~/.local/bin`, which it
+/// then keeps up to date itself.
+pub(crate) const ANTIGRAVITY_INSTALL: &str =
+    "curl -fsSL https://antigravity.google/cli/install.sh | bash";
+
 /// Each harness's interactive sign-in, checked against its own CLI help (see
 /// docs/device-setup.md). The login runs in a Web terminal on the device,
 /// usually opened from another machine, so a device-code flow is chosen where
@@ -157,6 +174,9 @@ fn sign_in_command(id: &str, base: &str) -> Option<String> {
         // Cursor Agent 2026.11: `login` "Authenticate with Cursor. Set
         // NO_OPEN_BROWSER to disable browser opening" (`sign_in_environment`).
         "cursor" => &["login"],
+        // agy 1.5.18: `agy acp --login` "Log in with Google interactively,
+        // then exit"; it prints a URL and asks for the code.
+        "antigravity" => &["acp", "--login"],
         _ => return None,
     };
     let mut parts = shell_words::split(base)
@@ -475,6 +495,7 @@ mod tests {
             Some("/opt/codex/bin/codex login --device-auth")
         );
         assert_eq!(command("claude").as_deref(), Some("claude auth login"));
+        assert_eq!(command("antigravity").as_deref(), Some("agy acp --login"));
         assert_eq!(
             command("copilot").as_deref(),
             Some("copilot login --device-code")
