@@ -51,6 +51,10 @@ struct Session {
     mode: std::sync::Mutex<String>,
     /// The account offers Claude's `auto` mode.
     auto_mode: bool,
+    /// A mode the owner chose on a card for this session (Claude's suggested
+    /// "allow all edits", or a plan approval's mode); kept until the product
+    /// policy changes, so the next turn does not undo the owner's choice.
+    owner_mode: std::sync::Mutex<Option<String>>,
     /// Slash commands and skills, from initialize and `commands_changed`.
     commands: std::sync::Mutex<Vec<crate::acp::NegotiatedCommand>>,
     /// Device-registry MCP servers passed at launch, and those whose startup
@@ -78,18 +82,25 @@ impl Session {
     }
     /// Put Claude in the product policy's mode if it drifted.
     async fn assert_mode(&self, settings: &SessionSettings) -> Result<()> {
-        let desired = desired_mode(settings, self.auto_mode);
+        let product = permission_mode(settings);
+        let owner = self.owner_mode.lock().unwrap().clone();
+        let desired = match owner {
+            Some(mode) if product == "default" => mode,
+            _ => product.to_owned(),
+        };
         if *self.mode.lock().unwrap() == desired {
             return Ok(());
         }
         self.process
             .request(json!({"subtype":"set_permission_mode","mode":desired}))
             .await?;
-        *self.mode.lock().unwrap() = desired.to_owned();
+        *self.mode.lock().unwrap() = desired;
         Ok(())
     }
 }
 struct Permission {
+    /// The Claude tool asking (`ExitPlanMode` leaves plan mode when approved).
+    tool: String,
     /// An MCP server's form (`elicitation`), answered as an MCP ElicitResult.
     elicitation: Option<Value>,
     session: String,
@@ -321,6 +332,7 @@ impl ClaudeRuntime {
                 window: Default::default(),
                 mode: std::sync::Mutex::new(spawned_mode),
                 auto_mode,
+                owner_mode: Default::default(),
                 commands: std::sync::Mutex::new(commands.clone()),
                 fast: Default::default(),
                 configured_mcp,
@@ -397,6 +409,7 @@ impl ClaudeRuntime {
         self.pending.lock().await.insert(
             id,
             Permission {
+                tool: "elicitation".into(),
                 elicitation: Some(params),
                 session: session_id.into(),
                 choices: Vec::new(),
@@ -532,7 +545,40 @@ impl ClaudeRuntime {
         } else {
             json!({"behavior":"deny","message":"The user declined to answer"})
         };
+        if response["behavior"] == "allow" {
+            self.after_approval(&permission, &response).await;
+        }
         self.answer(permission, response).await
+    }
+    /// What an approval changes beyond the tool call: a session mode the owner
+    /// picked, and leaving the product's plan mode when a plan is approved
+    /// (as native Codex `implement_plan` and DSH do).
+    async fn after_approval(&self, permission: &Permission, response: &Value) {
+        let Ok(s) = self.session(&permission.session).await else {
+            return;
+        };
+        if let Some(mode) = response["updatedPermissions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|u| u["type"] == "setMode" && u["destination"] == "session")
+            .find_map(|u| u["mode"].as_str())
+        {
+            *s.owner_mode.lock().unwrap() = Some(mode.to_owned());
+        }
+        if permission.tool != "ExitPlanMode" {
+            return;
+        }
+        let mut settings = s.settings.lock().await;
+        if settings.collaboration_mode.as_deref() == Some("plan") {
+            settings.collaboration_mode = Some("default".into());
+            permission.bus.emit(ThreadEventEnvelope {
+                event_type: "thread.collaboration.updated".into(),
+                thread_id: permission.thread.clone(),
+                timestamp: now_rfc3339(),
+                payload: json!({"turnId": permission.dto.turn_id, "collaborationMode": "default"}),
+            });
+        }
     }
     async fn answer(&self, permission: Permission, response: Value) -> Result<()> {
         permission.process.write(json!({"type":"control_response","response":{"subtype":"success","request_id":permission.native_id,"response":response}})).await?;
@@ -604,6 +650,7 @@ impl ClaudeRuntime {
         };
         let permission = Permission {
             session: session_id.into(),
+            tool: tool.to_owned(),
             elicitation: None,
             choices,
             tool_use: request["tool_use_id"].as_str().map(str::to_owned),
@@ -703,15 +750,11 @@ fn policy(settings: &SessionSettings) -> crate::acp::ProductSessionPolicy {
     }
 }
 /// Claude's permission mode for the product policy. Full access wins over
-/// plan; plan and read-only refuse writes. Guarded work uses Claude's `auto`
-/// mode where the account offers it, like the ACP adapter's default mode
-/// (`acp/modes.rs`), and `default` otherwise.
-fn desired_mode(settings: &SessionSettings, auto: bool) -> &'static str {
-    match permission_mode(settings) {
-        "default" if auto => "auto",
-        mode => mode,
-    }
-}
+/// plan; plan and read-only refuse writes. Guarded work runs in Claude's
+/// `default` mode: everything Claude's own rules do not allow asks the owner
+/// through `can_use_tool`. Claude's `auto` mode would let its classifier answer
+/// instead, and when the classifier has no verdict Claude refuses the call
+/// without asking anyone ("Claude Code doesn't ask for approval in its place").
 fn permission_mode(settings: &SessionSettings) -> &'static str {
     let policy = policy(settings);
     if policy.allows_writes_outside_workspace() {
@@ -995,6 +1038,9 @@ impl AgentRuntime for ClaudeRuntime {
         if settings.collaboration_mode.is_some() {
             next.collaboration_mode = settings.collaboration_mode;
         }
+        if permission_mode(&next) != permission_mode(&current) {
+            s.owner_mode.lock().unwrap().take();
+        }
         s.assert_mode(&next).await?;
         if let Some(fast) = settings.performance_mode {
             let applied = *s.fast.lock().unwrap();
@@ -1139,6 +1185,15 @@ impl AgentRuntime for ClaudeRuntime {
                             }
                         }
                     }
+                }
+                if message["type"]=="system" && message["subtype"]=="permission_denied" && message["decision_reason_type"]=="classifier" && *s.mode.lock().unwrap()=="auto" {
+                    // Auto mode refused a call without asking anyone (no verdict, or
+                    // judged unsafe). The owner chose auto on a card; from here on the
+                    // owner is asked again, so Claude neither fails silently nor loops.
+                    s.owner_mode.lock().unwrap().take();
+                    let settings = s.settings.lock().await.clone();
+                    let _ = tokio::time::timeout(Duration::from_secs(10), s.assert_mode(&settings)).await;
+                    crate::acp::runtime::emit_mapped(&bus,&input.thread_id,&input.turn_id,mapper.notice("warning","Auto mode is off: Claude will ask you","Claude's automatic check refused a call without a verdict, so this session asks you again."),input.hidden);
                 }
                 if message["type"]=="rate_limit_event" {
                     // Live plan allowance from the API response itself; ACP drops it.
