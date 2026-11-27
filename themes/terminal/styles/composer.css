@@ -69,3 +69,22 @@
 :theme .thread-ui-shell .thread-composer-upload {
   border-radius: 0;
 }
+
+/* Effort: a blocky track, one block per step filled up to a square thumb. */
+:theme .thread-ui-shell .model-picker-effort { --thumb: 12px; --effort-thumb-radius: 0; }
+:theme .thread-ui-shell :is(.model-picker-effort-track, .model-picker-effort-ticks) { opacity: 0; }
+:theme .thread-ui-shell .model-picker-effort-blocks {
+  position: absolute;
+  top: 50%;
+  right: calc(var(--thumb) / 2);
+  left: calc(var(--thumb) / 2);
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  margin-top: -4px;
+  pointer-events: none;
+}
+:theme .thread-ui-shell .model-picker-effort-blocks > i { flex: 1; background: color-mix(in oklab, var(--theme-fg) 14%, transparent); }
+:theme .thread-ui-shell .model-picker-effort-blocks > i[data-on] { background: var(--effort-accent); }
+:theme .thread-ui-shell .model-picker-effort-thumb { box-shadow: 0 0 0 2px var(--effort-thumb-ring); }
+:theme .thread-ui-shell .model-picker-effort-thumb:focus-visible { box-shadow: 0 0 0 2px var(--effort-thumb-ring), 0 0 0 4px var(--theme-fg); }
