@@ -146,7 +146,82 @@ pub(super) async fn list(
     for (i, checks) in statuses {
         pulls[i].checks = checks;
     }
+    // The list has no review state either; derive it from each open PR's
+    // reviews the same way the detail does.
+    let reviews: Vec<(usize, Option<Value>)> = stream::iter(
+        pulls
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.state == "open")
+            .map(|(i, p)| (i, format!("{}/pulls/{}/reviews", root(repo), p.number)))
+            .collect::<Vec<_>>(),
+    )
+    .map(|(i, path)| async move { (i, host.request("GET", &path, None).await.ok()) })
+    .buffer_unordered(6)
+    .collect()
+    .await;
+    let decisions: Vec<(usize, Option<String>)> = reviews
+        .into_iter()
+        .filter_map(|(i, value)| {
+            let list = value?.as_array().cloned().unwrap_or_default();
+            Some((
+                i,
+                decision_of(&reviewers_of(&list, &pulls[i].requested_reviewers)),
+            ))
+        })
+        .collect();
+    for (i, decision) in decisions {
+        pulls[i].review_decision = decision;
+    }
     Ok(pulls)
+}
+
+/// Each reviewer's standing review: the latest approval or change request
+/// (a later plain comment does not replace it, as on GitHub), then the
+/// reviewers asked again or still waiting.
+fn reviewers_of(reviews: &[Value], requested: &[String]) -> Vec<Reviewer> {
+    let mut reviewers: Vec<Reviewer> = Vec::new();
+    for r in reviews {
+        let state = review_state(&r["state"]);
+        let login = str_of(&r["user"]["login"]);
+        if r["dismissed"] == true || login.is_empty() || state == "pending" {
+            continue;
+        }
+        let standing = reviewers.iter().any(|x| {
+            x.login == login && matches!(x.state.as_str(), "approved" | "changesRequested")
+        });
+        if state == "commented" && standing {
+            continue;
+        }
+        reviewers.retain(|x| x.login != login);
+        reviewers.push(Reviewer {
+            login,
+            state,
+            team: false,
+        });
+    }
+    for login in requested {
+        reviewers.retain(|x| &x.login != login);
+        reviewers.push(Reviewer {
+            login: login.clone(),
+            state: "requested".into(),
+            team: false,
+        });
+    }
+    reviewers
+}
+
+fn decision_of(reviewers: &[Reviewer]) -> Option<String> {
+    let has = |state: &str| reviewers.iter().any(|r| r.state == state);
+    if has("changesRequested") {
+        Some("changesRequested".into())
+    } else if has("approved") {
+        Some("approved".into())
+    } else if has("requested") {
+        Some("reviewRequired".into())
+    } else {
+        None
+    }
 }
 
 fn review_state(value: &Value) -> String {
@@ -184,19 +259,11 @@ pub(super) fn map_detail(
     let mut summary = summary(repo, p);
     summary.checks = combined(status);
     let head = summary.head_sha.clone();
-    let mut reviewers: Vec<Reviewer> = Vec::new();
+    let reviewers = reviewers_of(reviews, &summary.requested_reviewers);
+    summary.review_decision = decision_of(&reviewers);
     let mut timeline = Vec::new();
     for r in reviews {
         let state = review_state(&r["state"]);
-        let login = str_of(&r["user"]["login"]);
-        if r["dismissed"] != true && !login.is_empty() && state != "pending" {
-            reviewers.retain(|x| x.login != login);
-            reviewers.push(Reviewer {
-                login: login.clone(),
-                state: state.clone(),
-                team: false,
-            });
-        }
         if matches!(state.as_str(), "pending" | "requested")
             || (state == "commented" && str_of(&r["body"]).trim().is_empty())
         {
@@ -220,24 +287,6 @@ pub(super) fn map_detail(
             commit: opt_str(&r["commit_id"]),
         });
     }
-    for login in &summary.requested_reviewers {
-        reviewers.retain(|x| &x.login != login);
-        reviewers.push(Reviewer {
-            login: login.clone(),
-            state: "requested".into(),
-            team: false,
-        });
-    }
-    let decision = if reviewers.iter().any(|r| r.state == "changesRequested") {
-        Some("changesRequested")
-    } else if reviewers.iter().any(|r| r.state == "approved") {
-        Some("approved")
-    } else if reviewers.iter().any(|r| r.state == "requested") {
-        Some("reviewRequired")
-    } else {
-        None
-    };
-    summary.review_decision = decision.map(Into::into);
     for c in comments {
         timeline.push(TimelineEntry {
             kind: "comment".into(),
