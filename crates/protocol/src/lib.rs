@@ -1037,12 +1037,46 @@ pub fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+/// A provisional thread title from a prompt or session preview: whitespace
+/// collapsed, at most `TITLE_LIMIT` characters, cut at a word end with an
+/// ellipsis when longer (a single long word is cut inside it).
+pub const TITLE_LIMIT: usize = 60;
 pub fn truncate_title(value: &str) -> String {
     let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.chars().count() <= 15 {
-        normalized
-    } else {
-        normalized.chars().take(15).collect()
+    if normalized.chars().count() <= TITLE_LIMIT {
+        return normalized;
+    }
+    let head: String = normalized.chars().take(TITLE_LIMIT - 1).collect();
+    let cut = match head.rfind(' ') {
+        Some(space) if head[..space].chars().count() >= TITLE_LIMIT / 2 => &head[..space],
+        _ => head.as_str(),
+    };
+    format!(
+        "{}…",
+        cut.trim_end_matches(|c: char| c.is_whitespace() || ",.;:".contains(c))
+    )
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    #[test]
+    fn short_titles_stay_whole_and_long_ones_end_at_a_word() {
+        assert_eq!(
+            truncate_title("  Fix the   login bug "),
+            "Fix the login bug"
+        );
+        let long = "Split prompt-queue.ts into a durable queue and keep the order of every prompt";
+        let title = truncate_title(long);
+        assert!(title.chars().count() <= TITLE_LIMIT, "{title}");
+        assert_eq!(
+            title,
+            "Split prompt-queue.ts into a durable queue and keep the…"
+        );
+        let word = "x".repeat(100);
+        assert_eq!(truncate_title(&word).chars().count(), TITLE_LIMIT);
+        assert!(truncate_title(&word).ends_with('…'));
     }
 }
 
