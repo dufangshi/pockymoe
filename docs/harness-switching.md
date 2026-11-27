@@ -20,7 +20,7 @@ change in the timeline. The rest of this page is about switching to another
 agent.
 
 Plan, sandbox, fast mode and reasoning effort reset; the approval mode stays in
-effect. The effort row under the note shows the target model's levels (the
+effect. The effort slider under the note shows the target model's levels (the
 pending pick's, else the agent's default model's); the level chosen there
 applies with the switch when the picked model offers it, else its default. Harnesses unavailable in an
 isolated execution environment are refused. The rail lists only agents ready on

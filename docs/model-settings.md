@@ -10,8 +10,10 @@ opened from the model key (a popover on desktop, a bottom sheet on phones):
   (`GET /api/config/model-pricing`, matched like the cost estimate); a model the
   catalog does not know leaves those cells empty. The current model is checked
   and scrolled into view.
-- The current model's effort below the list: one row of chips with the level
-  names, the chosen one in its effort colour; ←/→, Home and End choose.
+- The current model's effort below the list: one compact slider row, the level
+  beside the label ("Effort · high") and a slim track with a tick per level; it
+  snaps between levels when dragged and with ←/→, Home and End, and applies the
+  level when the drag ends.
 - For the thread's owner, a rail of the device's ready agents on the left, the
   current one first and marked with a dot; ←/→ move between agents. Picking a
   model of another agent moves the thread to it (see

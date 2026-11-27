@@ -470,24 +470,24 @@
   stroke-width: 3;
 }
 
-/* Reasoning effort: a plum-to-rose heat scale on felt chips. */
-:theme :is(.model-picker-effort-chip, .composer-model-effort):is([data-effort='none'], [data-effort='minimal']) { --effort-color: #6f86e0 !important; }
-:theme :is(.model-picker-effort-chip, .composer-model-effort)[data-effort='low'] { --effort-color: #8a5fe0 !important; }
-:theme :is(.model-picker-effort-chip, .composer-model-effort)[data-effort='medium'] { --effort-color: #f0a414 !important; }
-:theme :is(.model-picker-effort-chip, .composer-model-effort)[data-effort='high'] { --effort-color: #f2702a !important; }
-:theme :is(.model-picker-effort-chip, .composer-model-effort)[data-effort='xhigh'] { --effort-color: #e83e65 !important; }
-:theme :is(.model-picker-effort-chip, .composer-model-effort):is([data-effort='max'], [data-effort='ultra']) { --effort-color: #c43aa8 !important; }
-/* The label under the model name takes the same ink as the chosen chip. */
+/* Reasoning effort: a plum-to-rose heat scale on a felt slider. */
+:theme :is(.model-picker-effort, .composer-model-effort):is([data-effort='none'], [data-effort='minimal']) { --effort-color: #6f86e0 !important; }
+:theme :is(.model-picker-effort, .composer-model-effort)[data-effort='low'] { --effort-color: #8a5fe0 !important; }
+:theme :is(.model-picker-effort, .composer-model-effort)[data-effort='medium'] { --effort-color: #f0a414 !important; }
+:theme :is(.model-picker-effort, .composer-model-effort)[data-effort='high'] { --effort-color: #f2702a !important; }
+:theme :is(.model-picker-effort, .composer-model-effort)[data-effort='xhigh'] { --effort-color: #e83e65 !important; }
+:theme :is(.model-picker-effort, .composer-model-effort):is([data-effort='max'], [data-effort='ultra']) { --effort-color: #c43aa8 !important; }
+/* The label under the model name takes the same ink as the slider's level. */
 :theme .thread-ui-shell [data-composer-layout] .composer-model-effort { color: color-mix(in srgb, var(--effort-color) 60%, #1f0f26); }
 :theme[data-theme-effective='dark'] .thread-ui-shell [data-composer-layout] .composer-model-effort { color: color-mix(in srgb, var(--effort-color) 70%, #fff6ea); }
-:theme .thread-ui-shell .model-picker-effort-chips { border-radius: 999px; background: var(--pc-key); }
-:theme .thread-ui-shell .model-picker-effort-chip { border-radius: 999px; font-family: var(--plum-display); font-weight: 600; }
-:theme .thread-ui-shell .model-picker-effort-chip[aria-checked='true'] {
-  background: color-mix(in srgb, var(--effort-color) 22%, var(--pc-felt));
-  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--effort-color) 60%, transparent);
-  color: color-mix(in srgb, var(--effort-color) 52%, #1f0f26);
+:theme .thread-ui-shell .model-picker-effort {
+  --effort-accent: var(--effort-color);
+  --effort-track-bg: var(--pc-key);
+  --effort-fill: linear-gradient(90deg, #9479cf, var(--effort-color));
+  --effort-thumb-bg: var(--pc-felt);
 }
-:theme[data-theme-effective='dark'] .thread-ui-shell .model-picker-effort-chip[aria-checked='true'] { color: color-mix(in srgb, var(--effort-color) 55%, #fff6ea); }
+:theme .thread-ui-shell .model-picker-effort-value { color: color-mix(in srgb, var(--effort-color) 55%, #1f0f26); }
+:theme[data-theme-effective='dark'] .thread-ui-shell .model-picker-effort-value { color: color-mix(in srgb, var(--effort-color) 60%, #fff6ea); }
 
 /* ── Queued prompts: numbered slips tucked above the pocket ───────────────── */
 
