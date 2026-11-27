@@ -11,6 +11,8 @@ const AGENT_SCHEMES: Record<string, string> = {
   cursor: 'cursor',
   'cursor-agent': 'cursor',
   gemini: 'gemini',
+  antigravity: 'antigravity',
+  agy: 'antigravity',
   copilot: 'copilot',
   'github-copilot': 'copilot',
   opencode: 'opencode',

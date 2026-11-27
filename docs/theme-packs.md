@@ -264,7 +264,8 @@ A pack replaces a glyph like this; the lucide paths inside stay in the markup:
 Every agent maps to one canonical key (`themeAgentKey` in the shared UI): thread
 agent ids, providers and harness labels such as `claude-code` and "Claude Code"
 all become `claude`; `dsh` becomes `deepseek`; the families are claude, opencode,
-codex, deepseek, copilot, gemini, grok, cursor, qwen and kimi. Any other agent
+codex, deepseek, copilot, gemini, antigravity (`agy` too), grok, cursor, qwen and
+kimi. Any other agent
 uses its id as a slug. The loader turns `agents` into
 `--theme-agent-avatar` and `--theme-agent-peek` on `[data-agent="<key>"]`
 elements (`default` everywhere else), so a pack's CSS only uses the two

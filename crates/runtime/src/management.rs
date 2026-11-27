@@ -32,11 +32,22 @@ fn npm_package(id: &str) -> Option<&'static str> {
     }
 }
 pub fn can_install(id: &str) -> bool {
-    npm_package(id).is_some() || (!cfg!(windows) && matches!(id, "grok" | "cursor"))
+    npm_package(id).is_some() || (!cfg!(windows) && official_installer(id).is_some())
+}
+/// The official install script of a harness that ships its own installer
+/// (Unix only). Templates can never supply a URL or command.
+fn official_installer(id: &str) -> Option<&'static str> {
+    match id {
+        "grok" => Some("https://x.ai/cli/install.sh"),
+        "cursor" => Some("https://cursor.com/install"),
+        // Installs `agy` into ~/.local/bin; `agy` then updates itself.
+        "antigravity" => Some("https://antigravity.google/cli/install.sh"),
+        _ => None,
+    }
 }
 /// Why a harness has no Install action.
 fn no_installer(id: &str) -> &'static str {
-    if matches!(id, "grok" | "cursor") {
+    if official_installer(id).is_some() {
         "This harness has no managed installer on Windows. Install it with its own installer."
     } else {
         "This harness has no managed installer. Install it with its own installer."
@@ -72,12 +83,7 @@ pub async fn install_harness(state: &Supervisor, id: &str) -> Result<()> {
         ]);
         let parsed = crate::acp::rpc::parse_spawn_command(&command)?;
         output(Path::new(&parsed.program), &parsed.args, 600).await?;
-    } else if matches!(id, "grok" | "cursor") && !cfg!(windows) {
-        let url = if id == "grok" {
-            "https://x.ai/cli/install.sh"
-        } else {
-            "https://cursor.com/install"
-        };
+    } else if let Some(url) = official_installer(id).filter(|_| !cfg!(windows)) {
         let response = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()?
@@ -334,6 +340,15 @@ pub fn installation(path: PathBuf, agent: &str) -> Installation {
     found
 }
 
+/// An official-installer harness in its installer's location, which `<exe> update` updates.
+fn updates_itself(agent: &str, real_path: &Path, home: &Path) -> bool {
+    match agent {
+        "grok" => real_path.starts_with(home.join(".grok")),
+        "cursor" | "antigravity" => real_path.starts_with(home.join(".local")),
+        _ => false,
+    }
+}
+
 pub async fn inspect(command: &str, agent: &str) -> Result<Installation> {
     let mut found = installation(resolve(command)?, agent);
     if found.path.starts_with(harness_bin()) && npm_package(agent).is_some() {
@@ -351,19 +366,7 @@ pub async fn inspect(command: &str, agent: &str) -> Result<Installation> {
         found.reason = None;
         found.update = vec![parsed.program];
         found.update.extend(parsed.args);
-    } else if agent == "grok"
-        && found
-            .real_path
-            .starts_with(crate::config::home_dir().join(".grok"))
-    {
-        found.manager = "native".into();
-        found.reason = None;
-        found.update = vec![text_path(&found.path), "update".into()];
-    } else if agent == "cursor"
-        && found
-            .real_path
-            .starts_with(crate::config::home_dir().join(".local"))
-    {
+    } else if updates_itself(agent, &found.real_path, &crate::config::home_dir()) {
         found.manager = "native".into();
         found.reason = None;
         found.update = vec![text_path(&found.path), "update".into()];
@@ -537,4 +540,26 @@ async fn adapter_inventory(def: &crate::acp::catalog::AcpAgentDef) -> Value {
     value["canUpdate"] = value["installed"].clone();
     value["updateCommand"] = json!(crate::acp::dependencies::install_command(&def.id));
     value
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn antigravity_installs_with_its_official_script_and_updates_itself() {
+        assert_eq!(
+            super::official_installer("antigravity"),
+            Some("https://antigravity.google/cli/install.sh")
+        );
+        assert_eq!(super::can_install("antigravity"), !cfg!(windows));
+        assert_eq!(super::official_installer("gemini"), None);
+        let home = std::path::Path::new("/home/u");
+        let agy = home.join(".local/bin/agy");
+        assert!(super::updates_itself("antigravity", &agy, home));
+        assert!(!super::updates_itself(
+            "antigravity",
+            std::path::Path::new("/usr/bin/agy"),
+            home
+        ));
+        assert!(!super::updates_itself("gemini", &agy, home));
+    }
 }

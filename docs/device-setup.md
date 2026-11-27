@@ -149,8 +149,12 @@ Open a device's Settings to manage its Supervisor, harnesses and upstreams.
 Only the device owner can change these settings. Install/Update jobs keep running
 when the page closes; their progress is visible when reopening Settings. The
 managed install catalog includes Codex, Claude Code, Gemini CLI, Grok Build,
-Cursor Agent, GitHub Copilot, OpenCode and DeepSeek Harness. Codex and Claude also
-install the ACP adapter. DeepSeek Harness is one npm package (`@deepseek-ai/dsh`)
+Cursor Agent, Google Antigravity, GitHub Copilot, OpenCode and DeepSeek Harness.
+Codex and Claude also install the ACP adapter. Grok Build, Cursor Agent and Google
+Antigravity install with their vendor's official script (not on Windows);
+Antigravity's (`curl -fsSL https://antigravity.google/cli/install.sh | bash`)
+puts `agy` in `~/.local/bin`, Pockymoe starts it as `agy acp`, and Update runs
+`agy update`. DeepSeek Harness is one npm package (`@deepseek-ai/dsh`)
 with ACP and its Web console built in, so it has no separate adapter; Install and
 Update use its `latest` tag, which is currently a release candidate. Updates
 preserve the detected installation owner, and a global npm installation of
@@ -179,6 +183,7 @@ device's own loopback cannot be completed from another machine:
 | OpenCode | `opencode auth login` | `opencode auth login --help`, 1.19.6 |
 | Grok Build | `grok login --device-auth` | `grok login --help`, 1.0.92 |
 | Cursor Agent | `cursor-agent login` (with `NO_OPEN_BROWSER=1`) | `cursor-agent login --help`, 2026.11.22 |
+| Google Antigravity | `agy acp --login` | `agy acp --help`, 1.5.18 |
 
 Gemini CLI has no sign-in command (it signs in inside its interactive session),
 nor do DeepSeek Harness and a custom ACP agent; they get no button. The button
