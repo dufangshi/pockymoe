@@ -667,14 +667,22 @@ export async function exchange(
     ...(hasBody ? { body: sealed } : {}),
   });
   if (response.headers.get('x-rcd-encrypted') !== '1') {
+    const failure: { code?: string; message?: string } =
+      response.status === 409 || response.status === 400
+        ? await response.clone().json().catch(() => ({}))
+        : {};
+    // 400 transport_request_rejected: the device could not open the request and did not run
+    // it, typically because this clock jumped since the key was fetched (the request time is
+    // outside the device's ±120 s window) or the key expired. A fresh key brings a fresh clock
+    // offset. Older Supervisors send the generic gateway code with the same message.
+    const rejected =
+      response.status === 400 &&
+      (failure.code === 'transport_request_rejected' ||
+        (failure.code === 'gateway_unavailable' &&
+          failure.message?.startsWith('Encrypted request is invalid, expired, or replayed') === true));
     if (
-      response.status === 409 &&
-      (
-        await response
-          .clone()
-          .json()
-          .catch(() => ({}))
-      ).code === 'transport_reconnect_required'
+      (response.status === 409 && failure.code === 'transport_reconnect_required') ||
+      rejected
     ) {
       clearTransportKeyCache(route.deviceId);
       // Unknown recipient keys are rejected before decryption/dispatch. Session

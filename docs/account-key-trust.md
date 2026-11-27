@@ -520,6 +520,17 @@ always take these owner checks, never the recipient checks of
 [sharing](#sharing). **Manage device trust** (the encryption status icon) shows the
 state, the bound account fingerprint and the browsers registered on the device.
 
+A browser keeps a device's key descriptor until shortly before `expiresAt` and stamps
+each encrypted request with its own clock plus the offset to the descriptor's
+`serverTime`. The device opens a request only within ±120 s of its own clock and
+with a key it still holds; otherwise it answers 400 `transport_request_rejected`
+(older versions: `gateway_unavailable` with "Encrypted request is invalid, expired,
+or replayed") without running it. The browser then drops the descriptor, so a
+clock that jumped while the page or app was open gets a fresh offset: reads and
+`POST /api/transport/session` are retried once at once, other requests on the next
+attempt. A device that lost the key answers 409 `transport_reconnect_required`,
+handled the same way.
+
 If a pending enrollment expires or its browser data is lost, copy the setup or
 bind command again in a browser of the account and run it on the device.
 

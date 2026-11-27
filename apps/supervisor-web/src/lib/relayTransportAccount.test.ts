@@ -40,6 +40,8 @@ const device = vectors.deviceCertificate.certificate.deviceId;
 const endpoint = (path: string) => `https://pockymoe.test/relay/devices/${device}/api/${path}`;
 let unbound: boolean;
 let missingCertificate: boolean, registrationRevoked: boolean, applicationRevoked: boolean, rejectCount: number, grantee: boolean;
+// The device's clock minus this one's; requests outside its ±120 s window are refused before dispatch.
+let deviceSkew: number, legacyRejection: boolean;
 let wires: { path: string; headers: Headers; aad: string; sealed: Uint8Array; body: unknown }[];
 let browser: BrowserIdentity;
 let foreignCertificate: DeviceCertificate | undefined;
@@ -50,7 +52,7 @@ function packet(body: unknown, status: number) {
 beforeEach(async () => {
   vi.restoreAllMocks(); foreignCertificate = undefined; transport.setTransportReporter(() => {});
   state.store.clear(); state.identities.clear(); state.pending.mockReset().mockResolvedValue([]); unbound = false; transport.clearAllTransportKeys(); vault.closeUnlockWindow(); state.fetch.mockReset();
-  wires = []; missingCertificate = registrationRevoked = applicationRevoked = grantee = false; rejectCount = 0;
+  wires = []; missingCertificate = registrationRevoked = applicationRevoked = grantee = legacyRejection = false; rejectCount = 0; deviceSkew = 0;
   const a = vectors.account;
   const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
   const publicKey = c.encode64(await crypto.subtle.exportKey('spki', pair.publicKey));
@@ -64,11 +66,17 @@ beforeEach(async () => {
     if (target.pathname.endsWith('/account/browsers')) return Response.json({ browsers: [], revocations: [] });
     if (target.pathname.endsWith('/transport/key')) {
       const descriptor = { version: 1, challenge: target.searchParams.get('challenge'), keyId: 'key-1', publicKey: c.encode64(await suite.kem.serializePublicKey(recipient.publicKey)), identityKey: vectors.deviceCertificate.certificate.identityKey,
-        expiresAt: Date.now() + 600000, serverTime: Date.now(), signature: '', certificate: missingCertificate ? null : foreignCertificate ?? vectors.deviceCertificate.certificate, trust: { bound: !unbound, strict: !unbound, accountKeyId: a.accountKeyId } };
+        expiresAt: Date.now() + deviceSkew + 600000, serverTime: Date.now() + deviceSkew, signature: '', certificate: missingCertificate ? null : foreignCertificate ?? vectors.deviceCertificate.certificate, trust: { bound: !unbound, strict: !unbound, accountKeyId: a.accountKeyId } };
       descriptor.signature = await c.sign(identity, `rcd-key-v1\n${descriptor.challenge}\n${descriptor.keyId}\n${descriptor.expiresAt}\n${descriptor.serverTime}\n${descriptor.publicKey}`);
       return Response.json(descriptor);
     }
     const headers = new Headers(init?.headers), method = init?.method ?? 'GET', path = target.pathname.replace(`/relay/devices/${device}`, '');
+    if (Math.abs(Number(headers.get('x-rcd-request')!.split('.').pop()) - (Date.now() + deviceSkew)) > 120_000) {
+      wires.push({ path: 'rejected:' + path, headers, aad: '', sealed: new Uint8Array(), body: null });
+      return Response.json(legacyRejection
+        ? { code: 'gateway_unavailable', message: 'Encrypted request is invalid, expired, or replayed. Reconnect to the device.' }
+        : { code: 'transport_request_rejected', message: 'Encrypted request is invalid, expired, or replayed. Reconnect to the device.' }, { status: 400 });
+    }
     const aad = `rcd-http-v1\n${headers.get('x-rcd-key')}\n${headers.get('x-rcd-request')}\n${method}\n${path}\n${headers.get('x-rcd-resource') ?? ''}`;
     const sealed = method === 'GET' ? c.decode64(headers.get('x-rcd-sealed')!) : new Uint8Array(init?.body as ArrayBuffer);
     const receiver = await suite.createRecipientContext({ recipientKey: recipient.privateKey, enc: c.bytes(c.decode64(headers.get('x-rcd-enc')!)), info: c.utf8('remote-codex/relay/v1') });
@@ -114,6 +122,22 @@ it('service-worker fetch reads the same non-extractable key and signs file reque
 it('re-registers and retries at most once when a device forgets registration', async () => {
   rejectCount = 1; expect((await transport.exchange(new Request(endpoint('workspaces'), { method: 'POST', body: '{}' }))).response.ok).toBe(true);
   expect(wires.filter(w => w.path.endsWith('/browser'))).toHaveLength(2); expect(wires.filter(w => w.path === '/api/workspaces')).toHaveLength(2); await verifyWires();
+});
+it('recovers once after this clock jumps past the device window, with a fresh key and offset', async () => {
+  expect((await transport.exchange(new Request(endpoint('version')))).response.ok).toBe(true);
+  deviceSkew = 10 * 60_000; // e.g. the phone's clock was corrected while the app kept its key
+  expect((await transport.exchange(new Request(endpoint('workspaces')))).response.ok).toBe(true);
+  expect(wires.map(w => w.path).slice(-2)).toEqual(['rejected:/api/workspaces', '/api/workspaces']);
+  legacyRejection = true; deviceSkew = -10 * 60_000; // an older Supervisor's generic code
+  expect((await transport.exchange(new Request(endpoint('version')))).response.ok).toBe(true);
+  expect(wires.map(w => w.path).slice(-2)).toEqual(['rejected:/api/version', '/api/version']);
+});
+it('does not resend a rejected mutation but lets the next attempt use a fresh key', async () => {
+  expect((await transport.exchange(new Request(endpoint('version')))).response.ok).toBe(true);
+  deviceSkew = 10 * 60_000;
+  expect((await transport.exchange(new Request(endpoint('workspaces'), { method: 'POST', body: '{}' }))).response.status).toBe(400);
+  expect(wires.filter(w => w.path.endsWith('/api/workspaces'))).toHaveLength(1);
+  expect((await transport.exchange(new Request(endpoint('workspaces'), { method: 'POST', body: '{}' }))).response.ok).toBe(true);
 });
 async function cacheUnboundDescriptor() {
   missingCertificate = unbound = true;
