@@ -2,6 +2,7 @@ import { useHandoffModelNames } from './useHandoffModelNames';
 import { RestoreNotice } from '../components/git/RestoreNotice';
 import { getLocale } from '@pockymoe/thread-ui/i18n';
 import type { QuoteScope } from '@pockymoe/thread-ui';
+import type { RespondThreadActionRequestInput } from '@pockymoe/shared';
 import { fetchCheckpoints, type TurnCheckpoint } from '../lib/gitApi';
 import { RewindDialog } from '../components/git/RewindDialog';
 import { RelayUserMenu } from '../components/RelayUserMenu';
@@ -3406,7 +3407,7 @@ export function ThreadDetailPage() {
 
   const handleRespondToRequest = useCallback(async (
     requestId: string,
-    input: { answers: Record<string, { answers: string[] }> },
+    input: RespondThreadActionRequestInput,
   ) => {
     if (!relayThreadCanControl) {
       setError(translate("workbench.thisSharedSessionIsViewOnly"));

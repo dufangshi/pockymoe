@@ -165,6 +165,8 @@ Types are `start`, `complete`, `fail`, `approval` and `input`. The endpoint star
 held fake turn when necessary, then drives the ordinary durable turn/request event
 paths. It returns `{threadId,turnId,type}`. Approvals and questions appear in the
 normal thread detail and resolve through `/api/threads/:id/requests/:requestId/respond`.
+The `approval` request has no questions, as a source without options would send it;
+the Web card answers it with a bare `{ "allow": true | false }`.
 Completion/failure settles the turn; completion clears outstanding requests.
 The route is absent outside fake mode and never bypasses owner authentication;
 shared browser grants and Treer thread viewers cannot use it. This fixture adds

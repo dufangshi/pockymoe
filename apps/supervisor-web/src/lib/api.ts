@@ -2065,7 +2065,7 @@ export function untrustThreadHook(id: string, input: UntrustThreadHookInput) {
 export function respondToThreadRequest(
   id: string,
   requestId: string,
-  input: RespondThreadActionRequestInput | { allow: boolean },
+  input: RespondThreadActionRequestInput,
   deviceId?: string | null,
 ) {
   return deviceRequest<ThreadDetailDto>(deviceId,
