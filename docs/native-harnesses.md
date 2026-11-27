@@ -205,10 +205,17 @@ can describe it), and **No**. An answer that matches no choice is a denial.
 ExitPlanMode offers to start implementing, to start with edits auto-accepted, or
 to keep planning. The product policy answers first, like ACP: yolo or full access
 approves (except questions and plan exits), read-only refuses everything except
-reads and questions. Guarded work runs in Claude's `auto` mode when the account
-offers it (the ACP adapter's default), otherwise `default`; plan runs in `plan`
-and full access in `bypassPermissions`. Claude can leave a mode by itself (a plan
-approval), so each turn re-asserts the product mode.
+reads and questions. Guarded work runs in Claude's `default` mode, on both
+protocols: whatever Claude's own permission rules do not allow asks the owner.
+Claude's `auto` mode is not used for guarded, because its classifier answers in
+the owner's place and, when it has no verdict, Claude refuses the call without
+asking anyone, which left plan approvals looping. Plan runs in `plan` and full
+access in `bypassPermissions`. A session mode the owner picks on a card (allow
+all edits, or a plan approval's mode, including auto) stays for later turns
+until the product policy changes; if Claude's auto mode then refuses a call
+without asking, the session returns to asking the owner and says so. Approving
+a plan leaves the product's plan mode (`thread.collaboration.updated`), as native
+Codex and DSH do, so the next turn does not plan again.
 
 Usage: on the host, billing comes from the same Claude JSONL reader as ACP
 (every request once, subagents included), so token counts and cost match ACP.

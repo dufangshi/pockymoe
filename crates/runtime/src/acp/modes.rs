@@ -51,7 +51,8 @@ impl ProductSessionPolicy {
 ///   `collaboration_mode` config option, not a mode.
 /// - Claude ACP: `default`, `acceptEdits`, `plan`, optional `auto` and
 ///   `bypassPermissions`. Its own default is `auto`, so full access must name
-///   `bypassPermissions` or the session keeps Claude's classifier on.
+///   `bypassPermissions`, and guarded must name `default`, or the session
+///   keeps Claude's classifier on.
 /// - Claude-like: `plan` / `architect` / `ask` vs `code` / `build`
 /// - Grok and others may omit modes entirely
 ///
@@ -71,13 +72,16 @@ pub fn preferred_mode_ids(policy: &ProductSessionPolicy) -> Vec<&'static str> {
     } else if matches!(policy.sandbox_mode.as_deref(), Some("read-only")) {
         vec!["read-only", "readonly", "ask"]
     } else {
+        // Guarded asks the owner. Claude's `auto` lets its classifier answer
+        // instead and refuses a call outright when the classifier has no
+        // verdict, so Claude's `default` (ask) wins over `auto`.
         vec![
             "workspace-write",
             "agent",
             "code",
             "build",
-            "auto",
             "default",
+            "auto",
         ]
     }
 }
@@ -467,6 +471,15 @@ mod tests {
         assert_eq!(resolve_mode(&without, &policy(None, "yolo")), None);
         assert_eq!(
             resolve_mode(&claude_modes(), &policy(Some("workspace-write"), "guarded")).as_deref(),
+            Some("default")
+        );
+        // A harness whose only agent mode is `auto` keeps it.
+        let auto_only = vec![SessionMode {
+            id: "auto".into(),
+            name: None,
+        }];
+        assert_eq!(
+            resolve_mode(&auto_only, &policy(Some("workspace-write"), "guarded")).as_deref(),
             Some("auto")
         );
     }

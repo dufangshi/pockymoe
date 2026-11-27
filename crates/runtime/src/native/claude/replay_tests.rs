@@ -325,7 +325,7 @@ async fn replay_reject_denies_and_always_allow_sends_claudes_rule() {
 }
 
 #[tokio::test]
-async fn replay_yolo_auto_approves_and_guarded_runs_in_auto_mode() {
+async fn replay_yolo_auto_approves_and_guarded_asks_the_owner() {
     let r = replay("guarded", "yolo").await;
     let t = run(&r, "yolo", "guarded", ignore).await;
     assert!(t.events("thread.request.created").is_empty());
@@ -336,9 +336,14 @@ async fn replay_yolo_auto_approves_and_guarded_runs_in_auto_mode() {
             .unwrap()["behavior"],
         "allow"
     );
-    // Guarded workspace work uses Claude's auto mode, as the ACP adapter does.
+    // Guarded asks the owner: Claude's default mode, never its auto classifier.
     let r = replay("guarded", "guarded").await;
-    assert_eq!(r.controls("set_permission_mode")[0]["mode"], "auto");
+    let t = run(&r, "guarded", "guarded", allow).await;
+    assert_eq!(t.events("thread.request.created").len(), 1);
+    assert!(r
+        .controls("set_permission_mode")
+        .iter()
+        .all(|c| c["mode"] != "auto"));
 }
 
 #[tokio::test]
@@ -562,7 +567,21 @@ async fn replay_questions_and_plan_approval() {
     let card = t.of("plan");
     assert_eq!(card.len(), 1, "the approved plan is the turn's plan card");
     assert!(card[0].text.starts_with("# Plan: Add a README"));
-    // The plan approval moved Claude to default; the next turn re-asserts plan.
+    // Approving the plan leaves the product's plan mode, as native Codex does.
+    let left = t.events("thread.collaboration.updated");
+    assert_eq!(left.len(), 1);
+    assert_eq!(left[0].payload["collaborationMode"], "default");
+    assert_eq!(left[0].payload["turnId"], "plan");
+    let session = r.runtime.session(&r.session).await.unwrap();
+    assert_eq!(
+        session.settings.lock().await.collaboration_mode.as_deref(),
+        Some("default")
+    );
+    // "Manually approve edits" is Claude's default mode, kept for later turns.
+    assert_eq!(
+        session.owner_mode.lock().unwrap().as_deref(),
+        Some("default")
+    );
     assert_eq!(
         *r.runtime
             .session(&r.session)
@@ -776,4 +795,72 @@ fn api_retries_and_fallbacks_are_notices_without_a_row_per_attempt() {
         items[0].detail_text.as_deref(),
         Some("overloaded (HTTP 529); next try in 2s")
     );
+}
+
+#[tokio::test]
+async fn replay_auto_mode_without_a_verdict_falls_back_to_asking_the_owner() {
+    let r = replay("auto-noverdict", "guarded").await;
+    let mut plan = input(&r.session, "noverdict", "plan");
+    plan.collaboration_mode = Some("plan".into());
+    let t = run_with(
+        &r,
+        plan,
+        CancellationToken::new(),
+        |runtime: Arc<ClaudeRuntime>, _: String, event: ThreadEventEnvelope| async move {
+            if event.event_type == "thread.request.created" {
+                let request = &event.payload["request"];
+                let answer =
+                    json!({"permission":{"answers":["Yes, and use auto mode"]}}).to_string();
+                runtime
+                    .respond_permission(request["id"].as_str().unwrap(), true, Some(&answer))
+                    .await
+                    .unwrap();
+            }
+        },
+    )
+    .await;
+    assert!(t.result.is_ok());
+    // The owner's auto mode refused a call without asking: back to asking.
+    let modes: Vec<_> = r
+        .controls("set_permission_mode")
+        .into_iter()
+        .map(|c| c["mode"].clone())
+        .collect();
+    assert_eq!(modes.last().unwrap(), "default", "{modes:?}");
+    let notice = t
+        .of("generic")
+        .into_iter()
+        .find(|i| i.text.starts_with("Auto mode is off"))
+        .expect("notice");
+    assert_eq!(notice.extra["severity"], "warning");
+    assert_eq!(
+        t.of("commandExecution")[0].status.as_deref(),
+        Some("failed")
+    );
+    let session = r.runtime.session(&r.session).await.unwrap();
+    assert!(session.owner_mode.lock().unwrap().is_none());
+    assert_eq!(*session.mode.lock().unwrap(), "default");
+}
+
+#[tokio::test]
+async fn an_owner_chosen_session_mode_survives_turns_until_the_policy_changes() {
+    let r = replay("guarded", "guarded").await;
+    let s = r.runtime.session(&r.session).await.unwrap();
+    *s.owner_mode.lock().unwrap() = Some("acceptEdits".into());
+    let settings = s.settings.lock().await.clone();
+    s.assert_mode(&settings).await.unwrap();
+    assert_eq!(*s.mode.lock().unwrap(), "acceptEdits");
+    // A new product policy (full access) drops the owner's session choice.
+    r.runtime
+        .apply_session_settings(
+            &r.session,
+            SessionSettings {
+                sandbox_mode: Some("danger-full-access".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(s.owner_mode.lock().unwrap().is_none());
+    assert_eq!(*s.mode.lock().unwrap(), "bypassPermissions");
 }

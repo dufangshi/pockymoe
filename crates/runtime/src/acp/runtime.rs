@@ -3177,6 +3177,26 @@ impl AgentRuntime for AcpRuntime {
                                     emit_mapped(&bus, &input.thread_id, &input.turn_id, mapper.native_task_notification(&notice), input.hidden);
                                 }
                             }
+                            // claude-agent-acp leaves plan mode when the owner approves a
+                            // plan (ExitPlanMode); keep the thread's setting with it, or the
+                            // next turn would re-enter plan mode.
+                            if update["update"]["sessionUpdate"] == "current_mode_update"
+                                && update["update"]["currentModeId"].as_str().or(update["update"]["modeId"].as_str()).is_some_and(|mode| mode != "plan")
+                            {
+                                let left_plan = self.inner.sessions.lock().await
+                                    .get_mut(&input.provider_session_id)
+                                    .filter(|live| live.adapter_id == "claude" && live.collaboration_mode.as_deref() == Some("plan"))
+                                    .map(|live| live.collaboration_mode = Some("default".into()))
+                                    .is_some();
+                                if left_plan {
+                                    bus.emit(ThreadEventEnvelope {
+                                        event_type: pockymoe_protocol::ThreadEventType::ThreadCollaborationUpdated,
+                                        thread_id: input.thread_id.clone(),
+                                        timestamp: now_rfc3339(),
+                                        payload: json!({"turnId": input.turn_id, "collaborationMode": "default"}),
+                                    });
+                                }
+                            }
                             // codex-acp leaves Plan Mode after an approved plan review and
                             // says so in a config update; keep the thread's setting with it,
                             // or the next turn would re-enter Plan Mode.

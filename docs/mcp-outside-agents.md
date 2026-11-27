@@ -35,8 +35,9 @@ Add `--access read` or `--access full`, or `--workspace ID`, after `mcp serve`.
 
 `--access read` permits inspection, `supervised` additionally permits creating,
 sending to and stopping guarded threads (guarded is the harness's normal agent
-mode, Codex `agent` and Claude `auto`, in which the harness itself decides what
-needs approval; both edit files and run ordinary commands without asking), and `full` additionally permits yolo
+mode: Codex `agent`, which edits files and runs ordinary commands in its sandbox
+without asking, and Claude `default`, which asks the owner for anything its own
+permission rules do not allow), and `full` additionally permits yolo
 threads, answering approvals and switching harnesses. The default is supervised. This is a ceiling;
 tool arguments cannot widen it, and `tools/list` offers only the tools it allows.
 `--workspace ID` (repeatable) limits the client to those workspaces, like the
