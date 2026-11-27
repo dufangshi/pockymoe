@@ -888,14 +888,15 @@ pub(crate) async fn forward_local(
         if !transport.has_key(payload["headers"]["x-rcd-key"].as_str().unwrap_or("")) {
             return json!({"statusCode":409,"headers":{"content-type":"application/json","cache-control":"no-store"},"body":json!({"code":"transport_reconnect_required","message":"The device reconnected. Retry this action to use its new encryption key."}).to_string()});
         }
-        let opened =
-            match transport.open(&payload) {
-                Ok(o) => o,
-                Err(_) => return relay_error_response(
-                    400,
-                    "Encrypted request is invalid, expired, or replayed. Reconnect to the device.",
-                ),
-            };
+        // A request the device cannot open was never dispatched. Its own code lets a client
+        // whose clock jumped (request time outside the ±120 s window) or whose key expired drop
+        // its cached key and retry, as for transport_reconnect_required.
+        let opened = match transport.open(&payload) {
+            Ok(o) => o,
+            Err(_) => {
+                return json!({"statusCode":400,"headers":{"content-type":"application/json","cache-control":"no-store"},"body":json!({"code":"transport_request_rejected","message":"Encrypted request is invalid, expired, or replayed. Reconnect to the device."}).to_string()})
+            }
+        };
         let mut opened = opened;
         let peer_bootstrap =
             peer.is_some() && method == "POST" && path == "/api/peer/transport/certificate";
