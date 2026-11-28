@@ -77,6 +77,34 @@ async fn scripted_start_stream_fork_rollback_compact_resume_release() {
     r.release_session(&id).await.unwrap();
 }
 #[tokio::test]
+async fn startup_notifications_do_not_block_native_control_replies() {
+    let (_dir, runtime) = runtime();
+    let mut session_input = input();
+    session_input.model = "startup-burst".into();
+    let (items, session) = tokio::time::timeout(Duration::from_secs(10), async {
+        let session = runtime
+            .start_session(session_input)
+            .await
+            .unwrap()
+            .provider_session_id;
+        let items = runtime
+            .start_turn(
+                turn(&session, "hello"),
+                EventBus::new(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        (items, session)
+    })
+    .await
+    .expect("control replies must reach the runtime during an MCP startup burst");
+    assert!(items.iter().any(|item| item.text == "Hello"));
+    assert!(items.iter().any(|item| item.text.contains("broken-docs")));
+    runtime.release_session(&session).await.unwrap();
+}
+
+#[tokio::test]
 async fn scripted_crash_is_execution_uncertain_then_resumes() {
     let (_dir, r) = runtime();
     let id = r.start_session(input()).await.unwrap().provider_session_id;

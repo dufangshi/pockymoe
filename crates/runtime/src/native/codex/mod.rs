@@ -2,6 +2,7 @@
 mod approvals;
 mod commands;
 mod mapping;
+mod notifications;
 mod plan_review;
 mod wire;
 use crate::{
@@ -10,6 +11,7 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
+use notifications::Notifications;
 use pockymoe_protocol::*;
 use serde_json::{json, Value};
 use std::{
@@ -22,7 +24,7 @@ use tokio::sync::{broadcast, Mutex};
 use tokio_util::sync::CancellationToken;
 struct Session {
     process: Arc<AcpProcess>,
-    updates: Mutex<tokio::sync::mpsc::Receiver<Value>>,
+    updates: Mutex<Notifications>,
     requests: Mutex<tokio::sync::mpsc::Receiver<(i64, String, Value)>>,
     settings: RwLock<SessionSettings>,
     cwd: String,
@@ -33,6 +35,18 @@ struct Session {
     context_delivered: std::sync::atomic::AtomicBool,
     goal_active: std::sync::atomic::AtomicBool,
     context_reader: Option<Arc<std::sync::Mutex<crate::context_inspection::CodexTraceReader>>>,
+}
+impl Session {
+    async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        let response = self.process.request(method, params);
+        tokio::pin!(response);
+        // A live turn can read notifications for us. If it ends before the
+        // response arrives, take over the receiver when it releases the lock.
+        tokio::select! {
+            result = &mut response => result,
+            mut updates = self.updates.lock() => updates.wait(&self.process, method, response).await,
+        }
+    }
 }
 struct PlanReview {
     thread: String,
@@ -89,7 +103,7 @@ impl CodexRuntime {
         cwd: &str,
     ) -> Result<(
         Arc<AcpProcess>,
-        tokio::sync::mpsc::Receiver<Value>,
+        Notifications,
         tokio::sync::mpsc::Receiver<(i64, String, Value)>,
     )> {
         let isolated = crate::execution::current().is_some();
@@ -145,7 +159,8 @@ impl CodexRuntime {
         };
         let (process, updates, requests) = AcpProcess::spawn(&launch, cwd, &env).await?;
         let process = Arc::new(process);
-        let initialized = process.request("initialize",json!({"clientInfo":{"name":"pockymoe","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await
+        let mut updates = Notifications::new(updates);
+        let initialized = updates.request(&process,"initialize",json!({"clientInfo":{"name":"pockymoe","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await
             .and_then(|init| {
                 if native_file { verify_isolated_native_file(&init) } else { Ok(()) }
             });
@@ -163,13 +178,16 @@ impl CodexRuntime {
         cwd: &str,
         settings: SessionSettings,
     ) -> Result<StartSessionResult> {
-        let (process, updates, requests) = self.spawn(cwd).await?;
+        let (process, mut updates, requests) = self.spawn(cwd).await?;
         let policy = policy(&settings);
         let mut params = json!({"cwd":cwd,"model":settings.model,"approvalPolicy":policy["approvalPolicy"],"sandbox":policy["sandbox"],"persistExtendedHistory":true});
         if let Some(raw) = raw {
             params["threadId"] = json!(raw);
+            // Resume and fork only need metadata. Codex retains the history
+            // in its own store, and a full response can exceed the frame limit.
+            params["excludeTurns"] = json!(true);
         }
-        let response = match process.request(method, params).await {
+        let response = match updates.request(&process, method, params).await {
             Ok(v) => v,
             Err(e) => {
                 let _ = process.shutdown().await;
@@ -339,12 +357,12 @@ impl AgentRuntime for CodexRuntime {
         _agent: Option<&str>,
         cwd: Option<&str>,
     ) -> Result<Vec<ModelOptionDto>> {
-        let (process, _, _) = self.spawn(cwd.unwrap_or(".")).await?;
+        let (process, mut updates, _requests) = self.spawn(cwd.unwrap_or(".")).await?;
         let result=async {
             let mut models=vec![]; let mut cursor=Value::Null;
             let mut bridge=crate::acp::codex_models::ModelCatalogBridge::default();
             if let Some((_,catalog))=crate::acp::upstream_models::UpstreamModels::new(self.upstreams.clone()).catalog("codex").await? {bridge.set_upstream(catalog);}
-            loop {let request=json!({"id":1,"method":"model/list","params":{"cursor":cursor}});bridge.observe_request(&request);let mut response=json!({"id":1,"result":process.request("model/list",request["params"].clone()).await?});bridge.observe_response(&mut response);
+            loop {let request=json!({"id":1,"method":"model/list","params":{"cursor":cursor}});bridge.observe_request(&request);let mut response=json!({"id":1,"result":updates.request(&process,"model/list",request["params"].clone()).await?});bridge.observe_response(&mut response);
                 for model in response["result"]["data"].as_array().into_iter().flatten() { models.push(serde_json::from_value(json!({"id":model["id"],"model":model["model"],"displayName":model["displayName"],"description":model["description"],"isDefault":model["isDefault"],"hidden":model["hidden"].as_bool().unwrap_or(false),"supportedReasoningEfforts":model["supportedReasoningEfforts"],"defaultReasoningEffort":model["defaultReasoningEffort"]}))?); }
                 cursor=response["result"]["nextCursor"].clone();if cursor.is_null(){break;}
             } Ok(models)
@@ -401,11 +419,6 @@ impl AgentRuntime for CodexRuntime {
         cancel: CancellationToken,
     ) -> Result<Vec<ThreadHistoryItemDto>> {
         let session = self.session(&input.provider_session_id)?;
-        let mut updates = session
-            .updates
-            .try_lock()
-            .map_err(|_| anyhow!("conflict: session busy"))?;
-        let mut requests = session.requests.lock().await;
         let _operation = session
             .operation
             .try_lock()
@@ -435,6 +448,8 @@ impl AgentRuntime for CodexRuntime {
                 .local_command(&session, &input, &bus, local, &settings, &policy)
                 .await;
         }
+        let mut updates = session.updates.lock().await;
+        let mut requests = session.requests.lock().await;
         let include_context = !input.context_delivered
             && !input.hidden
             && !session.process.cli_env.is_empty()
@@ -482,9 +497,8 @@ impl AgentRuntime for CodexRuntime {
             ),
             _ => ("turn/start", params),
         };
-        let started = session
-            .process
-            .request(method, params)
+        let started = updates
+            .request(&session.process, method, params)
             .await
             .and_then(|response| {
                 response["turn"]["id"]
@@ -537,7 +551,13 @@ impl AgentRuntime for CodexRuntime {
                 }
                 if let Some(limits)=reader.take_rate_limits() {announcer.announce(&bus,&input.thread_id,"codex",limits,input.hidden);}}
             },
-            _=cancel.cancelled(), if !interrupted => {interrupted=true;interrupt_deadline=tokio::time::Instant::now()+Duration::from_secs(15);self.interrupt(&input.provider_session_id,&turn).await?;},
+            _=cancel.cancelled(), if !interrupted => {
+                interrupted=true;
+                interrupt_deadline=tokio::time::Instant::now()+Duration::from_secs(15);
+                updates.request(&session.process, "turn/interrupt", serde_json::to_value(wire::TurnInterruptParams {
+                    thread_id: native_raw(&input.provider_session_id).into(), turn_id: turn.clone(),
+                })?).await?;
+            },
             _=tokio::time::sleep_until(interrupt_deadline), if interrupted => {return Err(ExecutionUncertain("Codex did not confirm interruption".into()).into());},
             request=requests.recv()=>{let Some((rpc_id,method,params))=request else {return Err(ExecutionUncertain("app-server request stream closed".into()).into());};
                 if method=="currentTime/read" {
@@ -589,7 +609,7 @@ impl AgentRuntime for CodexRuntime {
                             reviewed = true;
                             match self.review_plan(&input, &bus, &mut mapper, &item, &text, &cancel).await {
                                 Some(true) => {
-                                    turn = self.implement_plan(&session, &input, &bus).await?;
+                                    turn = self.implement_plan(&session, &mut updates, &input, &bus).await?;
                                     continue;
                                 }
                                 Some(false) => {}
@@ -680,7 +700,6 @@ impl AgentRuntime for CodexRuntime {
             .clone()
             .unwrap_or_else(|| turn.into());
         session
-            .process
             .request(
                 "turn/interrupt",
                 serde_json::to_value(wire::TurnInterruptParams {
@@ -694,7 +713,7 @@ impl AgentRuntime for CodexRuntime {
     async fn send_input(&self, id: &str, _turn: &str, prompt: &str) -> Result<()> {
         let s = self.session(id)?;
         let turn = s.active.read().unwrap().clone().context("No active turn")?;
-        s.process.request("turn/steer",json!({"threadId":native_raw(id),"expectedTurnId":turn,"input":[{"type":"text","text":prompt}]})).await?;
+        s.request("turn/steer",json!({"threadId":native_raw(id),"expectedTurnId":turn,"input":[{"type":"text","text":prompt}]})).await?;
         Ok(())
     }
     async fn apply_session_settings(&self, id: &str, settings: SessionSettings) -> Result<()> {
@@ -723,7 +742,7 @@ impl AgentRuntime for CodexRuntime {
         } else {
             Value::Null
         };
-        s.process.request("thread/settings/update",json!({"threadId":native_raw(id),"model":merged.model,"effort":merged.effort,"sandboxPolicy":policy["sandboxPolicy"],"approvalPolicy":policy["approvalPolicy"],"serviceTier":tier})).await?;
+        s.request("thread/settings/update",json!({"threadId":native_raw(id),"model":merged.model,"effort":merged.effort,"sandboxPolicy":policy["sandboxPolicy"],"approvalPolicy":policy["approvalPolicy"],"serviceTier":tier})).await?;
         // A running turn takes a new model, effort or tier from its next model
         // request (`turn/settings/update`); ACP only applies it next turn.
         let live = s.active.read().unwrap().clone();
@@ -742,7 +761,7 @@ impl AgentRuntime for CodexRuntime {
                 // Codex validates the switch (feature enabled at launch, model
                 // metadata, policy). If it refuses, the change still applies
                 // from the next turn, as on ACP, instead of failing.
-                if let Err(error) = s.process.request("turn/settings/update", change).await {
+                if let Err(error) = s.request("turn/settings/update", change).await {
                     tracing::info!(%error, "Codex kept the running turn's settings; they apply from the next turn");
                 }
             }
@@ -806,17 +825,14 @@ impl AgentRuntime for CodexRuntime {
         // finished, so no prompt starts against a half-compacted thread and
         // the caller's "compacted" really means done.
         let session = self.session(id)?;
-        let mut updates = session
-            .updates
-            .try_lock()
-            .map_err(|_| anyhow!("conflict: session busy"))?;
         let _operation = session
             .operation
             .try_lock()
             .map_err(|_| anyhow!("conflict: session busy"))?;
-        session
-            .process
+        let mut updates = session.updates.lock().await;
+        updates
             .request(
+                &session.process,
                 "thread/compact/start",
                 serde_json::to_value(wire::ThreadCompactStartParams {
                     thread_id: native_raw(id).into(),
@@ -904,7 +920,12 @@ impl AgentRuntime for CodexRuntime {
                 visited.insert(cursor.to_string()),
                 "Codex history cursor repeated"
             );
-            let page=s.process.request("thread/turns/list",json!({"threadId":raw,"cursor":cursor,"limit":remaining.min(100),"sortDirection":"desc","itemsView":"summary"})).await?;
+            let page = s
+                .request(
+                    "thread/turns/list",
+                    json!({"threadId":raw,"cursor":cursor,"limit":remaining.min(100),"sortDirection":"desc","itemsView":"summary"}),
+                )
+                .await?;
             for turn in page["data"]
                 .as_array()
                 .context("Codex turn history missing")?
@@ -921,15 +942,14 @@ impl AgentRuntime for CodexRuntime {
             }
         }
         if let Some(before) = before {
-            s.process
-                .request(
-                    "thread/revert",
-                    serde_json::to_value(wire::ThreadRevertParams {
-                        thread_id: raw.into(),
-                        before_turn_id: before,
-                    })?,
-                )
-                .await?;
+            s.request(
+                "thread/revert",
+                serde_json::to_value(wire::ThreadRevertParams {
+                    thread_id: raw.into(),
+                    before_turn_id: before,
+                })?,
+            )
+            .await?;
         }
 
         Ok(())
@@ -1014,7 +1034,6 @@ impl AgentRuntime for CodexRuntime {
     async fn get_goal(&self, id: &str) -> Result<Option<GoalState>> {
         let response = self
             .session(id)?
-            .process
             .request(
                 "thread/goal/get",
                 serde_json::to_value(wire::ThreadGoalGetParams {
@@ -1037,7 +1056,6 @@ impl AgentRuntime for CodexRuntime {
     ) -> Result<Option<GoalState>> {
         let response = self
             .session(id)?
-            .process
             .request(
                 "thread/goal/set",
                 serde_json::to_value(wire::ThreadGoalSetParams {
@@ -1163,17 +1181,11 @@ impl CodexRuntime {
     async fn implement_plan(
         &self,
         session: &Arc<Session>,
+        updates: &mut Notifications,
         input: &StartTurnInput,
         bus: &EventBus,
     ) -> Result<String> {
-        self.apply_session_settings(
-            &input.provider_session_id,
-            SessionSettings {
-                collaboration_mode: Some("default".into()),
-                ..Default::default()
-            },
-        )
-        .await?;
+        session.settings.write().unwrap().collaboration_mode = Some("default".into());
         event(
             bus,
             input,
@@ -1182,9 +1194,9 @@ impl CodexRuntime {
         );
         let settings = session.settings.read().unwrap().clone();
         let policy = policy(&settings);
-        let response = session
-            .process
+        let response = updates
             .request(
+                &session.process,
                 "turn/start",
                 json!({"threadId":native_raw(&input.provider_session_id),"input":[{"type":"text","text":plan_review::PROMPT}],
                     "model":settings.model,"effort":settings.effort,"approvalPolicy":policy["approvalPolicy"],"sandboxPolicy":policy["sandboxPolicy"],
@@ -1218,7 +1230,6 @@ impl CodexRuntime {
                     let mut cursor = Value::Null;
                     for _ in 0..20 {
                         let page = session
-                            .process
                             .request(
                                 "mcpServerStatus/list",
                                 json!({"cursor":cursor,"detail":"toolsAndAuthOnly"}),
@@ -1234,13 +1245,11 @@ impl CodexRuntime {
                 }
                 commands::Command::Skills => commands::render_skills(
                     &session
-                        .process
                         .request("skills/list", json!({"cwds":[session.cwd]}))
                         .await?,
                 ),
                 commands::Command::Status => {
                     let limits = session
-                        .process
                         .request("account/rateLimits/read", json!({}))
                         .await
                         .ok()

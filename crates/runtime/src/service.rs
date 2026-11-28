@@ -457,6 +457,23 @@ impl Supervisor {
             .or_default()
             .clone()
     }
+    pub async fn harness_has_live_turn(&self, id: &str) -> Result<bool> {
+        let live = self.live.lock().await;
+        for thread_id in live.keys() {
+            let thread = self.get_thread(thread_id)?;
+            if Self::thread_harness_id(&thread) == id {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    fn thread_harness_id(thread: &ThreadDto) -> &str {
+        match (thread.agent_id.as_deref(), thread.provider) {
+            (Some(agent), _) => agent,
+            (None, Provider::Acp) => "codex",
+            (None, provider) => provider.as_str(),
+        }
+    }
     /// The harness's "Sign-in required: …" message from its last ACP check.
     pub fn harness_sign_in_error(&self, id: &str) -> Option<String> {
         self.runtimes
@@ -3152,13 +3169,7 @@ impl Supervisor {
             .maintenance_gate
             .try_read()
             .map_err(|_| anyhow!("conflict: Supervisor update in progress"))?;
-        let gate = self.harness_gate(thread.agent_id.as_deref().unwrap_or(
-            if provider == Provider::Acp {
-                "codex"
-            } else {
-                provider.as_str()
-            },
-        ));
+        let gate = self.harness_gate(Self::thread_harness_id(&thread));
         let _guard = gate
             .try_read()
             .map_err(|_| anyhow!("conflict: Harness maintenance in progress"))?;

@@ -8,6 +8,7 @@ use pockymoe_runtime::{management, Supervisor};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Duration;
 
 pub async fn harnesses(State(state): State<Arc<Supervisor>>) -> Json<Value> {
     Json(management::inventory(&state).await)
@@ -50,23 +51,47 @@ pub async fn harness_action(
         )
             .into_response();
     };
-    let Ok(guard) = state.harness_gate(&id).try_write_owned() else {
-        return (StatusCode::CONFLICT, Json(json!({"code":"conflict","message":"This harness is busy. Wait for its turns to finish or stop them before maintenance."}))).into_response();
-    };
-    state.management_jobs.lock().unwrap().insert(
-        id.clone(),
-        json!({"state":"running","action":body.action,"component":body.component}),
-    );
+    let gate = state.harness_gate(&id);
+    let guard = gate.clone().try_write_owned().ok();
+    if guard.is_none() {
+        match state.harness_has_live_turn(&id).await {
+            Ok(true) => return harness_conflict("This harness is busy. Wait for its turns to finish or stop them before maintenance."),
+            Ok(false) if body.action == "restart" => {}
+            Ok(false) => return harness_conflict("This harness is preparing a session or performing maintenance. Try again shortly."),
+            Err(error) => {
+                tracing::warn!(%error, harness = %id, "could not determine whether the harness is running");
+                return harness_conflict("Could not determine whether this harness is running. Try again shortly.");
+            }
+        }
+    }
+    {
+        let mut jobs = state.management_jobs.lock().unwrap();
+        if jobs.get(&id).is_some_and(|job| job["state"] == "running") {
+            return harness_conflict("Harness maintenance is already in progress.");
+        }
+        jobs.insert(
+            id.clone(),
+            json!({"state":"running","action":body.action,"component":body.component}),
+        );
+    }
     tokio::spawn(async move {
-        let _guard = guard;
         let _maintenance = maintenance;
-        let result = if body.action == "restart" {
-            state.restart_harness(&id).await.map(|_| ())
-        } else if body.action == "install" && body.component == "base" {
-            management::install_harness(&state, &id).await
-        } else {
-            management::update_harness(&state, &id, &body.component).await
-        };
+        let result = async {
+            let _guard = match guard {
+                Some(guard) => guard,
+                // A queued writer takes precedence over the next prompt retry.
+                None => tokio::time::timeout(Duration::from_secs(30), gate.write_owned())
+                    .await
+                    .map_err(|_| anyhow::anyhow!("The harness did not become idle within 30 seconds. Check the thread queue and retry."))?,
+            };
+            if body.action == "restart" {
+                state.restart_harness(&id).await.map(|_| ())
+            } else if body.action == "install" && body.component == "base" {
+                management::install_harness(&state, &id).await
+            } else {
+                management::update_harness(&state, &id, &body.component).await
+            }
+        }.await;
         let value = match result {
             Ok(()) => {
                 json!({"state":"completed","action":body.action,"component":body.component,"connectionVerified":body.action=="update" && body.component=="adapter"})
@@ -78,6 +103,54 @@ pub async fn harness_action(
         state.management_jobs.lock().unwrap().insert(id, value);
     });
     (StatusCode::ACCEPTED, Json(json!({"state":"running"}))).into_response()
+}
+
+fn harness_conflict(message: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({"code":"conflict","message":message})),
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn harness_restart_waits_for_preflight_and_reserves_the_next_slot() {
+    let (_dir, state) = crate::tunnel::tests::state_with_relay_url("http://127.0.0.1:1");
+    let gate = state.harness_gate("codex");
+    let preflight = gate.read().await;
+    let restart = || {
+        harness_action(
+            State(state.clone()),
+            Path("codex".into()),
+            Json(HarnessAction {
+                action: "restart".into(),
+                component: "base".into(),
+            }),
+        )
+    };
+    assert_eq!(restart().await.status(), StatusCode::ACCEPTED);
+    assert_eq!(restart().await.status(), StatusCode::CONFLICT);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while gate.try_read().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("restart must queue a writer while preflight holds the gate");
+    drop(preflight);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let job = state.management_jobs.lock().unwrap()["codex"].clone();
+            if job["state"] != "running" {
+                assert_eq!(job["state"], "completed", "{job}");
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("restart must finish after preflight releases the gate");
 }
 
 async fn updater(state: &Supervisor, action: &str) -> anyhow::Result<Value> {
