@@ -5,6 +5,7 @@ def done():
     send({'method':'item/agentMessage/delta','params':{'threadId':'shared','itemId':'message','delta':'Hello'}})
     send({'method':'turn/completed','params':{'threadId':'shared','turn':{'id':'native-turn','status':'completed'}}})
 approval='command'
+startup_burst=False
 for line in sys.stdin:
     v=json.loads(line); m=v.get('method'); p=v.get('params',{}); result={}
     if not m:
@@ -16,7 +17,17 @@ for line in sys.stdin:
         continue
     if 'id' not in v: continue
     if m in ('thread/start','thread/resume','thread/fork'):
+        startup_burst=p.get('model')=='startup-burst'
+        if startup_burst:
+            for i in range(32):
+                send({'method':'mcpServer/startupStatus/updated','params':{'name':f'docs-{i}','status':'ready'}})
+            send({'method':'mcpServer/startupStatus/updated','params':{'name':'broken-docs','status':'failed','error':'fixture startup failed'}})
         result={'thread':{'id':'fork' if m=='thread/fork' else 'shared'},'model':'test'}
+        if m!='thread/start':
+            assert p.get('excludeTurns') is True, 'native load must request a metadata-only response'
+    if m=='thread/settings/update' and startup_burst:
+        for i in range(32):
+            send({'method':'mcpServer/startupStatus/updated','params':{'name':f'docs-{i}','status':'ready'}})
     if m=='thread/turns/list': result={'data':[{'id':'old-turn'}], 'nextCursor':None}
     if m=='thread/revert': assert p['beforeTurnId']=='old-turn'
     if m=='turn/start': result={'turn':{'id':'native-turn'}}
